@@ -389,7 +389,7 @@ try {
     assert.equal(response.status,200);return response.text();
   };
   modelFixture={status:400,body:{error:'Fixture model is not available'}};
-  assert.match(await requestModel(),/Fixture model is not available/);
+  assert.match(await requestModel(),/Model request request-rejected \(HTTP 400\).*Reference [a-f0-9-]{36}/);
   assert.equal((await localRequest('/api/agent/'+rimeId)).sync.online,true,'a rejected model request does not disconnect Rime');
   modelFixture={status:200,body:{text:'Shared model transport works',calls:[],items:[]}};
   assert.match(await requestModel(),/Shared model transport works/);
@@ -541,8 +541,8 @@ try {
     "hello\n",
   );
   await phonePage
-    .locator('[data-wd-type=terminal]:not([data-wd-off]) select[aria-label="Terminal session"]')
-    .selectOption(session.id, { force: true });
+    .locator(`[data-wd-type=terminal]:not([data-wd-off]) [role=tab][data-session="${session.id}"]`)
+    .click();
   await phonePage
     .locator("[data-wd-type=terminal]:not([data-wd-off])")
     .getByRole("button", { name: "Expand terminal", exact: true })

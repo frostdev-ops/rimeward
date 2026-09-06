@@ -260,7 +260,25 @@ test("paired harness authorization scopes both sync and model credentials to the
     assert.equal((await reader.read()).done, true);
     codexProvider.run = async () => { throw Object.assign(Error("fixture provider error"), { status: 422 }); };
     const failed = await invoke("model", { provider: "codex", model: "test", instructions: "test", items: [], tools: [] });
-    assert.deepEqual(await failed.json(), { error: "fixture provider error", status: 422 });
+    const failure = await failed.json();
+    assert.equal(failure.status, 422);
+    assert.equal(failure.category, 'request-rejected');
+    assert.match(failure.error, new RegExp(failure.requestId));
+    for (const [status, category] of [[503, 'provider-unavailable'], [429, 'request-rejected']] as const) {
+      codexProvider.run = async () => { throw Object.assign(Error('private response body'), { status }); };
+      const response = await invoke('model', { provider: 'codex', requestId: '11111111-1111-1111-1111-111111111111', model: 'test', instructions: 'test', items: [], tools: [] });
+      const error = await response.json();
+      assert.equal(error.category, category);
+      assert.equal(error.status, status);
+      assert.equal(error.requestId, '11111111-1111-1111-1111-111111111111');
+      assert.doesNotMatch(JSON.stringify(error), /private response body/);
+    }
+    codexProvider.run = async (call) => new Promise((_, reject) => {
+      call.signal!.addEventListener('abort', () => reject(call.signal!.reason), { once: true });
+    });
+    const cancelled = await invoke('model', { provider: 'codex', model: 'test', instructions: 'test', items: [], tools: [] });
+    await cancelled.body!.cancel();
+    await new Promise(resolve => setImmediate(resolve));
 
     assert.equal(
       (await invoke("", undefined, "https://example.com")).status,

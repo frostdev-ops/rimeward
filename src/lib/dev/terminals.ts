@@ -39,6 +39,7 @@ type Row = {
   task: string;
   assignment: string;
   task_state: SessionView["taskState"];
+  review: string;
   cols: number;
   rows: number;
   sequence: number;
@@ -133,7 +134,17 @@ function rowOf(user: number, id: string): Row {
   if (!row) throw new DevError("Terminal not found.", 404);
   return row;
 }
-function view(r: Row): SessionView {
+function view(r: Row, inspect = false): SessionView {
+  const receipt = inspect ? workDb().prepare("SELECT json FROM task_receipts WHERE session=?").get(r.id) as { json: string } | undefined : undefined;
+  const evidence = receipt ? JSON.parse(receipt.json) as NonNullable<SessionView['evidence']> : undefined;
+  if (evidence && inspect) evidence.stale = evidence.files.some(file => {
+    try {
+      const target = projectPath(r.user_id, r.project, file.path, true);
+      if (!fs.lstatSync(target, { throwIfNoEntry: false })) return file.hash !== null;
+      return fs.statSync(target).size > 5 * 1024 * 1024 || file.hash !== crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex');
+    }
+    catch { return true; }
+  });
   return {
     id: r.id,
     project: r.project,
@@ -151,6 +162,8 @@ function view(r: Row): SessionView {
     task: r.task,
     assignment: r.assignment,
     taskState: r.task_state,
+    ...(inspect ? { review: r.review } : {}),
+    ...(evidence ? { evidence } : {}),
   };
 }
 export function listSessions(user: number, project?: string): SessionView[] {
@@ -161,7 +174,7 @@ export function listSessions(user: number, project?: string): SessionView[] {
         "SELECT * FROM terminal_sessions WHERE user_id=? AND (? IS NULL OR project=?) ORDER BY rowid DESC",
       )
       .all(user, project ?? null, project ?? null) as Row[]
-  ).map(view);
+  ).map(r => view(r));
 }
 function persist(s: Live) {
   clearTimeout(s.flush);
@@ -383,7 +396,7 @@ export async function startSession(
   emitDev(user, "session", id, view(rowOf(user, id)));
   return view(rowOf(user, id));
 }
-export function readSession(user: number, id: string, after?: number) {
+export function readSession(user: number, id: string, after?: number, review = true) {
   const row = rowOf(user, id),
     s = live.get(id);
   const screen = s
@@ -402,7 +415,7 @@ export function readSession(user: number, id: string, after?: number) {
     after >= (s.chunks[s.head]?.sequence ?? 1) - 1 &&
     after <= s.sequence;
   return {
-    session: view(row),
+    session: view(row, review),
     screen,
     reset: !incremental,
     data: incremental
@@ -540,6 +553,7 @@ export async function waitSession(
   id: string,
   after: number,
   ms = 20_000,
+  review = true,
 ) {
   rowOf(user, id);
   if (live.get(id)?.sequence === after) await new Promise<void>(resolve => {
@@ -547,7 +561,7 @@ export async function waitSession(
     const timer = setTimeout(done, Math.min(30_000, Math.max(0, ms)));
     const stop = subscribeDev(user, event => { if (event.id === id) done(); });
   });
-  return readSession(user, id, after);
+  return readSession(user, id, after, review);
 }
 let stopping: Promise<void> | undefined;
 export function shutdownTerminals(): Promise<void> {

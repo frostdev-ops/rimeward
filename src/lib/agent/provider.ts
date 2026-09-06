@@ -37,6 +37,9 @@ export interface ProviderCall {
   cacheKey?: string;
   /** An interrupt (core.interruptTurn) aborts the call in flight through this. */
   signal?: AbortSignal;
+  onProgress?: () => void;
+  /** Native relay calls retain metadata only and never retry uncertain inference. */
+  relayRequestId?: string;
 }
 
 export interface ProviderResult {

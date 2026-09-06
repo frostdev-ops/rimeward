@@ -1,3 +1,5 @@
+import { modelFailure } from "./diagnostics.ts";
+import { randomUUID } from "node:crypto";
 import { getDb } from "../db.ts";
 import { cached } from '../cache.ts';
 import type { CodexModel } from './codex.ts';
@@ -288,6 +290,8 @@ export async function sharedModel(
     shared = sharedRime(user);
   if (!connection || !shared?.online || !shared.providers[provider])
     return null;
+  const requestId = randomUUID();
+  let accepted = false;
   try {
     const response = await request(
       connection.server,
@@ -298,6 +302,7 @@ export async function sharedModel(
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           provider,
+          requestId,
           model: call.model,
           effort: call.effort,
           instructions: call.instructions,
@@ -310,30 +315,35 @@ export async function sharedModel(
           : AbortSignal.timeout(MODEL_TIMEOUT_MS),
       },
     );
+    accepted = true;
     // Whitespace heartbeats, then one JSON document: the result, or the
     // server's error with its status (the status line was long gone by then).
-    const parsed = JSON.parse(await response.text()) as
+    if (!response.body) throw new SyntaxError("Missing model response.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        call.onProgress?.();
+        text += decoder.decode(value, { stream: true });
+      }
+      text += decoder.decode();
+    } finally { reader.releaseLock(); }
+    const parsed = JSON.parse(text) as
       | ProviderResult
-      | { error: string; status?: number };
+      | { error: string; status?: number; category?: string };
     if ("error" in parsed)
       throw Object.assign(new Error(typeof parsed.error === "string" ? parsed.error : "Invalid model response."), {
-        status: parsed.status ?? 400,
+        status: parsed.status ?? 502,
+        category: parsed.category,
       });
     return parsed as ProviderResult;
   } catch (e) {
-    const status = (e as { status?: number }).status;
-    if (
-      status &&
-      status >= 400 &&
-      status < 500 &&
-      ![401, 403, 404].includes(status)
-    )
-      throw e;
-    if (!call.signal?.aborted) disconnectRime(user);
-    if (call.signal?.aborted) throw e;
-    throw Error(
-      "The Rime server disconnected during the model request. Retry when ready.",
-    ); // No automatic replay after an uncertain provider request.
+    const failure = modelFailure(user, e, requestId, call.signal?.aborted);
+    if (failure.category === 'connection-lost' || (!accepted && (failure.status === 401 || failure.status === 403))) disconnectRime(user);
+    throw failure;
   }
 }
 

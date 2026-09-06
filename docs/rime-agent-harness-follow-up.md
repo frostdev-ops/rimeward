@@ -109,4 +109,18 @@ I inspected targeted source, `tests/development.test.ts`, and `tests/agent-conte
 
 The subsequent terminal release review fixes the large-write acknowledgement: `project_edit` returns a compact revision/saved receipt, and the shared output cap reports an omitted result without implying execution failure or instructing a repeated mutation. A regression saves a file larger than the result cap and verifies both its receipt and disk contents. The `desktop_projects` description now distinguishes local project ownership from model requests and shared transcript excerpts.
 
-The broader search/diff pagination, effective-policy summary, durable completion evidence, and provider diagnostics proposals remain open. The observations and validation scope above describe the original review, before these implementation changes.
+A subsequent implementation adds scoped search and directory pagination, exhaustive Git pagination with snapshot identity (including deleted paths), an effective execution/inference/sync/permission summary, task receipts with file hashes and reviewer-reported checks, categorized relay diagnostics, runtime metadata logs, and elapsed-wait/relay-progress labels. The observations and validation scope above describe the original review, before these implementation changes.
+
+Terminal sessions now use a fixed-height, horizontally scrolling tab strip. The terminal surface uses size containment so loading another PTY screen cannot resize or move its ward. Keyboard tab navigation and a ward-bounds regression cover session switching.
+
+Validation added: exhaustive 600-match model-facing search; reconstruction of a large Git diff without gaps; deleted-file scopes; persistent task receipts and stale-file detection; bounded diagnostic retention without payloads; categorized provider failures and stream cancellation. Search continuation assumes an unchanged tree; no project snapshot or index is created. Task checks remain explicitly reviewer-reported, and only listed files receive stale checks. Production relay soak testing and signed desktop release validation are separate from these local checks.
+
+Local verification: the 452-test suite passed, followed by the expanded development regressions; TypeScript and desktop lint passed. The clean-checkout production build and real-PTY terminal UI smoke test passed, including a 400×150 saved screen switching without ward movement. Rust compilation passed; the native diagnostic rotation/permissions test also passed in an isolated crate using the same function and test. Full in-place native test linking stalled, so this is not a full desktop release validation.
+
+Release review also preserves provider HTTP/timeout metadata, disables uncertain relay
+retries, keeps provider error bodies out of relay status logs, and excludes full task
+receipts from routine terminal reads. Reviews work for non-Git projects; unavailable
+file evidence becomes stale. Editor search follows continuation pages before applying its
+existing 200-result display cap. Git output errors no longer silently fall back to staged
+changes. Rapid terminal tab switches are serialized. The existing bulk-output regression
+now polls incrementally, avoiding repeated full-scrollback serialization on Intel CI.

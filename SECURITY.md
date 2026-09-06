@@ -41,3 +41,10 @@ that change applies immediately, while human ownership still blocks agent input 
 released. Standard CLI permissions remain enabled unless the user selects **Unrestricted**
 (YOLO), which applies on the next start. Shells use OS account permissions. Shared-tree coordination is advisory, not a
 filesystem sandbox. Dirty worktrees and unrelated edits must be preserved.
+
+Relayed model calls disable automatic inference retries (including SDK retries); a rejected
+Codex credential can still be refreshed once. Provider failures retain their category, HTTP
+status and request reference. The server records metadata rather than provider error bodies
+for these calls. Native runtime diagnostics also store fixed categories only, in a 64 KiB
+rotating file with one previous file. Task-review records remain in the desktop workspace
+database; excerpts explicitly read into a conversation follow the shared Rime data policy.

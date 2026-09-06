@@ -35,6 +35,8 @@ export interface SessionView {
   sequence: number;
   task: string;
   assignment: string;
+  review?: string;
+  evidence?: { reviewer: string; at: string; sequence: number; diff: string | null; files: { path: string; hash: string | null }[]; checks: { command: string; exitCode: number | null }[]; stale?: boolean };
   taskState: "active" | "needs-attention" | "done" | "cancelled";
 }
 export interface RuntimeEvent {

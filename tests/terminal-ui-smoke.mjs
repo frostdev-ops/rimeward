@@ -147,9 +147,16 @@ try {
   await ward.getByText('You’re in control',{exact:true}).waitFor();
   sessions=await page.evaluate(()=>fetch('/api/dev/sessions').then(r=>r.json()));
   assert.equal(sessions.length,2);const second=sessions[0];assert.notEqual(first.id,second.id);
-  await ward.locator('select[aria-label="Terminal session"]').selectOption(first.id,{force:true});
+  await page.evaluate(async first => {
+    const response = await fetch('/api/dev/resize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: first.id, owner: first.owner, cols: 400, rows: 150 }) });
+    if (!response.ok) throw Error(await response.text());
+  }, first);
+  const beforeSwitch = await ward.boundingBox();
+  await ward.locator(`[role=tab][data-session="${first.id}"]`).click();
   await ward.getByText('You’re in control',{exact:true}).waitFor();
   await page.waitForFunction(marker=>document.querySelector('.xterm')?.textContent?.includes(marker),marker);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.deepEqual(await ward.boundingBox(), beforeSwitch, 'switching tabs preserves ward position and size');
   await page.screenshot({path:path.join(screenshotDir,'rimeward-terminal-desktop.png'),animations:'disabled'});
   // Lose one input acknowledgement after the backend actually accepted it.
   let sent=0;

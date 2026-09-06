@@ -184,17 +184,17 @@ test("streamed terminal output is ordered, bounded and drains before exit; resta
     fs.writeFileSync(producer, 'process.stdout.write("0123456789abcdef".repeat(131072) + "\\r\\nSTREAM_DONE\\r\\n")');
     const command = `"${process.execPath}" "${producer}"\r`;
     writeSession(1, s.id, "agent:rime", command);
-    const deadline = Date.now() + 30000; // Includes parsing 2 MiB under shared CI runner load.
-    while (Date.now() < deadline && !readSession(1, s.id).screen.includes("STREAM_DONE"))
-      await waitSession(1, s.id, readSession(1, s.id).session.sequence, 1000);
+    const deadline = Date.now() + 30000; // Poll incrementally; serializing all scrollback per chunk starves slower CI runners.
+    while (Date.now() < deadline && !readSession(1, s.id, sequence).screen.includes("STREAM_DONE"))
+      await waitSession(1, s.id, sequence, 1000);
     const result = readSession(1, s.id);
     assert.match(result.screen, /STREAM_DONE/);
     assert.ok(bytes >= 2 * 1024 * 1024);
     assert.equal(readSession(1, s.id, 0).reset, true, "old output recovers from a snapshot after history rolls over");
     assert.equal(readSession(1, s.id, result.session.sequence).data, "");
     writeSession(1, s.id, "agent:rime", "exit\r");
-    while (Date.now() < deadline && readSession(1, s.id).session.state === "running")
-      await waitSession(1, s.id, readSession(1, s.id).session.sequence, 1000);
+    while (Date.now() < deadline && readSession(1, s.id, sequence).session.state === "running")
+      await waitSession(1, s.id, sequence, 1000);
     const ended = readSession(1, s.id);
     assert.equal(ended.session.state, "exited");
     assert.match(ended.data, /STREAM_DONE/);
@@ -202,7 +202,7 @@ test("streamed terminal output is ordered, bounded and drains before exit; resta
     assert.equal(next.agentInput, true);
     assert.equal(next.task, "");
     closeSession(1, next.id);
-  } finally { stop(); if (readSession(1, s.id).session.state === "running") closeSession(1, s.id); }
+  } finally { stop(); if (readSession(1, s.id, sequence).session.state === "running") closeSession(1, s.id); }
 });
 
 test("worktrees preserve disk changes, dirty recovery buffers, and unrelated shared-tree changes", async () => {
@@ -340,6 +340,14 @@ test("file reads page under the tool cap and the diff scopes to a path", async (
   assert.equal((receipt as { saved: boolean }).saved, true);
   assert.ok(JSON.stringify(receipt).length < 1000, 'successful writes acknowledge the revision without echoing the whole file');
   assert.equal(fs.readFileSync(path.join(dir, 'large-edit.txt'), 'utf8'), text);
+  const recovery = await DEV_TOOLS.project_edit!.run({ runtime: 'desktop', project: p.id, path: 'large-edit.txt', text: text + 'unsaved', revision: (receipt as { revision: number }).revision, save: false }, { userId: 1, ward: 'rime', conv: 0 }) as { revision: number; saved: boolean; dirty: boolean };
+  assert.equal(recovery.saved, false);
+  assert.equal(recovery.dirty, true);
+  assert.ok(JSON.stringify(recovery).length < 1000);
+  fs.writeFileSync(path.join(dir, 'large-edit.txt'), 'external change');
+  assert.throws(() => DEV_TOOLS.project_edit!.run({ runtime: 'desktop', project: p.id, path: 'large-edit.txt', text, revision: recovery.revision, save: true }, { userId: 1, ward: 'rime', conv: 0 }), { status: 409 });
+  assert.equal(readPage(1, p.id, 'large-edit.txt').conflict, true);
+  assert.equal(fs.readFileSync(path.join(dir, 'large-edit.txt'), 'utf8'), 'external change');
 
   const longLine = '\u0000'.repeat(5000) + 'tail';
   fs.writeFileSync(path.join(dir, "long.json"), JSON.stringify(longLine));
@@ -369,4 +377,79 @@ test("file reads page under the tool cap and the diff scopes to a path", async (
   assert.match(scoped.diff, /\+hello/);
   assert.doesNotMatch(scoped.diff, /big\.txt/);
   await assert.rejects(gitView(1, p.id, "../escape"));
+});
+
+test('model-facing search and Git pages exhaust results without overflow or gaps', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rimeward-search-'));
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const project = addProject(1, dir);
+  fs.mkdirSync(path.join(dir, 'src'));
+  fs.writeFileSync(path.join(dir, 'src', 'large.ts'), Array.from({ length: 600 }, (_, i) => `const value${i} = ${JSON.stringify('x'.repeat(180))};`).join('\n'));
+  const read = (operation: string, cursor?: number, scope = 'src') => DEV_TOOLS.project_read!.run({ runtime: 'desktop', project: project.id, operation, path: scope, query: 'const', cursor }, { userId: 1, ward: 'rime', conv: 0 }) as Promise<any>;
+  const matches: any[] = [];
+  let cursor: number | undefined;
+  do {
+    const page = await read('search', cursor);
+    assert.ok(JSON.stringify(page).length < 12000);
+    matches.push(...page.matches);
+    assert.equal(page.complete, page.next === undefined);
+    cursor = page.next;
+  } while (cursor !== undefined);
+  assert.equal(matches.length, 600);
+  assert.deepEqual(matches.map(m => m.line), Array.from({ length: 600 }, (_, i) => i + 1));
+  await git(1, project.id, ['init', '-q']);
+  await git(1, project.id, ['add', '.']);
+  await git(1, project.id, ['-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-qm', 'base']);
+  fs.appendFileSync(path.join(dir, 'src', 'large.ts'), '\n' + 'const changed = true;\n'.repeat(2000));
+  const full = await gitView(1, project.id);
+  const recovered = { status: '', diff: '', worktrees: '' };
+  do {
+    const page = await read('git', cursor, '');
+    assert.ok(JSON.stringify(page).length < 12000);
+    assert.equal(page.snapshot, full.snapshot);
+    for (const key of ['status', 'diff', 'worktrees'] as const) recovered[key] += page[key];
+    cursor = page.next;
+  } while (cursor !== undefined);
+  assert.deepEqual(recovered, { status: full.status, diff: full.diff, worktrees: full.worktrees });
+  fs.unlinkSync(path.join(dir, 'src', 'large.ts'));
+  assert.match((await gitView(1, project.id, 'src/large.ts')).diff, /deleted file/);
+  await assert.rejects(read('search', undefined, '../outside'));
+  for (let i = 0; i < 200; i++) fs.writeFileSync(path.join(dir, 'src', `${i}-${'x'.repeat(80)}`), '');
+  const entries: string[] = [];
+  do {
+    const page = await read('files', cursor);
+    assert.ok(JSON.stringify(page).length < 12000);
+    entries.push(...page.entries.map((entry: { path: string }) => entry.path));
+    cursor = page.next;
+  } while (cursor !== undefined);
+  assert.equal(entries.length, 200);
+  assert.equal(new Set(entries).size, 200);
+});
+
+test('task receipts survive reads and mark changed evidence stale', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rimeward-evidence-'));
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'reviewed.txt'), 'reviewed');
+  const project = addProject(1, dir);
+  await git(1, project.id, ['init', '-q']);
+  const session = await startSession(1, { project: project.id, kind: 'shell', mode: 'human' });
+  try {
+    const receipt = await DEV_TOOLS.terminal_task!.run({ runtime: 'desktop', session: session.id, state: 'done', review: 'Inspected saved file; checks not run.' + '"'.repeat(7000), files: ['reviewed.txt'], checks: [] }, { userId: 1, ward: 'reviewer', conv: 0 });
+    assert.ok(JSON.stringify(receipt).length < 1000);
+    let cursor: number | undefined, text = '';
+    do {
+      const page = await DEV_TOOLS.terminal_read!.run({ runtime: 'desktop', session: session.id, review: true, cursor }, { userId: 1, ward: 'reviewer', conv: 0 }) as { text: string; next?: number };
+      assert.ok(JSON.stringify(page).length < 12000);
+      text += page.text; cursor = page.next;
+    } while (cursor !== undefined);
+    assert.equal(JSON.parse(text).evidence.reviewer, 'agent:reviewer');
+    let saved = readSession(1, session.id).session;
+    assert.match(saved.review!, /checks not run/);
+    assert.equal(saved.evidence!.reviewer, 'agent:reviewer');
+    assert.deepEqual(saved.evidence!.checks, []);
+    assert.equal(saved.evidence!.stale, false);
+    fs.writeFileSync(path.join(dir, 'reviewed.txt'), 'changed later');
+    saved = readSession(1, session.id).session;
+    assert.equal(saved.evidence!.stale, true);
+  } finally { closeSession(1, session.id); }
 });

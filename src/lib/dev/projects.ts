@@ -140,7 +140,6 @@ export function tree(user: number, project: string, dir = "") {
   return fs
     .readdirSync(base, { withFileTypes: true })
     .filter((e) => e.name !== ".git")
-    .slice(0, 2000)
     .map((e) => {
       const relative = path.posix.join(dir, e.name);
       try {
@@ -216,46 +215,76 @@ export function renameFile(
         .run(user, project, row.path);
   emitDev(user, "project", project);
 }
-export async function searchFiles(
-  user: number,
-  project: string,
-  query: string,
-) {
-  if (!query.trim() || query.length > 200) return [];
+/** ponytail: offset continuation rescans earlier entries; use an index if large-repo latency matters. */
+export async function searchPage(user: number, project: string, query: string, scope = "", cursor = 0) {
   const matches: { path: string; line: number; text: string }[] = [];
-  const pending = [""];
-  const seen = new Set<string>();
-  let visited = 0;
-  // ponytail: bounded project scan; use a bundled search index if large-repo latency matters.
-  while (pending.length && visited < 10_000 && matches.length < 200) {
-    const dir = pending.pop();
-    if (dir === undefined) break;
-    const real = projectPath(user, project, dir);
+  if (!query.trim() || query.length > 200) return { matches, complete: true, scanned: 0 };
+  cursor = Math.max(0, Math.floor(Number(cursor)) || 0);
+  const pending = [scope], seen = new Set<string>();
+  let position = 0, scanned = 0, size = 0;
+  const needle = query.toLowerCase();
+  const hint = "Continue with cursor until complete; coverage assumes unchanged files. Content search excludes binary files and files over 5 MiB; dependency/build directories are excluded.";
+  while (pending.length) {
+    const relative = pending.pop();
+    if (relative === undefined) break;
+    const real = projectPath(user, project, relative);
     if (seen.has(real)) continue;
     seen.add(real);
-    for (const e of tree(user, project, dir)) {
-      if (++visited > 10_000) break;
-      if (e.directory) {
-        if (!["node_modules", "dist", "target", ".git"].includes(e.name))
-          pending.push(e.path);
-        continue;
-      }
-      if (e.path.toLowerCase().includes(query.toLowerCase()))
-        matches.push({ path: e.path, line: 1, text: e.name });
-      if (e.bytes > MAX_FILE || matches.length >= 200) continue;
-      const d = decode(fs.readFileSync(projectPath(user, project, e.path)));
-      if (d.readonly) continue;
-      const lines = d.text.split("\n");
-      for (const [i, line] of lines.entries()) {
-        if (matches.length >= 200) break;
-        if (line.toLowerCase().includes(query.toLowerCase()))
-          matches.push({ path: e.path, line: i + 1, text: line.slice(0, 300) });
-      }
+    const st = fs.statSync(real);
+    if (st.isDirectory()) {
+      if (position++ >= cursor && scanned++ >= 10_000)
+        return { matches, complete: false, next: position - 1, scanned, hint };
+      const entries = tree(user, project, relative);
+      for (const entry of entries.reverse())
+        if (!entry.directory || !["node_modules", "dist", "target", ".git"].includes(entry.name)) pending.push(entry.path);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      continue;
     }
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (!st.isFile()) continue;
+    const lines = st.size <= MAX_FILE ? decode(fs.readFileSync(real)) : null;
+    const candidates = [path.basename(relative), ...(lines && !lines.readonly ? lines.text.split("\n") : [])];
+    for (let i = 0; i < candidates.length; i++) {
+      if (position++ < cursor) continue;
+      const text = candidates[i] ?? "";
+      const hit = (i === 0 ? relative : text).toLowerCase().includes(needle);
+      const match = { path: relative, line: Math.max(1, i), text: text.slice(0, 300) };
+      const bytes = hit ? JSON.stringify(match).length + 1 : 0;
+      if (scanned >= 10_000 || size + bytes > 9000)
+        return { matches, complete: false, next: position - 1, scanned, hint };
+      scanned++; size += bytes;
+      if (hit) matches.push(match);
+    }
+    await new Promise<void>(resolve => setImmediate(resolve));
   }
-  return matches;
+  return { matches, complete: true, scanned, hint };
 }
+export async function searchFiles(user: number, project: string, query: string) {
+  const matches: Awaited<ReturnType<typeof searchPage>>["matches"] = [];
+  let cursor: number | undefined = 0;
+  do {
+    const page = await searchPage(user, project, query, "", cursor);
+    matches.push(...page.matches);
+    cursor = page.next;
+  } while (cursor !== undefined && matches.length < 200);
+  return matches.slice(0, 200);
+}
+export function treePage(user: number, project: string, dir = "", cursor = 0) {
+  const all = tree(user, project, dir);
+  const entries: ReturnType<typeof tree> = [];
+  let next = Math.max(0, Math.floor(Number(cursor)) || 0), size = 0;
+  while (next < all.length) {
+    const entry = all[next];
+    if (!entry) break;
+    const bytes = JSON.stringify(entry).length + 1;
+    if (size + bytes > 9000) {
+      if (!entries.length) throw new DevError("Directory entry exceeds the tool page size.");
+      break;
+    }
+    entries.push(entry); size += bytes; next++;
+  }
+  return { entries, snapshot: hash(Buffer.from(JSON.stringify(all))), total: all.length, complete: next >= all.length, ...(next < all.length ? { next } : {}) };
+}
+
 function decode(raw: Buffer) {
   let encoding = "utf8",
     bytes = raw;
@@ -598,33 +627,48 @@ export async function git(
 }
 /** Tool reads have a serialized budget; the Changes ward receives the full diff. */
 export const DIFF_CAP = 9_000;
-export async function gitView(user: number, project: string, file?: string, limit = Number.POSITIVE_INFINITY) {
+export async function gitView(user: number, project: string, file?: string, limit = Number.POSITIVE_INFINITY, cursor = 0) {
   // Validated like every other path, then handed to git relative and after
   // `--`, so it can neither leave the tree nor read as an option.
   const scope = file
     ? [
         path
-          .relative(projectOf(user, project).root, projectPath(user, project, file))
+          .relative(projectOf(user, project).root, projectPath(user, project, file, true))
           .split(path.sep)
           .join("/"),
       ]
     : [];
-  const diff = await git(user, project, ["--literal-pathspecs", "diff", "--no-ext-diff", "HEAD", "--", ...scope]).catch(() =>
-    git(user, project, ["--literal-pathspecs", "diff", "--no-ext-diff", "--cached", "--", ...scope]),
-  );
+  const base = await git(user, project, ["rev-parse", "--verify", "HEAD"]).then(() => "HEAD", () => "--cached");
+  // Only an unborn HEAD uses the staged diff. Output limits/errors must not silently drop working changes.
+  const diff = await git(user, project, ["--literal-pathspecs", "diff", "--no-ext-diff", base, "--", ...scope]);
   const result = {
     status: await git(user, project, ["status", "--short"]),
     diff,
     worktrees: await git(user, project, ["worktree", "list", "--porcelain"]),
   };
-  let truncated = false;
-  const budget = Math.max(512, limit);
-  while (JSON.stringify(result).length > budget) {
-    const field = (["diff", "status", "worktrees"] as const).reduce((a, b) => result[a].length >= result[b].length ? a : b);
-    result[field] = result[field].slice(0, Math.max(0, Math.floor(result[field].length * budget / JSON.stringify(result).length) - 128));
-    truncated = true;
+  const offsets = { diff: 0, status: 0, worktrees: 0 };
+  const full = { ...result };
+  let skip = Math.max(0, Math.floor(Number(cursor)) || 0);
+  // A single offset walks status, diff, then worktrees; every character remains retrievable.
+  let remaining = Math.max(512, limit) - 256;
+  for (const field of ["status", "diff", "worktrees"] as const) {
+    const start = Math.min(skip, full[field].length);
+    skip -= start;
+    let part = full[field].slice(start);
+    while (JSON.stringify(part).length > remaining && part.length)
+      part = part.slice(0, Math.max(0, Math.floor(part.length * Math.max(0, remaining) / JSON.stringify(part).length) - 1));
+    result[field] = part;
+    offsets[field] = start;
+    remaining -= JSON.stringify(part).length;
+    if (start + part.length < full[field].length) remaining = 0;
   }
-  return { ...result, ...(truncated ? { truncated: true, hint: "scope the diff with path" } : {}) };
+  const consumed = Object.values(result).reduce((n, text) => n + text.length, 0);
+  const total = Object.values(full).reduce((n, text) => n + text.length, 0);
+  const next = Math.max(0, Math.floor(Number(cursor)) || 0) + consumed;
+  const truncated = next < total;
+  return { ...result, offsets, snapshot: hash(Buffer.from(JSON.stringify(full))), complete: !truncated,
+    ...(truncated ? { truncated: true, next, hint: "Continue with cursor. Restart if snapshot changes; status is complete only after all pages." } : {}) };
+
 }
 export async function worktreeOp(
   user: number,

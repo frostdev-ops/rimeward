@@ -184,7 +184,7 @@ export async function ensureFreshTokens(userId: number): Promise<LiveTokens> {
   });
   if (!res.ok) {
     recordAgentStatus(userId, 'codex', false, `refresh rejected (${res.status}) — reconnect under Account → Agent`);
-    throw new CodexError(`codex: token refresh rejected (${res.status})`);
+    throw Object.assign(new CodexError(`codex: token refresh rejected (${res.status})`), { status: res.status });
   }
   const fresh = (await res.json()) as { id_token?: string; access_token?: string; refresh_token?: string };
   storeAgentAccount({
@@ -345,8 +345,8 @@ async function callCodex(call: ProviderCall, retriedAuth = false, retriedTransie
     });
   } catch (err) {
     if (call.signal?.aborted) throw new CodexError('codex: interrupted');
-    const e = new CodexError(`codex: network (${err instanceof Error ? err.message : err})`);
-    if (!retriedTransient && isTransient(e)) {
+    const e = new CodexError(`codex: network (${err instanceof Error ? err.message : err})`, { cause: err });
+    if (!call.relayRequestId && !retriedTransient && isTransient(e)) {
       await new Promise((r) => setTimeout(r, 1200));
       return callCodex(call, retriedAuth, true);
     }
@@ -359,8 +359,8 @@ async function callCodex(call: ProviderCall, retriedAuth = false, retriedTransie
   }
   if (!res.ok) {
     const body = (await res.text().catch(() => '')).slice(0, 300);
-    const err = new CodexError(`codex: ${res.status} ${body}`);
-    if (!retriedTransient && isTransient(err)) {
+    const err = Object.assign(new CodexError(`codex: ${res.status} ${body}`), { status: res.status });
+    if (!call.relayRequestId && !retriedTransient && isTransient(err)) {
       await new Promise((r) => setTimeout(r, 1200));
       return callCodex(call, retriedAuth, true);
     }
@@ -370,13 +370,13 @@ async function callCodex(call: ProviderCall, retriedAuth = false, retriedTransie
   // SSE, parsed after the fact: response.completed carries the authoritative
   // output list; per-item response.output_item.done events are the fallback.
   // The body drains for as long as the model thinks, so a reset HERE is just
-  // as transient as one during connect — retry it the same way.
+  // as transient as one during connect. Direct calls may retry; relayed calls never do.
   let raw: string;
   try {
     raw = await res.text();
   } catch (err) {
-    const e = new CodexError(`codex: stream (${err instanceof Error ? err.message : err})`);
-    if (!retriedTransient && isTransient(e)) {
+    const e = new CodexError(`codex: stream (${err instanceof Error ? err.message : err})`, { cause: err });
+    if (!call.relayRequestId && !retriedTransient && isTransient(e)) {
       await new Promise((r) => setTimeout(r, 1200));
       return callCodex(call, retriedAuth, true);
     }
@@ -404,7 +404,7 @@ async function callCodex(call: ProviderCall, retriedAuth = false, retriedTransie
     // A rate limit or upstream 5xx delivered as an SSE event is the same
     // hiccup as one delivered as a status code.
     const err = new CodexError(`codex: response failed ${failure}`);
-    if (!retriedTransient && isTransient(err)) {
+    if (!call.relayRequestId && !retriedTransient && isTransient(err)) {
       await new Promise((r) => setTimeout(r, 1200));
       return callCodex(call, retriedAuth, true);
     }
@@ -487,7 +487,7 @@ export const codexProvider: AgentProvider = {
       return result;
     } catch (err) {
       // A Stop from the user is not a provider failure: no sticky last-error, no log line.
-      if (!call.signal?.aborted) recordAgentStatus(call.userId, 'codex', false, err instanceof Error ? err.message : String(err));
+      if (!call.signal?.aborted) recordAgentStatus(call.userId, 'codex', false, call.relayRequestId ? `Relayed model request failed. Reference ${call.relayRequestId}.` : err instanceof Error ? err.message : String(err));
       throw err;
     }
   },

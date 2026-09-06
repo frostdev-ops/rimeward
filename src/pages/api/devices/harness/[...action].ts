@@ -1,3 +1,5 @@
+import { modelFailure } from "../../../../lib/agent/diagnostics.ts";
+import { randomUUID } from "node:crypto";
 import type { APIRoute } from "astro";
 import {
   authenticatedDevice,
@@ -142,8 +144,10 @@ export const ALL: APIRoute = async ({
       // origin is silent for 100s, and a long reasoning round is silent for
       // longer — so whitespace heartbeats go out until the JSON does. The
       // status line is already sent by then, so an error rides the body too.
+      const disconnected = new AbortController();
       const call: ProviderCall = {
         userId: user,
+        relayRequestId: typeof body.requestId === 'string' && /^[a-f0-9-]{36}$/.test(body.requestId) ? body.requestId : randomUUID(),
         model: body.model,
         effort: typeof body.effort === "string" ? body.effort : undefined,
         instructions: body.instructions,
@@ -153,7 +157,7 @@ export const ALL: APIRoute = async ({
           typeof body.cacheKey === "string"
             ? `device:${device.id}:${body.cacheKey.slice(0, 120)}`
             : undefined,
-        signal: request.signal,
+        signal: AbortSignal.any([request.signal, disconnected.signal]),
       };
       const pending = provider.run(call);
       const owner = user;
@@ -161,6 +165,7 @@ export const ALL: APIRoute = async ({
       const enc = new TextEncoder();
       return new Response(
         new ReadableStream({
+          cancel() { disconnected.abort(); },
           async start(ctrl) {
             const push = (s: string) => {
               try {
@@ -173,10 +178,13 @@ export const ALL: APIRoute = async ({
             try {
               push(JSON.stringify(await pending));
             } catch (e) {
+              const failure = modelFailure(owner, e, call.relayRequestId, call.signal?.aborted);
               push(
                 JSON.stringify({
-                  error: e instanceof Error ? e.message : "Rime request failed.",
-                  status: (e as { status?: number }).status ?? 400,
+                  error: failure.message,
+                  status: failure.status ?? 502,
+                  category: failure.category,
+                  requestId: failure.requestId,
                 }),
               );
             } finally {

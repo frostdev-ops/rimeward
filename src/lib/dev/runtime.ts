@@ -53,6 +53,7 @@ export function workDb(): Database.Database {
       cols INTEGER NOT NULL DEFAULT 100, rows INTEGER NOT NULL DEFAULT 30,
       sequence INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS task_receipts (session TEXT PRIMARY KEY REFERENCES terminal_sessions(id), json TEXT NOT NULL);
     UPDATE terminal_sessions SET state='interrupted' WHERE state='running';
   `);
   if (!(db.pragma("table_info(terminal_sessions)") as { name: string }[]).some(c => c.name === "agent_input")) {

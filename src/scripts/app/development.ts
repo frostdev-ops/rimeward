@@ -179,9 +179,13 @@ async function mount(w: WardInstance) {
       const caps = await api<ReturnType<typeof terminalCapabilities>>("capabilities");
       if (stopped) return;
       const names = { shell: "Shell", codex: "Codex", claude: "Claude Code" };
-      const sessions = select("Terminal session", []);
+      const sessions = el("div", "term-tabs");
+      sessions.setAttribute("role", "tablist");
+      sessions.setAttribute("aria-label", "Terminal sessions");
       const surface = el("div", "term-surface");
       const screen = el("div", "dev-terminal");
+      screen.id = `terminal-screen-${w.i}`;
+      screen.setAttribute("role", "tabpanel");
       const empty = el("div", "dev-empty term-empty");
       const footer = el("div", "term-footer");
       const status = el("span", "term-status", "Loading sessions…");
@@ -236,6 +240,7 @@ async function mount(w: WardInstance) {
       let painting: Promise<void> | undefined, outputs: { sequence: number; data: string }[] = [];
       let outputSize = 0, resync = false, released = false;
       let sessionOptions = "", autoAttach = !state.session;
+      let attaching = Promise.resolve();
       const uncertain = new Set<string>();
       const canType = () => !stopped && !!session && connected && streamReady && session.state === "running" &&
         session.owner === owner && !uncertain.has(session.id);
@@ -277,7 +282,7 @@ async function mount(w: WardInstance) {
         term.options.disableStdin = !writable;
         empty.hidden = !!session || !connected;
         screen.hidden = !session;
-        sessions.disabled = !list.length;
+
         newButton.disabled = launching;
         empty.querySelectorAll<HTMLButtonElement>("button").forEach(b => { b.disabled = launching; });
         take.hidden = session?.state !== "running" || writable;
@@ -317,11 +322,40 @@ async function mount(w: WardInstance) {
         const signature = JSON.stringify(list.map(s => [s.id, s.title, s.state]));
         if (signature !== sessionOptions) {
           sessionOptions = signature;
-          sessions.replaceChildren(new Option(list.length ? "Choose a session" : "Terminal", ""));
-          for (const s of list) sessions.add(new Option(`${s.title === s.kind ? names[s.kind] : s.title}${s.state === "running" ? "" : ` · ${s.state}`}`, s.id));
+          sessions.replaceChildren();
+          for (const s of list) {
+            const tab = button(`${s.title === s.kind ? names[s.kind] : s.title}${s.state === "running" ? "" : ` · ${s.state}`}`, () => attach(s.id));
+            tab.className = "term-tab";
+            tab.dataset.session = s.id;
+            tab.id = `terminal-tab-${w.i}-${s.id}`;
+            tab.setAttribute("role", "tab");
+            tab.setAttribute("aria-controls", screen.id);
+            tab.title = tab.textContent ?? "";
+            sessions.append(tab);
+          }
         }
-        sessions.value = state.session ?? "";
+        screen.removeAttribute("aria-labelledby");
+        const tabs = [...sessions.querySelectorAll<HTMLButtonElement>("button")];
+        for (const tab of tabs) {
+          const selected = tab.dataset.session === state.session;
+          tab.setAttribute("aria-selected", String(selected));
+          tab.tabIndex = selected || (!state.session && tab === tabs[0]) ? 0 : -1;
+          if (selected) {
+            screen.setAttribute("aria-labelledby", tab.id);
+            if (tab.offsetLeft < sessions.scrollLeft || tab.offsetLeft + tab.offsetWidth > sessions.scrollLeft + sessions.clientWidth)
+              sessions.scrollLeft = tab.offsetLeft;
+          }
+        }
       }
+      sessions.onkeydown = e => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+        e.preventDefault();
+        const tabs = [...sessions.querySelectorAll<HTMLButtonElement>("button")];
+        const at = tabs.indexOf(document.activeElement as HTMLButtonElement);
+        const tab = tabs[e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 :
+          (at + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
+        tab?.focus(); tab?.click();
+      };
       function drainOutput() {
         if (stopped || updating || painting) return;
         if (resync) { void update(); return; }
@@ -381,19 +415,22 @@ async function mount(w: WardInstance) {
         })().finally(() => { updating = undefined; if (connected) drainOutput(); });
         return updating;
       }
-      async function attach(id: string) {
-        await inputBuffer.flush();
-        await updating;
-        await painting;
-        if (stopped) return;
-        autoAttach = false;
-        state.session = id;
-        session = undefined;
-        sequence = undefined;
-        outputs = []; outputSize = 0; released = false; lastSize = "";
-        term.reset();
-        await remember();
-        await update();
+      function attach(id: string): Promise<void> {
+        attaching = attaching.catch(() => {}).then(async () => {
+          await inputBuffer.flush();
+          await updating;
+          await painting;
+          if (stopped || (state.session === id && session)) return;
+          autoAttach = false;
+          state.session = id;
+          session = undefined;
+          sequence = undefined;
+          outputs = []; outputSize = 0; released = false; lastSize = "";
+          term.reset();
+          await remember();
+          await update();
+        });
+        return attaching;
       }
       async function launch(options?: Record<string, unknown>, previous?: string) {
         if (launching) return;
@@ -425,7 +462,6 @@ async function mount(w: WardInstance) {
       };
       const listener = term.onData(data => void send(data));
       const binaryListener = term.onBinary(data => send(data, true));
-      sessions.onchange = () => void attach(sessions.value).catch(e => toast(e.message, undefined, true));
       const start = button("Open terminal", () => launch());
       start.className = "btn-primary";
       const agentChoices = el("div", "term-agent-choices");

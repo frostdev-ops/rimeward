@@ -1,14 +1,18 @@
+import fs from "node:fs";
+import { createHash } from "node:crypto";
+import { workDb } from "./runtime.ts";
 import type { ToolDef, ToolCtx } from "../agent/tools.ts";
 import { requireDesktop } from "./runtime.ts";
 import {
   listProjects,
-  tree,
+  projectPath,
+  treePage,
   readBuffer,
   readPage,
   DIFF_CAP,
   createFile,
   editBuffer,
-  searchFiles,
+  searchPage,
   gitView,
   worktreeOp,
 } from "./projects.ts";
@@ -63,13 +67,14 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
   ),
   project_read: wrap(
     "read",
-    "Read project files, directories, search results, or Git changes. A result is capped at 12k chars: a file comes back one page at a time (`from`/`lines`, follow `next` and `nextColumn` with `from` and `column`), a big diff is cut unless scoped with `path`. Inspect existing modifications before assigning shared-tree tasks.",
+    "Read project files, directories, search results, or Git changes. A result is capped at 12k chars: a file comes back one page at a time (`from`/`lines`, follow `next` and `nextColumn` with `from` and `column`), search/directories/Git use `cursor` from `next` until complete; restart Git reads if snapshot changes. Inspect existing modifications before assigning shared-tree tasks.",
     schema(
       {
         ...context,
         operation: { type: "string", enum: ["files", "file", "search", "git"] },
-        path: str("Project-relative path (file: the file; files: the directory; git: scope the diff to this path)"),
+        path: str("Project-relative path (file: the file; files: the directory; search/git: scope to this file or directory)"),
         query: str("Search text"),
+        cursor: { type: "number", description: "files/search/git: continuation offset from next; keep other arguments unchanged" },
         from: { type: "number", description: "file: first line to return, 1-based (default 1)" },
         lines: { type: "number", description: "file: how many lines (default: as many as fit the page)" },
         column: { type: "number", description: "file: zero-based character offset on the first line, from nextColumn" },
@@ -79,12 +84,12 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
     ),
     (a, c) =>
       a.operation === "files"
-        ? tree(c.userId, a.project, a.path ?? "")
+        ? treePage(c.userId, a.project, a.path ?? "", a.cursor)
         : a.operation === "file"
           ? readPage(c.userId, a.project, a.path, a.from, a.lines, a.column, a.version)
           : a.operation === "git"
-            ? gitView(c.userId, a.project, a.path || undefined, DIFF_CAP)
-            : searchFiles(c.userId, a.project, a.query ?? ""),
+            ? gitView(c.userId, a.project, a.path || undefined, DIFF_CAP, a.cursor)
+            : searchPage(c.userId, a.project, a.query ?? "", a.path ?? "", a.cursor),
   ),
   project_edit: wrap(
     "write",
@@ -151,8 +156,17 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
   terminal_read: wrap(
     "read",
     "Inspect current terminal screen and ordered output. Empty output or an idle screen does not prove a task completed. Unknown permission screens require attention.",
-    schema({ ...session, after: { type: "number" } }, ["runtime", "session"]),
-    (a, c) => readSession(c.userId, a.session, a.after),
+    schema({ ...session, after: { type: "number" }, review: { type: "boolean", description: "Read the durable task review and evidence as paginated JSON text instead of terminal output" }, cursor: { type: "number", description: "Review continuation from next" } }, ["runtime", "session"]),
+    (a, c) => {
+      const result = readSession(c.userId, a.session, a.after, a.review === true);
+      if (!a.review) return result;
+      const all = JSON.stringify({ review: result.session.review, evidence: result.session.evidence });
+      const cursor = Math.max(0, Math.floor(Number(a.cursor)) || 0);
+      let text = all.slice(cursor, cursor + 9000);
+      while (JSON.stringify(text).length > 9000) text = text.slice(0, Math.floor(text.length * 0.8));
+      const next = cursor + text.length;
+      return { text, snapshot: createHash('sha256').update(all).digest('hex'), complete: next >= all.length, ...(next < all.length ? { next } : {}) };
+    },
   ),
   terminal_wait: wrap(
     "read",
@@ -165,7 +179,7 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
       },
       ["runtime", "session", "after"],
     ),
-    (a, c) => waitSession(c.userId, a.session, a.after, a.milliseconds),
+    (a, c) => waitSession(c.userId, a.session, a.after, a.milliseconds, false),
   ),
   terminal_input: wrap(
     "write",
@@ -202,7 +216,7 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
   ),
   terminal_task: wrap(
     "write",
-    "Record delegated task state after inspecting resulting files, diffs, and relevant checks. A CLI prompt alone is not completion evidence. Use needs-attention for unknown states.",
+    "Record delegated task state after inspecting resulting files, diffs, and relevant checks. A CLI prompt alone is not completion evidence. Captures current file hashes and Git identity; checks are reviewer-reported observations, not independently executed by this tool. Use needs-attention for unknown states.",
     schema(
       {
         ...session,
@@ -210,18 +224,33 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
           type: "string",
           enum: ["needs-attention", "done", "cancelled"],
         },
+        files: { type: "array", maxItems: 100, items: str("Reviewed project-relative path; current disk hash is captured") },
+        checks: { type: "array", maxItems: 30, items: schema({ command: str("Validation command actually observed; never invent a check"), exitCode: { type: ["number", "null"], description: "Observed exit status, or null if not run/unknown" } }, ["command", "exitCode"]) },
         review: str(
           "Concrete review of resulting changes and validation, or the reason attention is required",
         ),
       },
-      ["runtime", "session", "state", "review"],
+      ["runtime", "session", "state", "review", "files", "checks"],
     ),
-    (a, c) => {
+    async (a, c) => {
       if (!a.review?.trim()) throw new Error("Review evidence is required.");
-      return configureSession(c.userId, a.session, {
-        taskState: a.state,
-        review: a.review,
+      if (!["needs-attention", "done", "cancelled"].includes(a.state)) throw new Error("Invalid task state.");
+      const session = listSessions(c.userId).find(s => s.id === a.session);
+      if (!session) throw new Error("Terminal not found.");
+      if (!Array.isArray(a.files) || a.files.length > 100 || a.files.some((f: unknown) => typeof f !== 'string')) throw new Error("List the reviewed files (up to 100).");
+      if (!Array.isArray(a.checks) || a.checks.length > 30 || a.checks.some((check: { command?: unknown; exitCode?: unknown }) => !check || typeof check.command !== 'string' || check.command.length > 1000 || !(check.exitCode === null || Number.isInteger(check.exitCode)))) throw new Error("Provide observed checks; use an empty list if none ran.");
+      const files = a.files.map((file: string) => {
+        const target = projectPath(c.userId, session.project, file, true);
+        if (fs.existsSync(target) && fs.statSync(target).size > 5 * 1024 * 1024) throw new Error("Review files must be at most 5 MiB.");
+        return { path: file, hash: fs.existsSync(target) ? createHash('sha256').update(fs.readFileSync(target)).digest('hex') : null };
       });
+      const changes = await gitView(c.userId, session.project).catch(() => null);
+      const evidence = { reviewer: owner(c), at: new Date().toISOString(), sequence: session.sequence, diff: changes?.snapshot ?? null, files,
+        checks: a.checks.map((check: { command: string; exitCode: number | null }) => ({ command: check.command, exitCode: check.exitCode })) };
+      workDb().prepare("INSERT INTO task_receipts VALUES(?,?) ON CONFLICT(session) DO UPDATE SET json=excluded.json").run(a.session, JSON.stringify(evidence));
+      configureSession(c.userId, a.session, { taskState: a.state, review: a.review });
+      return { session: a.session, taskState: a.state, reviewSaved: true, reviewer: evidence.reviewer,
+        at: evidence.at, sequence: evidence.sequence, diff: evidence.diff, files: files.length, checks: a.checks.length };
     },
   ),
   project_worktree: wrap(

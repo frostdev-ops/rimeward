@@ -1240,7 +1240,7 @@ export const TOOLS: Record<string, ToolDef> = {
   send_mail: {
     kind: 'confirm',
     description:
-      'Send an email from one of the user\'s own mailboxes ("google", "microsoft", "zoho", or "mailbox" for their own IMAP/SMTP server). The app shows them a Confirm button — just call it, never ask permission in words first.',
+      'Send an email from one of the user\'s own mailboxes ("google", "microsoft", "zoho", or "mailbox" for their own IMAP/SMTP server). The effective ward approval policy determines whether this call pauses for confirmation.',
     parameters: obj(
       {
         account: { type: 'string', enum: [...MAIL_ACCOUNTS] },
@@ -1291,7 +1291,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   chat_send: {
     kind: 'confirm',
-    description: 'Post a message from a chat ward\'s bot. channel blank = the ward\'s default channel. The app shows the user a Confirm button — just call it, never ask permission in words first.',
+    description: 'Post a message from a chat ward\'s bot. channel blank = the ward\'s default channel. The effective ward approval policy determines whether this call pauses for confirmation.',
     parameters: obj(
       { ward: str('the chat ward id — optional when there is only one'), channel: str('channel / chat id; blank = the ward\'s default'), text: str('the message'), reply_to: str('message id to reply to'), thread: bool('answer in a thread off reply_to') },
       ['text']
@@ -1316,7 +1316,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   chat_manage: {
     kind: 'confirm',
-    description: `Change a chat server's structure through the ward's bot: channels, categories, threads, pins, roles, permissions, invites, nicknames. op + args per provider:\n${CHAT_OPS}\nThe app shows the user a Confirm button — just call it.`,
+    description: `Change a chat server's structure through the ward's bot: channels, categories, threads, pins, roles, permissions, invites, nicknames. op + args per provider:\n${CHAT_OPS}\nThe effective ward approval policy determines whether this call pauses for confirmation.`,
     parameters: obj({ ward: str('the chat ward id — optional when there is only one'), op: str('the operation'), args: { type: 'object', description: 'the op\'s arguments', additionalProperties: true } }, ['op']),
     run: async (a, ctx) => {
       const w = chatWard(ctx.userId, a.ward);
@@ -1326,7 +1326,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   chat_moderate: {
     kind: 'confirm',
-    description: `The destructive server operations through the ward's bot — delete messages or channels, kick, ban, time out. op + args per provider:\n${CHAT_OPS}\nThe app shows the user a Confirm button — just call it.`,
+    description: `The destructive server operations through the ward's bot — delete messages or channels, kick, ban, time out. op + args per provider:\n${CHAT_OPS}\nThe effective ward approval policy determines whether this call pauses for confirmation.`,
     parameters: obj({ ward: str('the chat ward id — optional when there is only one'), op: str('the operation'), args: { type: 'object', description: 'the op\'s arguments (reason is passed to the audit log)', additionalProperties: true } }, ['op']),
     run: async (a, ctx) => {
       const w = chatWard(ctx.userId, a.ward);

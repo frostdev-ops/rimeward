@@ -139,12 +139,12 @@ async function callOpenRouter(call: ProviderCall, retried = false): Promise<Prov
         },
       },
       // The SDK skips its own timeout once a signal is given, so both ride one.
-      { timeoutMs: TIMEOUT_MS, ...(call.signal ? { fetchOptions: { signal: AbortSignal.any([call.signal, AbortSignal.timeout(TIMEOUT_MS)]) } } : {}) }
+      { timeoutMs: TIMEOUT_MS, ...(call.relayRequestId ? { retries: { strategy: 'none' as const } } : {}), ...(call.signal ? { fetchOptions: { signal: AbortSignal.any([call.signal, AbortSignal.timeout(TIMEOUT_MS)]) } } : {}) }
     );
   } catch (err) {
     if (call.signal?.aborted) throw new Error('openrouter: interrupted');
-    const e = new Error(`openrouter: ${err instanceof Error ? err.message : String(err)}`);
-    if (!retried && isTransient(e)) {
+    const e = new Error(`openrouter: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    if (!call.relayRequestId && !retried && isTransient(e)) {
       await new Promise((r) => setTimeout(r, 1200));
       return callOpenRouter(call, true);
     }
@@ -171,7 +171,7 @@ export const openrouterProvider: AgentProvider = {
       return result;
     } catch (err) {
       // A Stop from the user is not a provider failure: no sticky last-error, no log line.
-      if (!call.signal?.aborted) recordAgentStatus(call.userId, 'openrouter', false, err instanceof Error ? err.message : String(err));
+      if (!call.signal?.aborted) recordAgentStatus(call.userId, 'openrouter', false, call.relayRequestId ? `Relayed model request failed. Reference ${call.relayRequestId}.` : err instanceof Error ? err.message : String(err));
       throw err;
     }
   },

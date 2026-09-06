@@ -25,7 +25,7 @@ routes, tables and CSS classes keep their engineering names (`WardInstance`, log
 
 ## Changes
 
-- One concern per pull request, with the test that fails without it.
+- Keep changes focused. Preserve all existing tests and run the applicable checks; do not add test code unless the maintainer explicitly requests it.
 - Nothing instance-specific in the tree: names, domains, addresses and the monitor list are
   settings, environment or `data/` (see `.env.example`, `src/lib/site.ts`, `src/lib/brand-files.ts`,
   the admin monitor registry).

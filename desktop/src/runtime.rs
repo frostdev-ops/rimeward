@@ -3,7 +3,7 @@ use base64::Engine;
 use std::{process::Stdio, sync::Arc};
 use tauri::{AppHandle, Manager};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
     sync::Mutex,
 };
@@ -163,11 +163,36 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x08000000);
     let mut child = command.spawn()?;
+    let mut stderr = child.stderr.take().ok_or("missing runtime stderr")?;
+    let diagnostics = data.join("runtime-diagnostics.jsonl");
+    runtime_diagnostic(&diagnostics, "started");
+    let stderr_log = diagnostics.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut buffer = [0u8; 4096];
+        while let Ok(n) = stderr.read(&mut buffer).await {
+            if n == 0 {
+                break;
+            }
+            let text = String::from_utf8_lossy(&buffer[..n]);
+            let category = if text.contains("EADDRINUSE") {
+                "port-in-use"
+            } else if text.contains("ENOMEM") || text.contains("heap out of memory") {
+                "out-of-memory"
+            } else if text.contains("MODULE_NOT_FOUND") {
+                "missing-module"
+            } else if text.contains("EACCES") {
+                "access-denied"
+            } else {
+                "runtime-stderr"
+            };
+            runtime_diagnostic(&stderr_log, category);
+        }
+    });
     let mut stdin = child.stdin.take().ok_or("missing runtime stdin")?;
     let stdout = child.stdout.take().ok_or("missing runtime stdout")?;
     let initial = serde_json::json!({"port":port,"key":key,"data":data.join("data"),"browsers":resources.join("browsers")});
@@ -243,9 +268,40 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
             _ => {}
         }
     }
+    runtime_diagnostic(&diagnostics, "runtime-disconnected");
     super::set_status(&app, "Rimeward stopped; reopen to recover");
     Ok(())
 }
+// Only fixed categories reach this rotating owner-only file; never raw stderr.
+fn runtime_diagnostic(file: &std::path::Path, category: &str) {
+    use std::io::Write;
+    if std::fs::metadata(file).is_ok_and(|m| m.len() > 65536) {
+        let previous = file.with_extension("previous.jsonl");
+        let _ = std::fs::remove_file(&previous);
+        if std::fs::rename(file, previous).is_err() {
+            return;
+        }
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut log) = options.open(file) {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = writeln!(
+            log,
+            "{}",
+            serde_json::json!({"at": at, "category": category})
+        );
+    }
+}
+
 async fn desktop_request(
     app: &AppHandle,
     message: &serde_json::Value,
@@ -332,5 +388,37 @@ pub async fn shutdown(app: &AppHandle) {
         {
             let _ = child.kill().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod diagnostics_tests {
+    #[test]
+    fn runtime_metadata_rotates() {
+        let dir = std::env::temp_dir().join(format!("rimeward-diagnostics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("runtime.jsonl");
+        super::runtime_diagnostic(&file, "started");
+        assert!(std::fs::read_to_string(&file).unwrap().contains("started"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::write(&file, vec![b' '; 65537]).unwrap();
+        super::runtime_diagnostic(&file, "runtime-disconnected");
+        assert_eq!(
+            std::fs::metadata(file.with_extension("previous.jsonl"))
+                .unwrap()
+                .len(),
+            65537
+        );
+        assert!(std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("runtime-disconnected"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
