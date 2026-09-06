@@ -68,7 +68,7 @@
 .ag-composer-help { text-align:center; padding-top:.5rem; font-size:.62rem; color:var(--color-ink-muted); }
 .ag-chips { gap:.4rem; padding:.1rem .2rem .6rem; }
 .ag-approval { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; border:1px solid var(--color-warn); border-radius:.75rem; background:var(--color-surface-2); padding:.8rem; margin-bottom:.7rem; font-size:.8rem; }
-.ag-approval-text { flex:1 1 100%; line-height:1.5; }
+.ag-approval-text { flex:1 1 100%; min-width:0; max-height:12rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.5; }
 .ag-jump { position:absolute; bottom:.7rem; left:50%; translate:-50% 0; display:flex; align-items:center; gap:.4rem; border:1px solid var(--color-line-strong); border-radius:2rem; padding:.45rem .85rem; background:var(--color-surface); color:var(--color-ink); box-shadow:0 3px 12px #0002; font-size:.7rem; cursor:pointer; }
 dialog.ag-dialog { width:min(94vw,68rem); height:min(90dvh,60rem); max-height:94dvh; }
 .ag-dialog[open] { display:flex; flex-direction:column; }
@@ -135,3 +135,13 @@ dialog.ag-dialog { width:min(94vw,68rem); height:min(90dvh,60rem); max-height:94
 .ag-history-list { display: grid; gap: .65rem; }
 .ag-history-row { display: flex; flex-direction: column; align-items: flex-start; text-align: left; white-space: normal; }
 .ag-history-message { padding: .8rem; border: 1px solid var(--color-line); border-radius: .75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ag-tasks-button { position:relative; }
+.ag-tasks-button[data-count]:not([data-count=""])::after { content:attr(data-count); position:absolute; right:-.1rem; top:-.15rem; font-size:.6rem; border-radius:1rem; padding:0 .25rem; background:var(--color-accent); color:var(--color-surface); }
+.ag-task-list { display:grid; gap:.5rem; max-height:42dvh; overflow:auto; }
+.ag-task-row { display:flex; flex-wrap:wrap; gap:.6rem; padding:.7rem; border:1px solid var(--color-line); border-radius:.7rem; }
+.ag-task-description { flex:1 1 14rem; min-width:0; display:grid; gap:.3rem; font-size:.78rem; overflow-wrap:anywhere; }
+.ag-task-description > span { color:var(--color-ink-muted); font-size:.7rem; }
+.ag-task-actions { display:flex; align-items:center; gap:.4rem; }
+.ag-task-actions .btn { font-size:.72rem; }
+.ag-task-output { max-height:30dvh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:.7rem; margin-top:.7rem; font-size:.72rem; background:var(--color-surface-2); border-radius:.7rem; }
+.ag-task-output[data-empty="true"]::before { content:attr(data-placeholder); color:var(--color-ink-muted); }

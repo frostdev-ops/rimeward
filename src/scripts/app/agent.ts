@@ -9,7 +9,8 @@ import type { ContextUsage } from '../../lib/agent/context.ts';
 // below builds DOM nodes and never touches innerHTML.
 
 import { ACTIONS } from '../../lib/logic.ts';
-import { completeCommand, type CommandSpec } from '../../lib/agent/commands.ts';
+import { completeCommand, parseCommand, type CommandSpec } from '../../lib/agent/commands.ts';
+import type { AgentTask } from '../../lib/agent/tasks.ts';
 import { CATALOG, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body, note } from './wards.ts';
 import { el, getJson, postJson, tapToast, toast } from './dom.ts';
@@ -236,6 +237,8 @@ function stepCard(step: Step, running = false): HTMLElement {
   }
   const line = el('span', `min-w-0 flex-1${step.error ? ' text-err' : ''}`, step.reason || humanise(step.tool));
   head.append(mark, line);
+  if (step.result && typeof step.result === 'object' && 'background' in step.result && step.result.background)
+    head.append(el('span', 'text-[10px] text-ink-faint', 'Background task'));
 
   if (!running && step.ms) head.append(el('span', 'shrink-0 text-[10px] text-ink-faint', fmtMs(step.ms)));
   row.append(head);
@@ -304,6 +307,8 @@ interface Ui {
   input: HTMLTextAreaElement;
   send: HTMLButtonElement;
   stop: HTMLButtonElement;
+  background: HTMLButtonElement;
+  tasksButton: HTMLButtonElement;
   chips: HTMLElement;
   pendingBox: HTMLElement;
   pendingText: HTMLElement;
@@ -329,6 +334,7 @@ interface State {
   uploading: number;
   draft: string;
   clearing: boolean;
+  tasks: AgentTask[];
   sharedStatus?: string;
   configured?: boolean;
   context?: ContextUsage;
@@ -354,7 +360,7 @@ const states = new Map<string, State>();
 function stateFor(w: WardInstance): State {
   let st = states.get(w.i);
   if (!st) {
-    st = { w, items: [], pending: null, busy: false, remote: false, abort: null, attachments: [], uploading: 0, draft: '', clearing: false, uis: new Set() };
+    st = { w, items: [], pending: null, busy: false, remote: false, abort: null, attachments: [], uploading: 0, draft: '', clearing: false, tasks: [], uis: new Set() };
     states.set(w.i, st);
   }
   st.w = w; // config changes keep the same id — track the live instance
@@ -604,6 +610,11 @@ function paint(st: State): void {
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-clear]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-history]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
     ui.stop.classList.toggle('hidden', !st.busy && !st.remote); // server-side stop — any client, any turn
+    ui.background.classList.toggle('hidden', !st.tasks.some(t => t.state === 'running' && !t.background));
+    const running = st.tasks.filter(t => t.state === 'running' || t.state === 'stopping').length;
+    ui.tasksButton.setAttribute('aria-label', `Tasks${running ? ` (${running} running)` : ''}`);
+    ui.tasksButton.title = `Tasks${running ? ` · ${running} running` : ''}`;
+    ui.tasksButton.dataset.count = running ? String(running) : '';
     ui.pendingBox.classList.toggle('hidden', !st.pending);
     ui.pendingBox.classList.toggle('flex', !!st.pending);
     ui.pendingText.textContent = st.pending?.summary ?? '';
@@ -620,6 +631,7 @@ async function refetch(st: State, settled = false): Promise<void> {
   if (st.busy) return; // a local stream started mid-fetch — it owns the log
   st.configured = data.configured;
   st.context = data.context ?? undefined;
+  st.tasks = data.tasks ?? [];
   st.items = itemsFrom(data.transcript ?? []);
   st.pending = data.pending ?? null;
   // A turn is running elsewhere (another client, or an automation) — its live
@@ -829,6 +841,16 @@ function submit(st: State, ui: Ui): void {
   const text = ui.input.value.trim();
   if ((!text && !st.attachments.length) || st.uploading > 0 || st.clearing) return;
   for (const view of st.uis) view.follow = true;
+  if (parseCommand(text)?.name === 'tasks') {
+    setDraft(st, '');
+    openTasks(st);
+    return;
+  }
+  if (parseCommand(text)?.name === 'background') {
+    setDraft(st, '');
+    void background(st);
+    return;
+  }
   // Mid-turn (here or elsewhere), a message is a steer: it lands inside the
   // running turn and paints from its 'user' event. Commands stay commands.
   if ((st.busy || st.remote) && !text.startsWith('/')) {
@@ -866,6 +888,120 @@ async function steer(st: State, text: string): Promise<void> {
 async function interrupt(st: State): Promise<void> {
   const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'interrupt' });
   if (status !== 200) fail(st, data?.error ?? 'could not stop the agent', {});
+}
+
+async function background(st: State): Promise<void> {
+  const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'background' });
+  if (status !== 200) { toast(data?.error ?? 'Could not background the task.'); return; }
+  for (const task of data.tasks ?? []) updateTask(st, task);
+  toast(data.tasks?.length ? 'Task continues in the background. You can keep chatting.' : 'No foreground tool task is running.');
+}
+
+function updateTask(st: State, task: AgentTask): void {
+  const before = st.tasks.find(t => t.id === task.id);
+  st.tasks = [task, ...st.tasks.filter(t => t.id !== task.id)].slice(0, 100);
+  if (task.background && !['running', 'stopping'].includes(task.state) && before?.state !== task.state) {
+    if (!logVisible(st.w.i)) { unread.set(st.w.i, (unread.get(st.w.i) ?? 0) + 1); paintBadge(st.w.i); }
+    tapToast(`Task ${task.state}: ${task.reason}`, () => openTasks(st));
+  }
+  paint(st);
+}
+
+/** Task controls fetch their own small surface; opening a drawer never runs a model. */
+function openTasks(st: State): void {
+  const { d, form, actions, submit } = dialog('Tasks');
+  submit.remove();
+  actions.querySelector('button')!.textContent = 'Close';
+  form.onsubmit = e => e.preventDefault();
+  const list = el('div', 'ag-task-list');
+  actions.before(list);
+  let selected: string | null = null, cursor = 0, result = false;
+  let output: HTMLPreElement | null = null, more: HTMLButtonElement | null = null;
+  let signature = '', fetching = false;
+  const endpoint = `/api/agent/${encodeURIComponent(st.w.i)}?tasks=1`;
+  const loadOutput = async () => {
+    if (!selected || !output) return;
+    const id = selected, from = cursor, final = result;
+    const { status, data } = await getJson(`${endpoint}&task=${encodeURIComponent(id)}&cursor=${cursor}&output=${!result}`).catch(() => ({ status: 0, data: null }));
+    if (selected !== id || from !== cursor || final !== result || !d.open) return;
+    if (status !== 200) { output.textContent = data?.error ?? 'Could not read task output.'; return; }
+    if (data.truncated) output.textContent += '\n[Earlier output is no longer retained]\n';
+    output.textContent = (output.textContent + data.text).slice(result ? -128_000 : -64_000);
+    cursor = data.next;
+    more!.hidden = data.complete;
+    output.dataset.empty = !output.textContent ? 'true' : 'false';
+  };
+  const refresh = async () => {
+    if (!d.open || fetching) return;
+    fetching = true;
+    try {
+      const { status, data } = await getJson(endpoint);
+      if (!d.open) return;
+      if (status !== 200) { if (!list.childElementCount) list.append(el('p', undefined, data?.error ?? 'Tasks unavailable.')); return; }
+      st.tasks = data.tasks ?? []; paint(st);
+      const next = JSON.stringify(st.tasks);
+      if (next !== signature) {
+        signature = next;
+        list.replaceChildren();
+        if (!st.tasks.length) list.append(el('p', undefined, 'No tasks yet. Press Ctrl+B during a tool task to keep it running in the background.'));
+        for (const task of st.tasks) {
+          const row = el('article', 'ag-task-row');
+          const detail = el('div', 'ag-task-description');
+          const status = el('span', 'ag-task-status');
+          status.dataset.task = task.id;
+          detail.append(el('strong', undefined, task.reason), status);
+          if (task.error) detail.append(el('span', 'text-err', task.error));
+          const rowActions = el('div', 'ag-task-actions');
+          for (const final of [false, true]) {
+            const button = el('button', 'btn', final ? 'Result' : 'Output'); button.type = 'button';
+            button.onclick = () => {
+              selected = task.id; cursor = 0; result = final;
+              output ??= el('pre', 'ag-task-output');
+              output.setAttribute('aria-label', final ? 'Task result' : 'Task output');
+              output.dataset.placeholder = final ? 'The result will appear when the task finishes.' : 'No command output yet. Other tools report their result when finished.';
+              output.textContent = '';
+              more ??= el('button', 'btn', 'Load more'); more.type = 'button'; more.hidden = true;
+              more.onclick = () => { void loadOutput(); };
+              actions.before(output, more);
+              void loadOutput();
+            };
+            rowActions.append(button);
+          }
+          if (task.state === 'running' && !task.background) {
+            const detach = el('button', 'btn', 'Background'); detach.type = 'button';
+            detach.onclick = async () => {
+              detach.disabled = true;
+              const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'background', task: task.id });
+              if (status !== 200) { toast(data?.error ?? 'Could not background task.'); detach.disabled = false; }
+              else { for (const task of data.tasks ?? []) updateTask(st, task); void refresh(); }
+            };
+            rowActions.append(detach);
+          }
+          if (task.cancellable) {
+            const stop = el('button', 'btn', 'Stop'); stop.type = 'button'; stop.title = 'Stop this task; partial changes remain';
+            stop.onclick = async () => {
+              stop.disabled = true;
+              const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'cancel-task', task: task.id });
+              if (status !== 200) { toast(data?.error ?? 'Could not stop task.'); stop.disabled = false; }
+              else { updateTask(st, data.task); void refresh(); }
+            };
+            rowActions.append(stop);
+          }
+          row.append(detail, rowActions); list.append(row);
+        }
+      }
+      for (const status of list.querySelectorAll<HTMLElement>('.ag-task-status')) {
+        const task = st.tasks.find(t => t.id === status.dataset.task)!;
+        const age = Math.max(0, Math.round(((task.finishedAt ?? Date.now()) - task.startedAt) / 1000));
+        status.textContent = `${task.state}${task.background ? ' · background' : ''} · ${age}s · ${humanise(task.tool)}`;
+      }
+      if (selected && (!result || cursor === 0)) await loadOutput();
+    } catch { if (!list.childElementCount) list.append(el('p', undefined, 'Connection lost. Reopen Tasks to retry.')); }
+    finally { fetching = false; }
+  };
+  const timer = setInterval(() => { void refresh(); }, 2000);
+  d.addEventListener('close', () => { clearInterval(timer); d.remove(); }, { once: true });
+  void refresh();
 }
 
 function decide(st: State, action: 'confirm' | 'decline'): void {
@@ -1051,6 +1187,14 @@ function wireComposer(ui: Ui, cur: () => State | undefined): void {
   // FIRST, so its keydown listener sees Enter/Tab/arrows before the send below.
   wireCommandMenu(ui, go);
   ui.send.addEventListener('click', go);
+  ui.background.addEventListener('click', () => { const st = cur(); if (st) void background(st); });
+  ui.tasksButton.addEventListener('click', () => { const st = cur(); if (st) openTasks(st); });
+  ui.root.addEventListener('keydown', e => {
+    if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'b' && !e.isComposing) {
+      const st = cur();
+      if (st && (st.busy || st.remote)) { e.preventDefault(); e.stopPropagation(); if (!e.repeat) void background(st); }
+    }
+  });
   ui.input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229 &&
         (!matchMedia('(pointer: coarse)').matches || e.metaKey || e.ctrlKey)) {
@@ -1152,18 +1296,23 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   attach.append(icon('attach'));
   const file = el('input', 'hidden'); file.type = 'file'; file.multiple = true;
   const hint = el('span', 'ag-hint', 'Type / for commands');
+  const tasksButton = el('button', 'ag-icon-button ag-tasks-button');
+  tasksButton.type = 'button'; tasksButton.append(icon('tasks'));
+  const background = el('button', 'ag-icon-button hidden');
+  background.type = 'button'; background.title = 'Run in background · Ctrl+B'; background.setAttribute('aria-label', 'Run in background');
+  background.append(icon('right'));
   const stop = el('button', 'ag-icon-button ag-stop hidden');
   stop.type = 'button'; stop.title = 'Stop response'; stop.setAttribute('aria-label', 'Stop response');
   stop.append(icon('stop'));
   const send = el('button', 'ag-send');
   send.type = 'button'; send.title = 'Send message'; send.setAttribute('aria-label', 'Send message');
   send.append(icon('send'));
-  controls.append(attach, file, hint, stop, send);
+  controls.append(attach, file, tasksButton, hint, background, stop, send);
   form.append(chips, input, controls);
   const help = el('p', 'ag-composer-help', matchMedia('(pointer: coarse)').matches ? 'Tap send when you’re ready' : 'Enter to send · Shift + Enter for a new line');
   footer.append(pendingBox, form, help);
   host.append(stage, footer);
-  return { root, log, input, send, stop, chips, pendingBox, pendingText, status, context, jump, follow: true, rendered: [] };
+  return { root, log, input, send, stop, background, tasksButton, chips, pendingBox, pendingText, status, context, jump, follow: true, rendered: [] };
 }
 
 // ------------------------------------------------------------ shared dialog
@@ -1352,7 +1501,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   st.sharedStatus=data.sync?.server?data.sync.online?'Rime':'Rime · working offline':undefined;
   st.configured = data.configured;
   st.context = data.context ?? undefined;
-  if (!data.configured && !data.transcript?.length) {
+  if (!data.configured && !data.transcript?.length && !data.tasks?.length) {
     const setup = el('div', 'ag-empty ag-setup');
     const mark = el('div', 'ag-empty-mark');
     mark.append(icon('sparkle'));
@@ -1365,6 +1514,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   }
 
   // A rerender mid-stream must not clobber the live turn's log.
+  st.tasks = data.tasks ?? st.tasks;
   if (!st.busy) {
     st.items = itemsFrom(data.transcript ?? []);
     st.pending = data.pending ?? null;
@@ -1428,6 +1578,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   // client at the same moment; the settle ping then reconciles against storage.
   onAgentLive(w.i, (d) => {
     const live = states.get(w.i);
+    if (live && d?.event?.type === 'task') { updateTask(live, d.event.task); return; }
     if (!live || live.busy || !d) return; // this client's own stream owns the log
     let running = remoteRuns.get(w.i);
     if (!running) { running = newRun(); remoteRuns.set(w.i, running); }

@@ -13,6 +13,8 @@ export interface CommandSpec {
 }
 
 export const COMMANDS: readonly CommandSpec[] = [
+  { name: 'background', summary: 'Keep running tool tasks in the background · Ctrl+B' },
+  { name: 'tasks', summary: 'Show running tasks and their recent results' },
   { name: 'clear', summary: 'Start a fresh thread — this one is archived, not deleted' },
   {
     name: 'compact',

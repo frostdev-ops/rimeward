@@ -1,4 +1,5 @@
 import { DEV_TOOLS } from '../dev/tools.ts';
+import { listTasks, readTask, waitTask, cancelTask } from './tasks.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { sharedTool, serverTool } from './sync.ts';
 import { randomBytes } from 'node:crypto';
@@ -86,10 +87,14 @@ export interface ToolCtx {
   conv: number;
   /** Agent wards whose sync ask_agent is waiting on this turn — see core.askAgent. */
   via?: string[];
+  signal?: AbortSignal;
+  progress?: (text: string) => void;
 }
 
 export interface ToolDef {
   kind: ToolKind;
+  backgroundable?: boolean;
+  cancellable?: boolean;
   description: string;
   parameters: Record<string, unknown>;
   run: (args: Record<string, any>, ctx: ToolCtx) => unknown | Promise<unknown>;
@@ -806,11 +811,13 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   bash: {
     kind: 'write',
+    backgroundable: true,
+    cancellable: true,
     description:
       'Run one command line in your sandbox (a bash interpreter over a virtual FS — /history holds your past conversations, /docs the text of every attachment, /work is your scratch space; rg, sed, awk, sqlite3, pdftotext, js-exec are available). js-exec runs JavaScript (QuickJS): `js-exec file.js` or `js-exec -c "…"`; inside a script `await tools.<name>({…})` calls any of your READ-ONLY tools. It cannot touch the dashboard DB or the host.',
     parameters: obj({ command: str(`the command line, e.g. rg -n "invoice" /docs`) }, ['command']),
     run: async (a, ctx) => {
-      const res = await runShell(ctx.userId, String(a.command), (path, argsJson) => invokeReadTool(path, argsJson, ctx));
+      const res = await runShell(ctx.userId, String(a.command), (path, argsJson) => invokeReadTool(path, argsJson, ctx), ctx.signal);
       return { exit_code: res.exitCode, stdout: res.stdout, stderr: res.stderr.slice(0, 500), truncated: res.truncated };
     },
   },
@@ -1206,8 +1213,9 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   ask_agent: {
     kind: 'write',
+    backgroundable: true,
     description:
-      'Send a message to another Rime agent ward. It runs a turn in its own thread with its own memory and tools, unattended (confirm-gated tools decline there). wait (default true) returns the reply; wait:false returns at once and the reply arrives later as a message to you. mode: "queue" (default) waits its turn behind whatever it is doing; "steer" slips the note into the turn it is running now (a queue if idle); "interrupt" stops that turn, then runs this. Every message has a receipt — check_message(id).',
+      'Send a message to another Rime agent ward. It runs a turn in its own thread with its own tool configuration, unattended (confirm-gated tools decline there). Memory, skills, notes and /work files are shared across this user’s agents. wait (default true) returns the reply; wait:false returns at once and the reply arrives later as a message to you. mode: "queue" (default) waits its turn behind whatever it is doing; "steer" slips the note into the turn it is running now (a queue if idle); "interrupt" stops that turn, then runs this. Every message has a receipt — check_message(id).',
     parameters: obj(
       {
         ward: str('the agent ward id (list_agents)'),
@@ -1228,6 +1236,35 @@ export const TOOLS: Record<string, ToolDef> = {
       if (!m) throw new Error(`no message #${a.id}`);
       return receipt(m);
     },
+  },
+  task_list: {
+    kind: 'read',
+    description: 'List running and recent tool tasks in this chat, including tasks sent to the background. Tasks stay on the runtime that started them.',
+    parameters: obj({ cursor: num('Task list offset; default 0') }),
+    run: (a, ctx) => {
+      const cursor = a.cursor ?? 0;
+      if (!Number.isSafeInteger(cursor) || cursor < 0) throw Error('cursor must be a non-negative integer.');
+      const all = listTasks(ctx), tasks = all.slice(cursor, cursor + 10);
+      return { tasks, complete: cursor + tasks.length >= all.length, next: cursor + tasks.length };
+    },
+  },
+  task_output: {
+    kind: 'read',
+    description: 'Read a task result or live output in bounded pages. Follow next until complete. A live output log may drop old text (truncated=true); a completed command has an exit_code. A successful process exit alone does not prove the requested change is correct.',
+    parameters: obj({ id: str('Task ID'), cursor: num('Offset from next; default 0'), output: bool('true: live command output; false/default: final result JSON') }, ['id']),
+    run: (a, ctx) => readTask(ctx, String(a.id), a.cursor ?? 0, a.output !== true),
+  },
+  task_wait: {
+    kind: 'read',
+    description: 'Wait at most 30 seconds for a task, then return its status and a page of its result. Completion notices arrive between rounds or on your next turn; do useful work instead of repeatedly polling.',
+    parameters: obj({ id: str('Task ID'), milliseconds: num('Wait 0–30000ms, default 20000'), cursor: num('Result offset from next; default 0') }, ['id']),
+    run: (a, ctx) => waitTask(ctx, String(a.id), a.milliseconds ?? 20_000, a.cursor ?? 0),
+  },
+  task_cancel: {
+    kind: 'confirm',
+    description: 'Request cancellation of a cancellable task in this chat. Native commands terminate their terminal process. Stopping is not rollback; inspect files/output for partial changes. Non-cancellable tools must finish.',
+    parameters: obj({ id: str('Task ID') }, ['id']),
+    run: (a, ctx) => cancelTask(ctx, String(a.id)),
   },
   inbox: {
     kind: 'read',
@@ -1379,6 +1416,7 @@ export function aiTools(allow: 'all' | 'read-only', extra: Record<string, ToolDe
         parameters: {
           ...params,
           properties: {
+            ...(t.backgroundable ? { background: { type: 'boolean', description: 'Run independently and return a task ID immediately. Use task_output/task_wait for the result; completion is announced. The user can also press Ctrl+B while this call runs.' } } : {}),
             reason: {
               type: 'string',
               description:

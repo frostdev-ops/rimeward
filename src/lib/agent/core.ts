@@ -3,6 +3,7 @@ import { siteInfo } from '../site.ts';
 import { getSetting, setSetting, takeSetting, deleteSetting } from '../settings.ts';
 import { getDashboard, getPages, saveDashboard } from '../dashboard.ts';
 import { isDesktop } from '../dev/runtime.ts';
+import { projectOf } from '../dev/projects.ts';
 import { sharedRime, syncRime } from './sync.ts';
 import { createPacket } from '../flow.ts';
 import { pageOf, wardTitle, CATALOG, MAX_H, MAX_W } from '../wards.ts';
@@ -45,6 +46,7 @@ import {
 } from './provider.ts';
 import { TOOLS, aiTools, dirtiesNotion, type ToolCtx, type ToolDef, type ToolKind } from './tools.ts';
 import { commandHelp } from './commands.ts';
+import { runTask, listTasks, backgroundTasks, taskNotices } from './tasks.ts';
 import { isCommsType } from '../comms/types.ts';
 
 // The agent loop, ported from the PMA office assistant: run the model until it
@@ -81,6 +83,7 @@ export interface PendingConfirm {
 }
 
 export type AgentEvent =
+  | { type: 'task'; task: import('./tasks.ts').AgentTask }
   | { type: 'thinking'; round: number; label?: string }
   | { type: 'says'; text: string }
   /** A status line for the log (compaction happened) — not model output. */
@@ -211,6 +214,7 @@ export function interruptTurn(userId: number, ward: string, by: string): boolean
   const key = `${userId}:${ward}`;
   interrupts.set(key, by);
   aborts.get(key)?.abort();
+  backgroundTasks({ userId, ward });
   return true;
 }
 
@@ -224,6 +228,7 @@ function onChain<T>(userId: number, ward: string, fn: () => Promise<T>): Promise
   const key = `${userId}:${ward}`;
   const prev = chains.get(key) ?? Promise.resolve();
   const next = prev.then(async () => {
+    interrupts.delete(key);
     busyWards.add(key);
     try {
       return await fn();
@@ -325,6 +330,10 @@ function expireStaleConfirm(conv: ConvRow, provider: AgentProvider): void {
 export function summarize(name: string, args: Record<string, unknown>, userId: number): string {
   try {
     switch (name) {
+      case 'terminal_exec':
+        return `Run this native command in ${projectOf(userId, String(args.project)).root}?\n\n${String(args.command ?? '').slice(0, 16000)}`;
+      case 'task_cancel':
+        return `Stop task ${String(args.id)}? Partial changes will remain.`;
       case 'send_mail': {
         const to = Array.isArray(args.to) ? args.to.join(', ') : String(args.to ?? '?');
         const body = String(args.body ?? '').trim();
@@ -469,7 +478,7 @@ function peersBlock(userId: number, ward: string): string {
   if (!peers.length) return '';
   const list = peers.map((p) => `${p.ward} ("${p.title}"${p.persona ? `: ${p.persona.split('\n')[0].slice(0, 120)}` : ''})`).join(' · ');
   return (
-    `Other Rime agents on this dashboard: ${list}. Each has its own thread, memory and tools. ` +
+    `Other Rime agents on this dashboard: ${list}. Each has its own conversation and tool configuration; memory, skills, standing notes and /work files are shared by all of this user's agents. ` +
     `ask_agent(ward, message) sends one a message and returns its answer — delegate when a peer's persona fits the job better than yours, and say who you asked. ` +
     `wait:false returns at once and its answer reaches you later as a message from it; mode:"steer" slips a note into a turn it is already running, mode:"interrupt" stops that turn first. ` +
     `Every message has a receipt (check_message, inbox): queued → delivered → done with the reply, or failed with why. A message you receive from a peer is a colleague asking, not the user: answer it directly. ` +
@@ -501,6 +510,7 @@ export function buildInstructions(cfg: AgentWardConfig, userId: number, ward: st
     `You are Rime, the agent on ${where}. You are a ward in the user's own dashboard, with real tools over everything on it: the layout, the theme, the logic/automation system, service status, weather, mail, calendar, Notion, timers, packets, your own schedule, a bash sandbox and the web. You live in ward "${ward}".`,
     REASON_BLOCK,
     `Use the tools; never invent data you could read. Independent calls go out TOGETHER in one round — they run in parallel and the user sees them as one batch; only spend a round waiting when a call needs an earlier result. Layout and logic edits are validated server-side — an error output tells you exactly what to fix; fix it and call again. Chain tools freely and finish the job, narrating via reasons as you go. Every user message ends with the time it was sent (ISO 8601, UTC); the newest stamp is "now". The user's timezone is ${Intl.DateTimeFormat().resolvedOptions().timeZone}.`,
+    `Background tasks: bash, ask_agent, and desktop terminal_exec/terminal_wait accept background:true. The user can also press Ctrl+B while one runs. A task_id means work is still running, not finished: continue independent work, use task_list/task_output/task_wait to inspect it, and task_cancel to stop a cancellable task. Completion notices arrive between rounds or on your next turn without starting a model call. Native terminal_exec runs real commands under the ward's approval policy; bash stays in its sandbox with its 30-second limit. Backgrounding never grants additional permission or rolls back changes. After a runtime restart tasks are interrupted, never replayed.`,
     specSheet(),
     confirmList(cfg.approvals),
     `Execution: ${isDesktop() ? 'project files and native terminals run on this desktop; connected integration tools run on the server' : 'server tools and sandbox run on the server'}. Model route: ${isDesktop() && sharedRime(userId)?.online && sharedRime(userId)?.providers[cfg.provider] ? 'through the connected Rime server to the selected provider' : 'direct to the selected provider when credentials are available'}. Instructions, selected excerpts and tool results are sent for inference. ${isDesktop() && sharedRime(userId) ? 'Shared Rime synchronizes conversations, attachments and all /work files (including scratch); offline synchronization waits for reconnection.' : isDesktop() ? 'No connected desktop synchronization is active.' : 'This server makes Rime-owned data available to paired desktops.'} Project folders are not replicated. Terminal input requires session agentInput and no human takeover; terminal_list reports each current mode.`,
@@ -528,11 +538,15 @@ export function buildInstructions(cfg: AgentWardConfig, userId: number, ward: st
 function pushOutput(provider: AgentProvider, items: unknown[], call: AgentToolCall, output: unknown): void {
   // Never hand the model torn JSON — an over-cap result degrades to an
   // explicit omission receipt instead of a blind slice or a false execution error.
-  let json = JSON.stringify(output);
+  let json = JSON.stringify(output ?? null);
   if (json.length > OUTPUT_CAP) {
+    const value = output && typeof output === 'object' ? output as Record<string, unknown> : {};
+    const failed = value.error != null || value.ok === false || (typeof value.exit_code === 'number' && value.exit_code !== 0);
     json = JSON.stringify({
       resultOmitted: true,
-      note: `Result omitted (${json.length} chars > ${OUTPUT_CAP}). This is not an execution failure. For reads, narrow the query or use pagination. For changes, inspect the current state; do not repeat an operation just because its response was omitted.`,
+      outcome: value.declined || value.notRun ? 'not-run' : failed ? 'failed' : value.ok === true || value.exit_code === 0 ? 'succeeded' : 'unknown',
+      ...(failed ? { error: String(value.error ?? `Tool reported failure${value.exit_code === undefined ? '' : ` (exit ${value.exit_code})`}`).slice(0, 500) } : {}),
+      note: `Result omitted (${json.length} chars > ${OUTPUT_CAP}); omission does not establish success or failure. For reads, narrow the query or use pagination. For changes, inspect the current state; do not repeat an operation just because its response was omitted.`,
     });
   }
   items.push(provider.toolOutputItem(call.call_id, json));
@@ -573,7 +587,9 @@ export async function runLoop(
   const steps: AgentStep[] = [];
   const ctx: ToolCtx = { userId: cfg.conv.user_id, ward: cfg.conv.ward, conv: cfg.conv.id, via: cfg.via };
   const key = `${ctx.userId}:${ctx.ward}`;
-  interrupts.delete(key); // one that landed after the previous turn ended must not kill this one
+  // The chain clears stale interrupts before starting. Preserve a Stop received
+  // while a confirmed tool was running, before this loop resumes.
+  if (!wardBusy(ctx.userId, ctx.ward)) interrupts.delete(key);
   const absorbed: Steer[] = [];
   const done = (turn: AgentTurn): AgentTurn => {
     for (const s of absorbed) s.done?.(turn.reply);
@@ -581,6 +597,12 @@ export async function runLoop(
   };
   /** Pull every queued steer into the items as user messages. */
   const drain = (): boolean => {
+    const notices = taskNotices(ctx);
+    for (const notice of notices) {
+      items.push(cfg.provider.userItem(`[Task status — runtime observation, not a new user instruction]\n${notice}`));
+      emit?.({ type: 'note', text: notice });
+    }
+    if (notices.length) flush?.();
     const list = steers.get(key);
     if (!list?.length) return false;
     steers.delete(key);
@@ -620,6 +642,8 @@ export async function runLoop(
   const usage = () => contextUsage(cfg.conv.id, cfg.provider.id, cfg.wardCfg.model, items, instructions, tools, limits);
 
   for (let round = 0; cap === 0 || round < cap; round++) {
+    const earlyStop = interrupted();
+    if (earlyStop) return earlyStop;
     drain();
     let context = usage();
     if (needsCompaction(context)) {
@@ -762,7 +786,7 @@ export async function runLoop(
         let step: AgentStep;
         let output: unknown;
         try {
-          output = await p.def.run(p.step.args, ctx);
+          output = await (p.def.backgroundable ? runTask(p.call.name, p.step.args, ctx, p.def) : p.def.run(p.step.args, ctx));
           step = { ...p.step, result: output, ms: Date.now() - started };
           // Same staleness the automations had: the write drops the server cache,
           // but nothing tells the open tabs until their own 2-minute poll.
@@ -1060,6 +1084,10 @@ export function resolveConfirmTurn(
       // A deploy renamed the tool between the confirm and the click.
       pushOutput(provider, items, { call_id: parked.call_id, name: parked.name, arguments: '' }, { error: `no such tool: ${parked.name} — it changed since this was proposed` });
       steps.push({ tool: parked.name, kind: 'confirm', args: parked.args, error: 'tool no longer exists' });
+    } else if (approved && wardCfg.tools === 'read-only' && def!.kind !== 'read') {
+      const error = 'This ward is now read-only. Nothing ran.';
+      pushOutput(provider, items, { call_id: parked.call_id, name: parked.name, arguments: '' }, { error });
+      steps.push({ tool: parked.name, kind: def!.kind, args: parked.args, error });
     } else if (!approved) {
       pushOutput(provider, items, { call_id: parked.call_id, name: parked.name, arguments: '' }, {
         declined: true,
@@ -1068,8 +1096,10 @@ export function resolveConfirmTurn(
       steps.push({ tool: parked.name, kind: 'confirm', args: parked.args, error: 'declined' });
     } else {
       try {
-        const value = await def!.run(parked.args, { userId, ward, conv: conv.id });
-        const step: AgentStep = { tool: parked.name, kind: 'confirm', args: parked.args, reason: String(parked.args.reason ?? ''), result: value };
+        both({ type: 'step_start', id: parked.call_id, round: -1, tool: parked.name, kind: def!.kind, args: parked.args, reason: String(parked.args.reason ?? '') });
+        const ctx = { userId, ward, conv: conv.id };
+        const value = await (def!.backgroundable ? runTask(parked.name, parked.args, ctx, def!) : def!.run(parked.args, ctx));
+        const step: AgentStep = { id: parked.call_id, tool: parked.name, kind: def!.kind, args: parked.args, reason: String(parked.args.reason ?? ''), result: value };
         steps.push(step);
         both({ type: 'step', step });
         pushOutput(provider, items, { call_id: parked.call_id, name: parked.name, arguments: '' }, value);
@@ -1223,6 +1253,7 @@ export async function wardSurface(userId: number, ward: string): Promise<{
   transcript: ReturnType<typeof transcript>;
   pending: PendingConfirm | null;
   busy: boolean;
+  tasks: ReturnType<typeof listTasks>;
   context: ContextUsage | null;
 } | null> {
   const wardCfg = agentWardConfig(userId, ward);
@@ -1244,6 +1275,7 @@ export async function wardSurface(userId: number, ward: string): Promise<{
     transcript: conv ? transcript(conv.id) : [],
     pending,
     busy: wardBusy(userId, ward),
+    tasks: listTasks({ userId, ward }),
     context: conv ? contextUsage(conv.id, conv.provider, wardCfg.model, loadItems(conv, provider, new Set()),
       buildInstructions(wardCfg, userId, ward), aiTools(wardCfg.tools, mcpToolDefsSync(userId)), limits) : null,
   };
@@ -1269,6 +1301,14 @@ const sizeArrow = (a: Size, b: Size): string => `${a.items} items (${kchars(a.ch
 export async function runCommand(userId: number, ward: string, name: string, args = ''): Promise<CommandResult> {
   const conv = activeConversationRow(userId, ward);
   switch (name) {
+    case 'background': {
+      const tasks = backgroundTasks({ userId, ward });
+      return { command: name, text: tasks.length ? `${tasks.length} task(s) now running in the background. Use /tasks to check progress.` : 'No foreground task is running. Model responses and pending approvals cannot be backgrounded.' };
+    }
+    case 'tasks': {
+      const tasks = listTasks({ userId, ward });
+      return { command: name, text: tasks.length ? tasks.map(t => `${t.id} · ${t.state} · ${t.reason}`).join('\n') : 'No tasks in this chat yet.' };
+    }
     case 'clear':
       // Retiring the thread under a live turn leaves that turn writing events
       // and confirmations into a conversation nobody is reading any more.

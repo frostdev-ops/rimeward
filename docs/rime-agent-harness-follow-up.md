@@ -4,7 +4,7 @@
 **Baseline:** `c670ec9d90d200ade6de3f802835f4da3bcfb3f2`, `main`, initially clean.
 **Perspective:** Rime using the desktop harness; not a release or security certification.
 
-This supplements [the reconstructed original review](rime-agent-harness-review.md), without replacing its incident record. The repository changed substantially while the original turn was interrupted. Repeating the old recommendations as current defects would be misleading.
+This supplements [the reconstructed original review](rime-agent-harness-review.md), without replacing its incident record. The repository changed substantially while the original turn was interrupted; repeating the old recommendations as current defects would be misleading.
 
 ## Bottom line
 
@@ -130,3 +130,59 @@ four native Rust tests, Clippy, the packaged-runtime check, and the full PC → 
 smoke flow. All twelve documentation goldens were regenerated and inspected. Windows CI
 identified a cleanup race in the new receipt fixture: it now removes its temporary folder
 asynchronously with bounded retries while the terminated shell releases its directory.
+
+## Independent re-review — baseline bf24153d, September 6, 2026
+
+Requested at 23:11 UTC. Baseline: `bf24153d7db486c4e5bf4bdf1c5601e7ca102838`, `main`, clean before this documentation update. The prior findings above remain a historical record, not the current defect list.
+
+### Assessment of the fixes
+
+The main recommendations have been implemented. This is now a more usable harness, not merely better documentation of the same limitations.
+
+- **Large writes:** `project_edit` returns only a small revision/saved/dirty/conflict receipt. The inspected regression saves a document larger than the result cap and checks recovery-only edits and conflicts. Updating this already-over-12k document exercises the live model-facing save path without adding a fixture or changing application code.
+- **Scoped search:** independently validated against `src/lib/agent/core.ts`. Three search pages returned 82, 77, and 36 matches: **195 total**, exactly equal, in line order, to an independent ten-page file read at revision 3. Serialized results were 9,193, 9,237, and 4,428 characters. Every cursor advanced and the final page reported complete. The old search-overflow finding is closed for this checked path.
+- **Git and directories:** source now exposes complete/next/snapshot metadata. Git handles deleted paths, preserves every output character across pages, and no longer hides output failures by falling back to staged changes. Source and existing regression inspected; no new large-diff fixture run here.
+- **Relay failures:** `sharedModel` calls `modelFailure`, retains categories/status/reference IDs, and disconnects selectively. Diagnostics retain at most 100 metadata records per account, not raw provider error bodies. Stream reads now report progress. Production soak and UI liveness behavior were not re-tested here.
+- **Data flow and input authority:** generated instructions now distinguish desktop execution, remote inference, shared transcripts, and `/work` synchronization. Rime input is an explicit session capability, separate from the CLI launch policy; agent input cannot seize a human-owned terminal.
+- **Task evidence:** receipts capture file hashes, Git identity, reviewer, sequence, and reviewer-reported checks. Detailed review reads recompute staleness for listed files, and routine terminal reads omit the large receipt. This is materially stronger than a free-text “done” claim. Unlisted files and unrelated changes remain outside that stale check, as the implementation notes disclose.
+
+### Remaining findings
+
+#### R1 — Root search mixes generated files and other checkouts (medium priority; live)
+
+The first unscoped `const` page returned `.astro/fonts/.../meta.json` and many `.claude/worktrees/dashboard-integrated-agent-84eb7a/...` matches before reaching current source. The nested worktree is at a different Git revision. For example, it surfaced an older provider timeout and old widget-era components. The paths are visible, so this is not hidden substitution, but it makes wrong-version conclusions unnecessarily easy and consumes context with generated content.
+
+`searchPage` excludes only four named directory types (`node_modules`, `dist`, `target`, `.git`); it does not honor Git ignore rules or identify nested worktrees. Its “dependency/build directories are excluded” hint is broader than those actual exclusions.
+
+**Recommendation:** default source search to the current checkout, honor appropriate ignore rules, and exclude nested worktrees/generated caches unless explicitly requested. Keep a deliberate include-ignored/include-other-worktrees option and label scope provenance. Until then, use explicit `path: "src"`, `path: "tests"`, or a file path rather than assuming root results describe HEAD.
+
+**Acceptance:** root source search does not silently mix a second checkout into current-code results; explicitly searching that checkout remains possible. Say what was excluded rather than implying exhaustive repository coverage.
+
+#### R2 — Omitted errors lose their execution outcome (medium priority; source-derived)
+
+The revised `pushOutput` is safer for successful oversized results: it says not to repeat a change. However, `runLoop` also catches thrown tool errors as `{ error: message }`, then passes them through the same function. If that error exceeds the cap, it becomes an omission receipt saying “This is not an execution failure,” with no retained failure flag or bounded error summary. This edge case was not deliberately triggered in the live workspace.
+
+**Recommendation:** preserve a small outcome field and bounded error summary independently of response truncation. Distinguish success, failure, not-run, and unknown result content; keep the no-blind-replay warning. Avoid inferring success solely because serialization—not execution—caused the omission.
+
+**Acceptance:** an oversized successful result and an oversized thrown error produce different, bounded, truthful receipts while neither encourages repeating an uncertain mutation.
+
+#### R3 — Peer memory wording still contradicts shared storage (low priority; source-confirmed)
+
+`peersBlock` says each peer has “its own thread, memory and tools.” But `workDir(userId)` and the memory/skill stores in `history.ts` and `store.ts` are per-user, not per-ward. The notes block's persistence correction is good; this remaining sentence can still suggest isolation that is not present.
+
+**Recommendation:** explicitly distinguish separate conversations/tool configurations from shared user memory, skills, and standing notes. A shared-memory write should not be described as private to one agent. No overwrite or data loss was observed in this pass.
+
+### Scope and next step
+
+This pass ran live read-only tool checks and the exact scoped-search comparison, inspected source and existing development regressions, and updated only this document. It did not run or add native/JavaScript test code, rerun the suite/build, change terminal permissions, deploy, or validate signed installers. The 452-test and release results in the preceding section are the existing implementation report, not newly observed executions by this reviewer.
+
+Prioritize R1 for everyday code-review accuracy, then R2 for truthful failure handling. R3 is a small wording correction. Do not reopen the resolved write-receipt and basic search-pagination defects based on the historical sections above.
+
+
+## Release review follow-up — desktop 0.4.7
+
+R1–R3 above are addressed: source search uses Git’s tracked/non-ignored working-tree listing without walking nested checkouts, with explicit `includeIgnored` access and scope metadata; oversized results preserve a bounded failure summary and an outcome instead of denying execution failure; peer instructions now describe shared per-user memory, skills, notes, and scratch files.
+
+The background-task review also added the exact native command and project folder to approvals, kept Tasks available without a configured provider, and coalesced live-output database writes. Existing tests are retained; no new test cases were added.
+
+Release validation passed all 452 existing tests, TypeScript, desktop lint, the production build, and the editor/terminal/chat smoke checks; documentation goldens were regenerated. The remote-workspace smoke flow passed PC → phone → PC continuation and offline recovery with fixture model responses. Isolated manual checks verified ignored/nested-checkout search scope, explicit excluded-file access, sandbox/native task cancellation, native nonzero exit reporting, cross-ward task access denial, and one-time completion notices. No external model calls were made.

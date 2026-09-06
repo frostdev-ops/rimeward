@@ -271,8 +271,9 @@ export function fitOutput(stdout: string, stderr: string): { stdout: string; std
 
 /** Run one command line. Each call is a fresh shell over the same mounts —
  *  /work persists between calls because it is a real directory. */
-export async function runShell(userId: number, command: string, invoke?: InvokeTool): Promise<ShellResult> {
+export async function runShell(userId: number, command: string, invoke?: InvokeTool, signal?: AbortSignal): Promise<ShellResult> {
   const bash = makeShell(userId, invoke);
+  const timeout = new AbortController();
   let result: { stdout?: unknown; stderr?: unknown; exitCode?: number };
   // The timer MUST be cleared: an un-cleared race timer keeps a handle alive for
   // its full duration after the command has already finished, which pins the
@@ -280,9 +281,12 @@ export async function runShell(userId: number, command: string, invoke?: InvokeT
   let timer: NodeJS.Timeout | undefined;
   try {
     result = await Promise.race([
-      bash.exec(command),
+      bash.exec(command, { signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal }),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`shell: timed out after ${SHELL_TIMEOUT_MS / 1000}s`)), SHELL_TIMEOUT_MS);
+        timer = setTimeout(() => {
+          timeout.abort();
+          reject(new Error(`shell: timed out after ${SHELL_TIMEOUT_MS / 1000}s`));
+        }, SHELL_TIMEOUT_MS);
       }),
     ]);
   } catch (err) {

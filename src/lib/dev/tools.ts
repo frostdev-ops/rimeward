@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import { workDb } from "./runtime.ts";
 import type { ToolDef, ToolCtx } from "../agent/tools.ts";
 import { requireDesktop } from "./runtime.ts";
@@ -25,7 +26,9 @@ import {
   interruptSession,
   closeSession,
   configureSession,
+  executable,
 } from "./terminals.ts";
+import { fitOutput } from "../agent/shell.ts";
 const str = (description: string) => ({ type: "string", description });
 const schema = (
   properties: Record<string, unknown>,
@@ -74,6 +77,7 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
         operation: { type: "string", enum: ["files", "file", "search", "git"] },
         path: str("Project-relative path (file: the file; files: the directory; search/git: scope to this file or directory)"),
         query: str("Search text"),
+        includeIgnored: { type: "boolean", description: "search: explicitly include ignored files and nested checkouts under path; default false" },
         cursor: { type: "number", description: "files/search/git: continuation offset from next; keep other arguments unchanged" },
         from: { type: "number", description: "file: first line to return, 1-based (default 1)" },
         lines: { type: "number", description: "file: how many lines (default: as many as fit the page)" },
@@ -89,7 +93,7 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
           ? readPage(c.userId, a.project, a.path, a.from, a.lines, a.column, a.version)
           : a.operation === "git"
             ? gitView(c.userId, a.project, a.path || undefined, DIFF_CAP, a.cursor)
-            : searchPage(c.userId, a.project, a.query ?? "", a.path ?? "", a.cursor),
+            : searchPage(c.userId, a.project, a.query ?? "", a.path ?? "", a.cursor, a.includeIgnored === true),
   ),
   project_edit: wrap(
     "write",
@@ -153,6 +157,41 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
       });
     },
   ),
+  terminal_exec: {
+    ...wrap(
+      "confirm",
+      "Run a native shell command in a desktop project and return its actual exit code. Commands can change files and access this computer/network; the ward approval policy applies. The session is visible in Terminal and outlives chat views. Use background:true for builds, tests, dev servers or other long work; task_output reads live logs. Stop terminates this command's session, not a user's existing terminal. Never assume an exit code proves a requested change is correct.",
+      schema({ ...context, command: str("Exact shell command; /bin/sh on macOS/Linux, PowerShell on Windows"), title: str("Short task label") }, ["runtime", "project", "command"]),
+      async (a, c) => {
+        c.signal?.throwIfAborted();
+        const shell = process.platform === 'win32' ? executable('pwsh') || executable('powershell') : '/bin/sh';
+        if (!shell) throw Error('PowerShell is not installed.');
+        const session = await startSession(c.userId, { project: a.project, kind: 'shell', mode: 'human', shell,
+          command: a.command, task: a.command, title: a.title || 'Rime command' });
+        const stop = () => { if (listSessions(c.userId).some(s => s.id === session.id && s.state === 'running')) closeSession(c.userId, session.id); };
+        c.signal?.addEventListener('abort', stop, { once: true });
+        let after = 0, output = '', truncated = false;
+        try {
+          if (c.signal?.aborted) stop();
+          for (;;) {
+            const read = await waitSession(c.userId, session.id, after, 1000, false);
+            // The exit snapshot contains the complete screen, so don't append it to live chunks again.
+            const text = stripVTControlCharacters(read.data);
+            if (read.reset) { output = text; c.progress?.(`\n[Terminal snapshot]\n${text}`); }
+            else { output += text; c.progress?.(text); }
+            if (output.length > 64_000) { output = output.slice(-64_000); truncated = true; }
+            after = read.session.sequence;
+            if (read.session.state !== 'running') {
+              const fitted = fitOutput(output, '');
+              return { session: session.id, exit_code: read.session.exitCode, ...fitted, truncated: truncated || fitted.truncated };
+            }
+          }
+        } finally { c.signal?.removeEventListener('abort', stop); }
+      },
+    ),
+    backgroundable: true,
+    cancellable: true,
+  },
   terminal_read: wrap(
     "read",
     "Inspect current terminal screen and ordered output. Empty output or an idle screen does not prove a task completed. Unknown permission screens require attention.",
@@ -168,7 +207,7 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
       return { text, snapshot: createHash('sha256').update(all).digest('hex'), complete: next >= all.length, ...(next < all.length ? { next } : {}) };
     },
   ),
-  terminal_wait: wrap(
+  terminal_wait: { ...wrap(
     "read",
     "Wait up to 30 seconds for output, then return a screen snapshot. For longer waits use the existing schedule_wake tool; coalesce activity instead of polling the model for every chunk.",
     schema(
@@ -179,8 +218,8 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
       },
       ["runtime", "session", "after"],
     ),
-    (a, c) => waitSession(c.userId, a.session, a.after, a.milliseconds, false),
-  ),
+    (a, c) => waitSession(c.userId, a.session, a.after, a.milliseconds, false, c.signal),
+  ), backgroundable: true, cancellable: true },
   terminal_input: wrap(
     "write",
     "Send exact input to a session with agentInput enabled. The user can enable Rime input in Session settings without restarting, then release human control. Read the latest screen first. Never blindly replay uncertain input or guess approval keys; user takeover pauses agent input.",

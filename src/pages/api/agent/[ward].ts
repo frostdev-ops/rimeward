@@ -3,6 +3,7 @@ import type { AgentEvent } from '../../../lib/agent/core.ts';
 import { agentConfigured } from '../../../lib/agent/provider.ts';
 import { parseCommand } from '../../../lib/agent/commands.ts';
 import { syncRime, syncStatus } from '../../../lib/agent/sync.ts';
+import { listTasks, readTask, backgroundTasks, cancelTask } from '../../../lib/agent/tasks.ts';
 
 export const prerender = false;
 
@@ -11,9 +12,17 @@ export const prerender = false;
 // event.type). A client disconnect never aborts the turn: tools already wrote,
 // and the transcript is the record either way.
 
-export const GET: APIRoute = async ({ params, locals }) => {
-  const { wardSurface } = await import('../../../lib/agent/core.ts');
+export const GET: APIRoute = async ({ params, locals, url }) => {
+  const { wardSurface, agentWardConfig } = await import('../../../lib/agent/core.ts');
   const userId = locals.user!.userId;
+  if (url.searchParams.has('tasks')) {
+    const ctx = { userId, ward: String(params.ward) };
+    if (!agentWardConfig(userId, ctx.ward)) return Response.json({ error: 'not an agent ward' }, { status: 400 });
+    try {
+      const id = url.searchParams.get('task');
+      return Response.json(id ? readTask(ctx, id, Number(url.searchParams.get('cursor') ?? 0), url.searchParams.get('output') !== 'true') : { tasks: listTasks(ctx) }, { headers: { 'cache-control': 'no-store' } });
+    } catch (err) { return Response.json({ error: err instanceof Error ? err.message : 'Task unavailable' }, { status: 400 }); }
+  }
   await syncRime(userId);
   const surface = await wardSurface(userId, String(params.ward));
   // 400, not 404 — the ward helpers map 404 to a Connect chip.
@@ -29,7 +38,8 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
   const body = (await request.json().catch(() => null)) as {
     message?: string;
     file_ids?: unknown;
-    action?: 'clear' | 'confirm' | 'decline' | 'interrupt';
+    action?: 'clear' | 'confirm' | 'decline' | 'interrupt' | 'background' | 'cancel-task';
+    task?: string;
     confirmId?: string;
     /** steer: hand the message to the turn already running (JSON {steered}); never a stream. */
     mode?: 'steer';
@@ -39,6 +49,12 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
   if (!body.action && body.mode !== 'steer') await syncRime(userId);
   const cfg = agentWardConfig(userId, ward);
   if (!cfg) return Response.json({ error: 'not an agent ward' }, { status: 400 });
+  if (body.action === 'background' || body.action === 'cancel-task') {
+    try {
+      const ctx = { userId, ward };
+      return Response.json(body.action === 'background' ? { tasks: backgroundTasks(ctx, body.task) } : { task: cancelTask(ctx, String(body.task ?? '')) });
+    } catch (err) { return Response.json({ error: err instanceof Error ? err.message : 'Task action failed' }, { status: 400 }); }
+  }
 
   if (body.action === 'clear') {
     clearThread(userId, ward);
@@ -77,8 +93,13 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
   if (!deciding && !message && !fileIds.length) return Response.json({ error: 'empty message' }, { status: 400 });
 
   const enc = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
+      heartbeat = setInterval(() => {
+        try { controller.enqueue(enc.encode(': keepalive\n\n')); }
+        catch { clearInterval(heartbeat); }
+      }, 15_000);
       const send = (event: AgentEvent | { type: 'done' | 'error'; [k: string]: unknown }) => {
         try {
           controller.enqueue(enc.encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -93,11 +114,13 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
         .then((turn) => send({ type: 'done', reply: turn.reply, steps: turn.steps, pending: turn.pending ?? null }))
         .catch((err) => send({ type: 'error', error: err instanceof Error ? err.message : 'turn failed' }))
         .finally(() => {
+          clearInterval(heartbeat);
           try {
             controller.close();
           } catch {}
         });
     },
+    cancel() { clearInterval(heartbeat); },
   });
 
   return new Response(stream, {

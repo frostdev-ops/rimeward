@@ -207,6 +207,8 @@ One shared dashboard brings server pages and desktop projects together. The app 
 
 Terminal sessions use keyboard-accessible tabs with visible close buttons, without resizing the ward. Closing a tab keeps its process running; reopen it from the terminal menu. Rime can page through project searches, directories, and Git changes, and retain task reviews with file hashes and reported check results. Long model waits show elapsed time and relay activity; failures include a reference for metadata-only diagnostics.
 
+**Keep working while a task runs.** Press **Ctrl+B** in chat, or use **Run in background**, to release Rime from a running shell command, terminal wait, or peer-agent request. **Tasks** (also `/tasks`) shows progress, native command output, results, and Stop controls. Rime can start these tools with `background:true`; desktop `terminal_exec` runs project builds, tests, and development servers under the ward's approval policy. Completion notices arrive without an extra model call. Task records survive reloads; a runtime restart marks unfinished tasks interrupted and never replays commands.
+
 Pair servers in **Connections** after launch. See [development workspace setup and validation](docs/development-workspaces.md), including the required proxy privacy configuration. The desktop release workflow builds separately for Apple silicon, Intel macOS, Windows, and Linux on a `desktop-v*` tag: macOS DMGs, Windows installers, and Linux DEB/AppImage packages. Signing uses the Apple secrets listed in that workflow; publication waits for every platform to pass.
 
 First launch offers **Bring your dashboard** or **Start right here**. To connect, enter your

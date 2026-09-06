@@ -559,7 +559,7 @@ test('/size and /compact report the thread, and /compact refuses mid-turn', asyn
 test('completeCommand drives the popup: opens on "/", filters, closes on a space', () => {
   const names = (t: string) => completeCommand(t)?.map((c) => c.name) ?? null;
   // A bare slash offers everything, in catalog order.
-  assert.deepEqual(names('/'), ['clear', 'compact', 'size', 'help']);
+  assert.deepEqual(names('/'), ['background', 'tasks', 'clear', 'compact', 'size', 'help']);
   assert.deepEqual(names('/c'), ['clear', 'compact']);
   assert.deepEqual(names('/co'), ['compact']);
   assert.deepEqual(names('/CL'), ['clear']);

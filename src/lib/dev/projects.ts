@@ -216,27 +216,39 @@ export function renameFile(
   emitDev(user, "project", project);
 }
 /** ponytail: offset continuation rescans earlier entries; use an index if large-repo latency matters. */
-export async function searchPage(user: number, project: string, query: string, scope = "", cursor = 0) {
+export async function searchPage(user: number, project: string, query: string, scope = "", cursor = 0, includeIgnored = false) {
   const matches: { path: string; line: number; text: string }[] = [];
   if (!query.trim() || query.length > 200) return { matches, complete: true, scanned: 0 };
   cursor = Math.max(0, Math.floor(Number(cursor)) || 0);
-  const pending = [scope], seen = new Set<string>();
+  const root = projectPath(user, project, scope);
+  const indexed = !includeIgnored && fs.statSync(root).isDirectory() &&
+    (await git(user, project, ['rev-parse', '--is-inside-work-tree']).catch(() => '')).trim() === 'true';
+  const pending = indexed ? [...new Set((await git(user, project,
+    ['--literal-pathspecs', 'ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', scope || '.']))
+    .split('\0').filter(Boolean))].reverse() : [scope];
+  const seen = new Set<string>();
   let position = 0, scanned = 0, size = 0;
   const needle = query.toLowerCase();
-  const hint = "Continue with cursor until complete; coverage assumes unchanged files. Content search excludes binary files and files over 5 MiB; dependency/build directories are excluded.";
+  const searchScope = { path: scope || '.', source: indexed ? 'git-working-tree' : 'filesystem', includeIgnored };
+  const hint = "Continue with cursor until complete; coverage assumes unchanged files. Content search excludes binary files and files over 5 MiB. " +
+    (indexed ? "Git-tracked and non-ignored untracked files only; nested checkouts are not traversed. Use includeIgnored:true with an explicit path to inspect excluded files." :
+      includeIgnored ? "Ignored files and nested checkouts are included under the selected path." : "Hidden, dependency/build directories and nested checkouts are excluded; an explicit path or includeIgnored:true opts in.");
   while (pending.length) {
     const relative = pending.pop();
     if (relative === undefined) break;
-    const real = projectPath(user, project, relative);
+    let real: string;
+    try { real = projectPath(user, project, relative); }
+    catch (error) { if (indexed && error instanceof DevError && [403, 404].includes(error.status)) continue; throw error; }
     if (seen.has(real)) continue;
     seen.add(real);
     const st = fs.statSync(real);
     if (st.isDirectory()) {
+      if (indexed || (!includeIgnored && relative !== scope && fs.existsSync(path.join(real, '.git')))) continue;
       if (position++ >= cursor && scanned++ >= 10_000)
-        return { matches, complete: false, next: position - 1, scanned, hint };
+        return { matches, complete: false, next: position - 1, scanned, hint, scope: searchScope };
       const entries = tree(user, project, relative);
       for (const entry of entries.reverse())
-        if (!entry.directory || !["node_modules", "dist", "target", ".git"].includes(entry.name)) pending.push(entry.path);
+        if (!entry.directory || includeIgnored || (!entry.name.startsWith('.') && !["node_modules", "dist", "target"].includes(entry.name))) pending.push(entry.path);
       await new Promise<void>(resolve => setImmediate(resolve));
       continue;
     }
@@ -250,13 +262,13 @@ export async function searchPage(user: number, project: string, query: string, s
       const match = { path: relative, line: Math.max(1, i), text: text.slice(0, 300) };
       const bytes = hit ? JSON.stringify(match).length + 1 : 0;
       if (scanned >= 10_000 || size + bytes > 9000)
-        return { matches, complete: false, next: position - 1, scanned, hint };
+        return { matches, complete: false, next: position - 1, scanned, hint, scope: searchScope };
       scanned++; size += bytes;
       if (hit) matches.push(match);
     }
     await new Promise<void>(resolve => setImmediate(resolve));
   }
-  return { matches, complete: true, scanned, hint };
+  return { matches, complete: true, scanned, hint, scope: searchScope };
 }
 export async function searchFiles(user: number, project: string, query: string) {
   const matches: Awaited<ReturnType<typeof searchPage>>["matches"] = [];

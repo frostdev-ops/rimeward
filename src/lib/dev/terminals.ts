@@ -233,6 +233,8 @@ export async function startSession(
     rows?: number;
     shell?: string;
     task?: string;
+    /** A one-shot shell command, only used by the approval-gated terminal_exec tool. */
+    command?: string;
     assignment?: string;
     title?: string;
   },
@@ -252,6 +254,8 @@ export async function startSession(
       "Close a terminal before starting another (24 running).",
       429,
     );
+  if (opts.command !== undefined && (kind !== "shell" || typeof opts.command !== "string" || !opts.command.trim() || opts.command.length > 16_000))
+    throw new DevError("Provide a shell command of at most 16000 characters.");
   const shell =
     opts.shell ||
     (process.platform === "win32"
@@ -287,6 +291,11 @@ export async function startSession(
   let program = command,
     args = cliArgs(kind, mode, task);
   if (kind === "shell" && process.platform !== "win32") args = ["-l"];
+  if (opts.command !== undefined) {
+    args = process.platform === "win32"
+      ? ["-NoLogo", "-NoProfile", "-Command", opts.command]
+      : ["-lc", opts.command];
+  }
   if (kind !== "shell" && process.platform !== "win32") {
     const script = fs.realpathSync(command);
     if (/\.[cm]?js$/.test(script)) {
@@ -554,13 +563,17 @@ export async function waitSession(
   after: number,
   ms = 20_000,
   review = true,
+  signal?: AbortSignal,
 ) {
   rowOf(user, id);
+  signal?.throwIfAborted();
   if (live.get(id)?.sequence === after) await new Promise<void>(resolve => {
-    const done = () => { clearTimeout(timer); stop(); resolve(); };
+    const done = () => { clearTimeout(timer); stop(); signal?.removeEventListener('abort', done); resolve(); };
     const timer = setTimeout(done, Math.min(30_000, Math.max(0, ms)));
     const stop = subscribeDev(user, event => { if (event.id === id) done(); });
+    signal?.addEventListener('abort', done, { once: true });
   });
+  signal?.throwIfAborted();
   return readSession(user, id, after, review);
 }
 let stopping: Promise<void> | undefined;
