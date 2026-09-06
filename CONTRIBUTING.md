@@ -66,7 +66,9 @@ linuxdeploy's library copyright-discovery and optional AppStream metadata warnin
 alongside skipped stripping/rpath changes and existing AppRun notices. These come from
 the upstream packagers. WiX also emits ICE03/40/57/60/61 validation warnings from its
 generated MSI template and bundled binary metadata. These remain outside the
-application's lint and compiler checks and are not suppressed.
+application's lint and compiler checks and are not suppressed. The pinned node-pty version
+can also report `AttachConsole failed` from its Windows console-list helper after a process
+has exited; its parent uses the existing fallback and releases the PTY worker.
 
 After a web build, run `npm run test:ui` with the staged Chromium available. These checks
 exercise real editor/PTY behavior, shared-client control, recovery, and isolated HTTPS

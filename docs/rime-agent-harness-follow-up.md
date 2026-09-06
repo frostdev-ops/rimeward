@@ -124,3 +124,9 @@ file evidence becomes stale. Editor search follows continuation pages before app
 existing 200-result display cap. Git output errors no longer silently fall back to staged
 changes. Rapid terminal tab switches are serialized. The existing bulk-output regression
 now polls incrementally, avoiding repeated full-scrollback serialization on Intel CI.
+
+The release checkout passed all 452 existing JavaScript tests, TypeScript, desktop lint,
+four native Rust tests, Clippy, the packaged-runtime check, and the full PC → phone → PC
+smoke flow. All twelve documentation goldens were regenerated and inspected. Windows CI
+identified a cleanup race in the new receipt fixture: it now removes its temporary folder
+asynchronously with bounded retries while the terminated shell releases its directory.

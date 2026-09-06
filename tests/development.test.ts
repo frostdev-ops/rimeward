@@ -428,7 +428,7 @@ test('model-facing search and Git pages exhaust results without overflow or gaps
 
 test('task receipts survive reads and mark changed evidence stale', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rimeward-evidence-'));
-  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  after(() => fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10 }));
   fs.writeFileSync(path.join(dir, 'reviewed.txt'), 'reviewed');
   const project = addProject(1, dir);
   await git(1, project.id, ['init', '-q']);
