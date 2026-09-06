@@ -64,7 +64,7 @@ try {
   await ward.getByText('You’re in control',{exact:true}).waitFor();
   assert.equal(await ward.getByRole('button',{name:'Take control',exact:true}).isVisible(),false);
   assert.equal(await ward.locator('.term-keys').isVisible(),false);
-  assert.equal(await ward.locator('.term-toolbar button:visible').count(),4,'session picker plus three toolbar controls');
+  assert.equal(await ward.locator('.term-toolbar button:visible').count(),5,'session tab, close button and three toolbar controls');
   const terminal=ward.locator('.xterm-helper-textarea');
   // System shell profiles may print the real hostname even with an isolated HOME.
   if(process.env.RIMEWARD_GOLDEN_DIR&&process.platform!=='win32'){
@@ -190,6 +190,7 @@ try {
   assert.equal(await mobileWard.locator('.term-keys').isVisible(),true);
   assert.equal(await mobileWard.locator('.term-toolbar').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
   await mobileWard.getByRole('button',{name:'Expand terminal'}).click();
+  await mobile.waitForFunction(marker=>document.querySelector('.xterm')?.textContent?.includes(marker),marker);
   await mobile.screenshot({path:path.join(screenshotDir,'rimeward-terminal-phone.png'),animations:'disabled'});
   await mobile.locator('.dev-expanded').getByRole('button',{name:'Close',exact:true}).click();
   await ward.getByRole('button',{name:'Take control',exact:true}).click();
@@ -206,7 +207,7 @@ try {
   sessions=await page.evaluate(()=>fetch('/api/dev/sessions').then(r=>r.json()));
   assert.equal(sessions[0].mode,'human');assert.equal(sessions[0].agentInput,true);assert.equal(sessions.length,3);
   assert.deepEqual(errors,[]);
-  console.log('Terminal UI passed: project entry, one-click shell + typing, four-control toolbar, search, expanded menus, launch guidance, switching, uncertain input, phone takeover, permissions, explicit end/restart. No agent CLI or model calls.');
+  console.log('Terminal UI passed: project entry, one-click shell + typing, session toolbar, search, expanded menus, launch guidance, switching, uncertain input, phone takeover, permissions, explicit end/restart. No agent CLI or model calls.');
 } finally {
   await browser?.close();
   child.kill('SIGTERM');

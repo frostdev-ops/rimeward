@@ -101,6 +101,7 @@ function expand(host: HTMLElement) {
 interface State {
   project: string;
   session?: string;
+  closedSessions?: string[];
   tabs?: string[];
   active?: string;
 }
@@ -239,7 +240,7 @@ async function mount(w: WardInstance) {
       let retrySnapshot: ReturnType<typeof setTimeout> | undefined;
       let painting: Promise<void> | undefined, outputs: { sequence: number; data: string }[] = [];
       let outputSize = 0, resync = false, released = false;
-      let sessionOptions = "", autoAttach = !state.session;
+      let sessionOptions = "", autoAttach = !state.session && !state.closedSessions?.length;
       let attaching = Promise.resolve();
       const uncertain = new Set<string>();
       const canType = () => !stopped && !!session && connected && streamReady && session.state === "running" &&
@@ -319,38 +320,55 @@ async function mount(w: WardInstance) {
         if (canType() && (term.cols !== cols || term.rows !== rows)) resize();
       }
       function sessionList() {
-        const signature = JSON.stringify(list.map(s => [s.id, s.title, s.state]));
+        const visible = list.filter(s => !state.closedSessions?.includes(s.id));
+        const signature = JSON.stringify(visible.map(s => [s.id, s.title, s.state]));
         if (signature !== sessionOptions) {
           sessionOptions = signature;
           sessions.replaceChildren();
-          for (const s of list) {
+          for (const s of visible) {
+            const row = el("div", "term-tab");
+            row.setAttribute("role", "presentation");
             const tab = button(`${s.title === s.kind ? names[s.kind] : s.title}${s.state === "running" ? "" : ` · ${s.state}`}`, () => attach(s.id));
-            tab.className = "term-tab";
+            tab.className = "term-tab-label";
             tab.dataset.session = s.id;
             tab.id = `terminal-tab-${w.i}-${s.id}`;
             tab.setAttribute("role", "tab");
             tab.setAttribute("aria-controls", screen.id);
+            tab.setAttribute("aria-keyshortcuts", "Delete");
             tab.title = tab.textContent ?? "";
-            sessions.append(tab);
+            const close = toolButton("close", `Close ${tab.textContent} tab`, () => attach(s.id, true));
+            close.classList.add("term-tab-close");
+            close.title = s.state === "running" ? "Close tab · session keeps running" : "Close tab";
+            row.append(tab, close);
+            sessions.append(row);
           }
         }
         screen.removeAttribute("aria-labelledby");
-        const tabs = [...sessions.querySelectorAll<HTMLButtonElement>("button")];
+        const tabs = [...sessions.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
         for (const tab of tabs) {
           const selected = tab.dataset.session === state.session;
           tab.setAttribute("aria-selected", String(selected));
+          const row = tab.parentElement;
+          if (!row) continue;
+          row.dataset.active = String(selected);
           tab.tabIndex = selected || (!state.session && tab === tabs[0]) ? 0 : -1;
           if (selected) {
             screen.setAttribute("aria-labelledby", tab.id);
-            if (tab.offsetLeft < sessions.scrollLeft || tab.offsetLeft + tab.offsetWidth > sessions.scrollLeft + sessions.clientWidth)
-              sessions.scrollLeft = tab.offsetLeft;
+            if (row.offsetLeft < sessions.scrollLeft || row.offsetLeft + row.offsetWidth > sessions.scrollLeft + sessions.clientWidth)
+              sessions.scrollLeft = row.offsetLeft;
           }
         }
       }
       sessions.onkeydown = e => {
+        if (!(e.target instanceof HTMLElement) || e.target.getAttribute("role") !== "tab" || !e.target.dataset.session) return;
+        if (e.key === "Delete") {
+          e.preventDefault();
+          void attach(e.target.dataset.session, true).catch(error => toast(error.message, undefined, true));
+          return;
+        }
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
         e.preventDefault();
-        const tabs = [...sessions.querySelectorAll<HTMLButtonElement>("button")];
+        const tabs = [...sessions.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
         const at = tabs.indexOf(document.activeElement as HTMLButtonElement);
         const tab = tabs[e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 :
           (at + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
@@ -386,9 +404,10 @@ async function mount(w: WardInstance) {
             if (stopped) return;
             list = next;
             if (state.session && !list.some(s => s.id === state.session)) { state.session = undefined; autoAttach = true; }
-            if (autoAttach && list.length) {
+            const visible = list.filter(s => !state.closedSessions?.includes(s.id));
+            if (autoAttach && visible.length) {
               autoAttach = false;
-              state.session = (list.find(s => s.state === "running") ?? list[0])?.id;
+              state.session = (visible.find(s => s.state === "running") ?? visible[0])?.id;
               await remember();
             }
             sessionList();
@@ -415,20 +434,34 @@ async function mount(w: WardInstance) {
         })().finally(() => { updating = undefined; if (connected) drainOutput(); });
         return updating;
       }
-      function attach(id: string): Promise<void> {
+      function attach(id: string, close = false): Promise<void> {
         attaching = attaching.catch(() => {}).then(async () => {
           await inputBuffer.flush();
           await updating;
           await painting;
-          if (stopped || (state.session === id && session)) return;
+          if (stopped || (!close && state.session === id && session)) return;
+          const visible = list.filter(s => !state.closedSessions?.includes(s.id));
+          const at = visible.findIndex(s => s.id === id);
+          const next = close ? (state.session === id ? (visible[at + 1] ?? visible[at - 1])?.id : state.session) : id;
+          const closed = new Set(state.closedSessions);
+          if (close) closed.add(id); else closed.delete(id);
+          const value = { ...state, session: next, closedSessions: [...closed] };
+          await api("view", { id: w.i, value }, "POST");
           autoAttach = false;
-          state.session = id;
-          session = undefined;
-          sequence = undefined;
-          outputs = []; outputSize = 0; released = false; lastSize = "";
-          term.reset();
-          await remember();
+          const switched = state.session !== next || !session;
+          state = value;
+          if (switched) {
+            session = undefined;
+            sequence = undefined;
+            outputs = []; outputSize = 0; released = false; lastSize = "";
+            term.reset();
+          }
           await update();
+          if (close) {
+            (sessions.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? newButton).focus();
+            if (list.find(s => s.id === id)?.state === "running")
+              toast("Tab closed. Session keeps running.", { label: "Reopen", fn: () => { void attach(id).catch(error => toast(error.message, undefined, true)); } });
+          }
         });
         return attaching;
       }
@@ -628,6 +661,11 @@ async function mount(w: WardInstance) {
           localStorage.setItem("rimeward-terminal-accessibility", String(term.options.screenReaderMode));
         });
         action(showKeys ? "Hide extra keys" : "Show extra keys", () => { showKeys = !showKeys; draw(); });
+        const closed = list.filter(s => state.closedSessions?.includes(s.id));
+        if (closed.length) {
+          menu.append(el("hr"));
+          for (const s of closed) action(`Reopen ${s.title}${s.state === "running" ? "" : ` · ${s.state}`}`, () => attach(s.id));
+        }
         if (session) {
           const target = session;
           menu.append(el("hr"));
@@ -683,7 +721,7 @@ async function mount(w: WardInstance) {
             const at = list.findIndex(s => s.id === next.id);
             if (at < 0) list.unshift(next); else list[at] = next;
             sessionList();
-            if (autoAttach && !launching && !state.session && next.state === "running")
+            if (autoAttach && !launching && !state.session && next.state === "running" && !state.closedSessions?.includes(next.id))
               void attach(next.id).catch(error => toast(error.message, undefined, true));
             if (state.session === next.id) {
               session = next;
