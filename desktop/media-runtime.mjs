@@ -28,7 +28,7 @@ async function download(url, expected) {
   fs.renameSync(part, file); return file;
 }
 let sdk = process.env.RIMEWARD_MEDIA_SDK ?? path.join(cache, 'sdk');
-if (!process.env.RIMEWARD_MEDIA_SDK && !fs.existsSync(path.join(sdk, platform === 'linux' ? '.rimeward-sdk-complete' : 'lib/pkgconfig/gstreamer-1.0.pc'))) {
+if (!process.env.RIMEWARD_MEDIA_SDK && !fs.existsSync(path.join(sdk, '.rimeward-sdk-complete'))) {
   if (platform === 'darwin') {
     const packages = [
       ['gstreamer-1.0-1.28.6-universal.pkg', 'a8eb366c59b7e9e5dc049848fed6bcd203a8878aa7517c051639fda78797c6ad'],
@@ -39,7 +39,12 @@ if (!process.env.RIMEWARD_MEDIA_SDK && !fs.existsSync(path.join(sdk, platform ==
       const expanded = `${file}.expanded`; if (!fs.existsSync(expanded)) run('pkgutil', ['--expand-full', file, expanded]);
       for (const pkg of fs.readdirSync(expanded)) {
         const payload = path.join(expanded, pkg, 'Payload');
-        if (fs.existsSync(payload) && fs.statSync(payload).isDirectory()) fs.cpSync(payload, sdk, { recursive: true, force: true });
+        // Use the flat SDK. The framework facade's Headers symlink collides with
+        // the development package's Headers directory when their payloads merge.
+        for (const directory of ['bin', 'etc', 'include', 'lib', 'libexec', 'share']) {
+          const source = path.join(payload, directory);
+          if (fs.existsSync(source)) run('ditto', ['--norsrc', '--noextattr', '--noqtn', source, path.join(sdk, directory)]);
+        }
       }
     }
   } else if (platform === 'win32') {
@@ -80,8 +85,8 @@ class Recipe(Recipe):
     run('python3', [...base, 'bootstrap', '-y', '-j', '2', '--system=yes', '--toolchains=yes', '--build-tools=yes'], { cwd: cerbero });
     // Release recipes contain exact source versions and hashes, including the native dependency graph.
     run('python3', [...base, 'build', '-j', '2', 'gst-plugins-good-1.0', 'gst-plugins-bad-1.0', 'libnice'], { cwd: cerbero });
-    fs.writeFileSync(path.join(sdk, '.rimeward-sdk-complete'), `${version}\n${commit}\n`);
   } else throw Error('Unsupported media target');
+  fs.writeFileSync(path.join(sdk, '.rimeward-sdk-complete'), `${version}\n`);
 }
 sdk = path.resolve(sdk);
 const sdkLib = [path.join(sdk, 'lib'), ...fs.readdirSync(path.join(sdk, 'lib'), { withFileTypes: true })

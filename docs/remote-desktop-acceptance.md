@@ -23,6 +23,9 @@ temporary files, with no model calls or personal application input.
 | Browser transfer recovery | Partial file/folder persistence, changed local/source prefix refusal, upload middle-prefix validation and cancellation passed |
 | UI goldens and smoke | Regenerated and inspected; editor, terminal, conversation, remote desktop and remote workspace checks passed |
 | Rust source/license notices | Resolved for macOS, Windows MSVC and Linux dependency graphs |
+| Main CI | Linux and Windows test jobs passed |
+| Committed macOS standalone package | Prebuild, desktop checks and standalone runtime checks passed in a detached checkout |
+| Local Developer ID signing | 96 nested binaries and six bundles signed; app version 0.5.0 passed deep strict verification; not notarized |
 
 The one-hour run used the shared-capture implementation before the later isolated
 pipeline-error handling change; the four-viewer fault test covers that change.
@@ -40,8 +43,8 @@ is not a substitute for installed capture/resource profiling.
   permission changes on each reference platform.
 - Production DNS-only `turn.frostdev.io`, trusted TLS, service/firewall provisioning,
   monitoring registration and forced-TURN acceptance on the production endpoint.
-- Clean committed standalone packaging, distributed installer jobs, nested signing,
-  notarization, deployment/rollback verification and installation verification.
+- Four-platform packaging CI, distributed installer jobs, notarization,
+  deployment/rollback verification and installation verification.
 
 The desktop workflow has a manual `validation_only` mode that builds/checks every
 target without publishing a release. Production TURN setup is in
