@@ -1,7 +1,9 @@
 import type { APIRoute } from "astro";
 import { relayRequest } from "../../../lib/dev/devices.ts";
 import { DevError } from "../../../lib/dev/runtime.ts";
-export const ALL: APIRoute = async ({ params, locals, request, url }) => {
+import { sessionId } from '../../../lib/auth.ts';
+import { relayAgentCaller } from '../../../lib/dev/tool-routing.ts';
+export const ALL: APIRoute = async ({ params, locals, request, url, cookies }) => {
   try {
     if (!locals.user) throw new DevError("Sign in required.", 401);
     return await relayRequest(
@@ -9,6 +11,8 @@ export const ALL: APIRoute = async ({ params, locals, request, url }) => {
       params.device ?? "",
       `/${params.path ?? ""}${url.search}`,
       request,
+      undefined,
+      params.path === 'api/dev/agent-tools' ? await relayAgentCaller(locals.user.userId, sessionId(cookies), request.clone()) : undefined,
     );
   } catch (e) {
     // A document always has a way back. API/media callers keep the original error status.

@@ -14,7 +14,7 @@
     )
       return value;
     const u = new URL(value, location.href);
-    if (u.origin !== location.origin || u.pathname.startsWith("/runtime/"))
+    if (u.origin !== location.origin || u.pathname.startsWith("/runtime/") || u.pathname.startsWith("/api/remote-desktop/"))
       return value;
     return base + u.pathname + u.search + u.hash;
   };

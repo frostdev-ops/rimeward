@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import os from 'node:os';
+import path from 'node:path';
 import { createHash } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import { workDb } from "./runtime.ts";
@@ -6,6 +8,7 @@ import type { ToolDef, ToolCtx } from "../agent/tools.ts";
 import { requireDesktop } from "./runtime.ts";
 import {
   listProjects,
+  addProject,
   projectPath,
   treePage,
   readBuffer,
@@ -30,6 +33,8 @@ import {
 } from "./terminals.ts";
 import { fitOutput } from "../agent/shell.ts";
 import { applyProjectPatch } from './apply-patch.ts';
+import { deviceTool, agentDevices } from './tool-routing.ts';
+import { computerStatus, computerScreenshot, computerInput } from './computer.ts';
 const str = (description: string) => ({ type: "string", description });
 const schema = (
   properties: Record<string, unknown>,
@@ -62,7 +67,40 @@ const session = {
   runtime: context.runtime,
   session: str("Local terminal session ID"),
 };
-export const DEV_TOOLS: Record<string, ToolDef> = {
+export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
+  desktop_files: wrap('read', 'Browse folders on the selected computer to locate a project. Defaults to its home folder. Returns at most 100 entries; use next as cursor. Open the chosen folder with desktop_open_project before reading/editing files or running commands.',
+    schema({ runtime: context.runtime, path: str('Absolute directory, or omit for the home folder'), cursor: { type: 'integer', minimum: 0 } }, ['runtime']),
+    (a) => {
+      const folder = a.path ?? os.homedir();
+      if (typeof folder !== 'string' || !path.isAbsolute(folder)) throw Error('Use an absolute directory.');
+      const cursor = a.cursor ?? 0;
+      if (!Number.isSafeInteger(cursor) || cursor < 0) throw Error('Invalid cursor.');
+      const entries = fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+      const page = entries.slice(cursor, cursor + 100).map(e => ({ name: e.name, directory: e.isDirectory(), symlink: e.isSymbolicLink() }));
+      while (JSON.stringify({ path: folder, entries: page }).length > 9000) {
+        if (page.length <= 1) throw Error('Directory entry exceeds the tool page size.');
+        page.pop();
+      }
+      return { path: folder, entries: page, ...(cursor + page.length < entries.length ? { next: cursor + page.length } : {}) };
+    }),
+  desktop_open_project: wrap('confirm', 'Open an existing absolute folder as a project on the selected computer. This grants project tools access to that folder; no files are copied. Returns a project ID for subsequent reads, edits and native commands.',
+    schema({ runtime: context.runtime, path: str('Absolute project folder') }, ['runtime', 'path']), (a, c) => addProject(c.userId, a.path)),
+  computer_status: wrap('read', 'Inspect screen-control availability, displays and the current controller on the selected computer. This does not capture the screen or enable control. The user enables control locally in Rimeward connections; the tray can stop it.',
+    schema({ runtime: context.runtime }, ['runtime']), (_, c) => computerStatus(c.userId)),
+  computer_screenshot: wrap('read', 'Capture one display on the selected computer. The image is shown to you as a visual observation. It may contain private information and joins this conversation. Call computer_status first. Desktop coordinates are pixels in the returned image; input must include its observation ID.',
+    schema({ runtime: context.runtime, display: { type: 'integer', minimum: 0 } }, ['runtime']),
+    (a, c) => computerScreenshot(c.userId, a, owner(c), c.signal)),
+  computer_input: wrap('confirm', 'Control the selected computer: click, move, drag, scroll, type text, or press a key chord. Requires local control permission and a screenshot observation from this agent in the last 60 seconds. Coordinates use that screenshot. Each call is atomic; never replay uncertain input. Do not change permissions, send messages, or perform purchases unless authorized by the user.',
+    schema({ runtime: context.runtime, observation: str('Observation ID from computer_screenshot'),
+      action: { type: 'string', enum: ['click', 'move', 'drag', 'scroll', 'text', 'key'] },
+      x: { type: 'number' }, y: { type: 'number' }, toX: { type: 'number' }, toY: { type: 'number' },
+      button: { type: 'string', enum: ['left', 'right', 'middle'] },
+      clicks: { type: 'integer', minimum: 1, maximum: 2 },
+      direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] }, amount: { type: 'integer', minimum: 1, maximum: 20 },
+      text: str('Literal text, at most 4000 characters'),
+      keys: { type: 'array', minItems: 1, maxItems: 5, items: str('Control, Alt, Shift, Meta, Enter, Tab, Escape, Backspace, Delete, Space, arrows, Home, End, PageUp, PageDown, F1–F12, or one character') },
+    }, ['runtime', 'observation', 'action']),
+    (a, c) => computerInput(c.userId, a, owner(c), c.signal)),
   desktop_projects: wrap(
     "read",
     "List projects on this desktop. Project folders are not replicated to the server. Selected file excerpts and tool results enter model requests and may sync with conversation history.",
@@ -316,4 +354,14 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
     ),
     (a, c) => worktreeOp(c.userId, a.project, a.operation, a.name),
   ),
+};
+
+export const DEV_TOOLS: Record<string, ToolDef> = {
+  list_devices: { kind: 'read', description: 'List computers paired to this Rimeward account with their IDs, names, platforms and live connection state. Use an explicit device ID on native tools to choose a computer. local means the desktop hosting this chat; it is unavailable on a server. Keep project/session IDs paired with their device. Never substitute another computer when the intended one is offline.', parameters: schema({}), run: (_, c) => agentDevices(c.userId) },
+  ...Object.fromEntries(Object.entries(LOCAL_DEV_TOOLS).map(([name, def]) => {
+    const parameters = def.parameters as { properties: Record<string, unknown> };
+    return [name, { ...def, parameters: { ...parameters, properties: { ...parameters.properties,
+      device: str('Computer ID from list_devices. Omit or local for the desktop hosting this chat; required on the server.') } },
+      run: (args: Record<string, unknown>, ctx: ToolCtx) => deviceTool(name, args, ctx, def.run) }];
+  })),
 };

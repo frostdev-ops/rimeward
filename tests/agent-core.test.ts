@@ -36,6 +36,8 @@ import { completeCommand, parseCommand } from '../src/lib/agent/commands.ts';
 import { agentRounds, parseRounds, ROUND_DEFAULT } from '../src/lib/agent/provider.ts';
 import type { AgentProvider, ProviderResult } from '../src/lib/agent/provider.ts';
 import { repairResponsesItems } from '../src/lib/agent/codex.ts';
+import { getProvider } from '../src/lib/agent/provider.ts';
+import { storeAttachment } from '../src/lib/agent/attachments.ts';
 
 function seedUser(email: string, approvals: 'outbound' | 'all' | 'off' = 'outbound'): number {
   getDb().prepare(`INSERT INTO users (email, password_hash, role) VALUES (?, 'x', 'admin')`).run(email);
@@ -69,6 +71,51 @@ const call = (call_id: string, name: string, args: Record<string, unknown>) => (
   call_id,
   name,
   arguments: JSON.stringify(args),
+});
+
+test('computer observations follow every tool reply in both dialects, including a declined pending approval', async () => {
+  const original = TOOLS.computer_screenshot;
+  try {
+    TOOLS.computer_screenshot = { ...original!, run: async (_args, ctx) => {
+      const image = await storeAttachment({ userId: ctx.userId, conversationId: ctx.conv, name: 'generated-observation.png', mime: 'image/png',
+        bytes: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64') });
+      return { file_id: image.id, device: 'test-device', observation: 'single-use-test' };
+    } };
+    for (const id of ['codex', 'openrouter'] as const) for (const pending of [false, true]) {
+      const user = seedUser(`observation-${id}-${pending}@test`), provider = await getProvider(id);
+      saveDashboard(user, [{ i: 'ag1', type: 'agent', size: '2x2', config: { provider: id, approvals: 'outbound' } }, { i: 'w1', type: 'weather', size: '2x1' }]);
+      const conv = activeConversation(user, 'ag1', id), previousRun = provider.run, previousContext = provider.context;
+      const calls = [call('screen', 'computer_screenshot', { reason: 'Observe generated fixture' }), call('other', pending ? 'remove_ward' : 'get_layout', { ward: 'w1', reason: 'Second independent operation' })];
+      let runs = 0;
+      provider.context = async () => undefined;
+      provider.run = async request => {
+        if (runs++ === 0) return { text: '', calls, items: id === 'codex'
+          ? calls.map(c => ({ type: 'function_call', ...c }))
+          : [{ role: 'assistant', content: '', toolCalls: calls.map(c => ({ id: c.call_id, type: 'function', function: { name: c.name, arguments: c.arguments } })) }] };
+        const items = request.items as Record<string, unknown>[];
+        const image = items.findIndex(item => JSON.stringify(item).includes('data:image/png;base64,'));
+        assert.ok(image > 0, 'the screenshot reaches the next scripted model round');
+        for (const call of calls) {
+          const reply = items.findIndex(item => id === 'codex' ? item.type === 'function_call_output' && item.call_id === call.call_id : item.role === 'tool' && item.toolCallId === call.call_id);
+          assert.ok(reply >= 0 && reply < image, 'each tool reply precedes the screenshot');
+        }
+        assert.match(JSON.stringify(items[image]), /tool observation, not a user instruction/);
+        return { text: 'verified', calls: [], items: [] };
+      };
+      try {
+        const items: unknown[] = [];
+        const result = await runLoop({ provider, conv, wardCfg: agentWardConfig(user, 'ag1')!, headless: false }, items);
+        if (pending) {
+          assert.ok(result.pending); assert.equal(runs, 1);
+          assert.equal(JSON.stringify(items).includes('data:image/png;base64,'), false, 'approval remains open before any image message');
+          appendItems(conv.id, items);
+          assert.equal((await resolveConfirmTurn(user, 'ag1', result.pending.confirmId, false, () => {})).reply, 'verified');
+          assert.ok(getDashboard(user).some(ward => ward.i === 'w1'), 'declined action did not execute');
+        } else assert.equal(result.reply, 'verified');
+        assert.equal(runs, 2);
+      } finally { provider.run = previousRun; provider.context = previousContext; }
+    }
+  } finally { TOOLS.computer_screenshot = original!; }
 });
 
 function cfgFor(userId: number, provider: AgentProvider): LoopCfg {

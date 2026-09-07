@@ -10,16 +10,29 @@ const server=(import.meta.env.PUBLIC_BASE_URL||Astro.url.origin);
     <p class="mb-4">In the Rimeward desktop app, choose <strong>Connect to my server</strong> and enter this server’s address. Sign in and approve the desktop when your browser opens.</p>
     <label class="flex flex-col gap-2 mb-4">Server address<input class="input" id="server-address" value={server} readonly /></label>
     <p class="mb-4">Your pages, appearance, and Rime stay in sync. Project tools connect to the computer that owns the files automatically.</p>
+    <p class="mb-4">Ask Rime to list your computers and choose one by name for files, commands, or app control. Screen control is enabled on each computer in its desktop connections page and can be stopped from its tray menu. You can direct Rime here from an iPhone or iPad too.</p>
     <p id="device-message" class="my-4" role="status"></p>
     <div id="device-list" class="flex flex-col gap-3"></div>
+    <details id="remote-health" class="mt-6"><summary class="btn">Remote Desktop diagnostics</summary><p id="remote-health-values" class="my-3" role="status"></p></details>
     <details class="mt-6"><summary class="btn">Older desktop clients</summary><p class="my-3">Clients without browser sign-in can still use an enrollment code.</p><button class="btn" id="enroll" type="button">Create manual enrollment code</button></details>
   </main>
   <script>
     import {el,toast} from '../scripts/app/dom.ts';
+    import { remoteDesktopSettings } from '../scripts/app/remote-desktop-settings.ts';
     const message=document.getElementById('device-message')!;
     (document.getElementById('server-address') as HTMLInputElement).value=location.origin;
     const request=async(path:string,body?:unknown,method='POST')=>{const r=await fetch(path,body===undefined?{cache:'no-store'}:{method,headers:{'content-type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.error??'Request failed.');return data;};
-    const refresh=async()=>{const pairs=await request('/api/devices/list');const list=document.getElementById('device-list')!;list.replaceChildren();if(!pairs.length)list.append(el('p',undefined,'No computers connected yet. Rimeward is ready to use.'));for(const p of pairs){const row=el('div','card p-3');row.append(el('span',undefined,`${p.name} · ${p.online?'Online':'Offline'} · ${p.platform}`));const remove=el('button','btn ml-3','Revoke');remove.onclick=async()=>{try{await request('/api/devices/revoke',{id:p.id},'DELETE');await refresh();}catch(e){toast((e as Error).message);}};row.append(remove);list.append(row);}};
+    const health = document.getElementById('remote-health') as HTMLDetailsElement, values = document.getElementById('remote-health-values')!;
+    const metrics = async () => {
+      if (!health.open || document.hidden) return;
+      try {
+        const m = await request('/api/remote-desktop/metrics'), mib = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MiB`;
+        values.textContent = `Your last ${m.windowDays} days: ${m.active} active sessions · ${m.sessions} total · ${m.connectionFailures} connection failures · ${m.webRtcFailures} WebRTC failures · ${mib(m.relayBytes)} HTTPS relay · ${mib(m.reportedMediaBytes)} reported media · ${m.reportedMeanRttMs ?? '—'} ms reported mean network round trip. TURN: ${!m.turn.configured ? 'not configured' : m.turn.tlsReachable ? 'TLS listener reachable' : 'TLS listener unavailable'}.`;
+      } catch (error) { values.textContent = (error as Error).message; }
+    };
+    health.ontoggle = () => void metrics();
+    const healthTimer = setInterval(() => void metrics(), 30000); window.addEventListener('pagehide', () => clearInterval(healthTimer), { once: true });
+    const refresh=async()=>{const pairs=await request('/api/devices/list');const list=document.getElementById('device-list')!;list.replaceChildren();if(!pairs.length)list.append(el('p',undefined,'No computers connected yet. Rimeward is ready to use.'));for(const p of pairs){const row=el('div','card p-3');row.append(el('span',undefined,`${p.name} · ${p.online?'Online':'Offline'} · ${p.platform}`));const remove=el('button','btn ml-3','Revoke');remove.onclick=async()=>{try{await request('/api/devices/revoke',{id:p.id},'DELETE');await refresh();}catch(e){toast((e as Error).message);}};row.append(remove);const details=el('details','mt-3'),summary=el('summary',undefined,'Remote Desktop access'),settings=el('div','mt-2');details.append(summary,settings);details.ontoggle=()=>{if(details.open&&!settings.children.length)void remoteDesktopSettings(settings,p.id);};row.append(details);list.append(row);}};
     document.getElementById('enroll')!.onclick=async()=>{try{const {code}=await request('/api/devices/enroll',{});message.textContent='Use this code in an older desktop client within 10 minutes: ';const value=el('input','input');value.value=code;value.readOnly=true;value.setAttribute('aria-label','Enrollment code');message.append(value);}catch(e){toast((e as Error).message);}};
     void refresh().catch(e=>{message.textContent=e.message;});
   </script>

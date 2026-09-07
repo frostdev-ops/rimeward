@@ -132,6 +132,7 @@ try {
   try {
     for (const [test, prefix, name] of [
       ['editor', 'editor', 'editor'], ['terminal', 'terminal', 'terminal'], ['conversation', 'chat', 'chat'],
+      ['remote-desktop', 'remote-desktop', 'remote-desktop'],
     ]) {
       execFileSync(process.execPath, [`tests/${test}-ui-smoke.mjs`], {
         stdio: 'inherit', env: { ...process.env, RIMEWARD_GOLDEN_DIR: shots },
@@ -139,6 +140,11 @@ try {
       for (const [source, dest] of [['desktop', name], ['phone', name + '-phone']]) {
         const file = `${OUT}/${dest}.png`;
         fs.copyFileSync(path.join(shots, `rimeward-${prefix}-${source}.png`), file);
+        await frame(file); console.log('wrote', file);
+      }
+      if (test === 'remote-desktop') for (const state of ['disconnected', 'control', 'expanded', 'approval', 'permission-required', 'offline']) {
+        const file = `${OUT}/remote-desktop-${state}.png`;
+        fs.copyFileSync(path.join(shots, `rimeward-remote-desktop-${state}.png`), file);
         await frame(file); console.log('wrote', file);
       }
     }

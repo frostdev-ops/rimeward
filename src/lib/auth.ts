@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { getDb } from './db.ts';
+import { revokeRemoteSessions } from './dev/remote-desktop-events.ts';
 
 export const SESSION_COOKIE = 'rimeward_session';
 export const SSO_STATE_COOKIE = 'rimeward_sso';
@@ -94,6 +95,7 @@ export function getSession(id: string | undefined): Session | null {
 
 export function destroySession(id: string): void {
   getDb().prepare('DELETE FROM sessions WHERE id = ?').run(id);
+  revokeRemoteSessions({ session: id });
 }
 
 /** SQLite hands back "YYYY-MM-DD HH:MM:SS" in UTC; make it a real Date. */

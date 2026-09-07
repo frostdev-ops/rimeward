@@ -86,7 +86,7 @@ export function mergeInstance(server: InstanceDashboard, local: InstanceDashboar
     pageIds.set(page.id, id);
     pages.push({ ...page, id, device, title: collision && page.title === 'Home' ? 'Personal' : page.title });
   }
-  for (const w of imported) layout.push({ ...w, i: wardIds.get(w.i) ?? w.i, device,
+  for (const w of imported) layout.push({ ...w, i: wardIds.get(w.i) ?? w.i, device: w.type === 'remote-desktop' ? w.device : device,
     page: pageIds.get(pageOf(w, local.pages, local.layout)), ...(w.in ? { in: wardIds.get(w.in) } : {}) });
   return { dashboard: validateInstance({ ...server, pages, layout }), wardIds };
 }
@@ -125,5 +125,5 @@ export function localWardsWithContent(user: number) {
 export function wardDevice(user: number, id: string): string | undefined {
   const layout = getDashboard(user), pages = getPages(user), ward = layout.find(w => w.i === id);
   if (!ward) return undefined;
-  return ward.device ?? pages.find(p => p.id === pageOf(ward, pages, layout))?.device;
+  return ward.device ?? (ward.type === 'remote-desktop' ? undefined : pages.find(p => p.id === pageOf(ward, pages, layout))?.device);
 }

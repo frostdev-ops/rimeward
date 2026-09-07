@@ -330,7 +330,7 @@ const dropDoc = (kind: StoreKind, a: Record<string, any>, ctx: ToolCtx) => {
 const docName = str('a slug, [a-z0-9-] ≤48 chars, e.g. "user-timezone" or "deploy-check"');
 
 export const TOOLS: Record<string, ToolDef> = {
-  ...(isDesktop()?DEV_TOOLS:{}),
+  ...DEV_TOOLS,
   // ------------------------------------------------------------------ reads
   get_layout: {
     kind: 'read',

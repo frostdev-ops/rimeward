@@ -22,6 +22,7 @@ interface Pair {
   token: string;
   name: string;
 }
+const bootId = crypto.randomUUID();
 type NativeGlobal = typeof globalThis & {
   __nativeVault?: (op: string, value?: string) => Promise<string>;
   __nativeDesktop?: (op: string, value?: unknown) => Promise<unknown>;
@@ -339,6 +340,9 @@ export async function unpairDesktop(user: number, id: string) {
   const next = pairs.filter((p) => p.id !== id);
   await vault("set", JSON.stringify(next));
   pairs = next;
+  const { stopRemoteHostSessions } = await import('./remote-desktop-host.ts');
+  await stopRemoteHostSessions();
+  await nativeDesktop('computer-disconnect').catch(() => {});
   serverSessions.delete(id);
   disconnectRime(user);
   clearTimeout(retries.get(id));
@@ -353,7 +357,7 @@ function connect(pair: Pair) {
   const ws = new WebSocket(
     `${pair.server.replace(/^https:/, "wss:")}/api/devices/connect`,
     {
-      headers: { authorization: `Bearer ${pair.token}` },
+      headers: { authorization: `Bearer ${pair.token}`, 'x-rimeward-boot': bootId, 'x-rimeward-remote-desktop': '1' },
       maxPayload: 16_384,
       perMessageDeflate: false,
     },
@@ -377,12 +381,21 @@ function connect(pair: Pair) {
   ws.on("message", (raw) => {
     try {
       const m = JSON.parse(raw.toString());
+      if (m.type === 'remote-policy-changed') {
+        void import('./computer.ts').then(m => m.invalidateComputerPolicy()).catch(() => {});
+        return;
+      }
+      if (m.type === 'remote-revoked') {
+        void import('./remote-desktop-host.ts').then(m => m.stopRemoteHostSessions());
+        void nativeDesktop('computer-disconnect').catch(() => {});
+        return;
+      }
       if (
         m.type === "request" &&
         /^[\w-]{36}$/.test(m.id) &&
         m.base === `/runtime/${pair.id}`
       )
-        openChannel(pair, m.id, m.base);
+        openChannel(pair, m.id, m.base, m.remote, m.agentCaller);
     } catch {}
   });
   ws.on("close", (code) => {
@@ -397,7 +410,9 @@ function connect(pair: Pair) {
     }
   });
 }
-function openChannel(pair: Pair, id: string, base: string) {
+function openChannel(pair: Pair, id: string, base: string, remote?: import('./devices.ts').RemoteRelayContext, agentCaller?: string) {
+  if (agentCaller !== undefined && !/^[a-f0-9]{64}$/.test(agentCaller)) return;
+  if (remote && (remote.protocol !== 1 || remote.device !== pair.id || !Number.isSafeInteger(remote.expires) || remote.expires <= Date.now() || remote.expires > Date.now() + 31000)) return;
   const set = channels.get(pair.id);
   if (!set || set.size >= 64) return;
   const ws = new WebSocket(
@@ -416,7 +431,7 @@ function openChannel(pair: Pair, id: string, base: string) {
   ws.on("close", () => set.delete(ws));
   ws.on("open", () => {
     const local = http.createServer((req, res) => {
-      if (!req.url || !allowedRelayPath(req.url)) {
+      if (!req.url || !allowedRelayPath(req.url, !!remote, !!agentCaller)) {
         res.writeHead(403);
         res.end();
         return;
@@ -424,6 +439,8 @@ function openChannel(pair: Pair, id: string, base: string) {
       const token = process.env.RIMEWARD_NATIVE_TOKEN;
       if (!token) { res.writeHead(503); res.end(); return; }
       const headers: Record<string, string> = { "x-rimeward-native-token": token };
+      if (remote) headers['x-rimeward-remote-context'] = Buffer.from(JSON.stringify(remote)).toString('base64url');
+      if (agentCaller) headers['x-rimeward-agent-caller'] = agentCaller;
       for (const key of forwardHeaders) {
         const value = req.headers[key];
         if (typeof value === "string") headers[key] = value;
@@ -456,7 +473,9 @@ function openChannel(pair: Pair, id: string, base: string) {
         },
       );
       upstream.on("error", () => res.destroy());
-      res.on("close", () => upstream.destroy());
+      const disconnected = () => upstream.destroy();
+      ws.once('close', disconnected);
+      res.on("close", () => { ws.off('close', disconnected); upstream.destroy(); });
       req.on("error", () => upstream.destroy());
       req.pipe(upstream);
     });

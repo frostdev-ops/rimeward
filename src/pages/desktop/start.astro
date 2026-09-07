@@ -48,6 +48,19 @@ Astro.response.headers.set('cache-control','no-store');
         <div class="setup-local-actions"><button class="btn" id="setup-project" aria-label="Open or create a project" type="button"><Icon id="plus" /> Open or create a project</button><button class="setup-text-button" id="setup-local" type="button">Continue without connecting <span aria-hidden="true">→</span></button></div>
       </section>
     </div>
+    <section class="setup-card" aria-labelledby="computer-control-title">
+      <h2 id="computer-control-title">Remote Desktop access</h2>
+      <p>Your signed-in account can view and control this computer when OS permissions allow it. Viewing starts without input control. Rime screenshots join its conversation; human viewing does not.</p>
+      <form id="computer-control-form">
+        <label><input type="checkbox" id="computer-control-enabled" /> Enable remote access (resume a local Stop)</label>
+        <p class="setup-help">Stop immediately from the Rimeward tray menu. File and terminal tools keep their existing permissions.</p>
+        <p id="computer-control-permissions" class="setup-help"></p>
+        <button type="submit" class="btn">Save control settings</button>
+        <p id="computer-control-status" role="status" aria-live="polite"></p>
+      </form>
+      <div id="computer-control-approvals" class="flex flex-col gap-2"></div>
+      <div id="computer-access-policies" class="flex flex-col gap-3"></div>
+    </section>
     <p class="setup-footnote">Rime’s chats, memories, and agent files stay in sync. Project folders stay on this computer.<br />Your pages, settings, and Rime are one shared workspace.</p>
   </main>
   <script>import '../../scripts/app/desktop-setup.ts';</script>

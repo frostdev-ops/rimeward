@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 const desktop = path.dirname(fileURLToPath(import.meta.url));
 const root = process.argv[2] ?? path.join(desktop, "runtime");
@@ -46,4 +47,15 @@ for (const file of code) {
   execFileSync("codesign", [...options, file], { stdio: "pipe" });
 }
 for (const file of code) execFileSync("codesign", ["--verify", "--strict", file], { stdio: "pipe" });
+// Signing changes Mach-O bytes; the manifest must describe the files sealed into the app.
+const mediaManifest = path.join(root, "media/manifest.json");
+if (fs.existsSync(mediaManifest)) {
+  const manifest = JSON.parse(fs.readFileSync(mediaManifest, "utf8"));
+  for (const name of Object.keys(manifest.hashes)) {
+    const hash = createHash("sha256");
+    for await (const chunk of fs.createReadStream(path.join(root, "media", name))) hash.update(chunk);
+    manifest.hashes[name] = hash.digest("hex");
+  }
+  fs.writeFileSync(mediaManifest, JSON.stringify(manifest, null, 2));
+}
 console.log(`Signed and verified ${files.length} native binaries and ${bundles.length} bundles.`);

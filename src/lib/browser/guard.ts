@@ -20,7 +20,8 @@ export type Dial = (host: string, port: number) => Promise<Duplex>;
 export const direct: Dial = async (host, port) => {
   const ip = await publicAddress(host);
   return new Promise((resolve, reject) => {
-    const s = net.connect(port, ip, () => resolve(s));
+    const s = net.connect(port, ip, () => { s.setTimeout(0); resolve(s); });
+    s.setTimeout(10000, () => s.destroy(new Error('Upstream connection timed out')));
     s.once('error', reject);
   });
 };
@@ -67,9 +68,11 @@ async function forward(dial: Dial, req: http.IncomingMessage, res: http.ServerRe
   }
   const up = await dial(url.hostname, Number(url.port) || 80).catch((e: Error) => e);
   if (up instanceof Error) {
+    if (res.destroyed) return;
     res.writeHead(status(up), { 'content-type': 'text/plain' }).end(up.message);
     return;
   }
+  if (res.destroyed) { up.destroy(); return; }
   const out = http.request(
     { createConnection: () => up as net.Socket, method: req.method, path: url.pathname + url.search, headers: req.headers },
     (r) => {
@@ -81,6 +84,8 @@ async function forward(dial: Dial, req: http.IncomingMessage, res: http.ServerRe
     if (!res.headersSent) res.writeHead(502);
     res.end();
   });
+  res.on('close', () => { out.destroy(); up.destroy(); });
+  req.on('error', () => out.destroy());
   req.pipe(out);
 }
 

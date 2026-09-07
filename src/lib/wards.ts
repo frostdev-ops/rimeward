@@ -125,6 +125,7 @@ export const CATEGORIES = {
 export type Category = keyof typeof CATEGORIES;
 
 export const CATALOG: Record<string, CatalogEntry> = {
+  'remote-desktop': { title: 'Remote Desktop', defaultSize: '6x4', icon: 'host', blurb: 'View and control one of your paired computers.', multi: true, configurable: true, category: 'rime', concepts: ['computer', 'screen', 'remote', 'desktop', 'monitor', 'control', 'sharing'], does: ['view computer screen', 'control mouse and keyboard', 'select display', 'hand control to Rime'] },
   'project-files': { title: 'Project files', defaultSize: '2x3', icon: 'folder', blurb: 'Browse and search a desktop project.', multi: true, category: 'rime', concepts: ['project','folder','files','tree','workspace','search'], does: ['browse folders','create files','rename files'] },
   editor: { title: 'Editor', defaultSize: '6x4', icon: 'code', blurb: 'Project files, code editing, linting, and recovery in one workspace.', multi: true, category: 'rime', concepts: ['code','text','file','editor','source','buffer','lint','vscode','explorer'], does: ['edit files','save changes','recover drafts','find problems','format code'] },
   terminal: { title: 'Terminal', defaultSize: '3x3', icon: 'bot', blurb: 'A live shell, Codex, or Claude Code session on your desktop.', multi: true, category: 'rime', concepts: ['shell','console','terminal','codex','claude','command'], does: ['run commands','control sessions','inspect output'] },
@@ -768,6 +769,10 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
         out.url = url;
       }
       return out;
+    }
+    case 'remote-desktop': {
+      return { autoConnect: raw.autoConnect === true, quality: ['saver', 'auto', 'sharp'].includes(String(raw.quality)) ? raw.quality : 'auto',
+        view: raw.view === 'actual' ? 'actual' : 'fit', diagnostics: raw.diagnostics === true };
     }
     case 'service-group': {
       // A group, a list of members, or neither: every monitor in the registry.

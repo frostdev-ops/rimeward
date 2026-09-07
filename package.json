@@ -1,7 +1,7 @@
 {
   "name": "rimeward",
   "type": "module",
-  "version": "0.22.8",
+  "version": "0.23.0",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -21,10 +21,10 @@
     "cli": "node bin/rimeward.mjs",
     "typecheck": "tsc --noEmit -p .",
     "postinstall": "node bin/prepare-pty.mjs",
-    "test:ui": "node tests/editor-ui-smoke.mjs && node tests/terminal-ui-smoke.mjs && node tests/conversation-ui-smoke.mjs && node tests/remote-workspace-smoke.mjs",
+    "test:ui": "node tests/editor-ui-smoke.mjs && node tests/terminal-ui-smoke.mjs && node tests/conversation-ui-smoke.mjs && node tests/remote-desktop-ui-smoke.mjs && node tests/remote-workspace-smoke.mjs",
     "test:standalone": "node tests/standalone-smoke.mjs",
     "goldens": "node ops/goldens.mjs",
-    "lint:desktop": "biome lint --error-on-warnings desktop/prebuild.mjs desktop/sign-runtime.mjs desktop-runtime.mjs public/runtime-bridge.js src/lib/dev src/lib/agent/diagnostics.ts src/lib/agent/tasks.ts src/lib/agent/sync.ts src/lib/agent/sync-store.ts src/pages/api/agent/history.ts src/pages/api/dev src/pages/api/devices src/pages/api/runtime.ts src/pages/runtime src/scripts/app/desktop-setup.ts src/scripts/app/development.ts src/scripts/app/terminal-input.ts src/scripts/app/terminal-stream.ts src/scripts/app/project-editor.ts src/scripts/app/runtime-picker.ts src/scripts/app/workspace-dialogs.ts desktop/frontend desktop/tauri.conf.json desktop/tauri.dev.conf.json desktop/tauri.macos.conf.json desktop/tauri.linux.conf.json desktop/capabilities bin/prepare-pty.mjs src/styles/development.css src/styles/workspaces.css src/scripts/app/browser-cdp.ts",
+    "lint:desktop": "biome lint --error-on-warnings desktop/prebuild.mjs desktop/media-runtime.mjs desktop/rust-notices.mjs desktop/sign-runtime.mjs desktop-runtime.mjs public/runtime-bridge.js src/lib/dev src/lib/agent/diagnostics.ts src/lib/agent/tasks.ts src/lib/agent/sync.ts src/lib/agent/sync-store.ts src/pages/api/agent/history.ts src/pages/api/dev src/pages/api/devices src/pages/api/runtime.ts src/pages/runtime src/scripts/app/desktop-setup.ts src/scripts/app/development.ts src/scripts/app/terminal-input.ts src/scripts/app/terminal-stream.ts src/scripts/app/project-editor.ts src/scripts/app/runtime-picker.ts src/scripts/app/workspace-dialogs.ts desktop/frontend desktop/tauri.conf.json desktop/tauri.dev.conf.json desktop/tauri.macos.conf.json desktop/tauri.linux.conf.json desktop/capabilities bin/prepare-pty.mjs src/styles/development.css src/styles/workspaces.css src/scripts/app/browser-cdp.ts src/pages/api/remote-desktop src/scripts/app/remote-desktop.ts src/scripts/app/remote-desktop-settings.ts src/scripts/app/remote-files.ts src/scripts/app/remote-media.ts src/scripts/app/remote-download-worker.ts src/styles/remote-desktop.css",
     "desktop:check": "npm run lint:desktop && cargo fmt --manifest-path desktop/Cargo.toml --check && cargo clippy --manifest-path desktop/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path desktop/Cargo.toml"
   },
   "dependencies": {
@@ -66,6 +66,7 @@
     "playwright-core": "1.62.1",
     "sharp": "^0.35.4",
     "tailwindcss": "^4.3.3",
+    "tar-stream": "2.2.0",
     "three": "^0.180.0",
     "ws": "^8.21.3"
   },
@@ -74,6 +75,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/mailparser": "^3.4.6",
     "@types/nodemailer": "^8.0.1",
+    "@types/tar-stream": "3.1.4",
     "@types/three": "^0.180.0",
     "@types/ws": "^8.18.1",
     "typescript": "^5.9.3"

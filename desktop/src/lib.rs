@@ -3,6 +3,16 @@
 
 mod chromium;
 mod commands;
+mod computer;
+mod input_guardian;
+mod remote_control;
+#[cfg(target_os = "linux")]
+mod remote_eis;
+mod remote_files;
+mod remote_media;
+mod remote_session;
+#[cfg(target_os = "linux")]
+mod remote_wayland;
 mod runtime;
 mod tunnel;
 
@@ -20,6 +30,11 @@ use tauri::menu::MenuItem;
 struct TrayStatus(MenuItem<tauri::Wry>);
 
 pub fn run() {
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new("--rimeward-input-guardian"))
+    {
+        std::process::exit(input_guardian::run());
+    }
     let builder = tauri::Builder::default();
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_autostart::init(
@@ -40,6 +55,8 @@ pub fn run() {
             runtime::startup_status
         ])
         .setup(|app| {
+            computer::initialize(app.path().app_data_dir()?);
+            remote_media::initialize(app.path().resource_dir()?.join("runtime/media"));
             #[cfg(desktop)]
             setup_tray(app.handle())?;
             // The dashboard's origin is the one Chrome will let onto a ward's
@@ -100,6 +117,7 @@ pub fn run() {
                 .is_ok()
             {
                 let app = app.clone();
+                computer::disconnect();
                 tauri::async_runtime::spawn(async move {
                     tunnel::stop(&app).await;
                     runtime::shutdown(&app).await;
@@ -149,7 +167,14 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, "quit", "Quit Rimeward", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&status, &open, &autostart, &quit])?;
+    let stop_control = MenuItem::with_id(
+        app,
+        "stop-control",
+        "Stop remote access",
+        true,
+        None::<&str>,
+    )?;
+    let menu = Menu::with_items(app, &[&status, &open, &autostart, &stop_control, &quit])?;
     app.manage(TrayStatus(status));
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().cloned().expect("bundle icon"))
@@ -157,6 +182,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main(app),
+            "stop-control" => computer::stop(),
             "autostart" => {
                 let launch = app.autolaunch();
                 let _ = if launch.is_enabled().unwrap_or(false) {

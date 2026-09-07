@@ -1,8 +1,8 @@
 [package]
 name = "rimeward"
-version = "0.4.10"
+version = "0.5.0"
 edition = "2021"
-rust-version = "1.84"
+rust-version = "1.88"
 description = "Rimeward — standalone development workspaces with live remote access"
 
 # The lib/bin split is what the mobile targets (later) build against.
@@ -10,11 +10,18 @@ description = "Rimeward — standalone development workspaces with live remote a
 name = "rimeward_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[test]]
+name = "input-recovery"
+path = "tests/input-recovery.rs"
+harness = false
+
 [build-dependencies]
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
 tauri = { version = "2.11", features = ["tray-icon"] }
+# Reuse Tauri's platform key mapping for browser physical key codes.
+tao = { version = "=0.35.3", default-features = false, features = ["serde"] }
 tauri-plugin-autostart = "2.5"
 # tauri enables rt, rt-multi-thread, sync, fs, io-util; the rest is ours.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "io-util", "net", "time", "macros", "process"] }
@@ -31,6 +38,24 @@ getrandom = "0.3"
 base64 = "0.22"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+enigo = { version = "=0.6.1", features = ["serde"] }
+xcap = "=0.9.8"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+arboard = "=3.6.1"
+cap-std = "=4.0.3"
+sha2 = "=0.10.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-graphics = "0.3"
+objc2-core-foundation = "0.3"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "=0.61.3", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_StationsAndDesktops"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "=0.13.13", default-features = false, features = ["tokio", "remote_desktop", "screencast", "clipboard"] }
+reis = "=0.7.1"
+libc = "0.2"
 
 [profile.release]
 codegen-units = 1

@@ -29,6 +29,8 @@ import {
   rimeConnection,
 } from "../../../lib/dev/remote.ts";
 import crypto from "node:crypto";
+import { serveDeviceTool } from '../../../lib/dev/tool-routing.ts';
+import { controlSettings, configureControl } from '../../../lib/dev/computer.ts';
 import { analyzeFile } from "../../../lib/dev/lint.ts";
 import {
   addProject,
@@ -74,6 +76,12 @@ export const ALL: APIRoute = async ({ params, request, locals, url }) => {
     requireDesktop();
     const user = locals.user.userId,
       action = params.action ?? "";
+    if (action === 'agent-tools' && request.method === 'POST') return await serveDeviceTool(user, request);
+    if (action === 'control-settings') {
+      if (request.headers.has('x-rimeward-native-token')) throw new DevError('Change control permissions in the local desktop window.', 403);
+      if (request.method === 'GET') return json(await controlSettings(user));
+      if (request.method === 'POST') return json(await configureControl(user, await request.json()));
+    }
     const body =
       request.method === "GET"
         ? Object.fromEntries(url.searchParams)

@@ -5,6 +5,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { rustNotices } from './rust-notices.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url)),
   root = path.dirname(here);
 const version = "22.22.0",
@@ -155,6 +156,8 @@ try {
     0o755,
   );
   fs.rmSync(node);
+  run(process.execPath, [path.join(here, 'media-runtime.mjs')]);
+  rustNotices(path.join(here, 'Cargo.toml'), path.join(runtime, 'rust-licenses'), target);
   fs.writeFileSync(
     path.join(runtime, "runtime.json"),
     JSON.stringify({ node: version, target, protocol: 1 }),

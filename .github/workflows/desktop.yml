@@ -14,6 +14,11 @@ on:
   push:
     tags: ['desktop-v*']
   workflow_dispatch:
+    inputs:
+      validation_only:
+        description: Build and check every platform without publishing installers
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -41,6 +46,7 @@ jobs:
           cache: npm
 
       - name: Verify release tag matches this build
+        if: github.event_name == 'push' || !inputs.validation_only
         shell: bash
         run: |
           tag=$(node -p "'desktop-v' + require('./desktop/tauri.conf.json').version")
@@ -63,7 +69,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libclang-dev libxcb1-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev xvfb python3-venv python3-distro
 
       - name: Bundle standalone runtime
         run: node desktop/prebuild.mjs
@@ -99,13 +105,34 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/desktop/runtime/browsers
         run: npm run typecheck && npm test && node tests/standalone-smoke.mjs
 
+      - name: Bundled remote media validation
+        shell: bash
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/desktop/runtime/browsers
+          RIMEWARD_MEDIA_SDK: ${{ github.workspace }}/desktop/runtime/media
+          RIMEWARD_MEDIA_VIEWERS: 4
+          RIMEWARD_MEDIA_FAULTS: 1
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            export RIMEWARD_MEDIA_HELPER="$RIMEWARD_MEDIA_SDK/rimeward-media.exe"
+          else
+            export RIMEWARD_MEDIA_HELPER="$RIMEWARD_MEDIA_SDK/rimeward-media"
+          fi
+          node tests/remote-media-smoke.mjs
+
+      - name: Validate native application build
+        if: github.event_name == 'workflow_dispatch' && inputs.validation_only
+        working-directory: desktop
+        run: npx tauri build --no-bundle ${{ matrix.args }}
+
       - name: App Store Connect key
-        if: startsWith(matrix.platform, 'macos-')
+        if: startsWith(matrix.platform, 'macos-') && (github.event_name == 'push' || !inputs.validation_only)
         run: echo "$APPLE_API_KEY_B64" | base64 -d > "$RUNNER_TEMP/AuthKey.p8"
         env:
           APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY_B64 }}
 
       - uses: tauri-apps/tauri-action@v1
+        if: github.event_name == 'push' || !inputs.validation_only
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Finder can hold the mounted installer open on hosted macOS runners.
@@ -131,6 +158,7 @@ jobs:
 
   publish:
     needs: build
+    if: github.event_name == 'push' || !inputs.validation_only
     runs-on: ubuntu-latest
     permissions:
       contents: write

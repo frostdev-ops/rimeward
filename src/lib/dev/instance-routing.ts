@@ -22,7 +22,10 @@ export async function routeInstance(context: APIContext): Promise<Response | und
   if (!user) return;
   const { request, url } = context;
   const path = url.pathname + url.search;
+  // These operations authorize their explicit target, never page placement.
+  if (url.pathname.startsWith('/api/remote-desktop/')) return;
   if (url.pathname.startsWith('/api/devices/')) return;
+  if (url.pathname === '/api/dev/agent-tools' || url.pathname === '/api/dev/control-settings') return;
   const desktop = isDesktop();
   const connection = desktop ? await rimeConnection(user) : undefined;
   const joined = desktop && !!getSetting(`instance:joined:${user}`);

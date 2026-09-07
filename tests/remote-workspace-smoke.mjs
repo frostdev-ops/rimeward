@@ -9,6 +9,7 @@ import net from "node:net";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import readline from "node:readline";
+import sharp from "sharp";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
@@ -210,7 +211,15 @@ try {
   const errors = [];
   desktopPage.on("pageerror", (e) => errors.push(e.message));
   let verificationUrl = "";
+  const remotePixels = await sharp({ create: { width: 64, height: 40, channels: 3, background: '#18314b' } }).jpeg().toBuffer();
+  let remoteOwner = null;
   nativeHandler = async (m) => {
+    if (m.op === 'computer-status') return { enabled: true, generation: 1, supported: true, suspended: false, platform: 'macos', topology: 1,
+      screenPermission: true, inputPermission: true, controller: remoteOwner, displays: [{ display: 1, x: -1920, y: 0, width: 1920, height: 1080, scale: 1, rotation: 0 }] };
+    if (m.op === 'computer-frame') return { image: remotePixels.toString('base64'), imageWidth: 64, imageHeight: 40 };
+    if (m.op === 'computer-acquire') { remoteOwner = { id: m.value.owner, kind: 'human', generation: 1 }; return { ownership: 1, topology: 1 }; }
+    if (m.op === 'computer-release' || m.op === 'computer-disconnect') { remoteOwner = null; return { released: true }; }
+    if (m.op === 'computer-files') return { active: 0 };
     if (m.op === "open-url") {
       verificationUrl = m.value.url;
       return true;
@@ -582,6 +591,33 @@ try {
   assert.equal(new URL(desktopPage.url()).origin, localOrigin, 'page changes do not switch app origins');
   await desktopPage.locator("#wd-grid [data-wd-type=editor] .cm-content").filter({ hasText: marker + "_UI" }).waitFor();
   assert.deepEqual(errors, []);
+  // The new ward crosses the real account/device relay, using only generated native pixels.
+  await phonePage.evaluate(async device => {
+    const html = await fetch('/dash').then(r => r.text());
+    const layout = JSON.parse(new DOMParser().parseFromString(html, 'text/html').getElementById('layout-data').textContent);
+    const saved = await fetch('/api/dashboard', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      layout: [...layout, { i: 'remote-fixture', type: 'remote-desktop', size: '6x4', device }],
+    }) });
+    if (!saved.ok) throw Error(await saved.text());
+  }, devices[0].id);
+  const remoteDesktopFixture = await phonePage.evaluate(async device => {
+    const response = await fetch('/api/remote-desktop/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ protocol: 1, device, ward: 'remote-fixture', capabilities: ['screen','input'] }) });
+    if (!response.ok) throw Error(await response.text());
+    return response.json();
+  }, devices[0].id);
+  assert.equal(remoteDesktopFixture.transport, 'compatibility'); assert.equal(remoteOwner, null);
+  const relayed = await phonePage.evaluate(async id => {
+    const action = body => fetch('/api/remote-desktop/sessions/'+id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const frame = await action({ action: 'frame', ack: 0 });
+    const bytes = (await frame.arrayBuffer()).byteLength;
+    const stale = await action({ action: 'frame', ack: 0 });
+    const acquired = await (await action({ action: 'acquire' })).json();
+    await action({ action: 'disconnect' });
+    const closed = await action({ action: 'status' });
+    return { bytes, stale: stale.status, ownership: acquired.ownership, closed: closed.status };
+  }, remoteDesktopFixture.id);
+  assert.equal(relayed.bytes, remotePixels.length); assert.equal(relayed.stale, 409); assert.equal(relayed.ownership, 1); assert.equal(relayed.closed, 404); assert.equal(remoteOwner,null);
   await phonePage.close();
   const unchanged = await desktopPage.evaluate(
     (id) => fetch("/api/dev/sessions?id=" + id).then((r) => r.json()),

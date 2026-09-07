@@ -1773,6 +1773,12 @@ let lastSecrets: Record<string, string> = {};
 const pendingSecrets = new Map<string, Record<string, string>>();
 
 const FIELDS: Record<string, Field[]> = {
+  'remote-desktop': [
+    { sel: '#aw-rd-auto', key: 'autoConnect', kind: 'bool' },
+    { sel: '#aw-rd-quality', key: 'quality', def: 'auto' },
+    { sel: '#aw-rd-view', key: 'view', def: 'fit' },
+    { sel: '#aw-rd-diagnostics', key: 'diagnostics', kind: 'bool' },
+  ],
   embed: [{ sel: '#aw-em-url', key: 'url' }],
   weather: [
     { sel: '#aw-we-name', key: 'name' },
@@ -2078,6 +2084,13 @@ function openDialog(existing?: WardInstance, into: HTMLElement | null = null): v
     selectCard(els.dialog, existing.type);
     els.title.value = existing.title ?? '';
     fillConfig(els.dialog, existing);
+    if (existing.type === 'remote-desktop') {
+      const host = q<HTMLElement>('[data-rd-access]', els.dialog)!;
+      host.replaceChildren();
+      if (existing.device) void import('./remote-desktop-settings.ts').then(m => {
+        if (editingId === existing.i) void m.remoteDesktopSettings(host, existing.device!);
+      });
+    }
   } else {
     // Non-multi types can exist once — grey their cards out.
     const present = new Set([...state.values()].map((w) => w.type));

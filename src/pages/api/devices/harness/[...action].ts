@@ -1,3 +1,4 @@
+import { REMOTE_DESKTOP_HEADER, requireRemoteLayoutVersion } from '../../../../lib/dev/remote-desktop-contract.ts';
 import { modelFailure } from "../../../../lib/agent/diagnostics.ts";
 import { randomUUID } from "node:crypto";
 import type { APIRoute } from "astro";
@@ -57,6 +58,10 @@ export const ALL: APIRoute = async ({
         request.headers.get("authorization")?.replace(/^Bearer /, ""),
       ),
       user = device.user_id;
+    // Block before manifest reads or writes: old clients must never replace an
+    // unfamiliar dashboard with their fallback layout.
+    const version = request.headers.get(REMOTE_DESKTOP_HEADER);
+    if (!params.action) requireRemoteLayoutVersion(getDashboard(user), version);
     let value: unknown,
       status = 200;
     if (request.method === "GET" && !params.action) {
@@ -95,6 +100,8 @@ export const ALL: APIRoute = async ({
     } else if (request.method === "POST" && !params.action) {
       const body = await bodyOf(request);
       if (body.record?.key?.startsWith('appearance/brand/')) return Response.json({ error: 'Instance brand assets are managed on the server.' }, { status: 403 });
+      if (body.record?.key === INSTANCE_KEY && typeof body.record.payload === 'string')
+        requireRemoteLayoutVersion(JSON.parse(body.record.payload)?.layout, version);
       value = acceptRecord(
         user,
         body.record,

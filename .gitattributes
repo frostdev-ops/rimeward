@@ -1,0 +1,2 @@
+# Checksummed upstream notices must retain their original bytes on Windows too.
+desktop/licenses/** -text -whitespace

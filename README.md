@@ -203,6 +203,8 @@ npm run desktop:build
 
 One shared dashboard brings server pages and desktop projects together. The app routes each ward automatically, without a local/server selector; phones control the same live editors and terminals through the server. Returning restores the last page. Project files stay on their original computer.
 
+**Rime can choose a computer.** Ask it to list your paired devices, browse folders, read/edit a project or run commands on a named Mac, Windows PC or Linux machine. Screen control adds screenshots, mouse and keyboard input after you enable it locally in **Connections**; stop it from the tray menu. Linux screen input currently requires X11. See [computer control, platform limits and setup](docs/computer-control.md).
+
 **Rime follows you.** The first connected server supplies Rime's default persona/model and provider access. Rime's own files, memories, skills, attachments, and chat history sync to a local copy. Offline edits reconcile on reconnect; conflicting local versions remain in **Chat history → Recovered version**. Model credentials stay on the server: an offline desktop needs its own configured provider to make new model calls. Chat history and its code/tool excerpts are shared Rime data; project folders, terminal processes, and pending actions are not replicated.
 
 Terminal sessions use keyboard-accessible tabs with visible close buttons, without resizing the ward. Closing a tab keeps its process running; reopen it from the terminal menu. Rime can page through project searches, directories, and Git changes, and retain task reviews with file hashes and reported check results. Long model waits show elapsed time and relay activity; failures include a reference for metadata-only diagnostics.

@@ -228,6 +228,7 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
         "DISPLAY",
         "WAYLAND_DISPLAY",
         "XDG_RUNTIME_DIR",
+        "XDG_SESSION_TYPE",
         "DBUS_SESSION_BUS_ADDRESS",
     ] {
         if let Some(value) = std::env::var_os(name) {
@@ -279,6 +280,7 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     let state = app.state::<Runtime>().0.clone();
     *state.lock().await = Some(child);
     let mut lines = BufReader::new(stdout).lines();
+    let desktop_slots = Arc::new(tokio::sync::Semaphore::new(16));
     while let Some(line) = lines.next_line().await? {
         let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
@@ -333,21 +335,31 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                 }
             }
             Some("desktop") => {
-                let result = desktop_request(&app, &message).await;
-                let reply = match result {
-                    Ok(value) => serde_json::json!({"id":message["id"],"value":value}),
-                    Err(error) => serde_json::json!({"id":message["id"],"error":error}),
-                };
-                if let Some(child) = state.lock().await.as_mut() {
-                    if let Some(input) = child.stdin.as_mut() {
-                        input.write_all(format!("{}\n", reply).as_bytes()).await?;
+                // Never wait for media, input or a dialog before reading vault/navigation.
+                let slot = desktop_slots.clone().try_acquire_owned();
+                let app = app.clone();
+                let state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = match slot {
+                        Ok(_permit) => desktop_request(&app, &message).await,
+                        Err(_) => Err("Desktop is busy; operation was not started".into()),
+                    };
+                    let reply = match result {
+                        Ok(value) => serde_json::json!({"id":message["id"],"value":value}),
+                        Err(error) => serde_json::json!({"id":message["id"],"error":error}),
+                    };
+                    if let Some(child) = state.lock().await.as_mut() {
+                        if let Some(input) = child.stdin.as_mut() {
+                            let _ = input.write_all(format!("{}\n", reply).as_bytes()).await;
+                        }
                     }
-                }
+                });
             }
             _ => {}
         }
     }
     runtime_diagnostic(&diagnostics, "runtime-disconnected");
+    crate::computer::disconnect();
     super::set_status(&app, "Rimeward stopped; reopen to recover");
     if app.state::<Startup>().0.lock().unwrap().stage == "ready" {
         Ok(())
@@ -393,6 +405,13 @@ async fn desktop_request(
     use tauri_plugin_opener::OpenerExt;
     let value = &message["value"];
     match message["op"].as_str() {
+        Some(op) if op.starts_with("computer-") => {
+            let op = op.to_string();
+            let value = value.clone();
+            tauri::async_runtime::spawn_blocking(move || crate::computer::request(&op, &value))
+                .await
+                .map_err(|_| "Computer control failed".to_string())?
+        }
         Some("local") => {
             let path = value["path"].as_str().ok_or("Missing local destination")?;
             if !(path == "/desktop/start?setup=1"

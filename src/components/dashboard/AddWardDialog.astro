@@ -69,6 +69,14 @@ const groups = (Object.keys(CATEGORIES) as Category[])
       </div>
     </template>
 
+    <div data-cfg="remote-desktop" class="hidden flex-col gap-3">
+      <p class="text-xs text-ink-faint">Choose the computer in the ward. Its target stays the same when you move it to another page. Manage access from Devices.</p>
+      <div data-rd-access></div>
+      <label><input type="checkbox" id="aw-rd-auto" /> Connect automatically when visible</label>
+      <label class="flex flex-col gap-1">Quality<select id="aw-rd-quality" class="input"><option value="saver">Bandwidth Saver</option><option value="auto">Auto</option><option value="sharp">Sharp</option></select></label>
+      <label class="flex flex-col gap-1">Scaling<select id="aw-rd-view" class="input"><option value="fit">Fit to ward</option><option value="actual">Actual size</option></select></label>
+      <label><input type="checkbox" id="aw-rd-diagnostics" /> Show connection diagnostics</label>
+    </div>
     <div data-cfg="browser" class="hidden flex-col gap-3">
       <div>
         <label class="label" for="aw-bw-url">Home page <span class="text-ink-faint">(optional)</span></label>

@@ -2,7 +2,9 @@ import './_setup.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { guardPort } from '../src/lib/browser/guard.ts';
+import net from 'node:net';
+import { once } from 'node:events';
+import { guardPort, guardFor } from '../src/lib/browser/guard.ts';
 
 const connect = (port: number, target: string) =>
   new Promise<number>((resolve, reject) => {
@@ -52,4 +54,20 @@ test('guard rejects malformed targets outright', async () => {
   assert.equal(await connect(port, 'example.com:99999'), 400);
   assert.equal((await get(port, '/relative')).status, 400);
   assert.equal((await get(port, 'ftp://example.com/')).status, 400);
+});
+
+test('closing a browser request closes its unfinished upstream connection', async () => {
+  const upstream = http.createServer(); upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  const port = (upstream.address() as net.AddressInfo).port;
+  const guard = await guardFor(() => new Promise((resolve, reject) => {
+    const socket = net.connect(port, '127.0.0.1', () => resolve(socket)); socket.once('error', reject);
+  }));
+  const received = once(upstream, 'request');
+  const request = http.get({ host: '127.0.0.1', port: guard.port, path: 'http://fixture.test/slow' });
+  request.on('error', () => {});
+  try {
+    const [, response] = await received;
+    const closed = once(response, 'close', { signal: AbortSignal.timeout(2000) });
+    request.destroy(); await closed;
+  } finally { request.destroy(); guard.close(); upstream.closeAllConnections(); upstream.close(); }
 });

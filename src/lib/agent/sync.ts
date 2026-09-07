@@ -1,3 +1,4 @@
+import { REMOTE_DESKTOP_HEADER, REMOTE_DESKTOP_PROTOCOL } from '../dev/remote-desktop-contract.ts';
 import { modelFailure } from "./diagnostics.ts";
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.ts";
@@ -73,8 +74,9 @@ async function request(
     ...init,
     redirect: "error",
     signal: init.signal ?? AbortSignal.timeout(15000),
-    headers: { ...init.headers, authorization: `Bearer ${token}` },
+    headers: { ...init.headers, [REMOTE_DESKTOP_HEADER]: String(REMOTE_DESKTOP_PROTOCOL), authorization: `Bearer ${token}` },
   });
+  if (response.status === 426) throw Object.assign(new Error('Update Rimeward before synchronizing this dashboard. Your local dashboard is preserved.'), { status: 426 });
   if (!response.ok && !(response.status === 409 && suffix === "")) {
     let message =
       response.status === 401

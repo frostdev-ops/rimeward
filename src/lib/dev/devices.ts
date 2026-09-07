@@ -6,6 +6,14 @@ import type WebSocket from "ws";
 import { WebSocketServer, createWebSocketStream } from "ws";
 import { getDb } from "../db.ts";
 import { DevError, isDesktop } from "./runtime.ts";
+import { revokeRemoteSessions } from './remote-desktop-events.ts';
+import type { DeviceAccessPolicy } from './remote-desktop-contract.ts';
+
+/** Carried on the authenticated device channel, never accepted from HTTP headers. */
+export interface RemoteRelayContext {
+  protocol: 1; actor: string; session: string; device: string;
+  policy: DeviceAccessPolicy; expires: number;
+}
 
 export const PROTOCOL = 1;
 const digest = (value: string) =>
@@ -22,8 +30,14 @@ interface Connection {
   ws: WebSocket;
   channels: Set<WebSocket>;
   alive: boolean;
+  boot: string;
+  remoteDesktop: number;
 }
 const connections = new Map<string, Connection>();
+export function deviceBoot(id: string) { return connections.get(id)?.boot; }
+export function notifyDevicePolicy(id: string) {
+  connections.get(id)?.ws.send(JSON.stringify({ type: 'remote-policy-changed' }));
+}
 const waiting = new Map<
   string,
   {
@@ -38,7 +52,7 @@ export function listDevices(user: number) {
     getDb()
       .prepare("SELECT id,name,platform,protocol FROM devices WHERE user_id=?")
       .all(user) as Device[]
-  ).map((d) => ({ ...d, online: connections.has(d.id) }));
+  ).map((d) => ({ ...d, online: connections.has(d.id), remoteDesktop: connections.get(d.id)?.remoteDesktop ?? null }));
 }
 export function enroll(user: number) {
   const code = crypto.randomBytes(32).toString("base64url");
@@ -95,6 +109,9 @@ export function claimEnrollment(
   })();
 }
 export function revoke(user: number, id: string) {
+  if (!getDb().prepare('SELECT 1 FROM devices WHERE id=? AND user_id=?').get(id, user)) throw new DevError('Desktop not found.', 404);
+  connections.get(id)?.ws.send(JSON.stringify({ type: 'remote-revoked' }));
+  revokeRemoteSessions({ device: id, user });
   getDb().prepare('DELETE FROM sessions WHERE id IN (SELECT s.session_id FROM device_sessions s JOIN devices d ON d.id=s.device_id WHERE d.id=? AND d.user_id=?)').run(id,user);
   const result = getDb()
     .prepare("DELETE FROM devices WHERE id=? AND user_id=?")
@@ -186,7 +203,10 @@ export function deviceUpgrade(
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
     disconnect(device.id);
-    const connection: Connection = { ws, channels: new Set(), alive: true };
+    const boot = req.headers['x-rimeward-boot'];
+    const connection: Connection = { ws, channels: new Set(), alive: true,
+      remoteDesktop: req.headers['x-rimeward-remote-desktop'] === '1' ? 1 : 0,
+      boot: typeof boot === 'string' && /^[a-f0-9-]{36}$/.test(boot) ? boot : '' };
     connections.set(device.id, connection);
     ws.on("error", () => {});
     ws.on("pong", () => {
@@ -222,7 +242,7 @@ export const forwardHeaders = [
   "if-range",
   "content-length",
 ];
-export function allowedRelayPath(value: string) {
+export function allowedRelayPath(value: string, remote = false, agent = false) {
   if (value.length > 8192 || !value.startsWith("/") || value.startsWith("//"))
     return false;
   let pathname = value.split("?")[0] ?? "";
@@ -237,7 +257,9 @@ export function allowedRelayPath(value: string) {
     pathname.split("/").some((p) => p === "." || p === "..")
   )
     return false;
-  if (/^\/api\/dev\/(?:pair(?:-preview|ings)?|unpair|sign-in[^/]*|open-server|onboard|folder|navigation|navigate)(?:\/|$)/.test(pathname)||pathname.startsWith('/desktop/'))
+  if (pathname.startsWith('/api/remote-desktop/')) return remote && pathname === '/api/remote-desktop/host';
+  if (pathname === '/api/dev/agent-tools') return agent;
+  if (/^\/api\/dev\/(?:control-settings|pair(?:-preview|ings)?|unpair|sign-in[^/]*|open-server|onboard|folder|navigation|navigate)(?:\/|$)/.test(pathname)||pathname.startsWith('/desktop/'))
     return false;
   return !/^\/(?:runtime(?:\/|$)|api\/(?:native|devices)(?:\/|$))/.test(
     pathname,
@@ -249,6 +271,8 @@ export async function relayRequest(
   device: string,
   path: string,
   request: Request,
+  remote?: RemoteRelayContext,
+  agentCaller?: string,
 ): Promise<Response> {
   if (isDesktop())
     throw new DevError("Select a remote server to connect to another desktop.");
@@ -258,7 +282,8 @@ export async function relayRequest(
       .get(user, device)
   )
     throw new DevError("Desktop not found.", 404);
-  if (!allowedRelayPath(path))
+  if (!allowedRelayPath(path, !!remote, !!agentCaller) || (remote && remote.device !== device) ||
+      (agentCaller !== undefined && !/^[a-f0-9]{64}$/.test(agentCaller)))
     throw new DevError("Invalid workspace route.", 403);
   const connection = connections.get(device);
   if (!connection)
@@ -280,6 +305,8 @@ export async function relayRequest(
         type: "request",
         id: challenge,
         base: `/runtime/${device}`,
+        ...(remote ? { remote } : {}),
+        ...(agentCaller ? { agentCaller } : {}),
       }),
     );
   });
@@ -315,6 +342,8 @@ export async function relayRequest(
           "content-range",
           "accept-ranges",
           "content-disposition",
+          "x-rimeward-frame",
+          "x-rimeward-topology",
         ]) {
           const value = res.headers[key];
           if (typeof value === "string") out.set(key, value);
@@ -345,9 +374,10 @@ export async function relayRequest(
         ),
       );
     });
-    request.signal.addEventListener("abort", () => req.destroy(), {
-      once: true,
-    });
+    const abort = () => { req.destroy(); ws.terminate(); };
+    request.signal.addEventListener("abort", abort, { once: true });
+    ws.once('close', () => request.signal.removeEventListener('abort', abort));
+    if (request.signal.aborted) abort();
     ws.on("error", () => req.destroy());
     if (request.body)
       Readable.fromWeb(request.body as import("node:stream/web").ReadableStream<Uint8Array>)

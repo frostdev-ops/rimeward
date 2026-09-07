@@ -1,8 +1,8 @@
 import type { beginSignIn, pollSignIn, onboarding } from "../../lib/dev/remote.ts";
 import { desktopApi, chooseProject } from "./workspace-dialogs.ts";
 import { el } from "./dom.ts";
-function required<T extends HTMLElement>(selector: string): T {
-  const element = document.querySelector<T>(selector);
+function required<T extends HTMLElement>(selector: string, parent: ParentNode = document): T {
+  const element = parent.querySelector<T>(selector);
   if (!element) throw new Error(`Setup control is missing: ${selector}`);
   return element;
 }
@@ -155,3 +155,58 @@ void desktopApi<Awaited<ReturnType<typeof onboarding>>>("onboarding")
     }
   })
   .catch(report);
+
+// Computer control is a local desktop setting, beside the connection it grants.
+
+const controlForm = required<HTMLFormElement>('#computer-control-form');
+const enabled = required<HTMLInputElement>('#computer-control-enabled');
+const controlStatus = required<HTMLElement>('#computer-control-status');
+let controlGeneration = -1;
+async function settings(value?: { enabled?: boolean; generation?: number; session?: string; allow?: boolean }) {
+  const response = await fetch('/api/dev/control-settings', value ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) } : { cache: 'no-store' });
+  const data = await response.json();
+  if (!response.ok) throw Error(data.error ?? 'Control settings unavailable.');
+  return data;
+}
+controlForm.onsubmit = event => {
+  event.preventDefault();
+  const submit = required<HTMLButtonElement>('button[type="submit"]', controlForm); submit.disabled = true;
+  void settings({ enabled: enabled.checked, generation: controlGeneration }).then(data => {
+    controlGeneration = data.generation; enabled.checked = data.enabled;
+    controlStatus.textContent = data.enabled ? 'Screen control enabled. Stop it at any time from the tray menu.' : 'Screen control is off.';
+  }).catch(async e => {
+    controlStatus.textContent = e.message;
+    const current = await settings().catch(() => null);
+    if (current) { controlGeneration = current.generation; enabled.checked = current.enabled; }
+  }).finally(() => { submit.disabled = false; });
+};
+void settings().then(data => {
+  controlGeneration = data.generation; enabled.checked = data.enabled;
+  required<HTMLElement>('#computer-control-permissions').textContent = data.permissions ?? '';
+  controlStatus.textContent = data.enabled ? 'Screen control is enabled.' : 'Screen control is off.';
+}).catch(e => { controlStatus.textContent = e.message; });
+
+const approvals = required<HTMLElement>('#computer-control-approvals');
+async function refreshApprovals() {
+  const data = await settings();
+  approvals.replaceChildren();
+  for (const pending of data.pending ?? []) {
+    const row = el('div', 'flex gap-2'), label = el('span', undefined, `Connection request: ${pending.capabilities.join(', ')}`);
+    row.append(label);
+    for (const allow of [true, false]) {
+      const button = el('button', 'btn', allow ? 'Allow connection' : 'Deny');
+      button.onclick = () => { void settings({ session: pending.id, allow }).then(refreshApprovals).catch(report); };
+      row.append(button);
+    }
+    approvals.append(row);
+  }
+}
+const approvalTimer = setInterval(() => { if (!document.hidden) void refreshApprovals().catch(() => {}); }, 5000);
+window.addEventListener('pagehide', () => clearInterval(approvalTimer), { once: true });
+void desktopApi<Awaited<ReturnType<typeof onboarding>>>('onboarding').then(async state => {
+  const { remoteDesktopSettings } = await import('./remote-desktop-settings.ts');
+  for (const pair of state.pairs.slice(0, 1)) {
+    const container = el('div'); required<HTMLElement>('#computer-access-policies').append(container);
+    await remoteDesktopSettings(container, pair.id);
+  }
+}).catch(() => {});

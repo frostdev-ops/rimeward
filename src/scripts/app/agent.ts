@@ -226,7 +226,7 @@ function humanise(tool: string): string {
 
 /** One tool call, as the user reads it: the reason first, in plain words.
  *  Tool name, args and raw result live behind a <details> click. */
-function stepCard(step: Step, running = false): HTMLElement {
+function stepCard(step: Step, running = false, ward = ''): HTMLElement {
   const row = el('div', 'ag-step');
 
   const head = el('div', 'flex items-start gap-2');
@@ -242,6 +242,7 @@ function stepCard(step: Step, running = false): HTMLElement {
 
   if (!running && step.ms) head.append(el('span', 'shrink-0 text-[10px] text-ink-faint', fmtMs(step.ms)));
   row.append(head);
+  if (typeof step.args?.device === 'string') row.append(el('small', 'ml-5 text-ink-faint', `Computer: ${step.args.device}`));
 
   // An error is something the user has to know about, so it stays visible.
   if (step.error) {
@@ -257,6 +258,11 @@ function stepCard(step: Step, running = false): HTMLElement {
       (typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 1));
     pre.textContent = text.length > 20_000 ? `${text.slice(0, 20_000)}\n… (truncated for display)` : text;
     det.append(sum, pre);
+    if (step.tool === 'computer_screenshot' && step.result && typeof step.result === 'object' && 'image_sha256' in step.result && typeof step.result.image_sha256 === 'string' && /^[a-f0-9]{64}$/.test(step.result.image_sha256)) {
+      const image = el('img', 'mt-2 max-w-full rounded'); image.alt = 'Rime computer screenshot'; image.loading = 'lazy';
+      image.src = `/api/agent/files?sha=${step.result.image_sha256}&_ward=${encodeURIComponent(ward)}`;
+      det.append(image);
+    }
     row.append(det);
   }
   return row;
@@ -519,7 +525,7 @@ function buildLog(st: State, ui: Ui): void {
         summary.append(mark,
           el('span', undefined, running ? group.find(g => g.running)!.step.reason || 'Working…' : `${group.length} ${group.length === 1 ? 'agent action' : 'agent actions'}${failed ? ` · ${failed} need attention` : ''}`));
         activity.open = failed > 0;
-        activity.append(summary, ...group.map(g => stepCard(g.step, g.running)));
+        activity.append(summary, ...group.map(g => stepCard(g.step, g.running, st.w.i)));
         node = activity;
       } else if (it.k === 'thinking') {
         node = el('div', 'ag-thinking');

@@ -21,6 +21,10 @@ const pending = new Map();
 let serial = 0;
 const nativeRequest = (type, op, value) =>
   new Promise((resolve, reject) => {
+    if (pending.size >= 32 || process.stdout.writableLength > 1024 * 1024) {
+      reject(new Error("Desktop is busy. Retry after the current operation finishes."));
+      return;
+    }
     const id = ++serial;
     const timer = setTimeout(
       () => {
@@ -30,7 +34,14 @@ const nativeRequest = (type, op, value) =>
       type === "desktop" ? 120000 : 15000,
     );
     pending.set(id, { resolve, reject, timer });
-    process.stdout.write(`${JSON.stringify({ type, id, op, value })}\n`);
+    const message = `${JSON.stringify({ type, id, op, value })}\n`;
+    if (Buffer.byteLength(message) > (op === 'computer-clipboard' ? 12 : op === 'computer-files' ? 6 : 2) * 1024 * 1024) {
+      pending.delete(id);
+      clearTimeout(timer);
+      reject(new Error("Desktop request too large"));
+      return;
+    }
+    process.stdout.write(message);
   });
 globalThis.__nativeVault = (op, value) => nativeRequest("vault", op, value);
 globalThis.__nativeDesktop = (op, value) => nativeRequest("desktop", op, value);
@@ -54,7 +65,11 @@ lines.on("line", (line) => {
       : p.resolve(m.value);
   } catch {}
 });
-lines.on("close", () => process.emit("SIGTERM"));
+lines.on("close", () => {
+  for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error("Desktop disconnected")); }
+  pending.clear();
+  process.emit("SIGTERM");
+});
 const { httpServer } = await import("./server.mjs");
 if (!httpServer.listening)
   await new Promise((resolve) => httpServer.once("listening", resolve));

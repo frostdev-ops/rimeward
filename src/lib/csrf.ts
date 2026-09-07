@@ -27,7 +27,7 @@ export function allowedOrigin(origin: string, base = process.env.PUBLIC_BASE_URL
 export function csrfBlocked(request: Request): boolean {
   if (!METHODS.has(request.method)) return false;
   const url = new URL(request.url);
-  if(url.pathname.startsWith('/runtime/')||url.pathname.startsWith('/api/devices/')||url.pathname==='/desktop/connect'){
+  if(url.pathname.startsWith('/runtime/')||url.pathname.startsWith('/api/devices/')||url.pathname.startsWith('/api/remote-desktop/')||url.pathname==='/desktop/connect'){
     const origin=request.headers.get('origin');if(!origin)return false;
     try{return process.env.PUBLIC_BASE_URL?new URL(origin).origin!==new URL(process.env.PUBLIC_BASE_URL).origin:new URL(origin).host!==(request.headers.get('host')??url.host);}catch{return true;}
   }

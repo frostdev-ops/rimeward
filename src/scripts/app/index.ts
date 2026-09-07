@@ -7,6 +7,7 @@ import { ensureStream } from './logic.ts';
 import './notion.ts';
 import './agent.ts';
 import './browser.ts';
+import './remote-desktop.ts';
 import './note.ts';
 import './store.ts';
 import './mcp.ts';
