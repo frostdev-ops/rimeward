@@ -54,11 +54,22 @@ export function workDb(): Database.Database {
       sequence INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS task_receipts (session TEXT PRIMARY KEY REFERENCES terminal_sessions(id), json TEXT NOT NULL);
-    UPDATE terminal_sessions SET state='interrupted' WHERE state='running';
   `);
   if (!(db.pragma("table_info(terminal_sessions)") as { name: string }[]).some(c => c.name === "agent_input")) {
     db.transaction(() => db.exec("ALTER TABLE terminal_sessions ADD COLUMN agent_input INTEGER NOT NULL DEFAULT 0; UPDATE terminal_sessions SET agent_input=(mode != 'human')"))();
   }
+  db.transaction(() => {
+    for (const [table, columns] of [
+      ['terminal_sessions', [['exit_signal', 'INTEGER'], ['termination_reason', 'TEXT']]],
+      ['buffer_copies', [['raw', 'BLOB'], ['mode', 'INTEGER']]],
+    ] as const) {
+      const existing = new Set((db.pragma(`table_info(${table})`) as { name: string }[]).map(c => c.name));
+      for (const [column, type] of columns) if (!existing.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+    db.exec(`UPDATE terminal_sessions SET state='interrupted',exit_code=NULL,exit_signal=NULL,
+      termination_reason=COALESCE(termination_reason,'runtime-interrupted'),
+      task_state=CASE WHEN task_state='active' THEN 'needs-attention' ELSE task_state END WHERE state IN ('running','interrupted')`);
+  })();
   database = db;
   return db;
 }

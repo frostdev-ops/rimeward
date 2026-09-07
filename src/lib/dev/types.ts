@@ -29,6 +29,8 @@ export interface SessionView {
   title: string;
   state: "running" | "exited" | "interrupted";
   exitCode: number | null;
+  exitSignal?: number | null;
+  terminationReason?: string | null;
   owner: string | null;
   cols: number;
   rows: number;
@@ -38,6 +40,15 @@ export interface SessionView {
   review?: string;
   evidence?: { reviewer: string; at: string; sequence: number; diff: string | null; files: { path: string; hash: string | null }[]; checks: { command: string; exitCode: number | null }[]; stale?: boolean };
   taskState: "active" | "needs-attention" | "done" | "cancelled";
+}
+/** Older session responses have no termination metadata; do not guess their signals. */
+export function terminalExitLabel(session: Pick<SessionView, 'state' | 'exitCode' | 'exitSignal' | 'terminationReason'>): string {
+  const label = session.terminationReason === 'cancelled' ? 'Cancelled' :
+    session.terminationReason === 'closed' ? 'Terminated' :
+    session.state === 'interrupted' || session.terminationReason === 'runtime-interrupted' ? 'Interrupted' :
+    session.terminationReason === 'runtime-shutdown' ? 'Stopped on shutdown' :
+    session.exitSignal ? 'Terminated' : 'Exited';
+  return `${label}${session.exitSignal ? ` · signal ${session.exitSignal}` : session.exitCode == null ? '' : ` · ${session.exitCode}`}`;
 }
 export interface RuntimeEvent {
   sequence: number;

@@ -269,6 +269,7 @@ const fmtMs = (ms: number) => (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)
 interface Pending {
   confirmId: string;
   summary: string;
+  patch?: string;
 }
 
 /** Who asked for the turn this item belongs to. Server-stamped and stored, so
@@ -312,6 +313,8 @@ interface Ui {
   chips: HTMLElement;
   pendingBox: HTMLElement;
   pendingText: HTMLElement;
+  pendingDetails: HTMLDetailsElement;
+  pendingPatch: HTMLElement;
   status: HTMLElement;
   /** How full the thread is, next to the status line. */
   context: HTMLElement;
@@ -618,6 +621,8 @@ function paint(st: State): void {
     ui.pendingBox.classList.toggle('hidden', !st.pending);
     ui.pendingBox.classList.toggle('flex', !!st.pending);
     ui.pendingText.textContent = st.pending?.summary ?? '';
+    ui.pendingDetails.hidden = !st.pending?.patch;
+    if (ui.pendingPatch.textContent !== (st.pending?.patch ?? '')) ui.pendingPatch.textContent = st.pending?.patch ?? '';
     paintChips(st, ui.chips);
   }
 }
@@ -1276,11 +1281,15 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   const pendingBox = el('div', 'ag-approval hidden');
   pendingBox.setAttribute('role', 'status');
   const pendingText = el('span', 'ag-approval-text');
+  const pendingDetails = el('details', 'ag-approval-text');
+  pendingDetails.hidden = true;
+  const pendingPatch = el('pre', 'font-mono whitespace-pre-wrap');
+  pendingDetails.append(el('summary', 'cursor-pointer', 'Review patch'), pendingPatch);
   const approve = el('button', 'btn-primary', 'Confirm');
   approve.type = 'button'; approve.dataset.agConfirm = '';
   const decline = el('button', 'btn', 'Cancel');
   decline.type = 'button'; decline.dataset.agDecline = '';
-  pendingBox.append(pendingText, approve, decline);
+  pendingBox.append(pendingText, pendingDetails, approve, decline);
   const form = el('form', 'ag-composer');
   form.addEventListener('submit', e => e.preventDefault());
   const chips = el('div', 'ag-chips hidden');
@@ -1312,7 +1321,7 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   const help = el('p', 'ag-composer-help', matchMedia('(pointer: coarse)').matches ? 'Tap send when you’re ready' : 'Enter to send · Shift + Enter for a new line');
   footer.append(pendingBox, form, help);
   host.append(stage, footer);
-  return { root, log, input, send, stop, background, tasksButton, chips, pendingBox, pendingText, status, context, jump, follow: true, rendered: [] };
+  return { root, log, input, send, stop, background, tasksButton, chips, pendingBox, pendingText, pendingDetails, pendingPatch, status, context, jump, follow: true, rendered: [] };
 }
 
 // ------------------------------------------------------------ shared dialog

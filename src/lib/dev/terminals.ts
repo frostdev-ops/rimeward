@@ -35,6 +35,8 @@ type Row = {
   title: string;
   state: SessionView["state"];
   exit_code: number | null;
+  exit_signal: number | null;
+  termination_reason: string | null;
   snapshot: string;
   task: string;
   assignment: string;
@@ -57,14 +59,19 @@ interface Live {
   queuedBytes: number;
   paused: boolean;
   closing?: boolean;
+  terminationReason?: 'cancelled' | 'closed' | 'runtime-shutdown';
   outputTimer?: ReturnType<typeof setTimeout>;
   flush?: ReturnType<typeof setTimeout>;
   user: number;
   id: string;
 }
 const live = new Map<string, Live>();
-function stopPty(s: Live) {
+function stopPty(s: Live, reason?: Live['terminationReason']) {
   if (s.closing) return;
+  if (reason) {
+    workDb().prepare('UPDATE terminal_sessions SET termination_reason=? WHERE id=?').run(reason, s.id);
+    s.terminationReason = reason;
+  }
   s.closing = true;
   s.pty.kill();
 }
@@ -155,6 +162,8 @@ function view(r: Row, inspect = false): SessionView {
     title: r.title,
     state: r.state,
     exitCode: r.exit_code,
+    exitSignal: r.exit_signal ?? null,
+    terminationReason: r.termination_reason ?? null,
     owner: leaseOwner(ownerKey(r.id)),
     cols: live.get(r.id)?.term.cols ?? r.cols,
     rows: live.get(r.id)?.term.rows ?? r.rows,
@@ -380,15 +389,18 @@ export async function startSession(
     if (s.pendingBytes >= 64 * 1024) flushOutput(s);
     else s.outputTimer ??= setTimeout(() => flushOutput(s), 8);
   });
-  pty.onExit(({ exitCode }) => {
+  pty.onExit(({ exitCode, signal }) => {
+    const exitSignal = typeof signal === 'number' && signal > 0 ? signal : null;
     flushOutput(s);
     term.write("", () => {
+      // A cancellation can arrive while xterm drains the final output.
+      const reason = s.terminationReason ?? (exitSignal ? 'signal' : null);
       persist(s);
       workDb()
         .prepare(
-          "UPDATE terminal_sessions SET state='exited',exit_code=?,task_state=CASE WHEN task_state='active' THEN 'needs-attention' ELSE task_state END WHERE id=?",
+          "UPDATE terminal_sessions SET state='exited',exit_code=?,exit_signal=?,termination_reason=?,task_state=CASE WHEN ?='cancelled' THEN 'cancelled' WHEN task_state='active' THEN 'needs-attention' ELSE task_state END WHERE id=?",
         )
-        .run(exitCode, id);
+        .run(reason ? null : exitCode, exitSignal, reason, reason, id);
       live.delete(id);
       releaseLease(ownerKey(id), leaseOwner(ownerKey(id)) ?? "");
       emitDev(user, "session", id, view(rowOf(user, id)));
@@ -504,10 +516,10 @@ export function interruptSession(user: number, id: string, owner: string) {
   claimInput(rowOf(user, id), owner, false, true);
   s.pty.write("\x03");
 }
-export function closeSession(user: number, id: string) {
+export function closeSession(user: number, id: string, reason: 'cancelled' | 'closed' = 'closed') {
   const s = running(user, id);
   persist(s);
-  stopPty(s);
+  stopPty(s, reason);
 }
 export function configureSession(
   user: number,
@@ -585,7 +597,7 @@ export function shutdownTerminals(): Promise<void> {
       try { persist(s); }
       catch (error) { console.error("[terminal] Failed to save shutdown snapshot", error); }
       finally {
-        try { stopPty(s); } catch { /* already exited */ }
+        try { stopPty(s, 'runtime-shutdown'); } catch { /* already exited */ }
         resolve();
       }
     });

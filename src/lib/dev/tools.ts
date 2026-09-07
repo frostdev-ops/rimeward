@@ -29,6 +29,7 @@ import {
   executable,
 } from "./terminals.ts";
 import { fitOutput } from "../agent/shell.ts";
+import { applyProjectPatch } from './apply-patch.ts';
 const str = (description: string) => ({ type: "string", description });
 const schema = (
   properties: Record<string, unknown>,
@@ -95,6 +96,14 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
             ? gitView(c.userId, a.project, a.path || undefined, DIFF_CAP, a.cursor)
             : searchPage(c.userId, a.project, a.query ?? "", a.path ?? "", a.cursor, a.includeIgnored === true),
   ),
+  apply_patch: wrap(
+    'confirm',
+    'Apply targeted diffs directly to disk in a desktop project. Use *** Begin Patch / *** End Patch with *** Add File: (+ lines), *** Update File: (@@ context hunks), *** Delete File:, optional *** Move to:, and *** End of File. Exact context only; ambiguous/missing context, dirty or other-owned buffers abort preflight for every file. No shell/git syntax. Up to 20 operations and 1 MiB of patch text. Recovery copies precede destructive writes; I/O failure may be partial. Returns saved/revision receipts, not contents.',
+    schema({ ...context, patch: str('Codex-style patch text, including Begin/End Patch markers'),
+      expected_revisions: { type: 'object', description: 'Optional project-relative path to project_read buffer revision map; 0 for an unread/new path. Disk hashes are always rechecked.', additionalProperties: { type: 'integer', minimum: 0 } },
+    }, ['runtime', 'project', 'patch']),
+    (a, c) => applyProjectPatch(c.userId, a.project, owner(c), a.patch, a.expected_revisions),
+  ),
   project_edit: wrap(
     "write",
     "Edit a versioned recovery buffer. Explicit save writes the file. `text` is the WHOLE file — read every page first. revision 0 on a path that does not exist creates the file. On conflict inspect both versions and ask the user; never take over a human buffer.",
@@ -160,7 +169,7 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
   terminal_exec: {
     ...wrap(
       "confirm",
-      "Run a native shell command in a desktop project and return its actual exit code. Commands can change files and access this computer/network; the ward approval policy applies. The session is visible in Terminal and outlives chat views. Use background:true for builds, tests, dev servers or other long work; task_output reads live logs. Stop terminates this command's session, not a user's existing terminal. Never assume an exit code proves a requested change is correct.",
+      "Run a native shell command in a desktop project. Returns exit_code for normal exits; signal/cancellation/termination returns null with exit_signal, cancelled and termination_reason. Commands can change files and access this computer/network; the ward approval policy applies. The session is visible in Terminal and outlives chat views. Use background:true for long work; task_output reads live logs. Stop terminates this command's session, not a user's existing terminal. Never assume an exit code proves a requested change is correct.",
       schema({ ...context, command: str("Exact shell command; /bin/sh on macOS/Linux, PowerShell on Windows"), title: str("Short task label") }, ["runtime", "project", "command"]),
       async (a, c) => {
         c.signal?.throwIfAborted();
@@ -168,7 +177,7 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
         if (!shell) throw Error('PowerShell is not installed.');
         const session = await startSession(c.userId, { project: a.project, kind: 'shell', mode: 'human', shell,
           command: a.command, task: a.command, title: a.title || 'Rime command' });
-        const stop = () => { if (listSessions(c.userId).some(s => s.id === session.id && s.state === 'running')) closeSession(c.userId, session.id); };
+        const stop = () => { if (listSessions(c.userId).some(s => s.id === session.id && s.state === 'running')) closeSession(c.userId, session.id, 'cancelled'); };
         c.signal?.addEventListener('abort', stop, { once: true });
         let after = 0, output = '', truncated = false;
         try {
@@ -183,7 +192,9 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
             after = read.session.sequence;
             if (read.session.state !== 'running') {
               const fitted = fitOutput(output, '');
-              return { session: session.id, exit_code: read.session.exitCode, ...fitted, truncated: truncated || fitted.truncated };
+              return { session: session.id, exit_code: read.session.exitCode, exit_signal: read.session.exitSignal ?? null,
+                cancelled: read.session.terminationReason === 'cancelled', termination_reason: read.session.terminationReason ?? null,
+                ...fitted, truncated: truncated || fitted.truncated };
             }
           }
         } finally { c.signal?.removeEventListener('abort', stop); }

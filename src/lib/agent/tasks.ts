@@ -106,6 +106,19 @@ export function taskNotices(ctx: ToolCtx): string[] {
   return rows.map(r => `Background task ${r.id} (${r.tool}): ${r.state}. ${r.error ?? ''} Use task_output to inspect its result before claiming success or repeating work.`);
 }
 
+/** A command terminated by a signal has no ordinary exit code; null is never success. */
+export function toolFailure(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const result = value as Record<string, unknown>;
+  if (result.cancelled === true || result.termination_reason === 'cancelled') return 'Command cancelled.';
+  if (result.error != null) return String(result.error) || 'Tool reported failure.';
+  if (typeof result.exit_signal === 'number' && result.exit_signal > 0) return `Command terminated by signal ${result.exit_signal}.`;
+  if (typeof result.termination_reason === 'string' && result.termination_reason) return `Command terminated (${result.termination_reason}).`;
+  if ('exit_code' in result && result.exit_code !== 0) return typeof result.exit_code === 'number' && Number.isFinite(result.exit_code)
+    ? `Command exited with status ${result.exit_code}` : 'Command ended without a normal exit status.';
+  return result.ok === false ? 'Tool reported failure.' : null;
+}
+
 /** One dispatch path for ordinary and confirmed calls. Approval happens in core before this. */
 export async function runTask(name: string, args: Record<string, unknown>, ctx: ToolCtx, def: ToolDef): Promise<unknown> {
   const store = db();
@@ -138,10 +151,11 @@ export async function runTask(name: string, args: Record<string, unknown>, ctx: 
   };
   run.done = Promise.resolve().then(() => def.run(args, { ...ctx, signal: ac.signal, progress })).then(value => {
     const json = JSON.stringify(value ?? null);
-    const failed = value && typeof value === 'object' && ('error' in value || ('exit_code' in value && value.exit_code !== 0));
+    const error = toolFailure(value);
+    const cancelled = ac.signal.aborted || !!(value && typeof value === 'object' && 'cancelled' in value && value.cancelled === true);
     store.prepare('UPDATE agent_jobs SET state=?,finished_at=?,result=?,error=? WHERE id=?')
-      .run(ac.signal.aborted ? 'cancelled' : failed ? 'failed' : 'completed', Date.now(), json.length <= RESULT_KEEP ? json : JSON.stringify({ omitted: true, note: 'Result exceeded 128k characters; inspect the output or source. Do not repeat a mutation.', preview: json.slice(0, 8000) }),
-        failed ? String('error' in value ? value.error : `Command exited with status ${value.exit_code}`).slice(0, 500) : null, id);
+      .run(cancelled ? 'cancelled' : error !== null ? 'failed' : 'completed', Date.now(), json.length <= RESULT_KEEP ? json : JSON.stringify({ omitted: true, note: 'Result exceeded 128k characters; inspect the output or source. Do not repeat a mutation.', preview: json.slice(0, 8000) }),
+        error?.slice(0, 500) ?? null, id);
     return value;
   }).catch(error => {
     const message = error instanceof Error ? error.message : String(error);

@@ -8,6 +8,7 @@ import { readPages, pageOfCard } from "./pages.ts";
 import { CATALOG, type WardInstance } from "../../lib/wards.ts";
 import {
   DEV_WARDS,
+  terminalExitLabel,
   type Project,
   type SessionView,
   type TerminalKind,
@@ -294,7 +295,7 @@ async function mount(w: WardInstance) {
         keys.hidden = !showKeys || !session || session.state !== "running";
         keys.querySelectorAll<HTMLButtonElement>("button").forEach(b => { b.disabled = !writable; });
         const text = !connected || !streamReady ? "Reconnecting…" : !session ? "Ready" :
-          session.state !== "running" ? (session.state === "exited" ? `Exited${session.exitCode === null ? "" : ` · ${session.exitCode}`}` : "Interrupted") :
+          session.state !== "running" ? terminalExitLabel(session) :
           uncertain.has(session.id) ? "Input unconfirmed · review the screen" :
           writable ? "You’re in control" : session.owner ? "Viewing · controlled elsewhere" : "Viewing only";
         if (status.textContent !== text) status.textContent = text;

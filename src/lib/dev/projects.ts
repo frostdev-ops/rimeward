@@ -16,8 +16,8 @@ import {
 import type { Project, BufferView } from "./types.ts";
 
 const exec = promisify(execFile);
-const MAX_FILE = 5 * 1024 * 1024;
-const hash = (b: Buffer) => crypto.createHash("sha256").update(b).digest("hex");
+export const MAX_FILE = 5 * 1024 * 1024;
+export const hash = (b: Buffer) => crypto.createHash("sha256").update(b).digest("hex");
 const inside = (root: string, file: string) =>
   file === root ||
   (!path.relative(root, file).startsWith(`..${path.sep}`) &&
@@ -297,7 +297,7 @@ export function treePage(user: number, project: string, dir = "", cursor = 0) {
   return { entries, snapshot: hash(Buffer.from(JSON.stringify(all))), total: all.length, complete: next >= all.length, ...(next < all.length ? { next } : {}) };
 }
 
-function decode(raw: Buffer) {
+export function decode(raw: Buffer) {
   let encoding = "utf8",
     bytes = raw;
   if (raw.subarray(0, 3).equals(Buffer.from([239, 187, 191]))) {
@@ -338,7 +338,7 @@ function decode(raw: Buffer) {
     : text.replace(/\r\n?|\n/g, "\n");
   return { text, encoding, newline, readonly: readonly || mixed };
 }
-function encode(text: string, encoding: string, newline: string): Buffer {
+export function encode(text: string, encoding: string, newline: string): Buffer {
   const normalized = text.replace(/\r\n?|\n/g, "\n").replace(/\n/g, newline);
   if (encoding.startsWith("utf16")) {
     const b = Buffer.from(normalized, "utf16le");
@@ -352,7 +352,7 @@ function encode(text: string, encoding: string, newline: string): Buffer {
     Buffer.from(normalized),
   ]);
 }
-interface BufferRow {
+export interface BufferRow {
   text: string;
   base_hash: string;
   revision: number;
@@ -361,7 +361,7 @@ interface BufferRow {
   newline: string;
   readonly: number;
 }
-const bufferKey = (u: number, p: string, f: string) => `buffer:${u}:${p}:${f}`;
+export const bufferKey = (u: number, p: string, f: string) => `buffer:${u}:${p}:${f}`;
 export function readBuffer(
   user: number,
   project: string,

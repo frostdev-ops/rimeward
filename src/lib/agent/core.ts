@@ -4,6 +4,7 @@ import { getSetting, setSetting, takeSetting, deleteSetting } from '../settings.
 import { getDashboard, getPages, saveDashboard } from '../dashboard.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { projectOf } from '../dev/projects.ts';
+import { parsePatch } from '../dev/patch.ts';
 import { sharedRime, syncRime } from './sync.ts';
 import { createPacket } from '../flow.ts';
 import { pageOf, wardTitle, CATALOG, MAX_H, MAX_W } from '../wards.ts';
@@ -46,7 +47,7 @@ import {
 } from './provider.ts';
 import { TOOLS, aiTools, dirtiesNotion, type ToolCtx, type ToolDef, type ToolKind } from './tools.ts';
 import { commandHelp } from './commands.ts';
-import { runTask, listTasks, backgroundTasks, taskNotices } from './tasks.ts';
+import { runTask, listTasks, backgroundTasks, taskNotices, toolFailure } from './tasks.ts';
 import { isCommsType } from '../comms/types.ts';
 
 // The agent loop, ported from the PMA office assistant: run the model until it
@@ -80,6 +81,7 @@ export interface AgentWardConfig {
 export interface PendingConfirm {
   confirmId: string;
   summary: string;
+  patch?: string;
 }
 
 export type AgentEvent =
@@ -265,7 +267,8 @@ export function parkConfirm(conv: ConvRow, call: { call_id: string; name: string
   const parked: ParkedCall = { userId: conv.user_id, conv: conv.id, call_id: call.call_id, name: call.name, args: call.args, at: Date.now() };
   setSetting(`agent_confirm:${confirmId}`, JSON.stringify(parked));
   setPendingConfirm(conv.id, confirmId);
-  return { confirmId, summary: summarize(call.name, call.args, conv.user_id) };
+  return { confirmId, summary: summarize(call.name, call.args, conv.user_id),
+    ...(call.name === 'apply_patch' ? { patch: String(call.args.patch ?? '') } : {}) };
 }
 
 export function claimConfirm(userId: number, conv: ConvRow, confirmId: string): ParkedCall {
@@ -330,6 +333,9 @@ function expireStaleConfirm(conv: ConvRow, provider: AgentProvider): void {
 export function summarize(name: string, args: Record<string, unknown>, userId: number): string {
   try {
     switch (name) {
+      case 'apply_patch':
+        return `Save this patch directly to disk in ${projectOf(userId, String(args.project)).root}?\n\n${parsePatch(args.patch).map(op =>
+          `${op.kind === 'update' && op.move ? 'Move/update' : op.kind}: ${op.path}${op.kind === 'update' && op.move ? ` → ${op.move}` : ''}`).join('\n')}\n\nRecovery copies are retained. I/O failures can leave partial changes.`;
       case 'terminal_exec':
         return `Run this native command in ${projectOf(userId, String(args.project)).root}?\n\n${String(args.command ?? '').slice(0, 16000)}`;
       case 'task_cancel':
@@ -523,7 +529,7 @@ export function buildInstructions(cfg: AgentWardConfig, userId: number, ward: st
     `Be concise and concrete. Format with Markdown.`,
     cfg.persona ? `The user set this persona for you — follow it within the rules above:\n${cfg.persona}` : '',
     `Current wards: ${layout}.`,
-    projectPage ? `Current desktop project: ${JSON.stringify({ page: projectPage.id, title: projectPage.title, project: projectPage.project })}. This is the default project for this chat. Use runtime "desktop" and this project ID with desktop tools; desktop_projects resolves its folder. Inspect files, terminal state, and changes before acting. Native terminal input follows the session's user-selected permission mode.` : '',
+    projectPage ? `Current desktop project: ${JSON.stringify({ page: projectPage.id, title: projectPage.title, project: projectPage.project })}. This is the default project for this chat. Use runtime "desktop" and this project ID with desktop tools; desktop_projects resolves its folder. Inspect files, terminal state, and changes before acting. Prefer apply_patch for targeted disk edits after reading the relevant context; project_edit replaces whole recovery buffers. Check mutation receipts before retrying. Native terminal input follows the session's user-selected permission mode.` : '',
     peersBlock(userId, ward),
     skillsBlock(userId),
     memoryBlock(userId),
@@ -541,11 +547,12 @@ function pushOutput(provider: AgentProvider, items: unknown[], call: AgentToolCa
   let json = JSON.stringify(output ?? null);
   if (json.length > OUTPUT_CAP) {
     const value = output && typeof output === 'object' ? output as Record<string, unknown> : {};
-    const failed = value.error != null || value.ok === false || (typeof value.exit_code === 'number' && value.exit_code !== 0);
+    const failure = toolFailure(value);
+    const failed = failure !== null;
     json = JSON.stringify({
       resultOmitted: true,
       outcome: value.declined || value.notRun ? 'not-run' : failed ? 'failed' : value.ok === true || value.exit_code === 0 ? 'succeeded' : 'unknown',
-      ...(failed ? { error: String(value.error ?? `Tool reported failure${value.exit_code === undefined ? '' : ` (exit ${value.exit_code})`}`).slice(0, 500) } : {}),
+      ...(failed ? { error: failure?.slice(0, 500) } : {}),
       note: `Result omitted (${json.length} chars > ${OUTPUT_CAP}); omission does not establish success or failure. For reads, narrow the query or use pagination. For changes, inspect the current state; do not repeat an operation just because its response was omitted.`,
     });
   }
@@ -1263,7 +1270,8 @@ export async function wardSurface(userId: number, ward: string): Promise<{
   let pending: PendingConfirm | null = null;
   if (conv?.pending_confirm_id) {
     const parked = livePendingConfirm(conv);
-    if (parked) pending = { confirmId: conv.pending_confirm_id, summary: summarize(parked.name, parked.args, userId) };
+    if (parked) pending = { confirmId: conv.pending_confirm_id, summary: summarize(parked.name, parked.args, userId),
+      ...(parked.name === 'apply_patch' ? { patch: String(parked.args.patch ?? '') } : {}) };
     // Expired while parked: decline it now so the thread isn't stuck.
     else void getProvider(wardCfg.provider).then((p) => expireStaleConfirm(conv, p));
   }
