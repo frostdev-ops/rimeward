@@ -4,7 +4,18 @@
     "targets": ["deb", "appimage"],
     "linux": {
       "deb": {
-        "depends": ["libc6 (>= 2.39)", "libpipewire-0.3-0 (>= 0.3.65)"]
+        "depends": [
+          "libc6 (>= 2.39)",
+          "unzip",
+          "libxcb1",
+          "libxrandr2",
+          "libdbus-1-3",
+          "libpipewire-0.3-0 (>= 0.3.65)",
+          "libwayland-client0",
+          "libwayland-server0",
+          "libegl1",
+          "libgbm1"
+        ]
       }
     }
   }

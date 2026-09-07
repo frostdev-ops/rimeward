@@ -2,6 +2,7 @@ import './_setup.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createUser } from '../src/lib/users.ts';
 import { createSession, destroySession } from '../src/lib/auth.ts';
 import { getDashboard, saveDashboard } from '../src/lib/dashboard.ts';
@@ -14,6 +15,18 @@ import { mergeInstance, wardDevice } from '../src/lib/dev/instance.ts';
 import { csrfBlocked } from '../src/lib/csrf.ts';
 import { ALL as harness } from '../src/pages/api/devices/harness/[...action].ts';
 import { relayAgentCaller } from '../src/lib/dev/tool-routing.ts';
+
+test('remote desktop deployment routes retain relay privacy and backpressure settings', () => {
+  const nginx = readFileSync(new URL('../ops/runtime-relay.nginx.conf', import.meta.url), 'utf8');
+  const routes = [...nginx.matchAll(/location ~ (\S+) \{([^}]+)\}/g)];
+  const route = routes.find(([, pattern]) => new RegExp(pattern).test('/api/remote-desktop/sessions'));
+  assert.ok(route, 'remote desktop requests need a streaming proxy location');
+  for (const setting of ['proxy_buffering off;', 'proxy_request_buffering off;', 'proxy_cache off;', 'proxy_max_temp_file_size 0;', 'access_log off;', 'error_log /dev/null crit;'])
+    assert.ok(route[2].includes(setting), setting);
+  const rulesets = JSON.parse(readFileSync(new URL('../ops/cloudflare-relay.json', import.meta.url), 'utf8'));
+  for (const ruleset of rulesets) for (const rule of ruleset.rules)
+    assert.ok(rule.expression.includes('starts_with(http.request.uri.path, "/api/remote-desktop/")'));
+});
 
 test('owner authorization, capability categories and policy compare-and-swap', () => {
   const user = createUser('remote-policy@example.com', null), other = createUser('remote-policy-other@example.com', null);

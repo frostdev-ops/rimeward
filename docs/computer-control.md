@@ -107,6 +107,10 @@ firewalls. The root-only shared secret remains in `/etc/rimeward/turn.secret`.
 The account server reads that file and issues five-minute session-associated
 credentials; no secret belongs in source control or dashboard settings.
 
+Install the reviewed `ops/runtime-relay.nginx.conf` snippet and apply the matching
+`ops/cloudflare-relay.json` rules. Both include `/api/remote-desktop/` so signaling,
+clipboard and file payloads inherit the relay's buffering, cache and logging exclusions.
+
 Devices → Remote Desktop diagnostics shows owner-scoped 30-day session totals,
 connection failures, HTTPS relay bytes, viewer-reported media bytes and network RTT.
 The TURN check validates its TLS listener and certificate; forced-TURN tests prove
