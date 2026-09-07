@@ -146,7 +146,9 @@ The main recommendations have been implemented. This is now a more usable harnes
 - **Data flow and input authority:** generated instructions now distinguish desktop execution, remote inference, shared transcripts, and `/work` synchronization. Rime input is an explicit session capability, separate from the CLI launch policy; agent input cannot seize a human-owned terminal.
 - **Task evidence:** receipts capture file hashes, Git identity, reviewer, sequence, and reviewer-reported checks. Detailed review reads recompute staleness for listed files, and routine terminal reads omit the large receipt. This is materially stronger than a free-text “done” claim. Unlisted files and unrelated changes remain outside that stale check, as the implementation notes disclose.
 
-### Remaining findings
+### Historical findings — resolved in desktop 0.4.7
+
+These findings describe the `bf24153d` / `4bb5bd9` review baseline. Commit `e2a5b81` fixes all three; see the release verification below. They are retained here as the original evidence, not as open defects.
 
 #### R1 — Root search mixes generated files and other checkouts (medium priority; live)
 
@@ -186,3 +188,7 @@ R1–R3 above are addressed: source search uses Git’s tracked/non-ignored work
 The background-task review also added the exact native command and project folder to approvals, kept Tasks available without a configured provider, and coalesced live-output database writes. Existing tests are retained; no new test cases were added.
 
 Release validation passed all 452 existing tests, TypeScript, desktop lint, the production build, and the editor/terminal/chat smoke checks; documentation goldens were regenerated. The remote-workspace smoke flow passed PC → phone → PC continuation and offline recovery with fixture model responses. Isolated manual checks verified ignored/nested-checkout search scope, explicit excluded-file access, sandbox/native task cancellation, native nonzero exit reporting, cross-ward task access denial, and one-time completion notices. No external model calls were made.
+
+Final verification against `e2a5b81` exercised the actual search and tool-loop paths in an isolated runtime. Three root-search pages contained 229 matches and no `.astro/` or `.claude/worktrees/` paths. Scoped search returned all 204 current `core.ts` matches, exactly matching an independent file read. Oversized successful, thrown-error, declined, and unknown results retained distinct outcomes in valid JSON below the 12k cap; the thrown error retained a 500-character summary. Both generated peer instructions and the `ask_agent` description identify shared per-user memory. No production code or new test cases were needed in this final pass.
+
+The same revision passed Linux and Windows main CI, four native Rust tests, Clippy, and the packaged standalone check. Desktop 0.4.7 was signed, installed, and started on the Mac; its four pages, 28 wards, shared theme, online synchronization without conflicts, and authenticated production relay were verified. Frostdev serves `v0.22.5 e2a5b81`. Installer publication is tracked separately in the `desktop-v0.4.7` Actions run.
