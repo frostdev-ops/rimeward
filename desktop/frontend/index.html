@@ -1,1 +1,65 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Rimeward</title></head><body style="background:#101419;color:#ddd;font:18px system-ui;padding:3rem"><h1>Rimeward</h1><p>Starting your local environment…</p><p>If startup stops, unlock your operating system credential store and reopen the app.</p></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width">
+    <title>Rimeward</title>
+    <style>
+      :root { color-scheme: dark light; font: 16px/1.6 system-ui, sans-serif; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: light-dark(#f5f7fa, #101419); color: light-dark(#18212c, #e1e7ef); }
+      main { width: min(36rem, calc(100% - 3rem)); padding: 2rem 0; }
+      h1 { margin: 0 0 1rem; font-size: 1.7rem; letter-spacing: -.04em; }
+      p { margin: .75rem 0; }
+      #detail { opacity: .75; }
+      code { overflow-wrap: anywhere; font-size: .85rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Rimeward</h1>
+      <div role="status" aria-live="polite">
+        <p id="status">Starting your local environment…</p>
+        <p id="detail">Preparing the application.</p>
+      </div>
+      <p id="diagnostic" hidden><code></code></p>
+    </main>
+    <script>
+      const stages = {
+        initializing: 'Preparing the application.',
+        files: 'Locating the runtime and your local data.',
+        credentials: 'Opening your operating system credential store.',
+        port: 'Preparing the local connection.',
+        runtime: 'Starting the bundled runtime.',
+        backend: 'Loading your local environment.',
+        window: 'Opening your workspace.',
+        ready: 'Your workspace is ready.',
+      };
+      const fixes = {
+        'credential-access': 'Your operating system denied access to the saved encryption key. Sign in to your normal OS account and check credential-store access, then quit Rimeward from its tray menu and reopen it.',
+        'credential-store': 'The operating system could not read or save the encryption key. Keep your existing Rimeward credentials and data; use the diagnostic code below to investigate.',
+        'missing-file': 'A required runtime file could not be found. Reinstall Rimeward using the latest installer and check whether your security software quarantined a file.',
+        'access-denied': 'The operating system blocked access to a required file or local connection. Check application permissions and your security software.',
+        'port-in-use': 'The saved local port is already in use. Quit other Rimeward instances from the tray, then reopen the app.',
+        'runtime-error': 'The local runtime could not start. Check runtime-diagnostics.jsonl in Rimeward’s application-data folder and share the diagnostic code below.',
+      };
+      const started = Date.now();
+      async function update() {
+        try {
+          const result = await window.__TAURI__.core.invoke('startup_status');
+          document.querySelector('#detail').textContent = result.error ? fixes[result.error] : stages[result.stage];
+          if (result.error) {
+            document.querySelector('#status').textContent = 'Your local environment could not start.';
+            document.querySelector('#diagnostic').hidden = false;
+            document.querySelector('code').textContent = `${result.stage} / ${result.error}${result.os_code === null ? '' : ` / OS ${result.os_code}`}`;
+            return;
+          }
+          if (Date.now() - started > 60000) document.querySelector('#status').textContent = 'Startup is taking longer than expected.';
+        } catch {
+          document.querySelector('#detail').textContent = 'Waiting for the desktop connection. If this persists, quit Rimeward from its tray menu and reopen it.';
+        }
+        setTimeout(update, 1000);
+      }
+      update();
+    </script>
+  </body>
+</html>

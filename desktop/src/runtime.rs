@@ -12,6 +12,72 @@ pub struct Runtime(pub Arc<Mutex<Option<Child>>>);
 #[derive(Default)]
 pub struct Workspace(pub Mutex<Option<(url::Url, String)>>);
 
+#[derive(Clone, serde::Serialize)]
+pub struct StartupStatus {
+    stage: &'static str,
+    error: Option<&'static str>,
+    os_code: Option<i64>,
+}
+pub struct Startup(pub std::sync::Mutex<StartupStatus>);
+impl Default for Startup {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(StartupStatus {
+            stage: "initializing",
+            error: None,
+            os_code: None,
+        }))
+    }
+}
+#[tauri::command]
+pub fn startup_status(state: tauri::State<'_, Startup>) -> StartupStatus {
+    state.0.lock().unwrap().clone()
+}
+fn startup_stage(app: &AppHandle, stage: &'static str) {
+    app.state::<Startup>().0.lock().unwrap().stage = stage;
+}
+pub fn startup_failed(app: &AppHandle, error: &(dyn std::error::Error + 'static)) {
+    // Never expose Display/Debug: credential errors can contain secret bytes.
+    let category = match error.downcast_ref::<keyring::Error>() {
+        Some(keyring::Error::NoStorageAccess(_)) => "credential-access",
+        Some(_) => "credential-store",
+        None => match error.downcast_ref::<std::io::Error>().map(|e| e.kind()) {
+            Some(std::io::ErrorKind::NotFound) => "missing-file",
+            Some(std::io::ErrorKind::PermissionDenied) => "access-denied",
+            Some(std::io::ErrorKind::AddrInUse) => "port-in-use",
+            _ => "runtime-error",
+        },
+    };
+    let mut source = Some(error);
+    let mut os_code = None;
+    while let Some(error) = source {
+        if let Some(error) = error.downcast_ref::<std::io::Error>() {
+            os_code = error.raw_os_error().map(i64::from);
+            break;
+        }
+        #[cfg(windows)]
+        if let Some(error) = error.downcast_ref::<keyring::windows::Error>() {
+            os_code = Some(i64::from(error.0));
+            break;
+        }
+        source = error.source();
+    }
+    let state = app.state::<Startup>();
+    let mut status = state.0.lock().unwrap();
+    status.error = Some(category);
+    status.os_code = os_code;
+    if let Ok(data) = app.path().app_data_dir() {
+        runtime_diagnostic(
+            &data.join("runtime-diagnostics.jsonl"),
+            &format!(
+                "startup-{}-{category}-{}",
+                status.stage,
+                os_code.unwrap_or(0)
+            ),
+        );
+    }
+    super::set_status(app, "Rimeward could not start; open the app for details");
+}
+
 /// Fixed loopback destination; the native token never reaches page JavaScript.
 pub async fn workspace_request(
     app: &AppHandle,
@@ -93,6 +159,7 @@ fn encryption_key(service: &str) -> Result<String, Box<dyn std::error::Error + S
     }
 }
 pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    startup_stage(&app, "files");
     let resources = app.path().resource_dir()?.join("runtime");
     let data = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data)?;
@@ -106,7 +173,9 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
             "rimeward-node"
         });
     let service = app.config().identifier.clone();
+    startup_stage(&app, "credentials");
     let key = encryption_key(&service)?;
+    startup_stage(&app, "port");
     // Keep loopback OAuth redirect URIs stable across application restarts.
     let port_file = data.join("runtime-port");
     let port = std::fs::read_to_string(&port_file)
@@ -122,7 +191,12 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
             port
         }
     };
+    startup_stage(&app, "runtime");
     let mut command = Command::new(node);
+    // Tauri already canonicalized this path. Node 22's main-module realpath
+    // fails on Windows \\?\ paths; retain the resolved UNC/long path as-is.
+    #[cfg(windows)]
+    command.arg("--preserve-symlinks-main");
     command
         .arg(resources.join("app/desktop-runtime.mjs"))
         .current_dir(resources.join("app"));
@@ -168,6 +242,7 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     #[cfg(windows)]
     command.creation_flags(0x08000000);
     let mut child = command.spawn()?;
+    startup_stage(&app, "backend");
     let mut stderr = child.stderr.take().ok_or("missing runtime stderr")?;
     let diagnostics = data.join("runtime-diagnostics.jsonl");
     runtime_diagnostic(&diagnostics, "started");
@@ -185,6 +260,8 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                 "out-of-memory"
             } else if text.contains("MODULE_NOT_FOUND") {
                 "missing-module"
+            } else if text.contains("EISDIR") {
+                "invalid-runtime-path"
             } else if text.contains("EACCES") {
                 "access-denied"
             } else {
@@ -209,6 +286,7 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
         match message["type"].as_str() {
             Some("ready") => {
                 if let Some(url) = message["url"].as_str() {
+                    startup_stage(&app, "window");
                     let bootstrap = url::Url::parse(url)?;
                     let token = bootstrap
                         .query_pairs()
@@ -229,6 +307,7 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                         window.navigate(bootstrap)?;
                     }
                     super::set_status(&app, "Rimeward is running");
+                    startup_stage(&app, "ready");
                 }
             }
             Some("vault") => {
@@ -270,7 +349,11 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     }
     runtime_diagnostic(&diagnostics, "runtime-disconnected");
     super::set_status(&app, "Rimeward stopped; reopen to recover");
-    Ok(())
+    if app.state::<Startup>().0.lock().unwrap().stage == "ready" {
+        Ok(())
+    } else {
+        Err("Local runtime disconnected before startup completed".into())
+    }
 }
 // Only fixed categories reach this rotating owner-only file; never raw stderr.
 fn runtime_diagnostic(file: &std::path::Path, category: &str) {

@@ -6,6 +6,7 @@ fn main() {
             "ward_touch",
             "workspace_navigation",
             "open_workspace",
+            "startup_status",
         ]),
     ))
     .expect("tauri-build");

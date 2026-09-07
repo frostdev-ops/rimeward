@@ -120,6 +120,14 @@ macOS release packaging signs nested Chromium apps, frameworks, executables, and
 
 Release validation still requires signed installers and native PTY/credential-store behavior on Windows and Linux, physical mobile touch/IME testing, real delegated-agent task/approval flows, and checking production proxy/edge logs, caches, temporary files, and backups. Automated browser emulation is not a substitute for those checks. Language servers, cross-file type checking, debugging, and VS Code extension compatibility are not included.
 
+### Desktop startup diagnostics
+
+Windows 0.4.9 could exit before evaluating the backend: Tauri supplies a canonical `\\?\` script path, and Node 22.22.0's main-module `realpath` fails on that form with `EISDIR` at the drive root. The Windows launcher now passes `--preserve-symlinks-main`; Tauri has already resolved the path, so Node can use it directly without stripping UNC or long-path prefixes. This applies only to the main script, not dependency resolution. The disposable Windows reproduction must exercise the native canonical script and working directory, including bootstrap HTTP; the ordinary-path standalone check alone did not expose this failure.
+
+The native startup screen reports the current stage and, on failure, a bounded category and OS error number when available. Credential-store guidance appears only for a credential-store failure. Earlier builds displayed that guidance unconditionally, so seeing it does **not** establish that the store is locked. Startup errors before the backend launches and early backend exits are now recorded too; raw errors and credentials are never exposed.
+
+On Windows, the diagnostic file is `%APPDATA%\io.frostdev.rimeward\runtime-diagnostics.jsonl`. When reporting a startup problem, include the app version, Windows version, installer type (`.exe` or `.msi`), the on-screen diagnostic code, and the last few diagnostic categories. If an older build produces no file, report that instead. Do not delete the saved encryption key or application data to troubleshoot startup. The existing standalone check exercises the bundled backend directly; it does not verify the installed native shell or OS credential-store access.
+
 ## macOS shutdown investigation
 
 The September 5 WindowServer report recorded a 40-second watchdog timeout; it does not establish which app triggered it. A separate Rimeward hang report showed its main thread waiting during Quit. Shutdown previously called `block_on` from the UI event callback. It now defers exit, awaits backend/browser cleanup asynchronously, and exits after cleanup, without blocking the event loop. The WindowServer trigger remains unconfirmed; the app was not relaunched to try reproducing a system-wide failure.

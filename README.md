@@ -213,6 +213,8 @@ Rime can make targeted disk edits with [apply_patch](docs/apply-patch.md), inclu
 
 Pair servers in **Connections** after launch. See [development workspace setup and validation](docs/development-workspaces.md), including the required proxy privacy configuration. The desktop release workflow builds separately for Apple silicon, Intel macOS, Windows, and Linux on a `desktop-v*` tag: macOS DMGs, Windows installers, and Linux DEB/AppImage packages. Signing uses the Apple secrets listed in that workflow; publication waits for every platform to pass.
 
+The Windows launcher preserves Tauri's resolved runtime path to avoid Node 22's canonical-path startup failure. The startup screen now reports the failing stage and a safe diagnostic code instead of blaming every failure on the operating system credential store. See [startup diagnostics](docs/development-workspaces.md#desktop-startup-diagnostics) for troubleshooting.
+
 First launch offers **Bring your dashboard** or **Start right here**. To connect, enter your
 server address and approve the desktop in your normal browser; the remote dashboard is
 still there. **Open project** reuses an existing project page or creates Editor and Rime

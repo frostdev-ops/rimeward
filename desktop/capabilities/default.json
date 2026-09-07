@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The dashboard window.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "allow-startup-status"]
 }

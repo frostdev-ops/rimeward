@@ -31,11 +31,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(Shutdown::default())
         .manage(runtime::Workspace::default())
+        .manage(runtime::Startup::default())
         .invoke_handler(tauri::generate_handler![
             commands::ward_browser,
             commands::ward_touch,
             commands::workspace_navigation,
-            commands::open_workspace
+            commands::open_workspace,
+            runtime::startup_status
         ])
         .setup(|app| {
             #[cfg(desktop)]
@@ -62,11 +64,8 @@ pub fn run() {
             )));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if runtime::launch(handle.clone()).await.is_err() {
-                    set_status(
-                        &handle,
-                        "Rimeward could not start; check OS credential store",
-                    );
+                if let Err(error) = runtime::launch(handle.clone()).await {
+                    runtime::startup_failed(&handle, error.as_ref());
                 }
             });
             Ok(())
