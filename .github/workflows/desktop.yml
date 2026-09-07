@@ -19,22 +19,21 @@ on:
         description: Build and check every platform without publishing installers
         type: boolean
         default: true
+      platform:
+        description: Validation target (release builds always use every platform)
+        type: choice
+        default: all
+        options: [all, macos-latest, macos-15-intel, ubuntu-24.04, windows-latest]
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: macos-latest
-            args: --target aarch64-apple-darwin
-          - platform: macos-15-intel
-            args: --target x86_64-apple-darwin
-          - platform: ubuntu-24.04
-            args: ''
-          - platform: windows-latest
-            args: ''
+        platform: ${{ fromJSON(inputs.validation_only && inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-latest","macos-15-intel","ubuntu-24.04","windows-latest"]') }}
     runs-on: ${{ matrix.platform }}
+    env:
+      TAURI_BUILD_ARGS: ${{ matrix.platform == 'macos-latest' && '--target aarch64-apple-darwin' || matrix.platform == 'macos-15-intel' && '--target x86_64-apple-darwin' || '' }}
     permissions:
       contents: write
     steps:
@@ -54,6 +53,10 @@ jobs:
           test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
 
       - run: npm ci
+
+      - name: Select macOS 26 SDK for the ScreenCaptureKit bridge
+        if: matrix.platform == 'macos-15-intel'
+        run: sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -123,7 +126,7 @@ jobs:
       - name: Validate native application build
         if: github.event_name == 'workflow_dispatch' && inputs.validation_only
         working-directory: desktop
-        run: npx tauri build --no-bundle ${{ matrix.args }}
+        run: npx tauri build --no-bundle ${{ env.TAURI_BUILD_ARGS }}
 
       - name: App Store Connect key
         if: startsWith(matrix.platform, 'macos-') && (github.event_name == 'push' || !inputs.validation_only)
@@ -154,7 +157,7 @@ jobs:
           releaseCommitish: ${{ github.event.repository.default_branch }}
           releaseDraft: true
           prerelease: false
-          args: --verbose ${{ matrix.args }}
+          args: --verbose ${{ env.TAURI_BUILD_ARGS }}
 
   publish:
     needs: build
