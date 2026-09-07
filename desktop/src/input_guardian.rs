@@ -101,6 +101,10 @@ pub struct Input {
     healthy: bool,
 }
 impl Input {
+    #[cfg(target_os = "windows")]
+    pub fn get_marker_value(&self) -> usize {
+        self.native.get_marker_value()
+    }
     pub fn new() -> Result<Self, String> {
         let began = Instant::now();
         while CHILDREN.load(Ordering::SeqCst) != 0 {

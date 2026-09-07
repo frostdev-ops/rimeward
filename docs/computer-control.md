@@ -20,6 +20,12 @@ On macOS, allow Rimeward in Accessibility and Screen & System Audio Recording.
 
 ## Current transport and platform support
 
+Linux installers target Ubuntu 24.04 or newer, or an equivalent distribution with
+glibc 2.39, WebKitGTK 4.1 and PipeWire 0.3.65 or newer. Ubuntu 22.04's PipeWire
+headers cannot build XCap's current native bindings. Existing older desktop apps
+keep their project and terminal functionality and require an OS/app upgrade for
+this ward. macOS requires version 14 or newer.
+
 The app bundles a separate GStreamer 1.28.6 helper, Rust WebRTC/RTP plugins, and
 a restricted, checksummed set of native media libraries. It negotiates media over
 authenticated account signaling; video/audio use WebRTC and ordered input enters

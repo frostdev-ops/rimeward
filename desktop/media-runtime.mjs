@@ -96,7 +96,9 @@ if (!sdkLib) throw Error('GStreamer SDK libraries are missing');
 const pkgconfig = [path.join(sdk, 'bin', platform === 'win32' ? 'pkg-config.exe' : 'pkg-config'), path.join(cache, 'build-tools/bin/pkg-config')].find(file => fs.existsSync(file)) ?? 'pkg-config';
 const env = { ...process.env, PKG_CONFIG: pkgconfig, PKG_CONFIG_PATH: path.join(sdkLib, 'pkgconfig'),
   PATH: path.join(sdk, 'bin') + path.delimiter + process.env.PATH,
-  ...(platform === 'darwin' ? { DYLD_LIBRARY_PATH: sdkLib } : platform === 'linux' ? { LD_LIBRARY_PATH: sdkLib } : {}) };
+  // A fallback lets test binaries find GStreamer without replacing Cargo's
+  // system libcurl and its certificate trust store.
+  ...(platform === 'darwin' ? { DYLD_FALLBACK_LIBRARY_PATH: sdkLib } : platform === 'linux' ? { LD_LIBRARY_PATH: sdkLib } : {}) };
 if (capture(pkgconfig, ['--modversion', 'gstreamer-1.0'], { env }).trim() !== version) throw Error('GStreamer 1.28.6 SDK required');
 if (platform === 'linux' && !fs.existsSync(path.join(sdkLib, 'gstreamer-1.0/libgstpipewire.so'))) {
   const archive = await download('https://codeload.github.com/PipeWire/pipewire/tar.gz/refs/tags/1.4.9', '8066a7b220069e4c6e3b02bd2b6ea303bba66df255023c07c99323449ba8fe3c');
