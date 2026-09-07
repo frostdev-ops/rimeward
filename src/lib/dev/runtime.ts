@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { DATA_DIR } from "../db.ts";
+import { DATA_DIR, getDb } from "../db.ts";
 import type { RuntimeEvent } from "./types.ts";
 
 export const isDesktop = (): boolean =>
@@ -57,6 +57,19 @@ export function workDb(): Database.Database {
   `);
   if (!(db.pragma("table_info(terminal_sessions)") as { name: string }[]).some(c => c.name === "agent_input")) {
     db.transaction(() => db.exec("ALTER TABLE terminal_sessions ADD COLUMN agent_input INTEGER NOT NULL DEFAULT 0; UPDATE terminal_sessions SET agent_input=(mode != 'human')"))();
+  }
+  if (!(db.pragma("table_info(terminal_sessions)") as { name: string }[]).some(c => c.name === "is_command")) {
+    // Identify old command tabs from their receipts, never from user-authored titles.
+    const jobs = getDb().prepare("SELECT user_id,result FROM agent_jobs WHERE tool='terminal_exec'").all() as { user_id: number; result: string }[];
+    db.transaction(() => {
+      db.exec("ALTER TABLE terminal_sessions ADD COLUMN is_command INTEGER NOT NULL DEFAULT 0");
+      const mark = db.prepare("UPDATE terminal_sessions SET is_command=1 WHERE id=? AND user_id=? AND kind='shell'");
+      for (const job of jobs) {
+        let result: { session?: unknown } | null;
+        try { result = JSON.parse(job.result); } catch { continue; }
+        if (typeof result?.session === 'string') mark.run(result.session, job.user_id);
+      }
+    })();
   }
   db.transaction(() => {
     for (const [table, columns] of [

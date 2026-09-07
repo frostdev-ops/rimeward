@@ -243,6 +243,7 @@ async function mount(w: WardInstance) {
       let outputSize = 0, resync = false, released = false;
       let sessionOptions = "", autoAttach = !state.session && !state.closedSessions?.length;
       let attaching = Promise.resolve();
+      const tabVisible = (s: SessionView) => (!s.command || state.tabs?.includes(s.id)) && !state.closedSessions?.includes(s.id);
       const uncertain = new Set<string>();
       const canType = () => !stopped && !!session && connected && streamReady && session.state === "running" &&
         session.owner === owner && !uncertain.has(session.id);
@@ -321,7 +322,7 @@ async function mount(w: WardInstance) {
         if (canType() && (term.cols !== cols || term.rows !== rows)) resize();
       }
       function sessionList() {
-        const visible = list.filter(s => !state.closedSessions?.includes(s.id));
+        const visible = list.filter(tabVisible);
         const signature = JSON.stringify(visible.map(s => [s.id, s.title, s.state]));
         if (signature !== sessionOptions) {
           sessionOptions = signature;
@@ -404,8 +405,12 @@ async function mount(w: WardInstance) {
             const next: SessionView[] = await api("sessions", { project: state.project });
             if (stopped) return;
             list = next;
-            if (state.session && !list.some(s => s.id === state.session)) { state.session = undefined; autoAttach = true; }
-            const visible = list.filter(s => !state.closedSessions?.includes(s.id));
+            if (state.session && !list.some(s => s.id === state.session && tabVisible(s))) {
+              state.session = undefined; session = undefined; sequence = undefined;
+              outputs = []; outputSize = 0; term.reset(); autoAttach = true;
+              await remember();
+            }
+            const visible = list.filter(tabVisible);
             if (autoAttach && visible.length) {
               autoAttach = false;
               state.session = (visible.find(s => s.state === "running") ?? visible[0])?.id;
@@ -441,12 +446,14 @@ async function mount(w: WardInstance) {
           await updating;
           await painting;
           if (stopped || (!close && state.session === id && session)) return;
-          const visible = list.filter(s => !state.closedSessions?.includes(s.id));
+          const visible = list.filter(tabVisible);
           const at = visible.findIndex(s => s.id === id);
           const next = close ? (state.session === id ? (visible[at + 1] ?? visible[at - 1])?.id : state.session) : id;
           const closed = new Set(state.closedSessions);
           if (close) closed.add(id); else closed.delete(id);
-          const value = { ...state, session: next, closedSessions: [...closed] };
+          const tabs = new Set(state.tabs);
+          if (close) tabs.delete(id); else tabs.add(id);
+          const value = { ...state, session: next, tabs: [...tabs], closedSessions: [...closed] };
           await api("view", { id: w.i, value }, "POST");
           autoAttach = false;
           const switched = state.session !== next || !session;
@@ -582,7 +589,7 @@ async function mount(w: WardInstance) {
             } else {
               const kind = program.value as TerminalKind;
               await launch({ kind, mode: kind === "shell" ? "human" : mode.value, agentInput: agentInput.checked, ...(kind === "shell" ? { shell: shell.value } : { task: task.value }),
-                title: `${names[kind]} ${list.filter(s => s.kind === kind).length + 1}` });
+                title: `${names[kind]} ${list.filter(s => s.kind === kind && !s.command).length + 1}` });
             }
             d.close();
           } catch (e) {
@@ -662,7 +669,22 @@ async function mount(w: WardInstance) {
           localStorage.setItem("rimeward-terminal-accessibility", String(term.options.screenReaderMode));
         });
         action(showKeys ? "Hide extra keys" : "Show extra keys", () => { showKeys = !showKeys; draw(); });
-        const closed = list.filter(s => state.closedSessions?.includes(s.id));
+        const commands = list.filter(s => s.command && !tabVisible(s));
+        if (commands.length) action("Rime commands…", () => {
+          const { d, form, error, actions, submit } = workspaceDialog("Rime commands");
+          const choices = select("Command", []);
+          for (const s of commands) choices.add(new Option(`${s.title} · ${s.state}`, s.id));
+          actions.before(el("p", "term-help", "Routine commands stay in chat Tasks. Open a terminal view here when you need it."), choices);
+          submit.textContent = "Open in terminal";
+          form.onsubmit = async e => {
+            e.preventDefault(); submit.disabled = true; error.hidden = true;
+            try { await attach(choices.value); d.close(); }
+            catch (e) { error.textContent = (e as Error).message; error.hidden = false; }
+            finally { submit.disabled = false; }
+          };
+          d.onclose = () => d.remove();
+        });
+        const closed = list.filter(s => !s.command && state.closedSessions?.includes(s.id));
         if (closed.length) {
           menu.append(el("hr"));
           for (const s of closed) action(`Reopen ${s.title}${s.state === "running" ? "" : ` · ${s.state}`}`, () => attach(s.id));
@@ -722,7 +744,7 @@ async function mount(w: WardInstance) {
             const at = list.findIndex(s => s.id === next.id);
             if (at < 0) list.unshift(next); else list[at] = next;
             sessionList();
-            if (autoAttach && !launching && !state.session && next.state === "running" && !state.closedSessions?.includes(next.id))
+            if (autoAttach && !launching && !state.session && next.state === "running" && tabVisible(next))
               void attach(next.id).catch(error => toast(error.message, undefined, true));
             if (state.session === next.id) {
               session = next;

@@ -23,6 +23,8 @@ export interface SessionView {
   id: string;
   project: string;
   kind: TerminalKind;
+  /** One-shot tool execution; opens a Terminal tab only at the user's request. */
+  command?: boolean;
   mode: PermissionMode;
   nextMode: PermissionMode;
   agentInput: boolean;

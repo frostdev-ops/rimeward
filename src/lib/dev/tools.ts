@@ -146,7 +146,7 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
   ),
   terminal_start: wrap(
     "write",
-    "Start a native shell, interactive Codex, or Claude Code with a task in a project. New sessions always use Human mode. The user can start sessions with delegated control through the Terminal ward. Never install CLIs or guess credentials. The session outlives views. Review output and changes before declaring completion.",
+    "Open a visible Terminal tab for an intentional interactive shell, Codex, or Claude Code session in a project. Use terminal_exec for routine commands instead of creating tabs. New sessions always use Human mode. The user can start sessions with delegated control through the Terminal ward. Never install CLIs or guess credentials. The session outlives views. Review output and changes before declaring completion.",
     schema(
       {
         ...context,
@@ -169,7 +169,7 @@ export const DEV_TOOLS: Record<string, ToolDef> = {
   terminal_exec: {
     ...wrap(
       "confirm",
-      "Run a native shell command in a desktop project. Returns exit_code for normal exits; signal/cancellation/termination returns null with exit_signal, cancelled and termination_reason. Commands can change files and access this computer/network; the ward approval policy applies. The session is visible in Terminal and outlives chat views. Use background:true for long work; task_output reads live logs. Stop terminates this command's session, not a user's existing terminal. Never assume an exit code proves a requested change is correct.",
+      "Run a native shell command in a desktop project without opening a Terminal tab. Output and Stop controls are in chat Tasks; users can open its retained screen through Terminal's Rime commands menu. Returns exit_code for normal exits; signal/cancellation/termination returns null with exit_signal, cancelled and termination_reason. Commands can change files and access this computer/network; the ward approval policy applies. Use background:true for long work; task_output reads live logs. Stop terminates this command's process, not a user's existing terminal. Prefer this tool for routine commands; terminal_start is for intentional interactive shells or terminal agents. Never assume an exit code proves a requested change is correct.",
       schema({ ...context, command: str("Exact shell command; /bin/sh on macOS/Linux, PowerShell on Windows"), title: str("Short task label") }, ["runtime", "project", "command"]),
       async (a, c) => {
         c.signal?.throwIfAborted();

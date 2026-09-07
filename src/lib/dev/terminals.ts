@@ -28,6 +28,7 @@ type Row = {
   user_id: number;
   project: string;
   kind: TerminalKind;
+  is_command: number;
   mode: PermissionMode;
   next_mode: PermissionMode | null;
   agent_input: number;
@@ -156,6 +157,7 @@ function view(r: Row, inspect = false): SessionView {
     id: r.id,
     project: r.project,
     kind: r.kind,
+    command: !!r.is_command,
     mode: r.mode,
     nextMode: r.next_mode ?? r.mode,
     agentInput: !!r.agent_input,
@@ -343,7 +345,7 @@ export async function startSession(
   try {
     workDb()
       .prepare(
-        "INSERT INTO terminal_sessions(id,user_id,project,kind,mode,title,state,task,assignment,shell,agent_input,cols,rows) VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?)",
+        "INSERT INTO terminal_sessions(id,user_id,project,kind,mode,title,state,task,assignment,shell,agent_input,cols,rows,is_command) VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?)",
       )
       .run(
         id,
@@ -358,6 +360,7 @@ export async function startSession(
         Number(opts.agentInput ?? mode !== "human"),
         cols,
         rows,
+        Number(opts.command !== undefined),
       );
   } catch (error) {
     pty.kill();
