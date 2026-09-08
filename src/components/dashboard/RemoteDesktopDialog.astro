@@ -1,0 +1,17 @@
+---
+import Icon from '../Icon.astro';
+// One dialog serves every Remote Desktop ward: Expand moves the ward's live
+// viewer (the same element — one stream, one canvas) into the host below and
+// the viewport follows the bigger surface. remote-desktop.ts owns all
+// behavior; everything here is inert markup.
+---
+
+<dialog id="remote-desktop-dialog" class="fd-dialog fd-dialog-full rd-dialog" aria-labelledby="rd-dialog-title">
+  <form method="dialog" class="flex h-full flex-col gap-2 p-3">
+    <div class="flex items-center justify-between gap-2">
+      <h2 id="rd-dialog-title" class="section-title truncate" data-rd-title>Remote Desktop</h2>
+      <button type="button" class="btn min-h-0 px-2 py-1 text-xs" data-rd-close aria-label="Close"><Icon id="close" /></button>
+    </div>
+    <div class="flex min-h-0 flex-1 flex-col" data-rd-host></div>
+  </form>
+</dialog>

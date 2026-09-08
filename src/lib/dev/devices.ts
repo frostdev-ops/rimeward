@@ -12,10 +12,12 @@ import type { DeviceAccessPolicy } from './remote-desktop-contract.ts';
 /** Carried on the authenticated device channel, never accepted from HTTP headers. */
 export interface RemoteRelayContext {
   protocol: 1; actor: string; session: string; device: string;
-  policy: DeviceAccessPolicy; expires: number;
+  policy: DeviceAccessPolicy; expires: number; issuedAt?: number;
 }
 
 export const PROTOCOL = 1;
+/** Concurrent relay channels per device. A relayed document load opens one per asset. */
+export const CHANNEL_CAP = 64;
 const digest = (value: string) =>
   crypto.createHash("sha256").update(value).digest("hex");
 interface Device {
@@ -117,13 +119,17 @@ export function revoke(user: number, id: string) {
     .prepare("DELETE FROM devices WHERE id=? AND user_id=?")
     .run(id, user);
   if (!result.changes) throw new DevError("Desktop not found.", 404);
-  disconnect(id);
+  console.warn(`[devices] device ${id} revoked`);
+  disconnect(id, 4001, "Revoked");
 }
-function disconnect(id: string) {
+/** 4001 = revoked or replaced: the old desktop must not reconnect.
+ *  4002 = missed heartbeat: the desktop reconnects. One code for both kept a laptop that slept
+ *  through one ping offline until its app restarted. */
+function disconnect(id: string, code = 4002, reason = "Disconnected") {
   const c = connections.get(id);
   if (!c) return;
   connections.delete(id);
-  c.ws.close(4001, "Disconnected");
+  c.ws.close(code, reason);
   for (const ws of c.channels) ws.terminate();
   for (const [key, p] of waiting)
     if (p.device === id) {
@@ -166,34 +172,29 @@ export function deviceUpgrade(
   socket: net.Socket,
   head: Buffer,
 ) {
-  if (req.headers.origin) {
-    socket.destroy();
-    return;
-  }
+  // A refused upgrade gets a status line (so the client sees why, not a bare reset) and one log line.
+  const refuse = (status: number, why: string) => {
+    console.warn(`[devices] upgrade refused: ${why}`);
+    socket.end(`HTTP/1.1 ${status} ${why}\r\nConnection: close\r\n\r\n`);
+  };
+  if (req.headers.origin) return refuse(403, "Browser origin");
   const token = req.headers.authorization?.replace(/^Bearer /, "");
-  if (!token || token.length > 200) {
-    socket.destroy();
-    return;
-  }
+  if (!token || token.length > 200) return refuse(401, "Missing token");
   const device = getDb()
     .prepare("SELECT * FROM devices WHERE token_hash=?")
     .get(digest(token)) as Device | undefined;
-  if (!device || device.protocol !== PROTOCOL) {
-    socket.destroy();
-    return;
-  }
+  if (!device) return refuse(401, "Unknown token");
+  if (device.protocol !== PROTOCOL) return refuse(426, "Protocol mismatch");
   const challenge = req.headers["x-rimeward-request"];
   if (challenge !== undefined) {
     const pending =
       typeof challenge === "string" ? waiting.get(challenge) : undefined;
     const connection = connections.get(device.id);
-    if (!pending || pending.device !== device.id || !connection) {
-      socket.destroy();
-      return;
-    }
-    waiting.delete(challenge as string);
-    clearTimeout(pending.timer);
+    if (!pending || pending.device !== device.id || !connection) return refuse(409, "Unknown challenge");
     wss.handleUpgrade(req, socket, head, (ws) => {
+      if (waiting.get(challenge as string) !== pending) { ws.terminate(); return; }
+      waiting.delete(challenge as string);
+      clearTimeout(pending.timer);
       connection.channels.add(ws);
       ws.on("error", () => {});
       ws.on("close", () => connection.channels.delete(ws));
@@ -202,7 +203,8 @@ export function deviceUpgrade(
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
-    disconnect(device.id);
+    if (connections.has(device.id)) console.warn(`[devices] device ${device.id} reconnected; replacing its socket`);
+    disconnect(device.id, 4001, "Replaced");
     const boot = req.headers['x-rimeward-boot'];
     const connection: Connection = { ws, channels: new Set(), alive: true,
       remoteDesktop: req.headers['x-rimeward-remote-desktop'] === '1' ? 1 : 0,
@@ -227,7 +229,8 @@ export function ensureDevices() {
   g.__fdDeviceHeartbeat ??= setInterval(() => {
     for (const [id, c] of connections) {
       if (!c.alive) {
-        disconnect(id);
+        console.warn(`[devices] device ${id} missed a heartbeat`);
+        disconnect(id, 4002, "Heartbeat");
         continue;
       }
       c.alive = false;
@@ -291,15 +294,25 @@ export async function relayRequest(
       "This desktop is offline. Your server dashboard remains available.",
       503,
     );
-  if (waiting.size > 256 || connection.channels.size > 64)
+  let pending = 0;
+  for (const p of waiting.values()) if (p.device === device) pending++;
+  if (waiting.size >= 256 || pending + connection.channels.size >= CHANNEL_CAP)
     throw new DevError("Too many active workspace requests.", 429);
   const challenge = crypto.randomUUID();
+  request.signal.throwIfAborted();
   const ws = await new Promise<WebSocket>((resolve, reject) => {
-    const timer = setTimeout(() => {
+    const cleanup = () => {
+      clearTimeout(timer);
       waiting.delete(challenge);
-      reject(new DevError("Desktop did not respond.", 504));
+      request.signal.removeEventListener('abort', abort);
+    };
+    const fail = (error: Error) => { cleanup(); reject(error); };
+    const abort = () => fail(request.signal.reason ?? new DevError('Client disconnected.', 499));
+    const timer = setTimeout(() => {
+      fail(new DevError("Desktop did not respond.", 504));
     }, 10_000);
-    waiting.set(challenge, { device, resolve, reject, timer });
+    waiting.set(challenge, { device, resolve: ws => { cleanup(); resolve(ws); }, reject: fail, timer });
+    request.signal.addEventListener('abort', abort, { once: true });
     connection.ws.send(
       JSON.stringify({
         type: "request",
@@ -307,7 +320,7 @@ export async function relayRequest(
         base: `/runtime/${device}`,
         ...(remote ? { remote } : {}),
         ...(agentCaller ? { agentCaller } : {}),
-      }),
+      }), error => { if (error) fail(error); },
     );
   });
   if (request.signal.aborted) {
@@ -357,10 +370,11 @@ export async function relayRequest(
         resolve(
           new Response(
             request.method === "HEAD" ||
-            [204, 304].includes(res.statusCode ?? 200)
+            [204, 205, 304].includes(res.statusCode ?? 200)
               ? null
               : (Readable.toWeb(res) as ReadableStream<Uint8Array>),
-            { status: res.statusCode ?? 502, headers: out },
+            // Node's parser accepts 600–999; Response() throws on them (and that throw would be uncaught).
+            { status: res.statusCode && res.statusCode >= 200 && res.statusCode <= 599 ? res.statusCode : 502, headers: out },
           ),
         );
       },

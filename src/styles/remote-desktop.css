@@ -1,22 +1,119 @@
-.rd-root { display:flex; flex-direction:column; gap:.5rem; min-height:0; height:100%; overflow:auto; }
-.rd-toolbar { display:flex; flex:none; flex-wrap:wrap; align-items:center; gap:.4rem; }
-.rd-toolbar .btn,.rd-toolbar .input { min-height:2rem; font-size:.75rem; padding:.3rem .55rem; }
-.rd-toolbar select { max-width:18rem; }
-.rd-toolbar .fd-ss-trigger { width:auto; max-width:min(18rem,100%); }
-.rd-toolbar input.input { width:auto; min-width:10rem; flex:1; }
-.rd-status { flex:none; font-size:.75rem; color:var(--color-ink-faint); min-height:1.25rem; }
-.rd-viewport { position:relative; flex:1 1 0; min-height:8rem; overflow:auto; background:#101114; display:flex; align-items:center; justify-content:center; }
-.rd-screen { display:block; flex:none; object-fit:contain; outline-offset:-3px; }
-.rd-video { position:absolute; object-fit:contain; pointer-events:none; }
-.rd-screen { position:relative; }
-.rd-video[hidden] { display:none; }
-.rd-viewport[data-scaling="actual"] { display:block; }
-.rd-viewport[data-scaling="actual"] .rd-screen { max-width:none; max-height:none; zoom:var(--rd-zoom,1); }
-.rd-viewport[data-scaling="actual"] .rd-video { left:0; top:0; zoom:var(--rd-zoom,1); }
-.rd-zoom { width:5rem; }
-.rd-diagnostics { font-variant-numeric:tabular-nums; color:var(--color-ink-faint); }
-.rd-dialog { padding:.75rem; }
-.rd-dialog .rd-root { height:100%; }
-.rd-files,.rd-clipboard { flex:none; }
-.rd-file-entries { max-height:15rem; overflow:auto; }
-@media (max-width:640px) { .rd-toolbar .btn { min-height:2.5rem; } .rd-toolbar select { max-width:12rem; } }
+/* Remote Desktop ward — chrome over the app's tokens; the viewport's letterbox
+   is the one fixed colour. remote-files.ts still draws .rd-toolbar/.rd-status. */
+.rd-root { position: relative; display: flex; flex-direction: column; gap: 0.4rem; min-height: 0; height: 100%; width: 100%; }
+.rd-bar { display: flex; flex: none; align-items: center; gap: 0.3rem; overflow: auto hidden; white-space: nowrap; }
+.rd-bar .btn { flex: none; min-height: 0; padding: 0.3rem 0.45rem; font-size: 0.75rem; gap: 0.3rem; }
+.rd-bar .btn[aria-pressed='true'] { border-color: var(--color-accent); color: var(--color-accent-hi); background: var(--color-accent-soft); }
+.rd-bar .rd-primary { font-weight: 600; }
+.rd-spacer { flex: 1 1 0; min-width: 0; }
+.rd-pill {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0.25rem 0.55rem; border-radius: 999px; border: 1px solid var(--color-line);
+  background: var(--color-surface-2); color: var(--color-ink-muted);
+  font-size: 0.7rem; line-height: 1.2; font-variant-numeric: tabular-nums; user-select: none;
+}
+.rd-pill[data-ctl='you'] { color: var(--color-accent-hi); background: var(--color-accent-soft); border-color: color-mix(in srgb, var(--color-accent) 45%, transparent); }
+.rd-pill[data-ctl='other'] { color: var(--color-warn); background: var(--color-warn-soft); border-color: color-mix(in srgb, var(--color-warn) 45%, transparent); }
+.rd-pill[data-ctl='rime'] { color: var(--color-ok); background: var(--color-ok-soft); border-color: color-mix(in srgb, var(--color-ok) 45%, transparent); }
+
+.rd-stage { position: relative; flex: 1 1 0; min-height: 6rem; overflow: hidden; border-radius: var(--radius-md); background: #000; }
+.rd-stage[data-state='empty'] { background: var(--color-surface-2); border: 1px dashed var(--color-line-strong); }
+.rd-viewport { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: auto; }
+.rd-viewport[data-scaling='actual'] { display: block; overflow: auto; }
+.rd-stage[data-ctl='you'] .rd-viewport { touch-action: none; cursor: none; }
+.rd-frame { position: relative; flex: none; }
+.rd-screen { display: block; width: 100%; height: 100%; outline: none; }
+.rd-screen:focus-visible { box-shadow: inset 0 0 0 2px var(--color-accent); }
+.rd-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.rd-key { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; pointer-events: none; }
+.rd-cursor {
+  position: absolute; z-index: 2; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 0 1.5px #000, 0 0 6px rgb(0 0 0 / 0.6); pointer-events: none;
+}
+.rd-stats {
+  position: absolute; left: 0.5rem; bottom: 0.5rem; z-index: 2; padding: 0.2rem 0.5rem; border-radius: var(--radius-md);
+  background: rgb(0 0 0 / 0.6); color: #fff; font-size: 0.68rem; font-variant-numeric: tabular-nums; pointer-events: none;
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+}
+.rd-stats:empty { display: none; }
+.rd-mods { position: absolute; right: 0.5rem; bottom: 0.5rem; z-index: 2; display: flex; gap: 0.25rem; }
+.rd-mods .btn { min-height: 2rem; padding: 0.2rem 0.5rem; font-size: 0.7rem; background: rgb(0 0 0 / 0.6); color: #fff; border-color: rgb(255 255 255 / 0.25); }
+.rd-mods .btn[aria-pressed='true'] { background: var(--color-accent); color: var(--color-accent-ink); border-color: transparent; }
+
+/* One overlay for every non-live state: empty and dropped show the panel,
+   connecting/pending/media the spinner line. */
+.rd-veil {
+  position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 0.6rem; padding: 0.75rem; text-align: center; color: #fff; background: rgb(0 0 0 / 0.5); overflow: auto;
+}
+.rd-veil-text { margin: 0; font-size: 0.8rem; max-width: 22rem; }
+.rd-empty {
+  display: flex; flex-direction: column; gap: 0.5rem; width: min(20rem, 100%); padding: 0.9rem; text-align: left;
+  border: 1px solid var(--color-line-strong); border-radius: var(--radius-xl); background: var(--color-surface); color: var(--color-ink);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.35);
+}
+[data-glass] .rd-empty { background: color-mix(in srgb, var(--color-surface) var(--fd-glass-alpha), transparent); }
+[data-glass-blur] .rd-empty { backdrop-filter: blur(var(--fd-glass-blur)) saturate(1.3); -webkit-backdrop-filter: blur(var(--fd-glass-blur)) saturate(1.3); }
+.rd-stage[data-state='live'] .rd-veil { display: none; }
+.rd-stage[data-state='empty'] .rd-veil { background: none; color: var(--color-ink); }
+.rd-stage:not([data-state='empty'], [data-state='dropped']) .rd-empty { display: none; }
+.rd-stage:is([data-state='empty'], [data-state='dropped']) :is(.rd-veil > .spinner, .rd-veil-text) { display: none; }
+.rd-empty-head { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; font-weight: 600; }
+.rd-empty .input { min-height: 0; padding: 0.4rem 0.6rem; font-size: 0.8rem; }
+.rd-empty .fd-ss-trigger { width: 100%; }
+.rd-empty .btn-primary { min-height: 0; padding: 0.45rem 0.75rem; font-size: 0.8rem; }
+.rd-msg { margin: 0; font-size: 0.75rem; color: var(--color-err); }
+.rd-msg:empty { display: none; }
+.rd-drawer { flex: none; max-height: 45%; overflow: auto; }
+.rd-drawer:not(:has(:not([hidden]))) { display: none; }
+
+/* Popovers: top-layer panels hosted inside the ward root (see remote-desktop.ts). */
+.rd-pop { inset: auto; margin: 0; max-width: calc(100vw - 1rem); max-height: calc(100dvh - 1rem); overflow: auto; }
+.rd-pop:not(.ctx-menu) {
+  position: fixed; display: flex; flex-direction: column; gap: 0.5rem; width: min(22rem, calc(100vw - 1rem)); padding: 0.75rem;
+  border: 1px solid var(--color-line-strong); border-radius: var(--radius-xl); background: var(--color-surface); color: var(--color-ink);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.35); font-size: 0.8rem; animation: fd-menu-in 0.14s ease-out;
+}
+.rd-pop:not(.ctx-menu):not(:popover-open) { display: none; }
+.rd-panel-title { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--color-ink-muted); }
+.rd-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.rd-pop .btn { min-height: 0; padding: 0.3rem 0.55rem; font-size: 0.75rem; }
+.rd-pop textarea.input { min-height: 5rem; font-size: 0.8rem; }
+.rd-pop .switch { font-size: 0.75rem; }
+.rd-range { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.6rem; font-size: 0.75rem; color: var(--color-ink-muted); font-variant-numeric: tabular-nums; }
+.rd-range input[type='range'] { flex: 1; min-width: 0; }
+[data-glass] .rd-pop:not(.ctx-menu) { background: color-mix(in srgb, var(--color-surface) var(--fd-glass-alpha), transparent); }
+[data-glass-blur] .rd-pop:not(.ctx-menu) { backdrop-filter: blur(var(--fd-glass-blur)) saturate(1.3); -webkit-backdrop-filter: blur(var(--fd-glass-blur)) saturate(1.3); }
+
+/* Fullscreen on the ward root: the stage is the screen, the toolbar a floating
+   pill that hides after 2 s unless pinned. */
+.rd-root:fullscreen { gap: 0; background: #000; }
+.rd-root:fullscreen .rd-stage { border-radius: 0; }
+.rd-root:fullscreen .rd-drawer { position: absolute; bottom: 0.5rem; right: 0.5rem; z-index: 4; width: min(36rem, calc(100% - 1rem)); padding: 0.5rem; border-radius: var(--radius-md); background: var(--color-surface); }
+.rd-root:fullscreen .rd-bar {
+  position: absolute; top: 0.6rem; left: 50%; translate: -50% -0.5rem; z-index: 5; max-width: calc(100vw - 1.5rem); padding: 0.35rem 0.5rem;
+  border: 1px solid var(--color-line-strong); border-radius: 999px; background: var(--color-surface); color: var(--color-ink);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.45); opacity: 0; pointer-events: none;
+  transition: opacity 0.18s var(--fd-ease), translate 0.18s var(--fd-ease);
+}
+.rd-root:fullscreen:is([data-bar], :has(.rd-bar:focus-within)) .rd-bar { opacity: 1; translate: -50% 0; pointer-events: auto; }
+.rd-dialog .rd-root { height: 100%; }
+
+/* remote-files.ts panel */
+.rd-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.rd-toolbar .btn, .rd-toolbar .input { min-height: 2rem; font-size: 0.75rem; padding: 0.3rem 0.55rem; }
+.rd-toolbar select { max-width: 18rem; }
+.rd-toolbar .fd-ss-trigger { width: auto; max-width: min(18rem, 100%); }
+.rd-toolbar input.input { width: auto; min-width: 10rem; flex: 1; }
+.rd-status { flex: none; font-size: 0.75rem; color: var(--color-ink-faint); min-height: 1.25rem; }
+.rd-files { flex: none; padding-top: 0.25rem; font-size: 0.8rem; }
+.rd-files > summary { cursor: pointer; font-size: 0.75rem; color: var(--color-ink-muted); }
+.rd-file-entries { max-height: 15rem; overflow: auto; }
+
+@media (pointer: coarse) {
+  .rd-bar .btn { min-height: 2.5rem; min-width: 2.5rem; }
+  .rd-empty .btn-primary { min-height: 2.75rem; }
+}
+
+/* Last on purpose: these unlayered display rules would otherwise beat preflight's layered [hidden]. */
+:is(.rd-root, .rd-pop) [hidden] { display: none; }

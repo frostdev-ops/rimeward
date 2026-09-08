@@ -5,6 +5,7 @@ const streams = new Map<string, {
   listeners: Map<Listener, string>;
   source?: EventSource;
   retry?: ReturnType<typeof setTimeout>;
+  delay?: number;
   ready?: boolean;
   connect: () => void;
 }>();
@@ -27,7 +28,9 @@ export function terminalEvents(device: string, ward: string, listener: Listener)
       current.source = source;
       source.onmessage = message => {
         if (current.source !== source) return;
-        const event = JSON.parse(message.data) as RuntimeEvent;
+        current.delay = undefined;
+        let event: RuntimeEvent;
+        try { event = JSON.parse(message.data) as RuntimeEvent; } catch { return; } // a torn frame: the sequence gap triggers a resync
         if (event.type === "reset") current.ready = true;
         for (const receive of current.listeners.keys()) receive(event);
       };
@@ -35,7 +38,8 @@ export function terminalEvents(device: string, ward: string, listener: Listener)
         if (current.source !== source) return;
         current.ready = false;
         for (const receive of current.listeners.keys()) receive(null);
-        if (source.readyState === EventSource.CLOSED) current.retry = setTimeout(current.connect, 3000);
+        // CLOSED = the server refused (401/403/404/5xx): back off 3 s → 30 s instead of hammering the relay.
+        if (source.readyState === EventSource.CLOSED) { current.retry = setTimeout(current.connect, current.delay ?? 3000); current.delay = Math.min((current.delay ?? 3000) * 2, 30000); }
       };
     };
   }

@@ -3,9 +3,13 @@ import { listTasks, readTask, waitTask, cancelTask } from './tasks.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { sharedTool, serverTool } from './sync.ts';
 import { randomBytes } from 'node:crypto';
+import fs from 'node:fs';
+import { renderPdfPage } from './docs.ts';
 import { getDb } from '../db.ts';
-import { browserWard, getDashboard, getPages, saveDashboard } from '../dashboard.ts';
-import { goto as browserGoto, open as openBrowser, withSession, type Session as BrowserSession } from '../browser/session.ts';
+import { getDashboard, getPages, saveDashboard } from '../dashboard.ts';
+import { browserId } from '../browser/routing.ts';
+import { browserCall, browserRequest } from '../browser/request.ts';
+import { DOWNLOAD_BYTES, type BrowserDownload } from '../browser/downloads.ts';
 import { validateLayout, validatePages, wardTitle, CATALOG, MAX_H, MAX_PAGES, MAX_W, type PageDef, type WardInstance, type WardSize } from '../wards.ts';
 import { validateGraph, CHANNEL_RE, type LogicGraph } from '../logic.ts';
 import {
@@ -57,7 +61,7 @@ import { getTimers } from '../timers.ts';
 import { createPacket, listPackets, markPassed, completePacket } from '../flow.ts';
 import { asAccount, mailInbox, sendNow } from '../mail.ts';
 import { normalizeTheme, parseTheme } from '../theme.ts';
-import { getAttachment, listAttachments, readPages, searchAttachment } from './attachments.ts';
+import { getAttachment, listAttachments, readPages, searchAttachment, storeAttachment, attachmentPath } from './attachments.ts';
 import { getNote, noteWard, plainText, saveNote, textToHtml } from '../note.ts';
 import { runShell, shellNetworkEnabled } from './shell.ts';
 import { webSearch } from './websearch.ts';
@@ -212,63 +216,6 @@ const pageSlug = (title: string, taken: PageDef[]) => {
 
 // ---------------------------------------------------------------- browser
 
-/** Ward → live session, through the same resolver the routes use. No ward
- *  named and exactly one browser ward on the layout → that one. */
-async function browserSession(userId: number, ward: unknown): Promise<BrowserSession> {
-  let id = typeof ward === 'string' ? ward.trim() : '';
-  if (!id) {
-    const all = getDashboard(userId).filter((w) => w.type === 'browser');
-    if (all.length !== 1) {
-      throw new Error(all.length ? 'several browser wards — say which (ward id)' : 'no browser ward — add one (add_ward type "browser")');
-    }
-    id = all[0]!.i;
-  }
-  const cfg = browserWard(userId, id);
-  if (!cfg) throw new Error(`${id} is not a browser ward`);
-  return openBrowser(userId, id, cfg);
-}
-
-const pageState = async (s: BrowserSession) => ({ url: s.page.url(), title: await s.page.title().catch(() => '') });
-const SNAPSHOT_CAP = 11_000; // under core.ts OUTPUT_CAP with room for url/title
-const capText = (t: string) => (t.length > SNAPSHOT_CAP ? `${t.slice(0, SNAPSHOT_CAP)}\n…[cut at ${SNAPSHOT_CAP} chars — trim with depth, or act on what is here]` : t);
-const REF_RE = /^(f\d+)?e\d+$/;
-
-async function browserAct(s: BrowserSession, a: Record<string, any>): Promise<void> {
-  const ref = String(a.ref ?? '').trim();
-  const T = { timeout: 10_000 };
-  const loc = () => {
-    if (!REF_RE.test(ref)) throw new Error('ref must be a [ref=eN] handle from the last browser_snapshot');
-    return s.page.locator(`aria-ref=${ref}`);
-  };
-  switch (String(a.action)) {
-    case 'click':
-      await loc().click(T);
-      break;
-    case 'fill':
-      await loc().fill(String(a.text ?? ''), T);
-      break;
-    case 'press':
-      await (ref ? loc().press(String(a.key ?? 'Enter'), T) : s.page.keyboard.press(String(a.key ?? 'Enter')));
-      break;
-    case 'select':
-      await loc().selectOption(String(a.value ?? ''), T); // a plain string matches value OR label
-      break;
-    case 'hover':
-      await loc().hover(T);
-      break;
-    case 'scroll':
-      await s.page.mouse.wheel(0, Number(a.dy) || 600);
-      break;
-    case 'back':
-      await s.page.goBack({ waitUntil: 'commit', timeout: 30_000 });
-      break;
-    case 'forward':
-      await s.page.goForward({ waitUntil: 'commit', timeout: 30_000 });
-      break;
-    default:
-      throw new Error('action must be one of click, fill, press, select, hover, scroll, back, forward');
-  }
-}
 
 function isAdminUser(userId: number): boolean {
   const row = getDb().prepare('SELECT role FROM users WHERE id = ?').get(userId) as { role?: string } | undefined;
@@ -772,6 +719,19 @@ export const TOOLS: Record<string, ToolDef> = {
     parameters: obj({ file_id: num('attachment id'), query: str('text to find') }, ['file_id', 'query']),
     run: (a, ctx) => ({ hits: searchAttachment(ownedFile(ctx.userId, a.file_id), String(a.query)) }),
   },
+  render_document_page: {
+    kind: 'read',
+    description: 'See one PDF page as an image, including scanned documents, diagrams and tables. The rendered page is sent to your vision input. Use read_document/search_document for searchable text and this tool when layout or image-only content matters.',
+    parameters: obj({ file_id: num('PDF attachment ID'), page: num('page number, starting at 1') }, ['file_id', 'page']),
+    run: async (a, ctx) => {
+      const file = ownedFile(ctx.userId, a.file_id);
+      if (file.mime !== 'application/pdf') throw Error('This tool renders PDF pages only.');
+      const rendered = await renderPdfPage(fs.readFileSync(attachmentPath(file.sha256)), Number(a.page));
+      const image = await storeAttachment({ userId: ctx.userId, conversationId: ctx.conv, name: `${file.name} — page ${a.page}.png`,
+        mime: 'image/png', bytes: rendered.bytes });
+      return { file_id: image.id, source_file_id: file.id, page: Number(a.page), pages: rendered.pages, image_sha256: image.sha256 };
+    },
+  },
   web_search: {
     kind: 'read',
     description: 'Search the web (Brave keyword + Exa semantic, merged). Needs a search key under Account → Agent.',
@@ -799,15 +759,7 @@ export const TOOLS: Record<string, ToolDef> = {
       mode: str('"tree" (default) or "text"'),
       depth: num('tree only: limit the depth — big pages get cut at the output cap'),
     }),
-    run: async (a, ctx) => {
-      const s = await browserSession(ctx.userId, a.ward);
-      return withSession(s, async () => {
-        const state = await pageState(s);
-        if (a.mode === 'text') return { ...state, text: capText(await s.page.innerText('body', { timeout: 10_000 }).catch(() => '')) };
-        const depth = Number(a.depth) > 0 ? { depth: Math.floor(Number(a.depth)) } : {};
-        return { ...state, snapshot: capText(await s.page.ariaSnapshot({ mode: 'ai', ...depth, timeout: 10_000 })) };
-      });
-    },
+    run: async (a, ctx) => browserCall(ctx.userId, browserId(ctx.userId, a.ward), 'snapshot', a, ctx.signal),
   },
   bash: {
     kind: 'write',
@@ -827,14 +779,7 @@ export const TOOLS: Record<string, ToolDef> = {
     kind: 'write',
     description: 'Navigate a browser ward to a URL and wait for it to load. Then browser_snapshot to see it. The user sees the same page move on their ward.',
     parameters: obj({ url: str('the http(s) URL'), ward: str('the browser ward id — optional when there is exactly one') }, ['url']),
-    run: async (a, ctx) => {
-      const s = await browserSession(ctx.userId, a.ward);
-      return withSession(s, async () => {
-        await browserGoto(s, String(a.url));
-        await s.page.waitForLoadState('load', { timeout: 15_000 }).catch(() => {});
-        return pageState(s);
-      });
-    },
+    run: async (a, ctx) => browserCall(ctx.userId, browserId(ctx.userId, a.ward), 'open', a, ctx.signal),
   },
   browser_act: {
     kind: 'write',
@@ -852,13 +797,45 @@ export const TOOLS: Record<string, ToolDef> = {
       },
       ['action']
     ),
+    run: async (a, ctx) => browserCall(ctx.userId, browserId(ctx.userId, a.ward), 'act', a, ctx.signal),
+  },
+  browser_downloads: {
+    kind: 'read',
+    description: 'List files downloaded in a browser ward, including downloads started by the user. Ready downloads have an id; use browser_download with that id to inspect the file. Failed and in-progress downloads have explicit status.',
+    parameters: obj({ ward: str('browser ward ID, optional when there is exactly one'), offset: num('pagination offset; use next from the previous result') }),
+    run: async (a, ctx) => browserCall(ctx.userId, browserId(ctx.userId, a.ward), 'downloads', a, ctx.signal),
+  },
+  browser_download: {
+    kind: 'write',
+    description: 'Import a ready browser download into this conversation for inspection (max 25 MB). Supply id from browser_downloads, or a direct file URL to fetch through the authenticated browser (including inline PDFs). A normal web page is not a downloaded file; use its download link through browser_act. Returns file_id for read_document/search_document; scanned PDFs and unsupported formats are reported explicitly.',
+    parameters: obj({ ward: str('browser ward ID'), id: str('download id from browser_downloads'), url: str('direct http(s) download URL, only when id is omitted') }),
     run: async (a, ctx) => {
-      const s = await browserSession(ctx.userId, a.ward);
-      return withSession(s, async () => {
-        await browserAct(s, a);
-        await s.page.waitForLoadState('load', { timeout: 5_000 }).catch(() => {});
-        return pageState(s);
-      });
+      const ward = browserId(ctx.userId, a.ward);
+      let id = typeof a.id === 'string' ? a.id : '';
+      if (!id && a.url) {
+        const state = await browserCall(ctx.userId, ward, 'download', { url: a.url }, ctx.signal);
+        id = state.download.id;
+      }
+      const state = await browserCall(ctx.userId, ward, 'downloads', { id }, ctx.signal);
+      const file = (state.downloads as BrowserDownload[]).find(f => f.id === id);
+      if (!file || file.status !== 'ready') throw Error(file?.error ?? 'Choose a ready download from browser_downloads; an in-progress download can be checked again.');
+      const response = await browserRequest(ctx.userId, ward, 'file', { id }, ctx.signal);
+      if (!response.ok || !response.body) throw Error(`Downloaded file unavailable (${response.status}).`);
+      const reader = response.body.getReader(), chunks: Uint8Array[] = []; let size = 0;
+      try {
+        for (;;) {
+          const chunk = await reader.read(); if (chunk.done) break;
+          size += chunk.value.length;
+          if (size > DOWNLOAD_BYTES) throw Error('Download exceeds 25 MB.');
+          chunks.push(chunk.value);
+        }
+      } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+      // File IDs are runtime-local; import bytes rather than passing the browser owner's ID to this conversation.
+      const stored = await storeAttachment({ userId: ctx.userId, conversationId: ctx.conv, name: file.name,
+        mime: 'application/octet-stream', bytes: Buffer.concat(chunks) });
+      return { file_id: stored.id, name: stored.name, mime: stored.mime, bytes: stored.bytes, pages: stored.pages,
+        ...(stored.pages !== null && !stored.text ? { scanned: true, next: 'Use render_document_page with this file_id to inspect the scanned PDF.' } : {}),
+        ...(stored.text ? { next: 'Use read_document or search_document with this file_id.' } : {}) };
     },
   },
 

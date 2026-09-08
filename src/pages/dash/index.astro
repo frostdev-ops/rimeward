@@ -9,6 +9,7 @@ import MailDialog from '../../components/dashboard/MailDialog.astro';
 import AddWardDialog from '../../components/dashboard/AddWardDialog.astro';
 import AgentDialog from '../../components/dashboard/AgentDialog.astro';
 import BrowserDialog from '../../components/dashboard/BrowserDialog.astro';
+import RemoteDesktopDialog from '../../components/dashboard/RemoteDesktopDialog.astro';
 import NoteDialog from '../../components/dashboard/NoteDialog.astro';
 import WardThemeDialog from '../../components/dashboard/WardThemeDialog.astro';
 import { getDashboard, getPages } from '../../lib/dashboard.ts';
@@ -80,6 +81,7 @@ const logicJson = JSON.stringify({
   <AddWardDialog />
   <AgentDialog />
   <BrowserDialog />
+  <RemoteDesktopDialog />
   <NoteDialog />
   <WardThemeDialog />
 

@@ -35,6 +35,9 @@ impl Drop for Helper {
     fn drop(&mut self) {
         if let Ok(mut state) = self.state.lock() {
             state.closing = true;
+            for session in state.grants.keys() {
+                crate::computer::release_remote_owner(session);
+            }
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -187,6 +190,9 @@ fn launch() -> Result<Helper, String> {
             let Ok(mut state) = read_state.lock() else {
                 break;
             };
+            if state.dead || state.closing {
+                break;
+            }
             if value["event"] == "ready" {
                 state.ready = value["protocol"] == 1 && value["gstreamer"] == "1.28.6";
                 continue;
@@ -221,22 +227,22 @@ fn launch() -> Result<Helper, String> {
                 }
                 input["owner"] = session.into();
                 input["display"] = grant.display.into();
-                drop(state);
                 // A data channel cannot acquire ownership or change a grant. All input re-enters the shared controller.
+                // Keep the grant locked through dispatch so stop/expiry cannot race an accepted input.
                 if let Err(reason) = crate::computer::request("computer-event", &input) {
-                    if let Ok(mut state) = read_state.lock() {
-                        if let Some(grant) = state.grants.get_mut(session) {
-                            if grant.events.len() >= 128 {
-                                state.dead = true;
-                            } else {
-                                grant
-                                    .events
-                                    .push_back(json!({"event":"input-rejected","reason":reason}));
-                            }
-                        }
+                    if grant.events.len() >= 128 {
+                        state.dead = true;
+                    } else {
+                        grant
+                            .events
+                            .push_back(json!({"event":"input-rejected","reason":reason}));
                     }
                 }
             } else {
+                if value["event"] == "closed" || value["event"] == "error" {
+                    grant.input = false;
+                    crate::computer::release_remote_owner(session);
+                }
                 if grant.events.len() >= 128 {
                     state.dead = true;
                     break;
@@ -244,13 +250,13 @@ fn launch() -> Result<Helper, String> {
                 grant.events.push_back(value);
             }
         }
-        let mut failed = true;
         if let Ok(mut state) = read_state.lock() {
-            failed = !state.closing;
             state.dead = true;
-        }
-        if failed {
-            crate::computer::release_remote_input();
+            if !state.closing {
+                for session in state.grants.keys() {
+                    crate::computer::release_remote_owner(session);
+                }
+            }
         }
     });
     Ok(Helper {
@@ -305,6 +311,12 @@ pub fn tick(now: u64, enabled: bool) {
 pub fn request(value: &Value) -> Result<Value, String> {
     let mut helper = HELPER.lock().map_err(|_| "Media helper unavailable")?;
     let command = value["command"].as_str().ok_or("Missing media command")?;
+    if !matches!(
+        command,
+        "start" | "snapshot" | "poll" | "answer" | "ice" | "stop"
+    ) {
+        return Err("Unknown media command".into());
+    }
     let session = value["session"]
         .as_str()
         .filter(|s| s.len() == 36 && s.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-'))
@@ -353,22 +365,30 @@ pub fn request(value: &Value) -> Result<Value, String> {
         .get_mut(session)
         .filter(|g| g.expires > clock())
         .ok_or("Media session expired")?;
-    grant.expires = expires;
     if command == "poll" {
-        let events: Vec<Value> = grant.events.drain(..).collect();
         h.commands
             .try_send(json!({"command":"renew","session":session}))
             .map_err(|_| "Media helper is busy")?;
+        grant.expires = grant.expires.max(expires);
+        let events: Vec<Value> = grant.events.drain(..).collect();
         return Ok(json!({"ready":state.ready,"events":events}));
     }
-    if !matches!(command, "start" | "snapshot" | "answer" | "ice" | "stop") {
-        return Err("Unknown media command".into());
+    if command == "stop" {
+        grant.input = false;
+        crate::computer::release_remote_owner(session);
     }
-    h.commands
-        .try_send(value.clone())
-        .map_err(|_| "Media helper is busy")?;
+    if h.commands.try_send(value.clone()).is_err() {
+        if command == "start" || command == "snapshot" {
+            state.grants.remove(session);
+        } else if command == "stop" {
+            state.dead = true;
+        }
+        return Err("Media helper is busy".into());
+    }
     if command == "stop" {
         state.grants.remove(session);
+    } else {
+        grant.expires = grant.expires.max(expires);
     }
     Ok(json!({"queued":true}))
 }

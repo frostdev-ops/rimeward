@@ -86,7 +86,7 @@ try {
     const inbound = await secondary.evaluate(async()=>[...(await window.peer.getStats()).values()].filter(r=>r.type==='inbound-rtp'));
     assert.equal(inbound.some(s=>s.kind==='audio'&&s.packetsReceived>0),small);
   }
-  if (viewerCount > 1) assert.ok(events.some(e=>e.event==='state'&&e.captures===1&&e.viewers===viewerCount&&e.audioCaptures===1), 'all qualities and listeners share one capture');
+  if (viewerCount > 1) assert.ok(events.some(e=>e.event==='state'&&e.captures===2&&e.viewers===viewerCount&&e.audioCaptures===1), 'viewers share a capture per size (1280×720 and full size) and listeners share its audio');
   const until = Date.now() + duration;
   while (Date.now() < until) {
     await new Promise(resolve => setTimeout(resolve, Math.min(30000, until - Date.now())));
@@ -99,7 +99,7 @@ try {
   if (viewerCount > 1) {
     if (process.env.RIMEWARD_MEDIA_FAULTS === '1') {
       const before = await Promise.all([...peers.values()].map(v=>v.page.evaluate(()=>document.querySelector('video').currentTime)));
-      send({command:'test-error',audio:true});
+      send({command:'test-error',audio:true}, [...peers.keys()][1]);
       await new Promise(resolve=>setTimeout(resolve,250));
       assert.equal(events.some(e=>e.event==='closed'),false,'audio failure must preserve every viewer');
       assert.ok(events.some(e=>e.event==='capability-unavailable'&&e.capability==='audio'));

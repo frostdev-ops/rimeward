@@ -41,6 +41,8 @@ function sniff(bytes: Uint8Array): string | null {
   // A drag-and-drop or a Windows browser can hand over an image with no mime.
   if (head.startsWith('\x89PNG')) return 'image/png';
   if (head.startsWith('\xff\xd8\xff')) return 'image/jpeg';
+  if (head === 'GIF8') return 'image/gif';
+  if (head === 'RIFF' && Buffer.from(bytes.subarray(8, 12)).toString('ascii') === 'WEBP') return 'image/webp';
   // Every OOXML/ODF file is a zip; extractDocxText returns null for the rest.
   if (head === 'PK\x03\x04') return DOCX_MIME;
   return null;
@@ -106,7 +108,7 @@ export async function storeAttachment(opts: {
   if (isDoc(mime)) {
     // Reuse a previous extraction of the identical file — same bytes, same text.
     const seen = getDb()
-      .prepare('SELECT pages, text FROM agent_files WHERE sha256 = ? AND text IS NOT NULL LIMIT 1')
+      .prepare("SELECT pages, text FROM agent_files WHERE sha256 = ? AND text <> '' LIMIT 1")
       .get(sha256) as { pages: number; text: string } | undefined;
     if (seen) {
       pages = seen.pages;

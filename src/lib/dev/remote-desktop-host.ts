@@ -16,17 +16,23 @@ interface HostSession {
   capabilities: RemoteCapability[]; pending: boolean; paused: boolean; display?: number;
   ownership?: number; topology: number; frame: number; frameAt: number; capturing: boolean;
   rime?: { owner: string; ownership: number; topology: number };
-  media?: boolean; detached?: boolean;
+  // Teardown invalidates pending completions; cleanup keeps new starts out until it finishes.
+  media?: boolean; detached?: boolean; epoch: number; starting: number;
 }
 const sessions = new Map<string, HostSession>();
 const closed = new Map<string, number>();
 const agentApprovals = new Map<string, { id: string; expires: number; approved: boolean; revision: number }>();
 let started = false;
 async function release(s: HostSession) {
-  const ownership = s.ownership;
-  s.ownership = undefined;
-  if (ownership !== undefined) await nativeDesktop('computer-release', { owner: s.id, ownership, topology: s.topology }).catch(() => {});
-  if (s.rime) { const rime = s.rime; s.rime = undefined; await nativeDesktop('computer-release', rime).catch(() => {}); }
+  s.epoch++; s.starting++;
+  const ownership = s.ownership, rime = s.rime; s.ownership = undefined; s.rime = undefined;
+  try {
+    if (ownership !== undefined) await nativeDesktop('computer-release', { owner: s.id, ownership, topology: s.topology }).catch(() => {});
+    if (rime) await nativeDesktop('computer-release', rime).catch(() => {});
+  } finally { s.starting--; }
+}
+function currentOperation(s: HostSession, epoch: number) {
+  return sessions.get(s.id) === s && s.epoch === epoch && s.expires > Date.now() && !s.paused && !s.detached;
 }
 async function close(s: HostSession) {
   sessions.delete(s.id); closed.set(s.id, Date.now() + REMOTE_LIMITS.authorizationMs);
@@ -80,10 +86,33 @@ function contextOf(request: Request): RemoteRelayContext {
   c.policy = parseRemotePolicy(c.policy);
   return c;
 }
-export async function remoteHostAction(request: Request, body: Record<string, unknown>) {
-  const grant = contextOf(request);
+/** Input batches, heartbeats and media signaling arrive many times a second; each native status read
+ *  enumerates displays. They reuse one read for 500 ms — the native controller re-checks enablement,
+ *  lock, ownership and topology on every event regardless, so this gate is never the only one. */
+const STATUS_REUSE = new Set(['input', 'heartbeat', 'clear', 'media']);
+let statusAt = 0, statusRead: Promise<NativeStatus> | undefined;
+function nativeStatus(action: unknown) {
+  if (statusRead && STATUS_REUSE.has(String(action)) && Date.now() - statusAt < 500) return statusRead;
+  statusAt = Date.now();
+  const read = nativeDesktop('computer-status') as Promise<NativeStatus>;
+  statusRead = read;
+  read.catch(() => { if (statusRead === read) statusRead = undefined; });
+  return read;
+}
+export async function remoteHostAction(request: Request, value: Record<string, unknown> | (() => Promise<Record<string, unknown>>)) {
+  let grant = contextOf(request);
+  const receiving = sessions.get(grant.session);
+  const body = typeof value === 'function' ? await value() : value;
+  if (grant.expires <= Date.now()) {
+    // A slow upload may outlive its original grant, but only independent renewals of the
+    // same approved session can authorize it. Never extend a lease just because bytes arrived.
+    if (!['files', 'clipboard'].includes(String(body.action)) || !receiving || sessions.get(grant.session) !== receiving ||
+      receiving.pending || receiving.expires <= Date.now() || receiving.actor !== grant.actor || receiving.device !== grant.device || receiving.revision !== grant.policy.revision)
+      throw new RemoteDesktopError('Expired session grant. Connect again.', 403);
+    grant = { ...grant, expires: receiving.expires };
+  }
   start();
-  const native = await nativeDesktop('computer-status') as NativeStatus;
+  const native = await nativeStatus(body.action);
   if (!native.enabled || native.locked) await stopRemoteHostSessions();
   const features = { screen: native.enabled && !native.locked && native.supported && native.screenPermission !== false && grant.policy.screen,
     input: native.enabled && !native.locked && native.supported && native.inputPermission !== false && grant.policy.input, rime: native.enabled && !native.locked && native.supported && native.inputPermission !== false && grant.policy.rime,
@@ -110,7 +139,7 @@ export async function remoteHostAction(request: Request, body: Record<string, un
     const s: HostSession = { id: grant.session, actor: grant.actor, device: grant.device, revision: grant.policy.revision,
       expires: grant.expires, active: Date.now(), capabilities: body.capabilities.filter(c => features[c as RemoteCapability]),
       pending: grant.policy.connection === 'approval', paused: false, topology: native.topology,
-      display: native.displays?.[0]?.display, frame: 0, frameAt: 0, capturing: false };
+      display: native.displays?.[0]?.display, frame: 0, frameAt: 0, capturing: false, epoch: 0, starting: 0 };
     sessions.set(s.id, s);
     return Response.json({ state: s.pending ? 'pending-approval' : 'connected', transport: 'compatibility',
       transports: native.media ? ['webrtc', 'compatibility'] : ['compatibility'],
@@ -119,14 +148,17 @@ export async function remoteHostAction(request: Request, body: Record<string, un
   const s = sessions.get(grant.session);
   if (!s || s.actor !== grant.actor || s.device !== grant.device || s.expires <= Date.now()) throw new RemoteDesktopError('Session expired. Connect again.', 404);
   if (s.revision !== grant.policy.revision) { await close(s); throw new RemoteDesktopError('Access settings changed. Connect again.', 403); }
-  s.expires = grant.expires; s.active = Date.now();
+  s.expires = Math.max(s.expires, grant.expires); s.active = Date.now();
   if (s.detached && !['files', 'status', 'disconnect', 'detach', 'resume'].includes(String(body.action)))
     throw new RemoteDesktopError('Viewing ended while hidden. Reconnect viewing before using this capability.', 409);
   if (s.topology !== native.topology) {
-    await release(s);
-    if (s.media) await nativeDesktop('computer-media', { command: 'stop', session: s.id, expires: s.expires }).catch(() => {});
-    s.media = false; s.topology = native.topology; s.frame = 0;
-    if (!native.displays?.some(d => d.display === s.display)) s.display = native.displays?.[0]?.display;
+    s.starting++;
+    try {
+      await release(s);
+      if (s.media) await nativeDesktop('computer-media', { command: 'stop', session: s.id, expires: s.expires }).catch(() => {});
+      s.media = false; s.topology = native.topology; s.frame = 0;
+      if (!native.displays?.some(d => d.display === s.display)) s.display = native.displays?.[0]?.display;
+    } finally { s.starting--; }
   }
   if (body.action === 'status') {
     if (s.rime) await nativeDesktop('computer-heartbeat', s.rime).catch(() => { s.rime = undefined; });
@@ -147,6 +179,7 @@ export async function remoteHostAction(request: Request, body: Record<string, un
     if (!['start', 'poll', 'answer', 'ice', 'stop'].includes(String(command))) throw new RemoteDesktopError('Invalid media command.');
     if (command === 'start') {
       if (s.paused) throw new RemoteDesktopError('Resume viewing before connecting media.', 409);
+      if (s.starting) throw new RemoteDesktopError('A session operation is still starting.', 409);
       if (body.audio === true && (!features.audio || !s.capabilities.includes('audio'))) throw new RemoteDesktopError('System audio is unavailable or not allowed.', 403);
       const display = native.displays?.find(d => d.display === s.display);
       if (!display) throw new RemoteDesktopError('Display unavailable.', 409);
@@ -154,18 +187,28 @@ export async function remoteHostAction(request: Request, body: Record<string, un
       const limit = quality === 'sharp' ? 3840 : quality === 'saver' ? 1280 : 1920;
       const pixels = native.platform === 'macos' ? Math.max(1, display.scale) : 1;
       const scale = Math.min(pixels, limit / Math.max(display.width, display.height));
-      const captureScale = Math.min(pixels, 3840 / Math.max(display.width, display.height));
-      await nativeDesktop('computer-media', { command, session: s.id, expires: s.expires, input: features.input && s.capabilities.includes('input'),
+      // ScreenCaptureKit scales on the GPU, so a macOS capture is sized to the viewer's output and the
+      // helper keys captures by size: no per-frame software downscale of a 4K/5K frame per viewer.
+      const captureScale = native.platform === 'macos' ? scale : Math.min(pixels, 3840 / Math.max(display.width, display.height));
+      const epoch = s.epoch; s.starting++;
+      try {
+        await nativeDesktop('computer-media', { command, session: s.id, expires: s.expires, input: features.input && s.capabilities.includes('input'),
         display: s.display, x: display.x, y: display.y, sourceWidth: display.width, sourceHeight: display.height,
         captureWidth: Math.max(2, Math.floor(display.width * captureScale / 2) * 2), captureHeight: Math.max(2, Math.floor(display.height * captureScale / 2) * 2),
         width: Math.max(2, Math.floor(display.width * scale / 2) * 2), height: Math.max(2, Math.floor(display.height * scale / 2) * 2),
         quality, audio: body.audio === true, forceTurn: body.forceTurn === true, turn: body.turn });
-      s.media = true;
-      return Response.json({ iceServers: body.iceServers ?? [], turnAvailable: body.turnAvailable === true });
+        if (!currentOperation(s, epoch)) {
+          await nativeDesktop('computer-media', { command: 'stop', session: s.id, expires: Date.now() + 1000 }).catch(() => {});
+          throw new RemoteDesktopError('Session changed while media was starting.', 409);
+        }
+        s.media = true;
+        return Response.json({ iceServers: body.iceServers ?? [], turnAvailable: body.turnAvailable === true });
+      } finally { s.starting--; }
     }
-    const result = await nativeDesktop('computer-media', { command, session: s.id, expires: s.expires, sdp: body.sdp, candidate: body.candidate, sdpMLineIndex: body.sdpMLineIndex });
-    if (command === 'stop') s.media = false;
-    return Response.json(result);
+    if (command === 'stop') { s.epoch++; s.starting++; s.media = false; }
+    try {
+      return Response.json(await nativeDesktop('computer-media', { command, session: s.id, expires: s.expires, sdp: body.sdp, candidate: body.candidate, sdpMLineIndex: body.sdpMLineIndex }));
+    } finally { if (command === 'stop') s.starting--; }
   }
   if (body.action === 'files') {
     if (!features.files || !s.capabilities.includes('files')) throw new RemoteDesktopError('File transfer is not allowed.', 403);
@@ -194,35 +237,58 @@ export async function remoteHostAction(request: Request, body: Record<string, un
     if (!features.rime || !s.capabilities.includes('rime') || typeof body.ward !== 'string' || !/^[a-z0-9-]{1,32}$/.test(body.ward) ||
       typeof body.caller !== 'string' || !/^[a-f0-9]{64}$/.test(body.caller)) throw new RemoteDesktopError('Rime control is not allowed.', 403);
     if (native.controller?.kind === 'human' && native.controller.id !== s.id) throw new RemoteDesktopError('The controlling viewer must release control first.', 409);
-    await release(s);
-    const owner = `agent:${body.local === true ? body.ward : `remote:${body.caller}`}:${localOwner()}`;
-    const acquired = await nativeDesktop('computer-agent-acquire', { owner }) as { ownership: number; topology: number };
-    s.rime = { owner, ...acquired };
-    return Response.json({ granted: true, ward: body.ward, note: 'Control granted. No task was sent to Rime.' });
+    if (s.starting || s.paused) throw new RemoteDesktopError('Resume viewing and wait for the current operation.', 409);
+    const epoch = s.epoch + 1; s.starting++;
+    try {
+      await release(s);
+      if (!currentOperation(s, epoch)) throw new RemoteDesktopError('Session changed before Rime acquired control.', 409);
+      const owner = `agent:${body.local === true ? body.ward : `remote:${body.caller}`}:${localOwner()}`;
+      const acquired = await nativeDesktop('computer-agent-acquire', { owner }) as { ownership: number; topology: number };
+      if (!currentOperation(s, epoch)) {
+        await nativeDesktop('computer-release', { owner, ...acquired }).catch(() => {});
+        throw new RemoteDesktopError('Session changed while Rime acquired control.', 409);
+      }
+      s.rime = { owner, ...acquired };
+      return Response.json({ granted: true, ward: body.ward, note: 'Control granted. No task was sent to Rime.' });
+    } finally { s.starting--; }
   }
   if (body.action === 'pause' || body.action === 'resume') {
-    if (body.action === 'resume' && s.detached) {
-      if ([...sessions.values()].filter(s => !s.detached).length >= REMOTE_LIMITS.viewers) throw new RemoteDesktopError('This computer already has four viewers.', 429);
-      s.detached = false; s.frame = 0;
-    }
-    s.paused = body.action === 'pause'; if (s.paused) await release(s);
-    if (s.paused && s.media) {
-      await nativeDesktop('computer-media', { command: 'stop', session: s.id, expires: s.expires }).catch(() => {}); s.media = false;
-    }
-    return Response.json({ paused: s.paused });
+    s.starting++;
+    try {
+      if (body.action === 'resume' && s.detached) {
+        if ([...sessions.values()].filter(s => !s.detached).length >= REMOTE_LIMITS.viewers) throw new RemoteDesktopError('This computer already has four viewers.', 429);
+        s.detached = false; s.frame = 0;
+      }
+      s.paused = body.action === 'pause'; if (s.paused) await release(s);
+      if (s.paused && s.media) {
+        await nativeDesktop('computer-media', { command: 'stop', session: s.id, expires: s.expires }).catch(() => {}); s.media = false;
+      }
+      return Response.json({ paused: s.paused });
+    } finally { s.starting--; }
   }
   if (body.action === 'monitor') {
     if (!native.displays?.some(d => d.display === body.display)) throw new RemoteDesktopError('Display unavailable. Refresh the display list.');
-    await release(s);
-    if (s.media) await nativeDesktop('computer-media', { command: 'stop', session: s.id, expires: s.expires }).catch(() => {});
-    s.media = false; s.display = Number(body.display); s.frame = 0;
-    return Response.json({ display: s.display });
+    s.starting++;
+    try {
+      await release(s);
+      if (s.media) await nativeDesktop('computer-media', { command: 'stop', session: s.id, expires: s.expires }).catch(() => {});
+      s.media = false; s.display = Number(body.display); s.frame = 0;
+      return Response.json({ display: s.display });
+    } finally { s.starting--; }
   }
   if (body.action === 'acquire') {
     if (s.paused || !features.input || !s.capabilities.includes('input')) throw new RemoteDesktopError('Input is not allowed.', 403);
-    const result = await nativeDesktop('computer-acquire', { owner: s.id, takeover: body.takeover === true }) as { ownership: number; topology: number };
-    s.ownership = result.ownership; s.topology = result.topology;
-    return Response.json(result);
+    if (s.starting) throw new RemoteDesktopError('A session operation is still starting.', 409);
+    const epoch = s.epoch; s.starting++;
+    try {
+      const result = await nativeDesktop('computer-acquire', { owner: s.id, takeover: body.takeover === true }) as { ownership: number; topology: number };
+      if (!currentOperation(s, epoch)) {
+        await nativeDesktop('computer-release', { owner: s.id, ...result }).catch(() => {});
+        throw new RemoteDesktopError('Session changed while acquiring control.', 409);
+      }
+      s.ownership = result.ownership; s.topology = result.topology;
+      return Response.json(result);
+    } finally { s.starting--; }
   }
   if (body.action === 'release') { await release(s); return Response.json({ released: true }); }
   if (body.action === 'heartbeat' || body.action === 'input' || body.action === 'clear') {
@@ -236,11 +302,17 @@ export async function remoteHostAction(request: Request, body: Record<string, un
   if (body.action === 'frame') {
     if (s.paused) throw new RemoteDesktopError('Viewing is paused.', 409);
     if (body.ack !== s.frame || s.capturing) throw new RemoteDesktopError('Acknowledge the previous frame before requesting another.', 409, 'frame_ack_required');
-    if (Date.now() - s.frameAt < 1000 / REMOTE_LIMITS.compatibilityFps) return new Response(null, { status: 204 });
-    s.capturing = true;
+    s.capturing = true; // held across the pacing wait too: a duplicate request cannot slip in meanwhile
+    const frameDisplay = s.display, frameTopology = s.topology;
     try {
-      const result = await nativeDesktop('computer-frame', { display: s.display }) as { image: string; imageWidth: number; imageHeight: number };
+      // Pace here rather than answering 204: a viewer asking a few ms early would otherwise wait a whole
+      // interval again and settle at half the frame rate. The relay allows 10 s per frame request.
+      const wait = 1000 / REMOTE_LIMITS.compatibilityFps - (Date.now() - s.frameAt);
+      if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+      if (!sessions.has(s.id) || s.paused) throw new RemoteDesktopError('Viewing is paused.', 409);
+      const result = await nativeDesktop('computer-frame', { display: frameDisplay }) as { image: string; imageWidth: number; imageHeight: number };
       if (!sessions.has(s.id) || s.expires <= Date.now()) throw new RemoteDesktopError('Session closed.', 409);
+      if (s.paused || s.display !== frameDisplay || s.topology !== frameTopology) throw new RemoteDesktopError('Display changed during capture.', 409);
       s.frame++; s.frameAt = Date.now();
       return new Response(Buffer.from(result.image, 'base64'), { headers: { 'content-type': 'image/jpeg',
         'x-rimeward-frame': String(s.frame), 'x-rimeward-topology': String(s.topology),

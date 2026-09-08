@@ -10,8 +10,10 @@ import { getSetting, setSetting } from "../settings.ts";
 import { repoDir } from "../db.ts";
 import { DevError, requireDesktop, isDesktop } from "./runtime.ts";
 import { localOwner } from "./native.ts";
+import { REMOTE_LIMITS } from './remote-desktop-contract.ts';
 import {
   PROTOCOL,
+  CHANNEL_CAP,
   allowedRelayPath,
   forwardHeaders,
   relaySocket,
@@ -46,6 +48,8 @@ export async function rimeConnection(user:number) {
 }
 const serverSessions = new Map<string, { id: string; expiresAt: string }>();
 const controls = new Map<string, WebSocket>();
+/** Pairs the server told us it revoked: their socket close must not schedule a reconnect. */
+const revoked = new Set<string>();
 const retries = new Map<string, ReturnType<typeof setTimeout>>();
 const channels = new Map<string, Set<WebSocket>>();
 async function vault(op: string, value?: string) {
@@ -246,9 +250,19 @@ export async function openServer(user: number, id: string, path = "/dash") {
   await nativeDesktop("server", { url: `${p.server}${path}`, session: session.id, device: p.id });
   return { ok: true };
 }
-async function serverSession(p: Pair) {
-  let session = serverSessions.get(p.id);
-  if (!session || Date.parse(`${session.expiresAt.replace(" ", "T")}Z`) < Date.now() + 60_000) {
+const sessionRequests = new Map<string, Promise<{ id: string; expiresAt: string }>>();
+/** The server caps sessions per device and expires old ones: concurrent creations would churn them. */
+function serverSession(p: Pair) {
+  const session = serverSessions.get(p.id);
+  if (session && Date.parse(`${session.expiresAt.replace(" ", "T")}Z`) >= Date.now() + 60_000) return Promise.resolve(session);
+  let pending = sessionRequests.get(p.id);
+  if (!pending) {
+    pending = createServerSession(p).finally(() => sessionRequests.delete(p.id));
+    sessionRequests.set(p.id, pending);
+  }
+  return pending;
+}
+async function createServerSession(p: Pair) {
   const response = await fetch(`${p.server}/api/devices/session`, {
     method: "POST",
     redirect: "error",
@@ -266,9 +280,8 @@ async function serverSession(p: Pair) {
         : "Server unavailable. You can continue on this desktop.",
       response.status,
     );
-  session = await response.json() as { id: string; expiresAt: string };
+  const session = await response.json() as { id: string; expiresAt: string };
   serverSessions.set(p.id, session);
-  }
   return session;
 }
 
@@ -285,7 +298,9 @@ export async function instanceRequest(user: number, path: string, request: Reque
   // A same-origin request on the desktop remains same-origin at the server.
   headers.set('origin', pair.server);
   const body = !['GET', 'HEAD'].includes(request.method) ? request.body : undefined;
-  const connect = new AbortController(), timeout = setTimeout(() => connect.abort(), 15000);
+  // This deadline includes uploading the request body, not just establishing the connection.
+  const connect = new AbortController(), timeout = setTimeout(() => connect.abort(),
+    body && path.startsWith('/api/remote-desktop/sessions/') ? 120000 : 15000);
   let response: Response;
   try {
     response = await fetch(`${pair.server}${path}`, {
@@ -296,6 +311,8 @@ export async function instanceRequest(user: number, path: string, request: Reque
     if (!request.signal.aborted) disconnectRime(user);
     throw e;
   } finally { clearTimeout(timeout); }
+  // A revoked session answers 401 on /api and a /login redirect on documents; the next call re-creates it.
+  if (response.status === 401 || (response.status === 303 && /\/login(?:\?|$)/.test(response.headers.get('location') ?? ''))) { if (serverSessions.get(pair.id)?.id === session.id) serverSessions.delete(pair.id); }
   const out = new Headers(response.headers);
   for (const key of ['set-cookie', 'content-length', 'content-encoding']) out.delete(key);
   out.set('cache-control', 'no-store');
@@ -386,6 +403,7 @@ function connect(pair: Pair) {
         return;
       }
       if (m.type === 'remote-revoked') {
+        revoked.add(pair.id);
         void import('./remote-desktop-host.ts').then(m => m.stopRemoteHostSessions());
         void nativeDesktop('computer-disconnect').catch(() => {});
         return;
@@ -403,7 +421,8 @@ function connect(pair: Pair) {
     if (controls.get(pair.id) === ws) controls.delete(pair.id);
     for (const channel of channels.get(pair.id) ?? []) channel.terminate();
     channels.delete(pair.id);
-    if (code !== 4001 && pairs.some((p) => p.id === pair.id)) {
+    // 4001 = revoked or replaced. Heartbeat and network failures reconnect.
+    if (code !== 4001 && !revoked.has(pair.id) && pairs.some((p) => p.id === pair.id)) {
       const timer = setTimeout(() => connect(pair), 5000);
       timer.unref();
       retries.set(pair.id, timer);
@@ -411,10 +430,21 @@ function connect(pair: Pair) {
   });
 }
 function openChannel(pair: Pair, id: string, base: string, remote?: import('./devices.ts').RemoteRelayContext, agentCaller?: string) {
-  if (agentCaller !== undefined && !/^[a-f0-9]{64}$/.test(agentCaller)) return;
-  if (remote && (remote.protocol !== 1 || remote.device !== pair.id || !Number.isSafeInteger(remote.expires) || remote.expires <= Date.now() || remote.expires > Date.now() + 31000)) return;
+  // A dropped channel surfaces on the server as a 10 s 504 "did not respond": say why here at least.
+  const drop = (why: string) => console.warn(`[relay] channel refused: ${why}`);
+  if (agentCaller !== undefined && !/^[a-f0-9]{64}$/.test(agentCaller)) return drop("invalid agent caller");
+  // Grants arrive on the authenticated live socket. Translate their bounded lifetime once to
+  // the host clock; forwarding the server's wall clock broke hosts more than one second behind.
+  if (remote?.issuedAt !== undefined) {
+    const lifetime = remote.expires - remote.issuedAt;
+    if (!Number.isSafeInteger(remote.issuedAt) || !Number.isSafeInteger(remote.expires) || lifetime <= 0 || lifetime > REMOTE_LIMITS.authorizationMs)
+      return drop('invalid remote grant lifetime');
+    remote = { ...remote, expires: Date.now() + lifetime };
+  }
+  if (remote && (remote.protocol !== 1 || remote.device !== pair.id || !Number.isSafeInteger(remote.expires) || remote.expires <= Date.now() || remote.expires > Date.now() + 31000))
+    return drop(remote.device !== pair.id ? "remote context for another device" : "remote context expired or clock skew over 31 s");
   const set = channels.get(pair.id);
-  if (!set || set.size >= 64) return;
+  if (!set || set.size >= CHANNEL_CAP) return drop(`channel cap ${CHANNEL_CAP} reached`);
   const ws = new WebSocket(
     `${pair.server.replace(/^https:/, "wss:")}/api/devices/connect`,
     {
@@ -438,7 +468,7 @@ function openChannel(pair: Pair, id: string, base: string, remote?: import('./de
       }
       const token = process.env.RIMEWARD_NATIVE_TOKEN;
       if (!token) { res.writeHead(503); res.end(); return; }
-      const headers: Record<string, string> = { "x-rimeward-native-token": token };
+      const headers: Record<string, string> = { "x-rimeward-native-token": token, "x-rimeward-relayed": "1" };
       if (remote) headers['x-rimeward-remote-context'] = Buffer.from(JSON.stringify(remote)).toString('base64url');
       if (agentCaller) headers['x-rimeward-agent-caller'] = agentCaller;
       for (const key of forwardHeaders) {
@@ -502,10 +532,8 @@ export function relayHtml(html: string, base: string) {
       `$1${base}/`,
     )
     .replace(/url\(["']?\/(?!\/)/g, (match) => `${match + base.slice(1)}/`)
-    .replace(
-      "<head>",
-      `<head><meta name="rimeward-runtime-base" content="${base}"><script>${bridge}</script>`,
-    );
+    // Same match as routeInstance's marker injection: a <head> with attributes must still get the bridge.
+    .replace(/<head(?:\s[^>]*)?>/i, head => `${head}<meta name="rimeward-runtime-base" content="${base}"><script>${bridge}</script>`);
 }
 export function ensureRemote() {
   if (isDesktop() && (globalThis as NativeGlobal).__nativeVault)

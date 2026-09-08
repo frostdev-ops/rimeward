@@ -154,6 +154,61 @@ fn viewer(value: &Value, source: String, capture: &mut Capture) -> Result<Viewer
     };
     sink.set_property("max-bitrate", max);
     sink.set_property("start-bitrate", max.min(4_000_000));
+    // ponytail: webrtcsink 0.15.3 cannot steer VideoToolbox/Media Foundation bitrate or
+    // negotiate TWCC for them. These are fixed targets, NOT congestion adaptation; use
+    // upstream encoder support before claiming adaptive hardware encoding.
+    let fixed_kbps = max / 1000 * 3 / 5;
+    sink.connect("encoder-setup", false, move |args| {
+        let enc = args[3].get::<gst::Element>().ok()?;
+        let name = enc
+            .factory()
+            .map(|f| f.name().to_string())
+            .unwrap_or_default();
+        let set = |property: &str, text: &str| {
+            if enc.has_property(property) {
+                enc.set_property_from_str(property, text);
+            }
+        };
+        if name.starts_with("vtenc_h264") {
+            // webrtcsink 0.15.3 forces constrained-baseline in its parser filter, but
+            // VideoToolbox emits baseline. Use its real profile, never relabel SDP/SPS.
+            // The internal name is pinned to 0.15.3. The separate negotiated encoder
+            // and RTP filters still enforce the peer's answer, including its profile.
+            let filter_name = if args[1].get::<String>().is_ok_and(|id| id == "discovery") {
+                "codec-parser-caps".to_owned()
+            } else {
+                format!("codec-parser-caps-{}", args[2].get::<String>().ok()?)
+            };
+            if let Some(filter) = enc
+                .parent()
+                .and_then(|p| p.downcast::<gst::Bin>().ok())
+                .and_then(|bin| bin.by_name(&filter_name))
+            {
+                filter.set_property(
+                    "caps",
+                    gst::Caps::builder("video/x-h264")
+                        .field("stream-format", "avc")
+                        .field("profile", "baseline")
+                        .build(),
+                );
+            }
+            set("realtime", "true");
+            set("allow-frame-reordering", "false");
+            set("bitrate", &fixed_kbps.to_string());
+            // ABR is a target, not a ceiling. Bound its one-second average to the preset.
+            set("data-rate-limits", &format!("{},1", max / 1000));
+            set("max-keyframe-interval", "2560");
+        } else if name.starts_with("mfh264") {
+            set("low-latency", "true");
+            set("bframes", "0");
+            set("rc-mode", "cbr");
+            set("bitrate", &fixed_kbps.to_string());
+            set("gop-size", "2560");
+        } else {
+            return Some(false.to_value());
+        }
+        Some(true.to_value())
+    });
     sink.connect("consumer-added", false, |args| {
         let session = args[1].get::<String>().ok()?;
         let bin = args[2].get::<gst::Element>().ok()?;
@@ -600,7 +655,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if viewers.contains_key(&session) || viewers.len() >= 4 {
                         return Err("Viewer limit or duplicate session".into());
                     }
-                    let source = value["display"].to_string();
+                    // The host requests viewer-sized macOS captures. Sharing by display alone
+                    // would upscale the first small capture for later sharp viewers. Other hosts
+                    // supply a common capture size, so their mixed-quality viewers still share.
+                    let source = format!(
+                        "{}:{}x{}",
+                        value["display"],
+                        value["captureWidth"]
+                            .as_u64()
+                            .or(value["width"].as_u64())
+                            .unwrap_or(0),
+                        value["captureHeight"]
+                            .as_u64()
+                            .or(value["height"].as_u64())
+                            .unwrap_or(0)
+                    );
                     if !captures.contains_key(&source) {
                         captures.insert(source.clone(), capture(&value, synthetic)?);
                     }
@@ -657,7 +726,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     v.signaller.ice(
                         &session,
                         value["candidate"].as_str().ok_or("Missing ICE")?,
-                        value["sdpMLineIndex"].as_u64().ok_or("Missing ICE index")? as u32,
+                        value["sdpMLineIndex"]
+                            .as_u64()
+                            .and_then(|n| u32::try_from(n).ok())
+                            .ok_or("Invalid ICE index")?,
                     )?;
                 }
                 _ => return Err("Unknown media command".into()),

@@ -144,8 +144,13 @@ export function authenticatedDevice(token: unknown) {
 export function deviceServerSession(token: unknown) {
   const device = authenticatedDevice(token), db = getDb();
   return db.transaction(() => {
+    // Expired sessions go; live ones stay — the app shell's server window and the legacy tunnel hold
+    // earlier ids, and a re-mint by the runtime used to log them out. Cap at the eight newest.
     db.prepare(
-      "DELETE FROM sessions WHERE id IN (SELECT session_id FROM device_sessions WHERE device_id=?)",
+      "DELETE FROM sessions WHERE id IN (SELECT session_id FROM device_sessions WHERE device_id=?) AND expires_at <= datetime('now')",
+    ).run(device.id);
+    db.prepare(
+      "DELETE FROM sessions WHERE id IN (SELECT s.id FROM sessions s JOIN device_sessions d ON d.session_id=s.id WHERE d.device_id=? ORDER BY s.expires_at DESC, s.rowid DESC LIMIT -1 OFFSET 7)",
     ).run(device.id);
     const session = createSession(device.user_id);
     db.prepare(

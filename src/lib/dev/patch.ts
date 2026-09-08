@@ -10,7 +10,7 @@ export type PatchOperation =
 export function patchPath(value: string): string {
   // Portable paths also avoid Windows drive/ADS aliases and trailing-dot normalization.
   if (!value || value.length > 200 || /[\uD800-\uDFFF]/u.test(value) || /[\\<>:"|?*\p{Cc}]/u.test(value) ||
-      value.split('/').some(s => !s || s === '.' || s === '..' || /[. ]$/.test(s) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(s)))
+      value.split('/').some(s => !s || s === '.' || s === '..' || s.toLowerCase() === '.git' || /[. ]$/.test(s) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(s)))
     throw Error('Patch paths must be portable project-relative paths (up to 200 characters), without traversal or absolute paths.');
   return value;
 }

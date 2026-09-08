@@ -491,15 +491,23 @@ export function projectEditor(host: HTMLElement, options: {
   window.addEventListener("fd:open-file", onOpen);
   const onKey = (e: KeyboardEvent) => { if (!e.defaultPrevented && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") { e.preventDefault(); e.stopPropagation(); run(quickOpen); } };
   host.addEventListener("keydown", onKey);
+  let renewed = 0;
   const stopPoll = poll(async () => {
     if (!current || pending || busy || syncing) return;
-    const file = current.path; syncing = true;
+    const file = current.path, mine = current.owner === owner;
+    // Holding the lease (30 s): one body-less POST renews it AND returns the view, every 10 s — over a
+    // relay each call is a fresh channel. Watching someone else's buffer: refresh every 2 s.
+    if (mine && Date.now() - renewed < 10_000) return;
+    syncing = true;
     try {
-      const next: BufferView = await api("buffer", { project: project.id, path: file });
+      let next: BufferView;
+      if (mine) {
+        try { next = await api("buffer", { project: project.id, path: file }, "POST"); renewed = Date.now(); }
+        catch (e) { if ((e as { status?: number }).status !== 409) throw e; next = await api("buffer", { project: project.id, path: file }); } // lease taken over: show whose
+      } else next = await api("buffer", { project: project.id, path: file });
       if (stopped || pending || busy || current?.path !== file) return;
       current = next; setText(next.text); if (next.dirty) dirtyFiles.add(file); else dirtyFiles.delete(file); renderTabs(); refreshStatus();
-      if (next.owner === owner) await api("buffer", { project: project.id, path: file }, "POST");
-    } catch { if (!stopped) status.textContent = "Disconnected · text retained"; }
+    } catch (e) { if (!stopped) status.textContent = (e as { status?: number }).status === 401 ? "Signed out · text retained" : "Disconnected · text retained"; }
     finally { syncing = false; }
   }, 2000, () => !host.getClientRects().length);
   const themeObserver = new MutationObserver(() => editor.dispatch({ effects: theme.reconfigure(editorTheme()) }));

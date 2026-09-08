@@ -16,7 +16,7 @@ import { normalizeTheme } from '../src/lib/theme.ts';
 import { saveBackground, backgroundPath } from '../src/lib/backgrounds.ts';
 import { INSTANCE_KEY, instanceDashboard, dashboardForSync, mergeInstance, wardDevice } from '../src/lib/dev/instance.ts';
 import { captureRime, syncManifest, syncRecord, acceptRecord, installRecord } from '../src/lib/agent/sync-store.ts';
-import { requestWard } from '../src/lib/dev/instance-routing.ts';
+import { requestWard, routeInstance } from '../src/lib/dev/instance-routing.ts';
 
 test('joining an instance keeps one Home, adds projects and preserves colliding custom wards', () => {
   const user = createUser('instance-join@x.dev', null), device = randomUUID();
@@ -97,4 +97,18 @@ test('routing resolves explicit ward context for native actions, uploads, histor
   assert.equal(requestWard('/api/agent/history?_ward=rime-one&key=chat%2Ftest'), 'rime-one');
   assert.equal(requestWard('/api/browser/stream/browser-one'), 'browser-one');
   assert.equal(requestWard('/api/calendar?account=all'), undefined);
+});
+
+test('a /runtime/<device> request keeps its explicit target; the same ward call without it is relayed', async () => {
+  const user = createUser('instance-runtime-route@x.dev', null), device = randomUUID();
+  const pages = validatePages([...DEFAULT_PAGES, { id: 'project', title: 'Project', device }])!;
+  saveDashboard(user, validateLayout([...DEFAULT_LAYOUT, { i: 'term', type: 'terminal', size: '3x2', page: 'project' }], pages)!, pages);
+  const route = (path: string) => {
+    const url = new URL(`https://rime.example${path}`);
+    return routeInstance({ locals: { user: { userId: user } }, url, request: new Request(url), cookies: { get: () => undefined } } as unknown as APIContext);
+  };
+  for (const path of [`/runtime/${device}/api/dev/projects?_ward=term`, `/runtime/${device}/api/agent/history?_ward=term`, `/runtime/${device}/api/weather?ward=term`])
+    assert.equal(await route(path), undefined, path);
+  // Without /runtime the ward's page places it on the device: the relay is attempted (this device is not enrolled here).
+  assert.equal((await route('/api/dev/projects?_ward=term'))?.status, 404);
 });

@@ -58,7 +58,15 @@ a restricted, checksummed set of native media libraries. It negotiates media ove
 authenticated account signaling; video/audio use WebRTC and ordered input enters
 the parent's existing controller through a data channel. H.264 is preferred with
 VP8 fallback; Opus carries explicitly enabled system audio. Quality presets select
-bandwidth saver, adaptive 1080p, or native resolution up to 4K. The helper's EOF,
+bandwidth saver, adaptive 1080p, or native resolution up to 4K. webrtcsink 0.15 has no
+tuning or bitrate control for VideoToolbox or Media Foundation encoders, so the helper's
+`encoder-setup` handler puts them in realtime mode without frame reordering at a fixed
+target rate per preset (1.2, 4.8 or 12 Mbit/s), with VideoToolbox also capped to
+the preset's one-second average rate; software VP8/VA encoders keep webrtcsink's
+congestion control. For the pinned webrtcsink 0.15.3, the VideoToolbox parser filter
+uses the encoder's actual baseline profile; the peer's negotiated profile remains
+enforced. Forcing constrained-baseline here prevented H.264 discovery and caused VP8
+fallback. The helper's EOF,
 authorization expiry and supervision are independent of viewer cleanup.
 
 Failed WebRTC connections use explicitly labeled **Compatibility mode**:
@@ -76,18 +84,34 @@ macOS continuous capture uses ScreenCaptureKit; Windows uses D3D11 and WASAPI
 loopback. Linux uses the selected PulseAudio/PipeWire-Pulse output monitor, never
 the default source or microphone. Audio is muted initially and unavailable in Compatibility mode.
 The TURN credential adapter is implemented; DNS/TLS/service provisioning remains
-outstanding. Up to four viewers share one capture per display; independent bounded
+outstanding. Up to four viewers share one capture per display and capture size (on macOS a
+capture is sized to the viewer's output, so ScreenCaptureKit scales on the GPU and no viewer
+branch downscales a 4K/5K frame in software); independent bounded
 branches preserve their quality and audio choices. Capture of system audio stops
 when the final authorized listener leaves.
 No microphones are captured. iOS target/Appium support has been removed; obsolete
 stored settings are ignored. Mobile web clients may control supported computers.
 
-Expand moves the same live viewer into a dialog. Retargeting closes the old session
-before saving the new device. Fit/actual-size scaling, zoom, monitor selection,
-control state and compatibility diagnostics are provided. Auto-connect is off by
+The ward is one icon toolbar over a viewport that fills the card: the primary
+Take control / Take over / Release control button, Expand, Fullscreen and a status
+pill (transport · control state · fps) that the card header mirrors; monitor, scaling
+(fit, fill, actual size with zoom), quality, audio and volume, the Keys menu (sticky
+modifiers and sequences such as Ctrl+Alt+Del, released in reverse), touchpad mode on
+touch screens, clipboard, files, Rime handoff and a stats chip live in popovers, and
+the toolbar folds into a More menu on narrow cards. Expand moves the same live viewer
+into a shared dialog; Fullscreen takes the ward root fullscreen with an auto-hiding
+toolbar and requests keyboard lock while controlling when the browser supports it.
+Operating-system reserved shortcuts may remain local; the Keys menu sends explicit
+remote chords. Windows secure-desktop actions such as Ctrl+Alt+Del require OS support
+beyond ordinary simulated input. Typed characters arrive as text events (IME composition
+respected); other keys, Backspace and arrows as key events. Retargeting closes the
+old session before saving the new device. Auto-connect is off by
 default. Hidden viewers pause media; controlling clients heartbeat every two seconds
 and lose synthetic input after five seconds without a heartbeat. Viewing reconnects
-must reacquire control; uncertain input is never replayed.
+must reacquire control; uncertain input is never replayed. Hidden viewers renew their
+viewing grant until the idle detach deadline. Pause, release, monitor changes and
+disconnect invalidate in-flight control/media starts; stale completions release
+only the ownership they acquired before another start can proceed.
 After 60 seconds hidden, viewing releases its slot. Active transfers can continue
 under their own renewed authorization. Returning starts view-only and rechecks the
 four-viewer limit. Monitor unplugging releases input and selects a remaining display.
@@ -166,7 +190,11 @@ use the account cookie and origin checks. Host execution requires both the nativ
 parent token and a grant attached by the authenticated device control channel.
 Session IDs alone confer no authority. Policy, ownership, topology and sequence are
 checked on their relevant operations. Known logout/revocation tears sessions down;
-account grants expire after 30 seconds without renewal. Parent IPC loss stops native
+account grants expire after 30 seconds without renewal. Updated paired endpoints
+translate the bounded grant lifetime to the host clock at receipt, so wall-clock skew
+does not prevent a connection. Uploads have a bounded 120-second transport window;
+an upload that outlives its original grant requires independent renewal of the same
+approved session, and cannot renew itself. Delayed requests cannot shorten a newer lease. Parent IPC loss stops native
 input independently. Audit retention is 30 days and excludes media, clipboard,
 keystrokes, credentials and full file paths.
 

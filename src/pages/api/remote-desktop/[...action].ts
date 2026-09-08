@@ -12,15 +12,19 @@ import { remoteHostAction } from '../../../lib/dev/remote-desktop-host.ts';
 async function readBody(request: Request) {
   const reader = request.body?.getReader();
   if (!reader) throw new RemoteDesktopError('Missing request.');
+  const signal = AbortSignal.any([request.signal, AbortSignal.timeout(120000)]);
+  const abort = () => { void reader.cancel(signal.reason).catch(() => {}); };
+  signal.addEventListener('abort', abort, { once: true });
   const chunks: Uint8Array[] = []; let bytes = 0;
   try {
     for (;;) {
-      const { done, value } = await reader.read(); if (done) break;
+      signal.throwIfAborted();
+      const { done, value } = await reader.read(); signal.throwIfAborted(); if (done) break;
       bytes += value.byteLength;
       if (bytes > 12 * 1024 * 1024) throw new RemoteDesktopError('Request too large.', 413);
       chunks.push(value);
     }
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  } finally { signal.removeEventListener('abort', abort); await reader.cancel().catch(() => {}); reader.releaseLock(); }
   const body = JSON.parse(Buffer.concat(chunks).toString());
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RemoteDesktopError('Invalid request.');
   return body as Record<string, unknown>;
@@ -31,7 +35,7 @@ export const ALL: APIRoute = async ({ params, request, locals, cookies, url }) =
     const action = params.action ?? '', user = locals.user.userId;
     if (action === 'host') {
       if (!isDesktop() || request.method !== 'POST') throw new RemoteDesktopError('Private native dispatch required.', 403);
-      return await remoteHostAction(request, await readBody(request));
+      return await remoteHostAction(request, () => readBody(request));
     }
     if (request.headers.has('x-rimeward-native-token')) throw new RemoteDesktopError('Viewer authentication required.', 403);
     if (isDesktop()) return await instanceRequest(user, url.pathname + url.search, request);

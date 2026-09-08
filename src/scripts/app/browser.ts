@@ -13,6 +13,8 @@ import { expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
 import { RENDERERS, body } from './wards.ts';
 import { el, normalizeUrl, postJson } from './dom.ts';
 import { icon } from './icon.ts';
+import { openMenu, menuItem, closeMenu } from './menu.ts';
+import type { BrowserDownload } from '../../lib/browser/downloads.ts';
 import { LocalDriver, type Transport } from './browser-cdp.ts';
 import type { BrowserConfig, WardInstance } from '../../lib/wards.ts';
 import type { BrowserEvent, Cmd } from '../../lib/browser/session.ts';
@@ -72,7 +74,7 @@ function connect(m: Mount): void {
   // at mount may have landed before the ward was saved, or on a browser since
   // closed and relaunched at the default.
   es.onopen = () => { if (m.es === es) scheduleResize(m); };
-  for (const type of ['frame', 'nav', 'tabs', 'dialog', 'route'] as const) {
+  for (const type of ['frame', 'nav', 'tabs', 'dialog', 'route', 'download'] as const) {
     es.addEventListener(type, (e) => { if (m.es === es) onEvent(m, JSON.parse((e as MessageEvent).data) as BrowserEvent); });
   }
   es.onerror = () => {
@@ -138,6 +140,10 @@ function onEvent(m: Mount, ev: BrowserEvent): void {
       break;
     case 'route':
       if (!ev.online) flash(m, ev.detail ?? 'Home route offline — open Rimeward on your computer', 8000);
+      break;
+    case 'download':
+      flash(m, ev.file.status === 'ready' ? `${ev.file.name} saved — open Downloads to save a copy. Rime can inspect it.`
+        : ev.file.status === 'failed' ? `${ev.file.name}: ${ev.file.error}` : `Downloading ${ev.file.name}…`, 8000);
       break;
   }
 }
@@ -437,6 +443,43 @@ function navButton(m: Mount, label: string, title: string, cmd: Cmd): HTMLButton
   return b;
 }
 
+async function showDownloads(m: Mount, button: HTMLButtonElement): Promise<void> {
+  try {
+    const response = await fetch(`/api/browser/${m.w.i}`, { signal: AbortSignal.timeout(15_000) });
+    const value = await response.json();
+    if (!response.ok) throw Error(value.error ?? 'Downloads unavailable.');
+    if (m.stopped) return;
+    const files = value.downloads as BrowserDownload[], rect = button.getBoundingClientRect();
+    openMenu(rect.left, rect.bottom + 4, menu => {
+      menu.style.maxHeight = 'min(60vh, 480px)'; menu.style.overflowY = 'auto';
+      if (/^https?:\/\//.test(m.url.value)) menu.append(menuItem('download', 'Download current file', () => {
+        void fetch(`/api/browser/${m.w.i}`, { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'download', args: { url: m.url.value } }), signal: AbortSignal.timeout(30_000) })
+          .then(async response => { const result = await response.json(); if (!response.ok || result.error) throw Error(result.error ?? 'Download failed.'); flash(m, 'Download started. Check Downloads for its status.', 6000); })
+          .catch(error => flash(m, String(error), 8000));
+      }));
+      if (!files.length) menu.append(el('p', 'p-2 text-sm', 'No downloads yet. Use a website’s download link (up to 25 MB).'));
+      for (const file of files) {
+        if (file.status === 'ready') {
+          const link = el('a', 'flex items-center gap-2 p-2 text-sm');
+          link.href = `/api/browser/${m.w.i}?download=${encodeURIComponent(file.id)}`;
+          link.download = file.name;
+          link.append(icon('download'), document.createTextNode(file.name));
+          link.setAttribute('role', 'menuitem');
+          link.addEventListener('click', closeMenu);
+          menu.append(link);
+        } else menu.append(el('p', 'p-2 text-sm', `${file.name}: ${file.error ?? 'Downloading…'}`));
+        if (file.status !== 'downloading') menu.append(menuItem('trash', `Remove ${file.name}`, () => {
+          void fetch(`/api/browser/${m.w.i}?download=${encodeURIComponent(file.id)}`, { method: 'DELETE', signal: AbortSignal.timeout(15_000) })
+            .then(async response => { if (!response.ok) throw Error((await response.json()).error ?? 'Removal failed.'); })
+            .catch(error => flash(m, String(error), 8000));
+        }));
+      }
+      menu.querySelector<HTMLElement>('a')?.focus();
+    });
+  } catch (error) { flash(m, error instanceof Error ? error.message : 'Downloads unavailable.', 8000); }
+}
+
 function build(w: WardInstance): Mount {
   const root = el('div', 'bw flex h-full w-full min-h-0 flex-col gap-1');
   const bar = el('form', 'flex items-center gap-1');
@@ -499,6 +542,10 @@ function build(w: WardInstance): Mount {
   });
   url.addEventListener('focus', () => url.select());
   expand.addEventListener('click', () => openDialog(m));
+  const downloads = el('button', 'btn min-h-0 shrink-0 px-1.5 py-0.5 text-xs');
+  downloads.type = 'button'; downloads.title = 'Downloads'; downloads.setAttribute('aria-label', 'Downloads');
+  downloads.append(icon('download'));
+  downloads.addEventListener('click', event => { event.stopPropagation(); void showDownloads(m, downloads); });
   restoreExpandedWard(w.i, () => openDialog(m));
   bar.append(
     navButton(m, '◀', 'Back', { t: 'back' }),
@@ -506,6 +553,7 @@ function build(w: WardInstance): Mount {
     navButton(m, '⟳', 'Reload', { t: 'reload' }),
     url,
     navButton(m, '＋', 'New tab', { t: 'newtab' }),
+    downloads,
     expand
   );
   root.append(bar, tabs, view);

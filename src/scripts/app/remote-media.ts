@@ -6,8 +6,12 @@ export function remoteMedia(video: HTMLVideoElement, action: (body: Record<strin
   const start = async (quality: unknown, audio: boolean, forceTurn = false) => {
     stop(); const current = revision;
     const call = async (body: Record<string, unknown>) => {
-      const result = await (await action(body)).json();
-      if (current !== revision) throw Error('Media session changed.');
+      if (current !== revision) throw new DOMException('Media session changed.', 'AbortError');
+      const result = await action(body).then(response => response.json()).catch(error => {
+        if (current !== revision) throw new DOMException('Media session changed.', 'AbortError');
+        throw error;
+      });
+      if (current !== revision) throw new DOMException('Media session changed.', 'AbortError');
       return result;
     };
     const options = await call({ command: 'start', quality, audio, forceTurn });
@@ -20,9 +24,9 @@ export function remoteMedia(video: HTMLVideoElement, action: (body: Record<strin
       if (current !== revision || failed) return; failed = true; stop();
       void action({ command: 'stop', failure: true }).catch(() => {}); fallback(error);
     };
-    connection.ontrack = event => { stream.addTrack(event.track); video.hidden = false; void video.play().catch(fail); };
+    connection.ontrack = event => { if (current !== revision) return; stream.addTrack(event.track); video.hidden = false; void video.play().catch(fail); };
     connection.ondatachannel = event => {
-      if (event.channel.label !== 'rimeward-input-v1') { event.channel.close(); return; }
+      if (current !== revision || event.channel.label !== 'rimeward-input-v1') { event.channel.close(); return; }
       channel = event.channel;
     };
     connection.onicecandidate = event => {
@@ -38,6 +42,7 @@ export function remoteMedia(video: HTMLVideoElement, action: (body: Record<strin
       try {
         const result = await call({ command: 'poll' });
         for (const event of result.events ?? []) {
+          if (current !== revision) return;
           if (event.event === 'sdp') {
             if (connection.remoteDescription) throw Error('Unexpected second offer. Reconnect viewing.');
             await connection.setRemoteDescription({ type: 'offer', sdp: event.sdp });
@@ -58,7 +63,8 @@ export function remoteMedia(video: HTMLVideoElement, action: (body: Record<strin
           // Optional diagnostics cannot terminate an otherwise healthy media session.
           await call({ command: 'metrics', mediaId: options.mediaId, transport: stats.transport, bytes: stats.bytes, rtt: stats.rtt }).catch(() => {});
         }
-        timer = setTimeout(() => void poll(), connection.connectionState === 'connected' ? 1000 : 150);
+        if (current !== revision) return;
+        timer = setTimeout(() => void poll(), connection.connectionState === 'connected' ? 2000 : 150);
       } catch (error) { fail(error); }
     };
     void poll();
@@ -71,11 +77,8 @@ export function remoteMedia(video: HTMLVideoElement, action: (body: Record<strin
       if (channel.bufferedAmount > 64 * 1024) throw Error('Input channel is backed up. Release and acquire control again.');
       channel.send(JSON.stringify(body)); return true;
     },
-    diagnostics: async () => {
-      if (!peer) return '';
-      const stats = await mediaStats(peer);
-      return `${stats.transport === 'turn' ? 'TURN' : 'WebRTC'} · ${stats.rtt} ms network round trip · ${stats.frames} fps`;
-    },
+    /** transport, rtt ms, fps and cumulative bytes received — the ward diffs bytes for a bitrate. */
+    stats: async () => peer ? mediaStats(peer) : null,
   };
 }
 async function mediaStats(peer: RTCPeerConnection) {

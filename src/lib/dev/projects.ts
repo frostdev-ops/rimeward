@@ -107,8 +107,10 @@ export function projectPath(
   if (
     relative.includes("\0") ||
     relative.includes("\\") ||
+    (process.platform === "win32" && relative.includes(":")) || // drive-relative and stream aliases
     path.isAbsolute(relative) ||
-    relative.split("/").includes("..")
+    // .git is never a project file: its config and hooks execute on the next status/diff/worktree call.
+    relative.split("/").some((s) => s === ".." || s.toLowerCase() === ".git")
   )
     throw new DevError("Path is outside the project.", 403);
   const target = path.resolve(p.root, relative);
@@ -131,7 +133,8 @@ export function projectPath(
       path.relative(ancestor, target),
     );
   }
-  if (!inside(p.root, real) || inside(fs.realpathSync(DATA_DIR), real))
+  if (!inside(p.root, real) || inside(fs.realpathSync(DATA_DIR), real) ||
+      path.relative(p.root, real).split(path.sep).some(s => s.toLowerCase() === ".git"))
     throw new DevError("Path is outside the approved project.", 403);
   return real;
 }
@@ -535,9 +538,10 @@ export function editBuffer(
   const view = readBuffer(user, project, file);
   file = view.path;
   if (view.readonly) throw new DevError("This file is read-only.");
-  claimLease(bufferKey(user, project, file), owner, opts.takeover);
+  // Revision first: a stale takeover must not steal the lease and then fail.
   if (opts.revision !== undefined && opts.revision !== view.revision)
     throw new DevError("The buffer changed. Reload before editing.", 409);
+  claimLease(bufferKey(user, project, file), owner, opts.takeover);
   const db = workDb();
   if (opts.text !== undefined) {
     if (Buffer.byteLength(opts.text) > MAX_FILE)
@@ -629,7 +633,8 @@ export async function git(
   project: string,
   args: string[],
 ): Promise<string> {
-  const { stdout } = await exec("git", args, {
+  // Managed Git operations disable repository hooks and fsmonitor.
+  const { stdout } = await exec("git", ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args], {
     cwd: projectPath(user, project),
     timeout: 30_000,
     maxBuffer: 2 * 1024 * 1024,

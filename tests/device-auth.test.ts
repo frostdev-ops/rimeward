@@ -97,3 +97,24 @@ test("declined and expired approvals cannot register a device, login continuatio
   ])
     assert.equal(allowedRelayPath("/api/dev/" + route), false);
 });
+
+test("a re-minted device session keeps the shell's live sessions and prunes only expired ones", () => {
+  const user = createUser("device-session-keep@example.com", null);
+  const grant = beginDeviceAuth("Session Mac", "darwin", 1);
+  approveDeviceAuth(grant.user_code, user, true);
+  const paired = pollDeviceAuth(grant.device_code, Date.now() + 3100);
+  assert.ok("token" in paired);
+  if (!("token" in paired)) return;
+  // The Tauri shell copies the first session into its server window; the runtime re-mints its own.
+  const shell = deviceServerSession(paired.token), runtime = deviceServerSession(paired.token);
+  assert.notEqual(shell.id, runtime.id);
+  assert.equal(getSession(shell.id)?.userId, user, "the shell window stays signed in");
+  assert.equal(getSession(runtime.id)?.userId, user);
+  getDb().prepare("UPDATE sessions SET expires_at=datetime('now','-1 day') WHERE id=?").run(shell.id);
+  deviceServerSession(paired.token);
+  assert.equal(getDb().prepare("SELECT 1 FROM sessions WHERE id=?").get(shell.id), undefined, "expired sessions are swept");
+  // Never unbounded: the newest eight survive.
+  for (let i = 0; i < 12; i++) deviceServerSession(paired.token);
+  const kept = getDb().prepare("SELECT COUNT(*) AS n FROM device_sessions WHERE device_id=?").get(paired.id) as { n: number };
+  assert.ok(kept.n <= 8, `kept ${kept.n}`);
+});

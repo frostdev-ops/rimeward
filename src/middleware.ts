@@ -72,7 +72,9 @@ export const onRequest = defineMiddleware(async (context, next) => {
     // cookie the browser keeps sending, that no script can replace, and that
     // this branch would otherwise bounce on forever.
     if (cookie) for (const name of SESSION_COOKIES) context.cookies.delete(name, { path: '/' });
-    if (pathname.startsWith('/api/')) {
+    // A relayed API call (/runtime/<device>/api/…) is an API call: a desktop with a dead
+    // session must see 401 JSON, not a /login redirect it would follow into its own login page.
+    if (pathname.startsWith('/api/') || /^\/runtime\/[^/]+\/api\//.test(pathname)) {
       return new Response(JSON.stringify({ error: 'unauthorized' }), {
         status: 401,
         headers: { 'content-type': 'application/json' },

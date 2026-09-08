@@ -1,3 +1,4 @@
+import { terminalEnv } from '../dev/environment.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -11,6 +12,7 @@ import { connectBrowserbase, dropBrowserbase } from './browserbase.ts';
 import { connectApp } from './app-backend.ts';
 import { publicAddress } from '../net-guard.ts';
 import { openStream, subscribeTunnel, tunnelOnline, tunnelStatus } from '../tunnel.ts';
+import { captureDownload, listDownloads, moveDownloads, type BrowserDownload } from './downloads.ts';
 
 // One live browser per browser ward, keyed `${userId}:${ward}`. The human
 // (screencast out over SSE, input in over POST) and the agent (tools) share
@@ -56,6 +58,7 @@ export type BrowserEvent =
   | { type: 'dialog'; kind: string; message: string }
   /** A home-routed ward: whether the desktop app's tunnel is up right now. */
   | { type: 'route'; online: boolean; detail?: string }
+  | { type: 'download'; file: BrowserDownload }
   | { type: 'closed' };
 
 export interface Session {
@@ -166,11 +169,23 @@ const homeDial =
     return openStream(userId, `${host}:${port}`);
   };
 
+/** The shell allowlist minus the two things a browser has no use for and must not hold. */
+function browserEnv(): Record<string, string> {
+  const { SSH_AUTH_SOCK: _agent, SHELL: _shell, ...env } = terminalEnv();
+  return env;
+}
 async function launchLocal(userId: number, ward: string, cfg: BrowserConfig): Promise<{ context: BrowserContext; close: () => Promise<void> }> {
   // A home-routed ward gets its own listener; every other one shares the direct proxy.
   const home = cfg.route === 'home' ? await guardFor(homeDial(userId)) : undefined;
   const port = home?.port ?? (await guardPort());
-  const context = await chromium.launchPersistentContext(profileDir(userId, ward), {
+  const profile = profileDir(userId, ward);
+  const downloads = path.join(profile, 'rimeward-transfers');
+  fs.mkdirSync(downloads, { recursive: true });
+  const owner = fs.statSync(profile);
+  if (process.getuid?.() === 0 && owner.uid !== 0) fs.chownSync(downloads, owner.uid, owner.gid);
+  // These are Chromium's temporary transfers; completed files live outside the profile.
+  for (const name of fs.readdirSync(downloads)) fs.rmSync(path.join(downloads, name), { force: true, recursive: true });
+  const context = await chromium.launchPersistentContext(profile, {
     ...(EXE ? { executablePath: EXE } : { channel: 'chromium' }),
     headless: true,
     chromiumSandbox: SANDBOX,
@@ -180,9 +195,13 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig): Pr
     handleSIGINT: false,
     handleSIGTERM: false,
     handleSIGHUP: false,
+    // Without this the browser child inherits TOKEN_ENC_KEY and RIMEWARD_NATIVE_TOKEN, readable
+    // from its own /proc/<pid>/environ — on the VPS by the very user the sandbox isolates.
+    env: browserEnv(),
     proxy: { server: `http://127.0.0.1:${port}`, bypass: '<-loopback>' },
     viewport: DEFAULT_VIEWPORT,
-    acceptDownloads: false,
+    acceptDownloads: true,
+    downloadsPath: downloads,
     // Chromium restores history, scroll positions and form state itself. A
     // forced blank startup tab would take the place of the restored page.
     ...(restoreDesktop() ? { ignoreDefaultArgs: ['about:blank'] } : {}),
@@ -276,6 +295,10 @@ function emit(s: Session, ev: BrowserEvent): void {
 }
 
 function watchPage(s: Session, p: Page): void {
+  p.on('download', download => captureDownload(s.userId, s.ward, download,
+    s.backend === 'local' ? path.join(PROFILES, String(s.userId), s.ward, 'rimeward-transfers') : undefined,
+    file => emit(s, { type: 'download', file })));
+
   const nav = () => {
     if (s.page === p) void pushNav(s);
     void pushTabs(s);
@@ -312,6 +335,7 @@ export async function pushState(s: Session): Promise<void> {
   await pushNav(s);
   await pushTabs(s);
   if (s.route === 'home') emit(s, { type: 'route', online: tunnelOnline(s.userId) });
+  for (const file of listDownloads(s.userId, s.ward).filter(f => f.status === 'downloading')) emit(s, { type: 'download', file });
 }
 
 /** Switch the active tab; the screencast (if running) follows. */
@@ -340,7 +364,13 @@ export async function goto(s: Session, url: string): Promise<void> {
   s.lastUsed = Date.now();
   // 'commit' — return as soon as navigation lands; the screencast shows the
   // rest. Callers that need the DOM (the agent) wait for a load state after.
-  await s.page.goto(href, { waitUntil: 'commit', timeout: NAV_MS });
+  const before = new Set(listDownloads(s.userId, s.ward).map(f => f.id));
+  try { await s.page.goto(href, { waitUntil: 'commit', timeout: NAV_MS }); }
+  catch (e) {
+    // An attachment response deliberately aborts navigation; its download receipt is the result.
+    if (!listDownloads(s.userId, s.ward).some(f => !before.has(f.id)) ||
+        !/Download is starting|net::ERR_ABORTED/.test(String(e))) throw e;
+  }
 }
 
 export async function resize(s: Session, width: number, height: number): Promise<void> {
@@ -536,6 +566,7 @@ export async function dropSession(userId: number, ward: string): Promise<void> {
   if (!WARD_RE.test(ward)) return;
   const s = sessions.get(`${userId}:${ward}`);
   if (s) await closeSession(s);
+  await moveDownloads(userId, ward);
   fs.rmSync(path.join(PROFILES, String(userId), ward), { recursive: true, force: true });
   dropBrowserbase(userId, ward);
 }
@@ -547,6 +578,7 @@ export async function rekeySession(userId: number, before: string, after: string
   if (active) await closeSession(active);
   const source = path.join(PROFILES, String(userId), before), target = path.join(PROFILES, String(userId), after);
   if (fs.existsSync(source)) fs.renameSync(source, target);
+  await moveDownloads(userId, before, after);
   const { getDb } = await import('../db.ts');
   getDb().prepare('UPDATE settings SET key=? WHERE key=?').run(`browserbase_ctx:${userId}:${after}`, `browserbase_ctx:${userId}:${before}`);
 }

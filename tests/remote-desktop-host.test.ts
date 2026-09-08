@@ -150,3 +150,21 @@ test('hidden transfers release viewer slots; returning rechecks the limit and st
     assert.equal((await (await remoteHostAction(request(contexts[0]!), { action: 'detach' })).json()).closed, true);
   } finally { activeTransfers = 0; textPermission = true; await stopRemoteHostSessions(); }
 });
+
+test('sub-second paths reuse one native status read; frames and status always read fresh', async () => {
+  const c = grant();
+  try {
+    await remoteHostAction(request(c), { action: 'connect', capabilities: ['screen', 'input'] });
+    await remoteHostAction(request(c), { action: 'acquire' });
+    const reads = () => calls.filter(v => v.op === 'computer-status').length;
+    const before = reads();
+    await remoteHostAction(request(c), { action: 'status' });
+    await remoteHostAction(request(c), { action: 'input', ownership: 2, topology: 1, sequence: 1, events: [] });
+    await remoteHostAction(request(c), { action: 'heartbeat', ownership: 2, topology: 1 });
+    await remoteHostAction(request(c), { action: 'input', ownership: 2, topology: 1, sequence: 2, events: [] });
+    assert.equal(reads(), before + 1, 'input and heartbeat reuse the status read');
+    await remoteHostAction(request(c), { action: 'frame', ack: 0 });
+    await remoteHostAction(request(c), { action: 'status' });
+    assert.equal(reads(), before + 3, 'frame and status read natively every time');
+  } finally { await remoteHostAction(request(c), { action: 'disconnect' }); }
+});

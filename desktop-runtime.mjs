@@ -45,11 +45,13 @@ const nativeRequest = (type, op, value) =>
   });
 globalThis.__nativeVault = (op, value) => nativeRequest("vault", op, value);
 globalThis.__nativeDesktop = (op, value) => nativeRequest("desktop", op, value);
+// Startup may not have installed the graceful shutdown handler yet.
+const stop = () => { if (!process.emit("SIGTERM")) process.exit(0); };
 lines.on("line", (line) => {
   try {
     const m = JSON.parse(line);
     if (m.type === "shutdown") {
-      process.emit("SIGTERM");
+      stop();
       return;
     }
     const p = pending.get(m.id);
@@ -68,7 +70,7 @@ lines.on("line", (line) => {
 lines.on("close", () => {
   for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error("Desktop disconnected")); }
   pending.clear();
-  process.emit("SIGTERM");
+  stop();
 });
 const { httpServer } = await import("./server.mjs");
 if (!httpServer.listening)

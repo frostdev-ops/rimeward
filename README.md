@@ -158,6 +158,20 @@ root without one, Chromium runs without its sandbox. Every host a user names is 
 the private address ranges before it is dialled, the Docker bridge range included — reach a
 sibling container by its public name or with host networking.
 
+The browser toolbar's **Downloads** menu retains website downloads and can download the
+current file, including PDFs displayed inline. Files stay on the browser's computer;
+save a copy or remove them from that menu. Transfers are limited to 25 MB, two minutes,
+and one active download per ward, with up to 100 retained files. Rime uses
+`browser_downloads` and `browser_download` to import a file into its conversation,
+then `read_document`, `search_document`, or `render_document_page` to inspect text,
+scans, diagrams and page layout. Imported attachments follow normal conversation sync.
+Direct file URLs use Chromium's authenticated network stack, including existing logins.
+
+Human controls and Rime tools follow the browser ward's computer placement. An unplaced
+“My computer” ward binds when opened in the desktop app; a server can also discover its
+unique active/profile-owning desktop. An offline or ambiguous owner never silently
+falls back to a different computer. Update both server and desktop for these routes.
+
 ## Deploy
 
 `server.mjs` is the production entry: Astro's standalone server plus the websocket upgrade the

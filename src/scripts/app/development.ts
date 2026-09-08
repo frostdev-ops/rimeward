@@ -39,7 +39,8 @@ async function request<T = unknown>(
     {
       method,
       cache: "no-store",
-      signal: action === "input" || (action === "sessions" && method === "GET") ? AbortSignal.timeout(15000) : undefined,
+      // Every call is bounded: the relay bounds only the channel handshake, not the proxied request.
+      signal: AbortSignal.timeout(action === "input" || (action === "sessions" && method === "GET") ? 15000 : 60000),
       ...(method === "GET"
         ? {}
         : {
@@ -48,8 +49,9 @@ async function request<T = unknown>(
           }),
     },
   );
-  const value = await response.json();
-  if (!response.ok) throw new Error(value.error ?? "Desktop unavailable.");
+  // An HTML body (proxy error page, login redirect) must not surface as a JSON parse error.
+  const value = await response.json().catch(() => { throw Object.assign(new Error("Desktop returned an invalid response."), { status: response.ok ? 502 : response.status }); });
+  if (!response.ok) throw Object.assign(new Error(value.error ?? "Desktop unavailable."), { status: response.status });
   return value;
 }
 const button = (label: string, fn: () => unknown) => {
@@ -80,6 +82,7 @@ function expand(host: HTMLElement) {
   const placeholder = document.createComment("expanded ward"),
     dlg = el("dialog", "fd-dialog dev-expanded");
   host.before(placeholder);
+  dlg.setAttribute("aria-label", `${host.dataset.title ?? "Ward"} · expanded`);
   const nav = el("div", "dev-bar");
   nav.append(button("Close", () => dlg.close()));
   for (const other of document.querySelectorAll<HTMLElement>(".dev-workspace"))
@@ -112,7 +115,8 @@ interface State {
 async function mount(w: WardInstance) {
   const api = <T = unknown>(action: string, data: Record<string, unknown> = {}, method = 'GET') => request<T>(action, data, method, w.i);
   const b = body(w.i);
-  if (!b || states.has(w.i)) return;
+  if (!b) return;
+  states.get(w.i)?.stop(); // resize / undo / project change re-render: replace the live instance, never blank it
   const host = el("div", "dev-workspace"),
     bar = el("div", "dev-bar"),
     content = el("div", "dev-content");
@@ -125,8 +129,10 @@ async function mount(w: WardInstance) {
   const cleanup: (() => void)[] = [];
   states.set(w.i, {
     stop() {
+      if (stopped) return;
       stopped = true;
       for (const stop of cleanup) stop();
+      host.closest<HTMLDialogElement>("dialog.dev-expanded")?.close();
       states.delete(w.i);
     },
   });
@@ -242,7 +248,7 @@ async function mount(w: WardInstance) {
       }).catch(() => {});
       let session: SessionView | undefined, list: SessionView[] = [];
       let sequence: number | undefined, updating: Promise<void> | undefined;
-      let connected = false, streamReady = false, launching = false;
+      let connected = false, streamReady = false, launching = false, failure = "";
       let retrySnapshot: ReturnType<typeof setTimeout> | undefined;
       let painting: Promise<void> | undefined, outputs: { sequence: number; data: string }[] = [];
       let outputSize = 0, resync = false, released = false;
@@ -300,7 +306,7 @@ async function mount(w: WardInstance) {
         restart.disabled = !connected || launching;
         keys.hidden = !showKeys || !session || session.state !== "running";
         keys.querySelectorAll<HTMLButtonElement>("button").forEach(b => { b.disabled = !writable; });
-        const text = !connected || !streamReady ? "Reconnecting…" : !session ? "Ready" :
+        const text = failure ? failure : !connected || !streamReady ? "Reconnecting…" : !session ? "Ready" :
           session.state !== "running" ? terminalExitLabel(session) :
           uncertain.has(session.id) ? "Input unconfirmed · review the screen" :
           writable ? "You’re in control" : session.owner ? "Viewing · controlled elsewhere" : "Viewing only";
@@ -433,12 +439,15 @@ async function mount(w: WardInstance) {
               if (result.data) await new Promise<void>(resolve => term.write(result.data, resolve));
               sequence = result.session.sequence;
               if (session.state === "running" && !session.owner && !session.agentInput && !released && !uncertain.has(id))
-                session = await api<SessionView>("control", { id }, "POST");
+                session = await api<SessionView>("control", { id }, "POST").catch(e => { if (e.status === 409) return session as SessionView; throw e; });
             }
             connected = true;
-          } catch {
+            failure = "";
+          } catch (e) {
             connected = false;
-            if (!stopped) retrySnapshot = setTimeout(() => void update(), 3000);
+            // A dead session, a refused route or a vanished desktop will not fix itself in 3 s: say why, retry slowly.
+            failure = [401, 403, 404].includes((e as { status?: number }).status ?? 0) ? (e as Error).message : "";
+            if (!stopped) retrySnapshot = setTimeout(() => void update(), failure ? 30000 : 3000);
           } finally {
             if (!stopped) { draw(); resize(); }
           }
@@ -821,8 +830,13 @@ async function mount(w: WardInstance) {
       );
     }
   } catch (err) {
+    if (stopped) return;
     content.textContent = (err as Error).message;
-    cleanup.push(poll(() => { states.get(w.i)?.stop(); void mount(w); }, 5000));
+    // A single owned timer. poll() ticks synchronously, so its stop would land in THIS (already
+    // run) cleanup list and the poller would remount the ward every 5 s for the rest of the page.
+    const slow = [401, 403, 404].includes((err as { status?: number }).status ?? 0);
+    const retry = setTimeout(() => { states.get(w.i)?.stop(); void mount(w); }, slow ? 30000 : 5000);
+    cleanup.push(() => clearTimeout(retry));
   }
 }
 for (const type of DEV_WARDS)

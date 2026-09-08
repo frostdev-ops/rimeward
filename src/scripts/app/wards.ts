@@ -587,7 +587,7 @@ export function bootInstance(w: WardInstance): void {
   const stop = r.intervalMs ? poll(() => r.render(w), r.intervalMs, () => pageOfCard(w.i) !== currentPage()) : () => {};
   booted.set(w.i, () => {
     stop();
-    r.stop?.(w.i);
+    RENDERERS[w.type]?.stop?.(w.i);
   });
   if (!r.intervalMs) void r.render(w);
 }

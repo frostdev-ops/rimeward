@@ -421,7 +421,7 @@ async function doctor() {
 }
 
 // ----------------------------------------------------- backup / restore
-const DATA_SUBDIRS = ['backgrounds', 'attachments', 'agent', 'browser', 'brand'];
+const DATA_SUBDIRS = ['backgrounds', 'attachments', 'agent', 'browser', 'browser-downloads', 'brand'];
 
 async function backup(args) {
   const { positionals: [dirArg] } = parse('backup', args);

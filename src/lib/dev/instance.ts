@@ -98,7 +98,7 @@ export async function moveLocalWardState(user: number, ids: Map<string, string>)
     if (before === after) continue;
     const { rekeySession } = await import('../browser/session.ts');
     await rekeySession(user, before, after);
-    for (const table of ['notes', 'timers', 'packets', 'agent_conversations', 'agent_wakes', 'agent_inbox', 'comms_messages']) {
+    for (const table of ['notes', 'timers', 'packets', 'agent_conversations', 'agent_wakes', 'agent_inbox', 'comms_messages', 'agent_tasks', 'agent_jobs']) {
       const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
       if (!columns.some(c => c.name === 'user_id')) continue;
       for (const field of ['ward', 'tile', 'sender']) if (columns.some(c => c.name === field))

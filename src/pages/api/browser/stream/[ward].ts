@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
 import { browserWard } from '../../../../lib/dashboard.ts';
 import { open, pushState, subscribe, type BrowserEvent } from '../../../../lib/browser/session.ts';
+import { routeBrowser } from '../../../../lib/browser/routing.ts';
 
 export const prerender = false;
 
@@ -14,7 +15,7 @@ const FRAME_MS = 50;
 /** The ward's live view: `frame` (jpeg base64 + the viewport it was captured
  *  at), `nav`, `tabs`, `dialog`. Connecting opens the browser if it is not
  *  already running. Same transport rules as /api/status/stream. */
-export const GET: APIRoute = async ({ params, locals }) => {
+export const GET: APIRoute = async ({ params, locals, request }) => {
   const userId = locals.user!.userId;
   const ward = String(params.ward);
   const cfg = browserWard(userId, ward);
@@ -27,6 +28,8 @@ export const GET: APIRoute = async ({ params, locals }) => {
   };
   let s;
   try {
+    const routed = await routeBrowser(userId, ward, request);
+    if (routed) return routed;
     s = await open(userId, ward, cfg);
   } catch (err) {
     // Not an error status (an EventSource cannot read one): a stream that

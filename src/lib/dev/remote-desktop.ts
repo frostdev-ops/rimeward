@@ -50,8 +50,9 @@ function start() {
       else if (!v.detached && v.pausedAt && Date.now() - v.pausedAt >= REMOTE_LIMITS.idleMs)
         void detach(v).then(response => response.body?.cancel()).catch(() => close(v, 'idle'));
     }
-    getDb().prepare('DELETE FROM remote_desktop_audit WHERE started_at<?').run(Date.now() - 30 * 86400000);
+    if (Date.now() - pruned >= 3600000) { pruned = Date.now(); getDb().prepare('DELETE FROM remote_desktop_audit WHERE started_at<?').run(Date.now() - 30 * 86400000); }
   };
+  let pruned = 0;
   setInterval(sweep, 1000).unref();
   onRemoteRevocation(event => {
     for (const v of viewers.values()) if ((!event.session || v.authentication === event.session) &&
@@ -67,8 +68,9 @@ function placement(user: number, ward: string, device: string) {
 }
 async function host(v: Viewer, action: string, body: Record<string, unknown> = {}, operation: RemoteOperation = 'view') {
   const policy = authorizeDevice(v.user, v.device, operation);
+  const issuedAt = Date.now();
   const remote: RemoteRelayContext = { protocol: 1, actor: v.actor, session: v.id, device: v.device, policy,
-    expires: Date.now() + REMOTE_LIMITS.authorizationMs };
+    issuedAt, expires: issuedAt + REMOTE_LIMITS.authorizationMs };
   if (action === 'media' && body.command === 'start') {
     const turn = remoteTurn(v.user, v.id);
     body = { ...body, turn: turn.servers, iceServers: turn.iceServers, turnAvailable: turn.available };
@@ -76,7 +78,7 @@ async function host(v: Viewer, action: string, body: Record<string, unknown> = {
   const payload = JSON.stringify({ ...body, action });
   const response = await relayRequest(v.user, v.device, '/api/remote-desktop/host', new Request('https://rimeward.invalid/api/remote-desktop/host', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: payload,
-    signal: AbortSignal.timeout(action === 'frame' ? 10000 : 5000),
+    signal: AbortSignal.timeout(action === 'files' || action === 'clipboard' ? 120000 : action === 'frame' ? 10000 : 15000),
   }), remote);
   if (!viewers.has(v.id)) return response;
   v.relayBytes += Buffer.byteLength(payload);
@@ -157,13 +159,13 @@ export async function remoteSessionAction(user: number, authentication: string, 
   authenticated(user, authentication);
   const v = viewers.get(id);
   if (!v || v.user !== user || v.actor !== actorOf(authentication)) throw new RemoteDesktopError('Session not found. Connect again.', 404, 'session_not_found');
+  if (body.action === 'disconnect') { await close(v, 'viewer_disconnected'); return Response.json({ closed: true }); }
   placement(user, v.ward, v.device);
   const spec = operations[String(body.action)];
   if (!spec) throw new RemoteDesktopError('Unknown session action.');
   if (spec.capability && !v.capabilities.includes(spec.capability)) throw new RemoteDesktopError('This capability was not granted to the session.', 403);
   const policy = authorizeDevice(user, v.device, spec.operation);
   if (policy.revision !== v.revision) { await close(v, 'policy_changed'); throw new RemoteDesktopError('Access settings changed. Connect again.', 403); }
-  if (body.action === 'disconnect') { await close(v, 'viewer_disconnected'); return Response.json({ closed: true }); }
   if (v.detached && !['files', 'status', 'disconnect', 'detach', 'resume'].includes(String(body.action)))
     throw new RemoteDesktopError('Viewing ended while hidden. Reconnect viewing first.', 409);
   v.active = Date.now();
@@ -179,7 +181,10 @@ export async function remoteSessionAction(user: number, authentication: string, 
     try {
       const response = await host(v, String(body.action), body, spec.operation);
       if (response.ok) v.pausedAt = body.action === 'pause' ? Date.now() : undefined;
-      else v.detached = detached;
+      else {
+        v.detached = detached;
+        if (body.action === 'resume' && response.status === 404) await close(v, 'idle');
+      }
       return response;
     } catch (error) { v.detached = detached; throw error; }
   }
@@ -260,6 +265,7 @@ export async function downloadRemoteFile(user: number, authentication: string, i
   };
   const state = await call('inspect');
   if (state.upload) throw new RemoteDesktopError('Select a download transfer.', 409);
+  if (!Number.isSafeInteger(state.size) || state.size < 0) throw new RemoteDesktopError('Invalid download size.', 502);
   if (state.offset !== 0) throw new RemoteDesktopError('Start a new browser download or explicitly resume into the original local file.', 409);
   let offset = 0;
   const stream = new ReadableStream<Uint8Array>({
@@ -268,7 +274,7 @@ export async function downloadRemoteFile(user: number, authentication: string, i
         if (offset === state.size) { await call('finalize'); controller.close(); return; }
         const result = await call('chunk', { offset });
         const bytes = Buffer.from(result.data, 'base64');
-        if (!bytes.length || bytes.length > REMOTE_LIMITS.chunkBytes || result.offset !== offset + bytes.length ||
+        if (!bytes.length || bytes.length > REMOTE_LIMITS.chunkBytes || result.offset !== offset + bytes.length || result.offset > state.size ||
           createHash('sha256').update(bytes).digest('hex') !== result.sha256) throw Error('Invalid transfer chunk.');
         offset = result.offset; controller.enqueue(bytes);
       } catch (error) { controller.error(error); }

@@ -20,6 +20,11 @@ import {
   revoke,
   allowedRelayPath,
 } from "../src/lib/dev/devices.ts";
+
+/** The desktop reconnects on every close code EXCEPT 4001; letting go must not read as revoked. */
+function closeCode(ws: WebSocket) {
+  return new Promise<number>(resolve => ws.on("close", code => resolve(code)));
+}
 const sockets = new Set<WebSocket>();
 const server = http.createServer();
 server.on("upgrade", (r, s, h) => deviceUpgrade(r, s as any, h));
@@ -187,5 +192,37 @@ test("relay origin checks use the forwarded host when no canonical URL is config
     );
   } finally {
     if (saved !== undefined) process.env.PUBLIC_BASE_URL = saved;
+  }
+});
+
+test("letting a desktop go and revoking it are different close codes", { timeout: 10000 }, async () => {
+  const user = createUser("device-close-codes@example.com", null);
+  const first = claimEnrollment(enroll(user).code, "PC", "darwin", 1);
+  const a = new WebSocket(url, { headers: { authorization: "Bearer " + first.token } });
+  sockets.add(a);
+  await once(a, "message");
+  // A second socket for the same device replaces the first: the older runtime must yield instead of reconnecting in a loop.
+  const replaced = closeCode(a);
+  const b = new WebSocket(url, { headers: { authorization: "Bearer " + first.token } });
+  sockets.add(b);
+  await once(b, "message");
+  assert.equal(await replaced, 4001);
+  // Revocation is final.
+  const revoked = closeCode(b);
+  revoke(user, first.id);
+  assert.equal(await revoked, 4001);
+});
+
+test("a refused device upgrade answers with a status instead of a bare reset", { timeout: 10000 }, async () => {
+  const user = createUser("device-upgrade-refused@example.com", null);
+  const pair = claimEnrollment(enroll(user).code, "PC", "darwin", 1);
+  for (const [headers, expected] of [
+    [{ authorization: "Bearer not-a-real-token" }, 401],
+    [{ authorization: "Bearer " + pair.token, "x-rimeward-request": crypto.randomUUID() }, 409],
+  ] as const) {
+    const ws = new WebSocket(url, { headers });
+    sockets.add(ws);
+    const [error] = await once(ws, "error") as [Error & { message: string }];
+    assert.match(error.message, new RegExp(String(expected)), error.message);
   }
 });

@@ -85,6 +85,9 @@ window.addEventListener('fd:instance', (event) => {
     if (instanceStreams.has(path)) continue;
     const stream = new EventSource(path);
     instanceStreams.set(path, stream);
+    // Only 5xx/network errors auto-retry; a 401/403/404/429 closes the source for good. Forget it so
+    // the next instance poll (15 s) opens a fresh one instead of keeping a dead object forever.
+    stream.onerror = () => { if (stream.readyState === EventSource.CLOSED && instanceStreams.get(path) === stream) instanceStreams.delete(path); };
     // Dashboard/theme changes arrive through reconciliation, never over an unsaved local edit.
     for (const [name, handle] of instanceHandlers) {
       if (name === 'layout' || name === 'theme') continue;

@@ -173,6 +173,7 @@ export const ALL: APIRoute = async ({ params, request, locals, url }) => {
                 user,
                 id,
                 body.after === undefined ? undefined : Number(body.after),
+                body.review === "1", // evidence re-hashes every receipt file; the terminal ward never shows it
               )
             : listSessions(user, project || undefined),
         );

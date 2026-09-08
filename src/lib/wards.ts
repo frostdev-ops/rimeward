@@ -772,7 +772,7 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
     }
     case 'remote-desktop': {
       return { autoConnect: raw.autoConnect === true, quality: ['saver', 'auto', 'sharp'].includes(String(raw.quality)) ? raw.quality : 'auto',
-        view: raw.view === 'actual' ? 'actual' : 'fit', diagnostics: raw.diagnostics === true };
+        view: ['fill', 'actual'].includes(String(raw.view)) ? raw.view : 'fit', diagnostics: raw.diagnostics === true };
     }
     case 'service-group': {
       // A group, a list of members, or neither: every monitor in the registry.

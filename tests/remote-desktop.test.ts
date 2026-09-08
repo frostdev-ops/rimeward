@@ -110,7 +110,7 @@ test('old sync reads and writes receive an upgrade requirement before changing s
   assert.throws(() => requireRemoteLayoutVersion(layout, null));
   assert.doesNotThrow(() => requireRemoteLayoutVersion(layout, '1'));
   assert.doesNotThrow(() => requireRemoteLayoutVersion([{ type: 'agent' }], null));
-  assert.equal(getDb().prepare('SELECT count(*) AS n FROM remote_desktop_audit').get() && true, true);
+  assert.equal((getDb().prepare('SELECT count(*) AS n FROM remote_desktop_audit').get() as { n: number }).n, 0);
 });
 
 test('page moves and joining an account preserve the explicitly selected remote target', () => {

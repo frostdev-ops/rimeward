@@ -178,7 +178,7 @@ pub fn request(v: &Value, now: u64, enabled: impl Fn() -> bool) -> Result<Value,
             .values_mut()
             .filter(|t| t.actor() == actor && t.session == session)
         {
-            t.expires = expires;
+            t.expires = t.expires.max(expires);
         }
         return Ok(json!({"active": transfers.values().filter(|t| t.session == session).count()}));
     }
@@ -367,7 +367,7 @@ pub fn request(v: &Value, now: u64, enabled: impl Fn() -> bool) -> Result<Value,
         .get_mut(id)
         .filter(|t| t.session == session && t.actor() == actor)
         .ok_or("Transfer unavailable; reauthorize and resume explicitly")?;
-    t.expires = expires;
+    t.expires = t.expires.max(expires);
     if command == "inspect" {
         return Ok(
             json!({"id": id, "offset": t.record.offset, "size": t.record.size, "digest": t.record.digest, "upload": t.record.upload,

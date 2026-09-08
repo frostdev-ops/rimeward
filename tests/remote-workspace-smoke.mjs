@@ -119,7 +119,7 @@ try {
   proxy = https.createServer(
     { key: fs.readFileSync(key), cert: fs.readFileSync(cert) },
     (req, res) => {
-      if (browserRouteProbe && /\/api\/browser\//.test(req.url)) {
+      if (browserRouteProbe && /\/api\/(?:browser|dev)\//.test(req.url)) {
         res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ routed: req.url })); return;
       }
       const accountAssets = {
@@ -333,6 +333,8 @@ try {
     for (const ward of ['other-browser', 'page-browser'])
       assert.equal((await localRequest('/api/browser/' + ward, 'POST', {})).routed, '/runtime/' + otherDevice + '/api/browser/' + ward);
     assert.equal((await localRequest('/api/browser/stream/other-browser')).routed, '/runtime/' + otherDevice + '/api/browser/stream/other-browser');
+    // A ward named in the QUERY (every /api/dev call) must take the same /runtime/<device> route as one named in the path.
+    assert.equal((await localRequest('/api/dev/projects?_ward=other-browser')).routed, '/runtime/' + otherDevice + '/api/dev/projects?_ward=other-browser');
   } finally {
     browserRouteProbe = false;
     await localRequest('/api/dashboard', 'PUT', { layout: beforeBrowser.layout, pages: beforeBrowser.pages });

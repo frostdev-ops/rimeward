@@ -75,6 +75,8 @@ function stopPty(s: Live, reason?: Live['terminationReason']) {
   }
   s.closing = true;
   s.pty.kill();
+  // A process that traps SIGHUP would otherwise hold its slot (and its row at "running") forever.
+  setTimeout(() => { if (live.get(s.id) === s) try { s.pty.kill("SIGKILL"); } catch {} }, 5000).unref();
 }
 const ownerKey = (id: string) => `terminal:${id}`;
 export function executable(name: string): string | null {
@@ -121,6 +123,9 @@ export function cliArgs(
   task = "",
 ): string[] {
   if (kind === "shell") return [];
+  // The task is the CLI's positional prompt: a leading dash would be parsed as an option and could
+  // re-add the bypass flags this mode omits.
+  if (/^\s*-/.test(task)) throw new DevError("A task cannot start with '-'.");
   if (kind === "codex")
     return [
       ...(mode === "yolo"
@@ -182,7 +187,8 @@ export function listSessions(user: number, project?: string): SessionView[] {
   return (
     workDb()
       .prepare(
-        "SELECT * FROM terminal_sessions WHERE user_id=? AND (? IS NULL OR project=?) ORDER BY rowid DESC",
+        // Everything but the snapshot (multi-MB per session): the list never shows it.
+        "SELECT id,user_id,project,kind,mode,title,shell,next_mode,human_control,review,state,exit_code,exit_signal,termination_reason,task,assignment,task_state,cols,rows,sequence,agent_input,is_command FROM terminal_sessions WHERE user_id=? AND (? IS NULL OR project=?) ORDER BY rowid DESC",
       )
       .all(user, project ?? null, project ?? null) as Row[]
   ).map(r => view(r));
@@ -190,18 +196,24 @@ export function listSessions(user: number, project?: string): SessionView[] {
 function persist(s: Live) {
   clearTimeout(s.flush);
   s.flush = undefined;
-  workDb()
-    .prepare(
-      "UPDATE terminal_sessions SET snapshot=?,sequence=?,cols=?,rows=? WHERE id=? AND user_id=?",
-    )
-    .run(
-      s.serializer.serialize({ scrollback: 10000 }),
-      s.sequence,
-      s.term.cols,
-      s.term.rows,
-      s.id,
-      s.user,
-    );
+  // Runs from a timer and from the exit callback: a throw here (disk full, busy database) would
+  // be uncaught and take the whole desktop runtime down.
+  try {
+    workDb()
+      .prepare(
+        "UPDATE terminal_sessions SET snapshot=?,sequence=?,cols=?,rows=? WHERE id=? AND user_id=?",
+      )
+      .run(
+        s.serializer.serialize({ scrollback: 10000 }),
+        s.sequence,
+        s.term.cols,
+        s.term.rows,
+        s.id,
+        s.user,
+      );
+  } catch (e) {
+    console.error(`[terminal] snapshot not saved: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 function checkpoint(s: Live) {
   if (s.flush) return;

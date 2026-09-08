@@ -14,6 +14,25 @@ const cache = path.join(os.tmpdir(), `rimeward-media-sdk-${version}-${platform}-
 const output = path.resolve(process.argv[2] ?? path.join(here, 'runtime/media'));
 const run = (file, args, options = {}) => execFileSync(file, args, { stdio: 'inherit', ...options });
 const capture = (file, args, options = {}) => execFileSync(file, args, { encoding: 'utf8', ...options });
+const common = ['coreelements', 'app', 'videotestsrc', 'audiotestsrc', 'videoconvertscale', 'audioconvert', 'audioresample',
+  'videorate', 'debugutilsbad', 'jpeg',
+  'rtp', 'rtpmanager', 'dtls', 'srtp', 'sctp', 'nice', 'webrtc', 'opus', 'vpx', 'videoparsersbad', 'typefindfunctions', 'playback', 'rawparse'];
+const plugins = [...common, ...(platform === 'darwin' ? ['applemedia'] : platform === 'win32' ? ['d3d11', 'd3d12', 'wasapi2', 'mediafoundation'] : ['ximagesrc', 'pulseaudio', 'pipewire', 'va'])];
+const optionalPlugins = new Set(['d3d12', 'mediafoundation', 'va']);
+const extension = platform === 'darwin' ? '.dylib' : platform === 'win32' ? '.dll' : '.so';
+const pluginFile = name => (platform === 'win32' ? 'gst' : 'libgst') + name + extension;
+function sdkLibrary(root) {
+  const lib = path.join(root, 'lib');
+  if (!fs.existsSync(lib)) return undefined;
+  return [lib, ...fs.readdirSync(lib, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => path.join(lib, entry.name))]
+    .find(directory => fs.existsSync(path.join(directory, 'pkgconfig/gstreamer-1.0.pc')));
+}
+function missingPlugins(root) {
+  const lib = sdkLibrary(root) ?? path.join(root, 'lib');
+  // PipeWire is built separately below, after the base Linux SDK is available.
+  return plugins.filter(name => name !== 'pipewire' && !optionalPlugins.has(name)
+    && !fs.existsSync(path.join(lib, 'gstreamer-1.0', pluginFile(name))));
+}
 fs.mkdirSync(cache, { recursive: true });
 async function checksum(file) {
   const hash = crypto.createHash('sha256'); for await (const chunk of fs.createReadStream(file)) hash.update(chunk); return hash.digest('hex');
@@ -39,7 +58,13 @@ async function download(url, expected) {
   fs.renameSync(part, file); return file;
 }
 let sdk = process.env.RIMEWARD_MEDIA_SDK ?? path.join(cache, 'sdk');
-if (!process.env.RIMEWARD_MEDIA_SDK && !fs.existsSync(path.join(sdk, '.rimeward-sdk-complete'))) {
+const missing = missingPlugins(sdk);
+if (process.env.RIMEWARD_MEDIA_SDK && missing.length) {
+  throw Error(`Incomplete RIMEWARD_MEDIA_SDK ${sdk}: missing required media plugins: ${missing.join(', ')}. Select a full GStreamer ${version} SDK, not a runtime bundle.`);
+}
+if (!process.env.RIMEWARD_MEDIA_SDK && (!fs.existsSync(path.join(sdk, '.rimeward-sdk-complete')) || missing.length)) {
+  // A completion marker can outlive an interrupted or damaged SDK copy.
+  fs.rmSync(path.join(sdk, '.rimeward-sdk-complete'), { force: true });
   if (platform === 'darwin') {
     const packages = [
       ['gstreamer-1.0-1.28.6-universal.pkg', 'a8eb366c59b7e9e5dc049848fed6bcd203a8878aa7517c051639fda78797c6ad'],
@@ -97,12 +122,12 @@ class Recipe(Recipe):
     // Release recipes contain exact source versions and hashes, including the native dependency graph.
     run('python3', [...base, 'build', '-j', '2', 'gst-plugins-good-1.0', 'gst-plugins-bad-1.0', 'libnice'], { cwd: cerbero });
   } else throw Error('Unsupported media target');
+  const absent = missingPlugins(sdk);
+  if (absent.length) throw Error(`SDK acquisition incomplete at ${sdk}: missing required media plugins: ${absent.join(', ')}. Remove the cached .expanded packages and retry.`);
   fs.writeFileSync(path.join(sdk, '.rimeward-sdk-complete'), `${version}\n`);
 }
 sdk = path.resolve(sdk);
-const sdkLib = [path.join(sdk, 'lib'), ...fs.readdirSync(path.join(sdk, 'lib'), { withFileTypes: true })
-  .filter(entry => entry.isDirectory()).map(entry => path.join(sdk, 'lib', entry.name))]
-  .find(directory => fs.existsSync(path.join(directory, 'pkgconfig/gstreamer-1.0.pc')));
+const sdkLib = sdkLibrary(sdk);
 if (!sdkLib) throw Error('GStreamer SDK libraries are missing');
 const pkgconfig = [path.join(sdk, 'bin', platform === 'win32' ? 'pkg-config.exe' : 'pkg-config'), path.join(cache, 'build-tools/bin/pkg-config')].find(file => fs.existsSync(file)) ?? 'pkg-config';
 const env = { ...process.env, PKG_CONFIG: pkgconfig, PKG_CONFIG_PATH: path.join(sdkLib, 'pkgconfig'),
@@ -134,18 +159,12 @@ const target = path.resolve(env.CARGO_TARGET_DIR ?? path.join(here, 'media-helpe
 fs.mkdirSync(output, { recursive: true });
 const executable = platform === 'win32' ? 'rimeward-media.exe' : 'rimeward-media';
 fs.copyFileSync(path.join(target, 'release', executable), path.join(output, executable));
-const common = ['coreelements', 'app', 'videotestsrc', 'audiotestsrc', 'videoconvertscale', 'audioconvert', 'audioresample',
-  'videorate', 'debugutilsbad', 'jpeg',
-  'rtp', 'rtpmanager', 'dtls', 'srtp', 'sctp', 'nice', 'webrtc', 'opus', 'vpx', 'videoparsersbad', 'typefindfunctions', 'playback', 'rawparse'];
-const plugins = [...common, ...(platform === 'darwin' ? ['applemedia'] : platform === 'win32' ? ['d3d11', 'd3d12', 'wasapi2', 'mediafoundation'] : ['ximagesrc', 'pulseaudio', 'pipewire', 'va'])];
-const extension = platform === 'darwin' ? '.dylib' : platform === 'win32' ? '.dll' : '.so';
 const library = path.join(output, 'lib'), pluginDir = path.join(library, 'gstreamer-1.0');
 fs.rmSync(pluginDir, { recursive: true, force: true }); fs.mkdirSync(pluginDir, { recursive: true });
 for (const name of plugins) {
-  const prefix = platform === 'win32' ? 'gst' : 'libgst';
-  const file = path.join(sdkLib, 'gstreamer-1.0', prefix + name + extension);
+  const file = path.join(sdkLib, 'gstreamer-1.0', pluginFile(name));
   if (!fs.existsSync(file)) {
-    if (['d3d12', 'mediafoundation', 'va'].includes(name)) continue;
+    if (optionalPlugins.has(name)) continue;
     throw Error(`Missing required media plugin: ${name}`);
   }
   fs.copyFileSync(file, path.join(pluginDir, path.basename(file)));
