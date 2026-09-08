@@ -15,7 +15,7 @@ import { ensureFonts } from './fonts.ts';
 import { ACTIONS, TRIGGERS } from '../../lib/logic.ts';
 import { registryDoes, searchCatalog } from '../../lib/catalog-search.ts';
 import { TAB_ID, bootInstance, readLayout, rerenderInstance, unbootInstance } from './wards.ts';
-import { el, getJson, holdToFire, newId, normalizeUrl, postJson, q, reducedMotion, toast } from './dom.ts';
+import { el, getJson, holdToFire, keyboardInUse, newId, normalizeUrl, postJson, q, reducedMotion, toast } from './dom.ts';
 import { closeMenu, menuItem, openMenu } from './menu.ts';
 import { currentPage, firstPage, pageOfCard, publishPages, readPages, restage, showPage } from './pages.ts';
 import type { PageDef } from '../../lib/wards.ts';
@@ -2409,9 +2409,8 @@ export function bootEdit(): void {
   undoBtn.addEventListener('click', undo);
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'z' || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
-    // Never steal it from a text field (the agent ward's composer) or from
-    // the wire editor, which is a different mode with its own history.
-    if ((e.target as HTMLElement).closest('input, textarea, [contenteditable]')) return;
+    // Fields and remote input surfaces keep their own undo history.
+    if (keyboardInUse(e)) return;
     if (grid.classList.contains('wiring') || document.querySelector('dialog[open]')) return;
     e.preventDefault();
     undo();

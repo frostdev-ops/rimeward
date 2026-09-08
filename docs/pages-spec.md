@@ -68,7 +68,10 @@ interface PageDef { id: string; title: string; icon?: IconId; project?: string }
 - URL: `/dash#p=<id>` (hash, so SSR is unaffected and back/forward work).
   Last page per device in `localStorage` `fd-page`, applied on boot if the URL
   has none.
-- Keyboard: `[` / `]` previous / next page; `1`–`9` jump. Touch: horizontal
+- Keyboard: `[` / `]` previous / next page; `1`–`9` jump. These shortcuts and
+  dashboard Undo yield to text fields, note/chat editors, browser and remote
+  desktop canvases, and IME composition. Already-handled keystrokes never
+  trigger dashboard actions. Touch: horizontal
   swipe on the grid (only when the grid is not scrollable horizontally, i.e.
   always today) with a 40px / 300ms threshold.
 

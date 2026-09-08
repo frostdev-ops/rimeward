@@ -7,7 +7,7 @@
 // ward on every page.
 
 import { DEFAULT_PAGES, MAX_PAGES, validatePages, type PageDef } from '../../lib/wards.ts';
-import { el, holdToFire, q, reducedMotion, toast } from './dom.ts';
+import { el, holdToFire, keyboardInUse, q, reducedMotion, toast } from './dom.ts';
 import { menuItem, openMenu } from './menu.ts';
 
 let pages: PageDef[] = DEFAULT_PAGES;
@@ -351,7 +351,7 @@ export function bootPages(): void {
     grid!.classList.contains('wiring') ||
     !!(document.activeElement as HTMLElement | null)?.closest('input, textarea, select, [contenteditable]');
   document.addEventListener('keydown', (e) => {
-    if (pages.length < 2 || e.metaKey || e.ctrlKey || e.altKey || busy()) return;
+    if (pages.length < 2 || e.metaKey || e.ctrlKey || e.altKey || keyboardInUse(e) || busy()) return;
     const i = pages.findIndex((p) => p.id === current);
     if (e.key === '[' || e.key === ']') {
       const j = (i + (e.key === ']' ? 1 : -1) + pages.length) % pages.length;

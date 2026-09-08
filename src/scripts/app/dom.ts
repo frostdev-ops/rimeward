@@ -60,6 +60,13 @@ export function tapToast(label: string, fn: () => void): void {
 
 // ------------------------------------------------------------- focus guards
 
+/** Dashboard shortcuts yield to the field or ward that owns the keystroke. */
+export function keyboardInUse(event: KeyboardEvent): boolean {
+  return event.defaultPrevented || event.isComposing || event.keyCode === 229 ||
+    [document.activeElement, ...event.composedPath()].some(target => target instanceof Element &&
+      !!target.closest('input, textarea, select, [contenteditable], [role="textbox"], canvas, iframe'));
+}
+
 /** True while the ward's input holds the user's un-submitted text — checked
  *  AFTER every await, since typing can start mid-fetch. */
 export function typingInto(b: HTMLElement): boolean {
