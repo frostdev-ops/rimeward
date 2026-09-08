@@ -49,6 +49,10 @@ GStreamer libraries into Tauri/WebKit or rewriting its checksummed files. Linux
 packaging checks compare the extracted runtime and run the existing standalone
 and four-viewer media checks against the AppImage's actual files.
 
+Viewer branches enter the capture pipeline's running state before they attach to
+its live tees. A NULL-state queue can otherwise return FLUSHING and stall the
+shared source during a scheduling gap, before the joining viewer negotiates.
+
 The app bundles a separate GStreamer 1.28.6 helper, Rust WebRTC/RTP plugins, and
 a restricted, checksummed set of native media libraries. It negotiates media over
 authenticated account signaling; video/audio use WebRTC and ordered input enters

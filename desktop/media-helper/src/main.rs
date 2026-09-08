@@ -226,6 +226,11 @@ fn viewer(value: &Value, source: String, capture: &mut Capture) -> Result<Viewer
         .pipeline
         .add(&viewer.branch)
         .map_err(|e| e.to_string())?;
+    // A live tee must not push into a NULL-state queue: FLUSHING stops the source.
+    viewer
+        .branch
+        .sync_state_with_parent()
+        .map_err(|e| e.to_string())?;
     capture
         .video
         .link_pads(None, &viewer.branch, Some("video_sink"))
@@ -236,10 +241,6 @@ fn viewer(value: &Value, source: String, capture: &mut Capture) -> Result<Viewer
             .link_pads(None, &viewer.branch, Some("audio_sink"))
             .map_err(|e| e.to_string())?;
     }
-    viewer
-        .branch
-        .sync_state_with_parent()
-        .map_err(|e| e.to_string())?;
     Ok(viewer)
 }
 fn capture(value: &Value, synthetic: bool) -> Result<Capture, String> {
