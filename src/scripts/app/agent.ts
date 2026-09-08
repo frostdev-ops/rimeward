@@ -305,9 +305,10 @@ interface StepItem {
 interface Run {
   steps: Map<string, StepItem>;
   seq: number;
+  spoken: Set<string>;
 }
 let runSeq = 0;
-const newRun = (): Run => ({ steps: new Map(), seq: ++runSeq });
+const newRun = (): Run => ({ steps: new Map(), seq: ++runSeq, spoken: new Set() });
 const batchKey = (seq: number | string, round: unknown) => (typeof round === 'number' ? `${seq}:${round}` : undefined);
 
 type Item =
@@ -328,6 +329,8 @@ interface Ui {
   microphone: HTMLButtonElement;
   voiceStop: HTMLButtonElement;
   voiceStatus: HTMLElement;
+  readResponses: HTMLInputElement;
+  conversationMode: HTMLSelectElement;
   chips: HTMLElement;
   pendingBox: HTMLElement;
   pendingText: HTMLElement;
@@ -384,12 +387,30 @@ function paintContext(el: HTMLElement, c: State['context']): void {
 
 const states = new Map<string, State>();
 
+function hideVoiceCapture(st: State) {
+  if (![...st.uis].some(ui => ui.root.isConnected && ui.root.getClientRects().length > 0)) void st.voice?.viewHidden();
+}
+window.addEventListener('fd:page', () => { for (const st of states.values()) hideVoiceCapture(st); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') for (const st of states.values()) void st.voice?.viewHidden();
+});
+
 function voiceFor(st: State) {
   return st.voice ??= createAgentVoice({
     ward: st.w.i,
     getDraft: () => st.draft,
     setDraft: value => setDraft(st, value),
-    isAlive: () => [...st.uis].some(ui => ui.root.isConnected && (!ui.root.matches('dialog') || ui.root.matches('[open]'))),
+    isAlive: () => readLayout().some(w => w.i === st.w.i && w.type === 'agent'),
+    canAutoSend: () => document.visibilityState !== 'hidden' && !st.pending && !st.clearing && !st.uploading && !st.attachments.length && st.configured !== false &&
+      [...st.uis].some(ui => ui.root.isConnected && ui.root.getClientRects().length > 0) &&
+      ![...st.uis].some(ui => document.activeElement === ui.input),
+    submitDraft: async expected => {
+      if (st.draft !== expected || st.pending || st.clearing || st.uploading || st.configured === false) return false;
+      const ui = [...st.uis].find(ui => ui.root.isConnected && ui.root.getClientRects().length > 0);
+      if (!ui || !expected.trim()) return false;
+      submit(st, ui);
+      return st.draft === '';
+    },
     onState: state => { st.voiceState = state; paint(st); },
   });
 }
@@ -715,12 +736,16 @@ function paint(st: State): void {
     buildLog(st, ui);
     const voicePhase = st.voiceState?.phase ?? 'idle';
     const voiceActive = voicePhase !== 'idle' && voicePhase !== 'error';
-    ui.microphone.disabled = st.clearing || voicePhase === 'finishing';
+    const conversationMode = st.voiceState?.mode ?? 'off';
+    ui.readResponses.checked = st.voiceState?.readEnabled ?? false;
+    ui.conversationMode.value = conversationMode;
+    ui.conversationMode.disabled = st.clearing || voicePhase === 'finishing';
+    ui.microphone.disabled = st.clearing || voicePhase === 'finishing' || (conversationMode !== 'off' && voicePhase !== 'listening');
     ui.microphone.setAttribute('aria-pressed', String(voicePhase === 'listening'));
-    const microphoneLabel = voicePhase === 'listening' ? 'Finish dictation' : voiceActive ? 'Stop voice' : 'Dictate message';
+    const microphoneLabel = conversationMode !== 'off' ? 'Finish & Send' : voicePhase === 'listening' ? 'Finish dictation' : voiceActive ? 'Stop voice' : 'Dictate message';
     ui.microphone.title = microphoneLabel;
     ui.microphone.setAttribute('aria-label', microphoneLabel);
-    ui.voiceStop.hidden = !voiceActive;
+    ui.voiceStop.hidden = !voiceActive && !st.voiceState?.readEnabled && conversationMode === 'off';
     ui.voiceStatus.hidden = !st.voiceState?.message;
     ui.voiceStatus.textContent = st.voiceState?.message ?? '';
     ui.voiceStatus.dataset.error = String(voicePhase === 'error');
@@ -825,7 +850,14 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource): boolean {
       return true;
     case 'says':
       dropThinking(st);
-      if (typeof e.text === 'string' && e.text.trim()) st.items.push({ k: 'msg', role: 'assistant', text: e.text, src });
+      if (typeof e.text === 'string' && e.text.trim()) {
+        st.items.push({ k: 'msg', role: 'assistant', text: e.text, src });
+        const speechKey = typeof e.id === 'string' ? e.id : e.text;
+        if (!run.spoken.has(speechKey)) {
+          run.spoken.add(speechKey);
+          st.voice?.read(e.text, typeof e.id === 'string' ? e.id : `${run.seq}:${run.spoken.size}`);
+        }
+      }
       return true;
     case 'step_start': {
       dropThinking(st); // the spinner on the card carries the signal now
@@ -861,7 +893,14 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource): boolean {
       // 'reply' is the final text ('says' are mid-turn interjections);
       // done's reply field repeats it and is ignored by the caller.
       dropThinking(st);
-      if (typeof e.text === 'string' && e.text.trim()) st.items.push({ k: 'msg', role: 'assistant', text: e.text, src });
+      if (typeof e.text === 'string' && e.text.trim()) {
+        st.items.push({ k: 'msg', role: 'assistant', text: e.text, src });
+        const speechKey = typeof e.id === 'string' ? e.id : e.text;
+        if (!run.spoken.has(speechKey)) {
+          run.spoken.add(speechKey);
+          st.voice?.read(e.text, typeof e.id === 'string' ? e.id : `${run.seq}:${run.spoken.size}`);
+        }
+      }
       return true;
   }
   return false;
@@ -932,6 +971,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
       endTurn(st);
       if (res.ok && data?.command) {
         if (data.command === 'clear') {
+          st.voice?.dispose();
           // The empty log IS the confirmation, and clearThread's ping would
           // wipe a note here anyway. Other clients follow from that ping.
           st.items = [];
@@ -1409,17 +1449,28 @@ function wireComposer(ui: Ui, cur: () => State | undefined): void {
     if (!st || sending) return;
     sending = true;
     try {
-      await st.voice?.stop();
-      if (cur() === st && ui.root.isConnected) submit(st, ui);
+      if (st.voiceState && st.voiceState.mode !== 'off' && ['listening', 'finishing'].includes(st.voiceState.phase)) {
+        await st.voice?.finishAndSend();
+      } else {
+        await st.voice?.finishDraft();
+        if (cur() === st && ui.root.isConnected) submit(st, ui);
+      }
     } finally { sending = false; }
   };
   ui.microphone.addEventListener('click', () => {
     const st = cur();
     if (!st) return;
-    if (st.voiceState && !['idle', 'error'].includes(st.voiceState.phase)) void st.voice?.stop();
+    if (st.voiceState && st.voiceState.mode !== 'off') void st.voice?.finishAndSend();
+    else if (st.voiceState?.phase === 'speaking') void st.voice?.stop();
+    else if (st.voiceState && !['idle', 'error'].includes(st.voiceState.phase)) void st.voice?.finishDraft();
     else void voiceFor(st).dictate();
   });
   ui.voiceStop.addEventListener('click', () => { const st = cur(); if (st) void st.voice?.stop(); });
+  ui.readResponses.addEventListener('change', () => { const st = cur(); if (st) void voiceFor(st).setReadResponses(ui.readResponses.checked); });
+  ui.conversationMode.addEventListener('change', () => {
+    const st = cur();
+    if (st) void voiceFor(st).setConversation(ui.conversationMode.value as 'off' | 'finish-send' | 'hands-free');
+  });
   // FIRST, so its keydown listener sees Enter/Tab/arrows before the send below.
   wireCommandMenu(ui, go, cur);
   ui.send.addEventListener('click', go);
@@ -1440,7 +1491,7 @@ function wireComposer(ui: Ui, cur: () => State | undefined): void {
   });
   ui.input.addEventListener('input', () => {
     const st = cur();
-    if (st) setDraft(st, ui.input.value);
+    if (st) { st.voice?.draftEdited(); setDraft(st, ui.input.value); }
   });
   ui.input.addEventListener('paste', e => {
     const st = cur();
@@ -1558,9 +1609,20 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   const help = el('p', 'ag-composer-help', matchMedia('(pointer: coarse)').matches ? 'Tap send when you’re ready' : 'Enter to send · Shift + Enter for a new line');
   const voiceStatus = el('p', 'ag-voice-status');
   voiceStatus.hidden = true; voiceStatus.setAttribute('role', 'status');
-  footer.append(pendingBox, form, voiceStatus, help);
+  const voiceOptions = el('div', 'ag-voice-options');
+  const readLabel = el('label');
+  const readResponses = el('input'); readResponses.type = 'checkbox';
+  readLabel.append(readResponses, document.createTextNode('Read responses'));
+  const modeLabel = el('label');
+  const conversationMode = el('select'); conversationMode.setAttribute('aria-label', 'Voice conversation mode');
+  for (const [value, label] of [['off', 'Off'], ['finish-send', 'Finish & Send'], ['hands-free', 'Hands-free']]) {
+    const option = el('option', undefined, label); option.value = value!; conversationMode.append(option);
+  }
+  modeLabel.append(document.createTextNode('Conversation'), conversationMode);
+  voiceOptions.append(readLabel, modeLabel);
+  footer.append(pendingBox, form, voiceOptions, voiceStatus, help);
   host.append(stage, footer);
-  return { root, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, chips, pendingBox, pendingText, pendingDetails, pendingPatch, status, context, jump, follow: true, rendered: [] };
+  return { root, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, readResponses, conversationMode, chips, pendingBox, pendingText, pendingDetails, pendingPatch, status, context, jump, follow: true, rendered: [] };
 }
 
 // ------------------------------------------------------------ shared dialog
@@ -1587,6 +1649,7 @@ function ensureDialog(): HTMLDialogElement | null {
     expandedDesktopWard();
     if (st) {
       st.uis.delete(ui);
+      hideVoiceCapture(st);
       void refetch(st); // the ward view catches up on whatever happened
     }
   });
@@ -1596,7 +1659,11 @@ function ensureDialog(): HTMLDialogElement | null {
 function openDialog(st: State): void {
   const dlg = ensureDialog();
   if (!dlg || !dialogUi) return;
-  if (dialogWard && dialogWard !== st.w.i) states.get(dialogWard)?.uis.delete(dialogUi);
+  if (dialogWard && dialogWard !== st.w.i) {
+    const previous = states.get(dialogWard);
+    previous?.uis.delete(dialogUi);
+    if (previous) hideVoiceCapture(previous);
+  }
   // The dialog is a singleton: a draft typed for one ward must never be sent
   // into another ward's conversation.
   dialogUi.input.value = st.draft;

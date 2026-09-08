@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { siteInfo } from '../site.ts';
 import { getSetting, setSetting, takeSetting, deleteSetting } from '../settings.ts';
 import { getDashboard, getPages, saveDashboard } from '../dashboard.ts';
@@ -89,13 +89,13 @@ export interface PendingConfirm {
 export type AgentEvent =
   | { type: 'task'; task: import('./tasks.ts').AgentTask }
   | { type: 'thinking'; round: number; label?: string }
-  | { type: 'says'; text: string }
+  | { type: 'says'; text: string; id?: string }
   /** A status line for the log (compaction happened) — not model output. */
   | { type: 'note'; text: string }
   | { type: 'step_start'; id: string; round: number; tool: string; kind: ToolKind; args: Record<string, unknown>; reason: string }
   | { type: 'step'; step: AgentStep }
   | { type: 'pending'; pending: PendingConfirm }
-  | { type: 'reply'; text: string }
+  | { type: 'reply'; text: string; id?: string }
   /** A message steered into the turn while it ran (the user's, or a peer agent's). */
   | { type: 'user'; text: string; source?: TurnSource }
   /** Full-request token estimate and selected-model capacity for the context meter. */
@@ -645,7 +645,7 @@ export async function runLoop(
     if (by === undefined) return null;
     interrupts.delete(key);
     const reply = `⏹ Interrupted by ${by}.`;
-    emit?.({ type: 'reply', text: reply });
+    emit?.({ type: 'reply', text: reply, id: randomUUID() });
     return done({ reply, steps });
   };
   const instructions = buildInstructions(cfg.wardCfg, cfg.conv.user_id, cfg.conv.ward);
@@ -725,14 +725,14 @@ export async function runLoop(
       // A steer that arrived during the final call is not lost: the answer
       // stands as an interjection and the turn goes one more round for it.
       if (steers.get(key)?.length) {
-        if (result.text.trim()) emit?.({ type: 'says', text: result.text });
+        if (result.text.trim()) emit?.({ type: 'says', text: result.text, id: randomUUID() });
         flush?.();
         continue;
       }
-      emit?.({ type: 'reply', text: result.text });
+      emit?.({ type: 'reply', text: result.text, id: randomUUID() });
       return done({ reply: result.text, steps });
     }
-    if (result.text.trim()) emit?.({ type: 'says', text: result.text });
+    if (result.text.trim()) emit?.({ type: 'says', text: result.text, id: randomUUID() });
 
     // Triage the whole batch first, then run everything runnable AT ONCE: the
     // batch is the model's own statement that these calls are independent.
@@ -846,7 +846,7 @@ export async function runLoop(
     if (stop) return stop;
   }
   const reply = `(paused after ${cap} tool rounds — say "continue" to keep going)`;
-  emit?.({ type: 'reply', text: reply });
+  emit?.({ type: 'reply', text: reply, id: randomUUID() });
   return done({ reply, steps });
 }
 

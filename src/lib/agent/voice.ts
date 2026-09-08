@@ -171,7 +171,8 @@ export async function voiceAction(user: number, ward: string, principal: string,
     return { active, expiresAt: lease.expiresAt, closed: lease.closed };
   }
   validateSdp(body.sdp);
-  limitDeviceAuth(`voice-start:${user}`, 12);
+  // Conversation playback rotates acknowledged peers: two starts per full listen/read cycle.
+  limitDeviceAuth(`voice-start:${user}`, 60);
   if (!getDashboard(user).some(w => w.i === ward && w.type === 'agent')) throw fail('Agent ward unavailable.', 404);
   const previous = leases.get(user);
   if ((previous && !previous.closed && previous.providerExpiresAt > Date.now()) || Number(getSetting(leaseKey(user))) > Date.now()) throw fail('Voice is active in another view, or its previous call may still be active. Wait for it to close before starting again.', 409);
