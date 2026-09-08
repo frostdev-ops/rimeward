@@ -27,14 +27,16 @@ temporary files, with no model calls or personal application input.
 | Rust source/license notices | Resolved for macOS, Windows MSVC and Linux dependency graphs |
 | Main CI | Linux and Windows test jobs passed |
 | Apple Silicon and Windows native CI | Bundled runtime, native tests, four-viewer media/fault checks and application compilation passed; distributed installer packaging is separate |
+| Linux native CI | Bundled runtime, native checks, four-viewer media/fault checks and application compilation passed in run `34173319110` |
 | Committed macOS standalone package | Prebuild, desktop checks and standalone runtime checks passed in a detached checkout |
 | Local Developer ID signing | 96 nested binaries and six bundles signed; app version 0.5.0 passed deep strict verification; not notarized |
-| Web deployment | 0.23.0 at `5ffef5e`; online database/application/nginx rollback backup retained, migrations 021/022 applied, database integrity and public/origin HTTP health passed |
+| Web deployment | 0.23.0 at `0c9b548`; online database/application/nginx rollback backup retained, migrations 021/022 applied, database integrity and public/origin HTTP health passed |
 | Apple Silicon installation | Signed 0.5.0 installed after graceful shutdown and profile backup; 29 wards and recovery records restored, paired server sync and authenticated public relay read passed |
 | macOS permission setup and restoration | Request/settings/recheck/relaunch UI, denied status, failed-recovery gating, setup modal above restored expanded wards, page/draft/editor/undo/layout restoration fixtures passed; native local-origin and safe-destination tests passed |
-| Local browser | Installed paired-routing failure reproduced and isolated with explicit device placement; actual paired-runtime frames and backend/device routing passed, along with modifier ordering, tab captions, paste, resizing, reconnect, session restoration and bounded shutdown. Installed navigation/input/history/expansion passed with explicit placement; final unassigned-ward check pending |
+| Local browser | Installed `0c9b548`: unassigned ward connected locally; two tabs, their order, active tab and exact draft survived installation/restart. Command-A, typing, paste and navigation title updates passed. Earlier navigation/history/expansion checks and automated routing, resize, reconnect and bounded shutdown checks passed. Dedicated test ward/page removed and original Spanish page restored |
 | Connected Account page | Cloudflare rewriting, missing server-build CSS and native redirect loop fixed; installed app served all eight assets, all seven sections and the preset picker worked, and Dashboard navigation stayed local |
-| Installed macOS permissions | Screen recording and Accessibility are off; host accurately reports permission-required and local permission instructions |
+| Installed macOS permissions | Both permissions report Allowed after the user's changes; authenticated paired-host capabilities report available screen, input, clipboard, files and audio. Save & relaunch restarted the installed app/runtime and preserved all 29 wards and recovery records; final modal visibility needs confirmation because UI inspection selected the exited process |
+| Distributed release | Tag `desktop-v0.5.0` points to `0c9b548`; four-platform installer run `34175413579` started. Signing, notarization and publication are not yet confirmed |
 
 The one-hour run used the shared-capture implementation before the later isolated
 pipeline-error handling change; the four-viewer fault test covers that change.
