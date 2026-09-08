@@ -5,11 +5,11 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
-import { Transform } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { rustNotices } from './rust-notices.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const version = '1.28.6', platform = process.platform, arch = process.arch;
+if (platform === 'darwin' && arch !== 'arm64') throw Error('macOS builds require Apple Silicon (arm64).');
 const cache = path.join(os.tmpdir(), `rimeward-media-sdk-${version}-${platform}-${arch}`);
 const output = path.resolve(process.argv[2] ?? path.join(here, 'runtime/media'));
 const run = (file, args, options = {}) => execFileSync(file, args, { stdio: 'inherit', ...options });
@@ -21,10 +21,21 @@ async function checksum(file) {
 async function download(url, expected) {
   const file = path.join(cache, path.basename(new URL(url).pathname));
   if (fs.existsSync(file) && await checksum(file) === expected) return file;
-  const response = await fetch(url); if (!response.ok || !response.body) throw Error(`Media download failed (${response.status})`);
-  const hash = crypto.createHash('sha256'), part = `${file}.part`;
-  await pipeline(response.body, new Transform({ transform(bytes, _, done) { hash.update(bytes); done(null, bytes); } }), fs.createWriteStream(part));
-  if (hash.digest('hex') !== expected) { fs.rmSync(part); throw Error('Media checksum mismatch'); }
+  const part = `${file}.part`;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(300_000) });
+      if (!response.ok || !response.body) throw Error(`Media download failed (${response.status})`);
+      await pipeline(response.body, fs.createWriteStream(part));
+      break;
+    } catch (error) {
+      fs.rmSync(part, { force: true });
+      if (attempt === 3) throw error;
+      console.warn(`Media download interrupted; retrying (${attempt + 1}/3): ${error.message}`);
+      await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+    }
+  }
+  if (await checksum(part) !== expected) { fs.rmSync(part); throw Error('Media checksum mismatch'); }
   fs.renameSync(part, file); return file;
 }
 let sdk = process.env.RIMEWARD_MEDIA_SDK ?? path.join(cache, 'sdk');

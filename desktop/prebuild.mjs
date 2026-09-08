@@ -11,6 +11,8 @@ const here = path.dirname(fileURLToPath(import.meta.url)),
 const version = "22.22.0",
   platform = process.platform,
   arch = process.arch;
+if (platform === "darwin" && arch !== "arm64")
+  throw new Error("macOS builds require Apple Silicon (arm64).");
 const target = `${arch === "arm64" ? "aarch64" : "x86_64"}-${platform === "darwin" ? "apple-darwin" : platform === "win32" ? "pc-windows-msvc" : "unknown-linux-gnu"}`;
 if (
   !["darwin", "linux", "win32"].includes(platform) ||

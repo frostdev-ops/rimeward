@@ -23,17 +23,17 @@ on:
         description: Validation target (release builds always use every platform)
         type: choice
         default: all
-        options: [all, macos-latest, macos-15-intel, ubuntu-24.04, windows-latest]
+        options: [all, macos-latest, ubuntu-24.04, windows-latest]
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(inputs.validation_only && inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-latest","macos-15-intel","ubuntu-24.04","windows-latest"]') }}
+        platform: ${{ fromJSON(inputs.validation_only && inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-latest","ubuntu-24.04","windows-latest"]') }}
     runs-on: ${{ matrix.platform }}
     env:
-      TAURI_BUILD_ARGS: ${{ matrix.platform == 'macos-latest' && '--target aarch64-apple-darwin' || matrix.platform == 'macos-15-intel' && '--target x86_64-apple-darwin' || '' }}
+      TAURI_BUILD_ARGS: ${{ matrix.platform == 'macos-latest' && '--target aarch64-apple-darwin' || '' }}
     permissions:
       contents: write
     steps:
@@ -54,15 +54,11 @@ jobs:
 
       - run: npm ci
 
-      - name: Select macOS 26 SDK for the ScreenCaptureKit bridge
-        if: matrix.platform == 'macos-15-intel'
-        run: sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.98.0
           components: rustfmt, clippy
-          targets: ${{ startsWith(matrix.platform, 'macos-') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
       - uses: swatinem/rust-cache@v2
         with:
