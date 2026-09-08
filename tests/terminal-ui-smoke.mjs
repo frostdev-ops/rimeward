@@ -1,3 +1,4 @@
+import { liveStreamFixture } from './live-stream-fixture.mjs';
 // Real PTY + isolated desktop data. Agent launcher dialogs are exercised without
 // starting external agents or sending any provider requests.
 import fs from 'node:fs';
@@ -33,16 +34,7 @@ try {
   const pc=await browser.newContext({viewport:{width:1280,height:850}}), page=await pc.newPage();
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.addInitScript(() => localStorage.setItem('rimeward-terminal-accessibility', 'true'));
-  await page.addInitScript(() => {
-    const Native = window.EventSource;
-    window.terminalTestStreams = [];
-    window.EventSource = class extends Native {
-      constructor(url, options) {
-        super(url, options);
-        if (String(url).includes('/api/dev/events')) window.terminalTestStreams.push(this);
-      }
-    };
-  });
+  await page.addInitScript(liveStreamFixture);
   await page.goto(url);
   await page.waitForURL('**/desktop/start');
   await page.getByRole('button',{name:'Continue without connecting'}).click();

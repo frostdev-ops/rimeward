@@ -1,3 +1,4 @@
+import { liveStreamFixture } from './live-stream-fixture.mjs';
 // Generated frames and isolated runtime state; never opens the user's browser profiles.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,23 +42,8 @@ try {
       if (command === 'macos_permissions') return { screen: true, input: true };
       throw Error('This server is not the active browser route');
     } } };
-    const Native = EventSource;
-    window.EventSource = class extends EventTarget {
-      constructor(url, options) {
-        super();
-        if (!url.startsWith('/api/browser/stream/')) return new Native(url, options);
-        this.url = url; this.readyState = 1; window.__browserStreams.push(this);
-        setTimeout(() => {
-          if (this.readyState !== 1) return;
-          this.onopen?.();
-          for (const data of [{ type: 'frame', data: frame, width: 640, height: 480 }, { type: 'nav', url: 'https://browser.fixture/one', title: 'Generated fixture' }, { type: 'tabs', tabs: [{ url: 'https://browser.fixture/one', title: 'One' }, { url: 'https://browser.fixture/two', title: 'Two' }], active: 0 }]) this.dispatchEvent(new MessageEvent(data.type, { data: JSON.stringify(data) }));
-        }, 10);
-      }
-      close() { this.readyState = 2; }
-      fail() { this.close(); this.onerror?.(); }
-      static CLOSED = 2;
-    };
   }, frame);
+  await page.addInitScript(liveStreamFixture, { browserFrame: frame });
   await page.route('**/api/browser/*', async route => {
     if (route.request().method() !== 'POST') return route.continue();
     const call = { ward: new URL(route.request().url()).pathname.split('/').at(-1), cmds: route.request().postDataJSON().cmds };

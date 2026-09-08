@@ -45,6 +45,7 @@ struct Instance {
 
 pub struct Chromium {
     data: PathBuf,
+    pub bundled_extensions: PathBuf,
     /// The dashboard's origin, allowed onto the DevTools socket (Chrome 111+
     /// refuses a browser page's Origin otherwise).
     origin: String,
@@ -64,6 +65,7 @@ impl Chromium {
         let (tx, rx) = watch::channel(0);
         let c = Chromium {
             data,
+            bundled_extensions: PathBuf::new(),
             origin,
             profile_scope: String::new(),
             spec: None,
@@ -294,7 +296,18 @@ pub async fn acquire(shared: &Shared, ward: &str) -> Result<(u16, String), Strin
         c.instances.remove(ward);
     }
     let profile = c.data.join("profiles").join(&c.profile_scope).join(ward);
-    let (child, port, ws_path) = launch(&exe, &profile, &c.origin).await?;
+    let config = profile.join("rimeward-extensions/enabled.json");
+    let extensions: Vec<PathBuf> = if config.exists() {
+        serde_json::from_slice::<Vec<String>>(&std::fs::read(config).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|id| valid_extension_id(id))
+            .map(|id| profile.join("rimeward-extensions").join(id))
+            .collect()
+    } else {
+        vec![c.bundled_extensions.join("glaze")]
+    };
+    let (child, port, ws_path) = launch(&exe, &profile, &c.origin, &extensions).await?;
     c.instances.insert(
         ward.to_string(),
         Instance {
@@ -322,12 +335,30 @@ pub async fn release(shared: &Shared, ward: &str) {
     }
 }
 
-async fn launch(exe: &Path, profile: &Path, origin: &str) -> Result<(Child, u16, String), String> {
+async fn launch(
+    exe: &Path,
+    profile: &Path,
+    origin: &str,
+    extensions: &[PathBuf],
+) -> Result<(Child, u16, String), String> {
     std::fs::create_dir_all(profile).map_err(|e| e.to_string())?;
     let active = profile.join("DevToolsActivePort");
     let _ = std::fs::remove_file(&active);
     let mut child = Command::new(exe)
         .arg("--headless=new")
+        .arg("--enable-unsafe-extension-debugging")
+        .args(if extensions.is_empty() {
+            vec![]
+        } else {
+            vec![format!(
+                "--load-extension={}",
+                extensions
+                    .iter()
+                    .map(|p| p.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )]
+        })
         .arg("--remote-debugging-port=0")
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("--no-first-run")
@@ -357,6 +388,113 @@ async fn launch(exe: &Path, profile: &Path, origin: &str) -> Result<(Child, u16,
     }
     let _ = child.kill().await;
     Err("Chromium did not start".into())
+}
+
+fn valid_extension_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| (b'a'..=b'p').contains(&b))
+}
+
+/// Only extension files from the approved server, inside this ward's scoped profile.
+pub async fn store_extensions(shared: &Shared, ward: &str, bytes: &[u8]) -> Result<(), String> {
+    if ward.is_empty()
+        || ward.len() > 32
+        || !ward
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err("Invalid browser ward".into());
+    }
+    #[derive(Deserialize)]
+    struct Package {
+        id: String,
+        files: HashMap<String, String>,
+    }
+    #[derive(Deserialize)]
+    struct Upload {
+        packages: Vec<Package>,
+    }
+    let upload: Upload = serde_json::from_slice(bytes).map_err(|_| "Invalid extension upload")?;
+    if upload.packages.len() > 20 {
+        return Err("Too many extensions".into());
+    }
+    let c = shared.lock().await;
+    let root = c
+        .data
+        .join("profiles")
+        .join(&c.profile_scope)
+        .join(ward)
+        .join("rimeward-extensions");
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let mut enabled = Vec::new();
+    for package in upload.packages {
+        if !valid_extension_id(&package.id)
+            || package.files.len() > 2000
+            || !package.files.contains_key("manifest.json")
+        {
+            return Err("Invalid extension package".into());
+        }
+        let dir = root.join(&package.id);
+        let mut files = Vec::new();
+        let mut total = 0;
+        for (name, content) in package.files {
+            if name.len() > 240
+                || name.contains(['\\', ':', '<', '>', '"', '|', '?', '*'])
+                || name.chars().any(char::is_control)
+                || name.split('/').any(|part| {
+                    let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
+                    part.is_empty()
+                        || part == "."
+                        || part == ".."
+                        || part.ends_with(['.', ' '])
+                        || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                        || (stem.len() == 4
+                            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+                })
+            {
+                return Err("Unsafe extension filename".into());
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(content)
+                .map_err(|_| "Invalid extension content")?;
+            total += bytes.len();
+            if total > 30 * 1024 * 1024 {
+                return Err("Extension expands beyond 30 MB".into());
+            }
+            files.push((name, bytes));
+        }
+        if !files.iter().all(|(name, bytes)| {
+            std::fs::read(dir.join(name)).is_ok_and(|existing| existing == *bytes)
+        }) {
+            let temp = root.join(format!("{}.tmp", package.id));
+            let backup = root.join(format!("{}.old", package.id));
+            let _ = std::fs::remove_dir_all(&temp);
+            for (name, bytes) in files {
+                let target = temp.join(name);
+                std::fs::create_dir_all(target.parent().ok_or("Invalid path")?)
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(target, bytes).map_err(|e| e.to_string())?;
+            }
+            let _ = std::fs::remove_dir_all(&backup);
+            if dir.exists() {
+                std::fs::rename(&dir, &backup).map_err(|e| e.to_string())?;
+            }
+            if let Err(error) = std::fs::rename(&temp, &dir) {
+                let _ = std::fs::rename(&backup, &dir);
+                return Err(error.to_string());
+            }
+            let _ = std::fs::remove_dir_all(backup);
+        }
+        enabled.push(package.id);
+    }
+    let temp = root.join("enabled.tmp");
+    std::fs::write(
+        &temp,
+        serde_json::to_vec(&enabled).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::rename(temp, root.join("enabled.json")).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Every minute: an instance nobody has used for IDLE goes.

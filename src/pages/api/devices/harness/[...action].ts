@@ -1,6 +1,7 @@
 import { REMOTE_DESKTOP_HEADER, requireRemoteLayoutVersion } from '../../../../lib/dev/remote-desktop-contract.ts';
 import { modelFailure } from "../../../../lib/agent/diagnostics.ts";
 import { randomUUID } from "node:crypto";
+import { voiceAction, voiceBody } from '../../../../lib/agent/voice.ts';
 import type { APIRoute } from "astro";
 import {
   authenticatedDevice,
@@ -114,6 +115,11 @@ export const ALL: APIRoute = async ({
         broadcast(user, 'layout', { layout: state.layout, pages: state.pages });
         broadcast(user, 'theme', state.theme ? JSON.parse(state.theme) : {});
       }
+    } else if (request.method === 'POST' && params.action === 'voice') {
+      const body = await voiceBody(request);
+      if (typeof body.ward !== 'string' || !getDashboard(user).some(w => w.i === body.ward && w.type === 'agent'))
+        return Response.json({ error: 'Agent ward unavailable.' }, { status: 404, headers: { 'cache-control': 'no-store' } });
+      value = await voiceAction(user, body.ward, `device:${device.id}`, body);
     } else if (request.method === 'POST' && params.action === 'tool') {
       limitDeviceAuth(`rime-tool:${user}`, 240);
       const body = await bodyOf(request);

@@ -55,6 +55,28 @@ Rime's own `/work` files (including `AGENTS.md`, memory, skill folders, and scra
 
 Agent wards and expanded chat share a composer. Draft text and attachments follow the ward when it expands or closes; drafts remain in memory for the current page, with no copy in a remote browser's persistent storage. Desktop Enter sends and Shift+Enter adds a line; on touch devices Enter adds a line and the Send button sends. IME confirmation does not send. Drop or paste files into chat, copy replies or code blocks, and open the activity summary to inspect tool results. New chat archives the current conversation only after the server confirms the request. While Rime works, Stop interrupts it and a new message steers the turn. Reading earlier replies holds the scroll position; Latest returns to the newest activity. Animations respect reduced-motion settings.
 
+### Ward mentions
+
+Type **@** anywhere in Rime's composer to search wards by title, type, page or ID. Wards on the current page appear first; other pages, groups and hidden wards are included. Arrow keys choose an entry, Enter or Tab inserts it without sending, and Escape dismisses the list. Duplicate titles use page names and, when needed, a number. Mention chips explain what will be attached and can be removed. Sent messages display each mention as a readable **@Ward name** tag with its ward icon; the tag remains in chat history. Copying a message copies the readable name. Up to eight wards can accompany a message, including a message sent while Rime is working. Draft recovery retains the ward IDs, so renaming a ward cannot redirect a mention.
+
+Context is captured at send time on each ward's owning runtime. Edited notes and editor recovery buffers finish saving before capture. Screenshots and drawings enter the existing image attachment/replay path for both providers. Snapshots can appear in synchronized conversation history; project roots and native databases remain local.
+
+| Ward | Included context |
+| --- | --- |
+| Browser | Active-tab screenshot, URL, title, viewport, tab list, accessible elements and visible text. No navigation or tab switch. Cookies and browser credentials are not read. |
+| Notepad | Saved text, timestamp and rendered ink drawing. |
+| Editor / Project files / Changes | Selected project, open/active files, current buffer excerpt, directory entries or Git changes. |
+| Terminal | Selected session, visible screen, recent output, exit state and other session names. No input is sent. |
+| Remote Desktop | Target computer and screen-access status. A mention does not acquire control or capture the screen; screen access uses the existing Rime handoff. |
+| Notion | Page properties, blocks and comments; database rows or checklist items; recent pages. View settings accompany the snapshot. |
+| Inbox / communication wards | Recent messages from the configured account/channel. No messages are sent. |
+| Weather / Agenda / Next up / Services / Incidents / Chart | Forecast, upcoming events, selected service status, incident spans or chart source history. |
+| Timer / Flow / Button | Timer state, packets, or connected Leylines and their run results. |
+| Rime / Memory / Skills / MCP | Recent conversation, document index and excerpts, or connection/tool information. Mentioning another agent does not contact it. |
+| Group / Link / Embed / Spacer | Child ward inventory, configured URL or layout details. Mention children individually for their contents. Cross-origin embeds cannot supply screenshots or page contents. |
+
+Text snapshots are capped at 12,000 characters per ward with explicit truncation markers; browser text and accessibility excerpts each have a 5,000-character cap. A missing ward returns the draft for correction. Offline sources, capture failures and unsupported screenshots are reported rather than replaced with data from another computer. Captured contents are reference data, not instructions or permission to execute actions.
+
 ### Background tool tasks
 
 In the ward or expanded chat, **Ctrl+B**, **Run in background**, or `/background` detaches running `bash`, `terminal_exec`, `terminal_wait`, and `ask_agent` calls. Each keeps one execution and returns a task ID to the agent, which can continue independent work. Model inference and pending confirmations cannot be backgrounded. Tools also accept `background:true`; approval and read-only checks happen before dispatch, including confirmed calls. Native command confirmations show the exact command and project folder.

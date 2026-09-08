@@ -34,6 +34,10 @@ workspace work was preserved and checked with its owners.
 
 ## Performance and UI
 
+- Human control uses a locally rendered SVG pointer generated from the viewer's
+  current accent and contrast colours. Light and dark edges preserve visibility
+  over remote content; theme changes refresh it without reconnecting. Mouse and
+  touchpad share the artwork and hotspot; view-only retains the normal cursor.
 - Compatibility frames are paced at the host, avoiding early-request responses
   that caused the client to wait another full frame interval. Acknowledgements and
   the single outstanding-frame bound remain enforced.

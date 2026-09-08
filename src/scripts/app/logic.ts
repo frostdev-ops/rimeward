@@ -1,3 +1,4 @@
+import { LiveEventSource } from './live-stream.ts';
 // Client half of the logic system: the per-user SSE store (server timer
 // state, packet-change notices, client-side acts, run results) and the
 // timer / checklist / flow ward renderers. The visual wire editor lives in
@@ -6,7 +7,7 @@
 // Packet text, notes and Notion titles are hostile input — createElement +
 // textContent only, per the house rule in wards.ts.
 
-import { CATALOG, rowsOf, sizeParts, timerSteps, validateLayout, validatePages, wardTitle, type WardInstance } from '../../lib/wards.ts';
+import { CATALOG, rowsOf, sizeParts, timerSteps, validateLayout, validatePages, wardTitle, type WardInstance, type PageDef } from '../../lib/wards.ts';
 import { ACTIONS } from '../../lib/logic.ts';
 import { icon } from './icon.ts';
 import { RENDERERS, TAB_ID, body, getJson, handled, note, readLayout, rerenderInstance } from './wards.ts';
@@ -71,8 +72,8 @@ export interface AgentLive {
 }
 const agentLiveSubs = new Map<string, Set<(d?: AgentLive) => void>>();
 const runSubs = new Set<(r: RunEvent) => void>();
-let es: EventSource | null = null;
-const instanceStreams = new Map<string, EventSource>();
+let es: LiveEventSource | null = null;
+const instanceStreams = new Map<string, LiveEventSource>();
 const instanceHandlers = new Map<string, (data: any) => void>();
 window.addEventListener('fd:instance', (event) => {
   if (!es) return;
@@ -83,7 +84,8 @@ window.addEventListener('fd:instance', (event) => {
   for (const [path, stream] of instanceStreams) if (!paths.has(path)) { stream.close(); instanceStreams.delete(path); }
   for (const path of paths) {
     if (instanceStreams.has(path)) continue;
-    const stream = new EventSource(path);
+    const stream = new LiveEventSource(path);
+    stream.onopen = () => window.dispatchEvent(new CustomEvent('fd:agent-reconnect'));
     instanceStreams.set(path, stream);
     // Only 5xx/network errors auto-retry; a 401/403/404/429 closes the source for good. Forget it so
     // the next instance poll (15 s) opens a fresh one instead of keeping a dead object forever.
@@ -101,7 +103,8 @@ window.addEventListener('pagehide', () => { for (const stream of instanceStreams
  *  reconnects). Renderers and the wire editor call this on boot. */
 export function ensureStream(): void {
   if (es) return;
-  es = new EventSource('/api/logic/stream');
+  es = new LiveEventSource('/api/logic/stream');
+  es.onopen = () => window.dispatchEvent(new CustomEvent('fd:agent-reconnect'));
   const on = (event: string, fn: (data: any) => void) => {
     instanceHandlers.set(event, fn);
     es!.addEventListener(event, (e) => {
@@ -132,7 +135,13 @@ export function ensureStream(): void {
   on('layout', (d: { layout?: unknown; pages?: unknown; from?: string }) => {
     if (d?.from && d.from === TAB_ID) return; // our own save, already on screen
     const next = validateLayout(d?.layout);
-    if (next && applyLayout(next, reloadHolds, false, validatePages(d?.pages) ?? undefined)) return;
+    const pages = validatePages(d?.pages) ?? undefined;
+    pendingLayout = next ? { layout: next, pages } : null;
+    if (next && applyLayout(next, reloadHolds, false, pages)) {
+      pendingLayout = null;
+      pendingLayoutReload = false;
+      return;
+    }
     pendingLayoutReload = true;
     flushPendingLayout();
   });
@@ -171,30 +180,26 @@ export function ensureStream(): void {
 
 // ------------------------------------------------------------ layout reloads
 //
-// The FALLBACK path. A pushed layout normally animates into the live grid
-// (applyLayout above); this is what happens when it cannot — edit mode, or the
-// diff touching a ward whose agent turn is still streaming. A silent reload
-// mid-edit, mid-dialog or mid-turn eats the user's work, and a toast offered
-// while a modal is open is painted BEHIND it (the dialog lives in the browser's
-// top layer) — so the reload waits for the coast to clear instead of being
-// fired and forgotten.
+// Keep the latest pushed layout while a turn or dialog holds a ward. Apply
+// it in place when the hold clears; an incompatible change requires an
+// explicit reload so other wards and unsaved work remain usable.
 
-/** Wards with a locally-streamed agent turn in flight (agent.ts holds one per turn). */
+/** Wards with a turn running here or on another client. */
 export const reloadHolds = new Set<string>();
 let pendingLayoutReload = false;
+let pendingLayout: { layout: WardInstance[]; pages?: PageDef[] } | null = null;
 
 /** Re-check after a blocker clears — a turn ending, a dialog closing. */
 export function flushPendingLayout(): void {
   if (!pendingLayoutReload) return;
   // Still held or still covered: a toast now would be invisible anyway.
   if (reloadHolds.size || document.querySelector('dialog[open]')) return;
+  const next = pendingLayout;
+  pendingLayout = null;
   pendingLayoutReload = false;
-  // Edit mode never gets reloaded out from under the user — there the toast is right.
-  if (document.getElementById('wd-grid')?.classList.contains('editing')) {
-    tapToast('The agent changed your layout — tap to reload', () => location.reload());
-  } else {
-    location.reload();
-  }
+  if (next && applyLayout(next.layout, reloadHolds, false, next.pages)) return;
+  // A layout conflict must not silently reload terminals, browsers or unsaved work.
+  tapToast('The agent changed your layout — tap to reload', () => location.reload());
 }
 
 // Any dialog closing may have been the blocker ('close' doesn't bubble, but

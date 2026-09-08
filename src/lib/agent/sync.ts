@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "../db.ts";
 import { cached } from '../cache.ts';
 import type { CodexModel } from './codex.ts';
+import type { VoiceAction, VoiceReply } from './voice.ts';
 import { getSetting, setSetting } from "../settings.ts";
 import { isDesktop } from "../dev/runtime.ts";
 import { rimeConnection } from "../dev/remote.ts";
@@ -85,7 +86,7 @@ async function request(
           ? "Update the server to enable shared Rime."
           : "Rime server is unavailable.";
     if (
-      suffix === "/model" &&
+      (suffix === "/model" || suffix === "/voice") &&
       response.status >= 400 &&
       response.status < 500 &&
       ![401, 403, 404].includes(response.status)
@@ -99,6 +100,18 @@ async function request(
     throw Object.assign(new Error(message), { status: response.status });
   }
   return response;
+}
+
+/** Paired signaling only; voice media never enters sharedModel or sync records. */
+export async function sharedVoice(user: number, ward: string, action: VoiceAction): Promise<VoiceReply | null> {
+  if (!isDesktop()) return null;
+  const connection = await rimeConnection(user);
+  if (!connection) return null;
+  const response = await request(connection.server, connection.token, '/voice', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...action, ward }), signal: AbortSignal.timeout(action.action === 'start' ? 90_000 : 15_000),
+  });
+  return await response.json() as VoiceReply;
 }
 export function syncRime(user: number, force = false): Promise<void> {
   if (!isDesktop()) return Promise.resolve();

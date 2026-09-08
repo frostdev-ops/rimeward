@@ -1,6 +1,34 @@
 import net from 'node:net';
 import { chromium, type BrowserContext } from 'playwright-core';
 import { openStream, tunnelOnline } from '../tunnel.ts';
+import { extensionRegistry, extensionZip } from './extensions.ts';
+import { unzipSync } from 'fflate';
+
+/** Legacy CDP app profiles also keep the packages on the computer that runs Chromium. */
+export async function syncAppExtensions(userId: number, ward: string): Promise<void> {
+  const packages = extensionRegistry(userId, ward).extensions.filter(e => e.enabled).map(entry => ({
+    id: entry.id,
+    files: Object.fromEntries(Object.entries(unzipSync(extensionZip(userId, ward, entry.id))).map(([name, data]) => [name, Buffer.from(data).toString('base64')])),
+  }));
+  const stream = await openStream(userId, `extensions:${ward}`);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error('Desktop extension update timed out')), 30_000);
+      let reply = '';
+      stream.on('error', reject).on('data', chunk => {
+        reply += chunk.toString();
+        if (reply.length > 2000) { clearTimeout(timer); reject(Error('Invalid desktop extension response')); }
+        if (reply.includes('\n')) {
+          clearTimeout(timer);
+          try { const result = JSON.parse(reply); if (result.error) reject(Error(result.error)); else resolve(); } catch (error) { reject(error); }
+        }
+      }).on('close', () => { clearTimeout(timer); reject(Error('Desktop extension transfer closed before completion. Update Rimeward if needed.')); });
+      const data = Buffer.from(JSON.stringify({ packages }) + '\n');
+      if (data.length > 64 * 1024 * 1024) { clearTimeout(timer); reject(Error('Enabled desktop extensions exceed the 64 MB transfer limit')); return; }
+      for (let offset = 0; offset < data.length; offset += 64 * 1024) stream.write(data.subarray(offset, offset + 64 * 1024));
+    });
+  } finally { stream.destroy(); }
+}
 
 // The "My computer" backend: a Chromium the desktop app runs for this ward,
 // reached over the tunnel. A loopback listener here forwards each TCP
@@ -13,6 +41,7 @@ const OFFLINE = 'Rimeward offline — open it on your computer';
 
 export async function connectApp(userId: number, ward: string): Promise<{ context: BrowserContext; close: () => Promise<void> }> {
   if (!tunnelOnline(userId)) throw new Error(OFFLINE);
+  await syncAppExtensions(userId, ward);
   // The probe makes the app launch (or download) the browser and name it; a
   // refusal ("downloading 42%") is the message the ward shows.
   const probe = await openStream(userId, `cdp:${ward}`);

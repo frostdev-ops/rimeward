@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Glaze</title>
+<style>
+  /* The popup wears the user's own palette: popup.js writes the picked colours onto :root as it goes. */
+  :root {
+    --gz-surface: #0d1b2e; --gz-surface-2: #060d18; --gz-ink: #e8f2fa; --gz-ink-muted: #8fa8c0;
+    --gz-ink-faint: #5c7189; --gz-line: #16283f; --gz-line-strong: #24405f; --gz-accent: #17c8f4;
+    --gz-accent-hi: #6fdcff; --gz-accent-soft: #082f49; --gz-accent-ink: #04121f;
+    --gz-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  * { box-sizing: border-box; }
+  body {
+    width: 320px; margin: 0; padding: 0.875rem 1rem 1rem;
+    font: 13px/1.45 ui-sans-serif, system-ui, sans-serif;
+    color: var(--gz-ink); background: var(--gz-surface-2);
+    transition: color 0.25s var(--gz-ease), background 0.25s var(--gz-ease);
+  }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.75rem; }
+  h1 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: 0.01em; }
+  h2 { margin: 0 0 0.5rem; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--gz-ink-faint); display: flex; align-items: center; justify-content: space-between; }
+  section { padding: 0.75rem 0; border-top: 1px solid var(--gz-line); }
+  section + section { margin-top: 0; }
+  section { position: relative; }
+  .reset { position: absolute; top: 0.75rem; right: 0; }
+  label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem 0.75rem; }
+  .grid label { font-size: 12px; color: var(--gz-ink-muted); }
+  input[type="color"] {
+    width: 26px; height: 22px; padding: 0; border: 1px solid var(--gz-line-strong); border-radius: 6px;
+    background: var(--gz-surface); cursor: pointer; flex: none;
+  }
+  input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
+  input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 3px; }
+  input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--gz-accent); flex: none; }
+  .checks label { padding: 0.2rem 0; }
+  button {
+    font: inherit; font-size: 11px; padding: 0.15rem 0.6rem; border-radius: 999px; cursor: pointer;
+    color: var(--gz-ink-muted); background: var(--gz-surface); border: 1px solid var(--gz-line-strong);
+    text-transform: none; letter-spacing: 0;
+    transition: color 0.2s var(--gz-ease), border-color 0.2s var(--gz-ease);
+  }
+  button:hover { color: var(--gz-accent); border-color: var(--gz-accent); }
+  /* master switch */
+  .switch { position: relative; width: 38px; height: 22px; flex: none; }
+  .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+  .switch span {
+    position: absolute; inset: 0; border-radius: 999px; background: var(--gz-line-strong);
+    transition: background 0.25s var(--gz-ease);
+  }
+  .switch span::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+    background: var(--gz-ink); transition: transform 0.3s var(--gz-ease);
+  }
+  .switch input:checked + span { background: var(--gz-accent); }
+  .switch input:checked + span::after { transform: translateX(16px); background: var(--gz-accent-ink); }
+  .switch input:focus-visible + span { outline: 2px solid var(--gz-accent); outline-offset: 2px; }
+  /* preset swatches: surface disc with an accent dot */
+  .swatches { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .swatch {
+    position: relative; width: 24px; height: 24px; padding: 0; border-radius: 50%;
+    border: 1px solid var(--gz-line-strong); cursor: pointer;
+    transition: transform 0.2s var(--gz-ease), border-color 0.2s var(--gz-ease);
+  }
+  .swatch::after {
+    content: ""; position: absolute; inset: 0; margin: auto; width: 9px; height: 9px;
+    border-radius: 50%; background: var(--dot);
+  }
+  .swatch:hover { transform: scale(1.12); border-color: var(--gz-accent); }
+  .swatch:focus-visible { outline: 2px solid var(--gz-accent); outline-offset: 2px; }
+  body.off section { opacity: 0.45; pointer-events: none; }
+  .hint { margin: 0.5rem 0 0; font-size: 11px; color: var(--gz-ink-faint); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Glaze</h1>
+    <label class="switch" title="Theme on / off"><input type="checkbox" id="enabled" aria-label="Theme on / off"><span></span></label>
+  </header>
+
+  <section>
+    <h2>Presets</h2>
+    <div class="swatches" id="presets"></div>
+  </section>
+
+  <section>
+    <h2>Colours</h2><button id="reset" type="button" class="reset">Reset</button>
+    <div class="grid" id="colors"></div>
+  </section>
+
+  <section class="checks">
+    <h2>Motion</h2>
+    <label><input type="checkbox" data-motion="enter"> Page &amp; card entrance</label>
+    <label><input type="checkbox" data-motion="hover"> Hover lift &amp; press</label>
+    <label><input type="checkbox" data-motion="transitions"> Colour &amp; border transitions</label>
+  </section>
+
+  <section class="checks">
+    <h2>Footer</h2>
+    <label><input type="checkbox" id="footer"> Show the footer bar</label>
+  </section>
+
+  <p class="hint">Changes apply to open Blackboard Ultra tabs immediately.</p>
+
+  <script src="defaults.js"></script>
+  <script src="popup.js"></script>
+  <script src="presets.js"></script>
+</body>
+</html>

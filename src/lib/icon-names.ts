@@ -162,6 +162,7 @@ export const ICONS = {
   keyboard: ['⌨️', 'keyboard', 'keyboard', 'keyboard', 'keyboard', 'keyboard'],
   mouse: ['🖱️', 'mouse', 'mouse', 'mouse', 'mouse', 'mouse'],
   monitor: ['🖥', 'monitor', 'monitor', 'device-desktop', 'monitor', 'desktop-windows'],
+  microphone: ['🎙️', 'mic', 'microphone', 'microphone', 'microphone', 'mic'],
   volume: ['🔊', 'volume-2', 'speaker-high', 'volume', 'volume-loud', 'volume-up'],
   'volume-off': ['🔇', 'volume-x', 'speaker-slash', 'volume-off', 'muted', 'volume-off'],
   gauge: ['📊', 'gauge', 'gauge', 'gauge', 'speedometer-middle', 'speed'],

@@ -1,6 +1,8 @@
 import type { APIRoute } from 'astro';
 import type { AgentEvent } from '../../../lib/agent/core.ts';
 import { agentConfigured } from '../../../lib/agent/provider.ts';
+import { validateMentionLabels, type WardMention } from '../../../lib/agent/mentions.ts';
+import { validateWardMentions } from '../../../lib/agent/ward-context.ts';
 import { parseCommand } from '../../../lib/agent/commands.ts';
 import { syncRime, syncStatus } from '../../../lib/agent/sync.ts';
 import { listTasks, readTask, backgroundTasks, cancelTask } from '../../../lib/agent/tasks.ts';
@@ -38,6 +40,8 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
   const body = (await request.json().catch(() => null)) as {
     message?: string;
     file_ids?: unknown;
+    ward_ids?: unknown;
+    ward_mentions?: unknown;
     action?: 'clear' | 'confirm' | 'decline' | 'interrupt' | 'background' | 'cancel-task';
     task?: string;
     confirmId?: string;
@@ -76,13 +80,20 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     }
   }
 
+  let wardIds: string[], mentions: WardMention[];
+  try {
+    wardIds = validateWardMentions(userId, body.ward_ids);
+    mentions = validateMentionLabels(wardIds, body.ward_mentions);
+  }
+  catch (e) { return Response.json({ error: e instanceof Error ? e.message : 'Invalid ward mentions' }, { status: 400 }); }
+
   if (!agentConfigured(userId, cfg.provider)) return Response.json({ error: 'not-configured' }, { status: 503 });
   if (body.mode === 'steer') {
     // Typed while the agent works: the next round reads it as a user message.
     // steered:false = the turn ended first — the client sends it as a turn.
     if (!typed) return Response.json({ error: 'empty message' }, { status: 400 });
     if (!wardBusy(userId, ward)) return Response.json({ steered: false });
-    steerTurn(userId, ward, { text: typed, from: 'user' });
+    steerTurn(userId, ward, { text: typed, from: 'user', wardIds, mentions });
     return Response.json({ steered: true });
   }
   if (wardBusy(userId, ward)) return Response.json({ error: 'busy' }, { status: 409 });
@@ -109,7 +120,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       };
       const run = deciding
         ? resolveConfirmTurn(userId, ward, String(body.confirmId ?? ''), body.action === 'confirm', send)
-        : runChatTurn(userId, ward, { message, fileIds }, send);
+        : runChatTurn(userId, ward, { message, fileIds, wardIds, mentions }, send);
       run
         .then((turn) => send({ type: 'done', reply: turn.reply, steps: turn.steps, pending: turn.pending ?? null }))
         .catch((err) => send({ type: 'error', error: err instanceof Error ? err.message : 'turn failed' }))

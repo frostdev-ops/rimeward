@@ -1,3 +1,4 @@
+import { ensureLiveStream } from './lib/live-stream.ts';
 import { defineMiddleware } from 'astro:middleware';
 import { SESSION_COOKIES, getSession, sessionId } from './lib/auth.ts';
 import { csrfBlocked } from './lib/csrf.ts';
@@ -20,6 +21,7 @@ ensureLogicEngine();
 ensureBrowser(); // orphan sweep + graceful close for the browser wards
 (await import('./lib/comms/index.ts')).ensureComms(); // every chat ward with a token reconnects; sockets close on the way down
 ensureDevices();
+ensureLiveStream();
 ensureRemote();
 ensureTunnel(); // publishes the desktop app's upgrade handler for server.mjs / the dev hook
 

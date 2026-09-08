@@ -11,12 +11,12 @@ import fs from 'node:fs';
 import { backgroundPath } from '../backgrounds.ts';
 
 const localPaths = /^\/(?:_astro\/|api\/(?:native\/|logout(?:\?|$)|runtime(?:\?|$)|dashboard(?:\?|$)|instance(?:\/|\?|$)|dev\/|store\/|agent\/models(?:\?|$)|logic\/stream(?:\?|$)|account\/(?:theme|background)(?:\?|$))|desktop\/|dash(?:\/|\?|$)|brand\/|favicon|apple-touch-icon)/;
-const wardPath = /^\/api\/(?:agent|browser(?:\/stream)?|note|comms)\/([^/?]+)$/;
+const wardPath = /^\/api\/(?:(?:agent|browser(?:\/stream)?|note|comms)\/([^/?]+)|agent\/([^/?]+)\/voice)$/;
 /** Kept pure so routing can be checked without starting either backend. */
 export function requestWard(path: string): string | undefined {
   const url = new URL(path, 'https://rimeward.invalid');
-  return url.searchParams.get('_ward') || url.searchParams.get('ward') ||
-    wardPath.exec(url.pathname)?.[1];
+  const match = wardPath.exec(url.pathname);
+  return url.searchParams.get('_ward') || url.searchParams.get('ward') || match?.[1] || match?.[2];
 }
 export async function routeInstance(context: APIContext): Promise<Response | undefined> {
   const user = context.locals.user?.userId;

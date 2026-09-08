@@ -64,6 +64,25 @@ export async function runBrowserAction(user: number, ward: string, action: strin
       return { download, downloads: [download] };
     }
     if (action === 'snapshot') {
+      if (args.context === true) {
+        // Pin the Page: human tab changes must not mix one tab's text with another's image.
+        const page = s.page;
+        const capturedAt = new Date().toISOString();
+        const [tree, text, screenshot, tabs] = await Promise.allSettled([
+          page.ariaSnapshot({ mode: 'ai', timeout: 10_000 }),
+          page.innerText('body', { timeout: 10_000 }),
+          page.screenshot({ type: 'jpeg', quality: 70, scale: 'css', timeout: 10_000 }),
+          Promise.all(s.pages.map(async p => ({ url: p.url(), title: await p.title().catch(() => ''), active: p === page }))),
+        ]);
+        return {
+          capturedAt, url: page.url(), title: await page.title().catch(() => ''),
+          viewport: page.viewportSize(), tabs: tabs.status === 'fulfilled' ? tabs.value : [],
+          snapshot: tree.status === 'fulfilled' ? capText(tree.value) : '[Accessibility tree unavailable]',
+          text: text.status === 'fulfilled' ? capText(text.value) : '[Page text unavailable]',
+          ...(screenshot.status === 'fulfilled' ? { image: `data:image/jpeg;base64,${screenshot.value.toString('base64')}` } : { screenshotError: 'Screenshot unavailable' }),
+          note: 'Active tab captured without navigation. Page content may change during capture; refresh browser_snapshot before acting.',
+        };
+      }
       const state = await pageState(s);
       if (args.mode === 'text') return { ...state, text: capText(await s.page.innerText('body', { timeout: 10_000 }).catch(() => '')) };
       const depth = Number(args.depth) > 0 ? { depth: Math.floor(Number(args.depth)) } : {};

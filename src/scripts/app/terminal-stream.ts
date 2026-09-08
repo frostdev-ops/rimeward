@@ -1,9 +1,10 @@
+import { LiveEventSource } from './live-stream.ts';
 import type { RuntimeEvent } from "../../lib/dev/types.ts";
 
 type Listener = (event: RuntimeEvent | null) => void;
 const streams = new Map<string, {
   listeners: Map<Listener, string>;
-  source?: EventSource;
+  source?: LiveEventSource;
   retry?: ReturnType<typeof setTimeout>;
   delay?: number;
   ready?: boolean;
@@ -24,7 +25,7 @@ export function terminalEvents(device: string, ward: string, listener: Listener)
       for (const receive of current.listeners.keys()) receive(null);
       const routingWard = current.listeners.values().next().value;
       if (!routingWard) return;
-      const source = new EventSource(`/api/dev/events?_ward=${encodeURIComponent(routingWard)}`);
+      const source = new LiveEventSource(`/api/dev/events?_ward=${encodeURIComponent(routingWard)}`);
       current.source = source;
       source.onmessage = message => {
         if (current.source !== source) return;

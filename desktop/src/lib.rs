@@ -76,6 +76,8 @@ pub fn run() {
                 })
                 .unwrap_or_default();
             let (shared, changes) = chromium::Chromium::new(app.path().app_data_dir()?, origin);
+            shared.try_lock()?.bundled_extensions =
+                runtime::resources(app.handle())?.join("app/assets/browser-extensions");
             app.manage(shared.clone());
             app.manage(changes);
             tauri::async_runtime::spawn(chromium::reap_loop(shared));

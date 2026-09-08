@@ -145,3 +145,15 @@ dialog.ag-dialog { width:min(94vw,68rem); height:min(90dvh,60rem); max-height:94
 .ag-task-actions .btn { font-size:.72rem; }
 .ag-task-output { max-height:30dvh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:.7rem; margin-top:.7rem; font-size:.72rem; background:var(--color-surface-2); border-radius:.7rem; }
 .ag-task-output[data-empty="true"]::before { content:attr(data-placeholder); color:var(--color-ink-muted); }
+.ag-mention-row { align-items: center; }
+.ag-mention-label { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 0.125rem; }
+.ag-mention-label .fd-cmd-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; }
+.ag-mention-detail { color: var(--color-ink-muted); font-size: 0.6875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-mention-chip { display: inline-flex; align-items: center; gap: 0.375rem; max-width: 16rem; border: 1px solid var(--color-line-strong); border-radius: var(--radius-md); padding: 0.25rem 0.5rem; background: var(--color-surface-2); color: var(--color-accent-hi); font-size: 0.75rem; cursor: pointer; }
+.ag-mention-chip:hover { border-color: var(--color-accent-hi); }
+.ag-mention-tag { display: inline-flex; align-items: center; vertical-align: baseline; gap: .3rem; max-width: 100%; padding: .08rem .4rem; margin: 0 .05rem; border: 1px solid var(--color-line-strong); border-radius: .5rem; background: var(--color-surface); color: var(--color-accent-hi); font-size: .9em; font-weight: 600; line-height: 1.5; white-space: nowrap; }
+
+.ag-voice-status { padding:.4rem .3rem 0; color:var(--color-ink-muted); font-size:.7rem; }
+.ag-voice-status[data-error="true"] { color:var(--color-err); }
+.ag-icon-button[aria-pressed="true"] { color:var(--color-accent); background:var(--color-surface-2); border-radius:.5rem; }
+@container (max-width: 350px) { .ag-hint { font-size:0; } }

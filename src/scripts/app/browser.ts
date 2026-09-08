@@ -16,13 +16,16 @@ import { icon } from './icon.ts';
 import { openMenu, menuItem, closeMenu } from './menu.ts';
 import type { BrowserDownload } from '../../lib/browser/downloads.ts';
 import { LocalDriver, type Transport } from './browser-cdp.ts';
+import { LiveEventSource } from './live-stream.ts';
 import type { BrowserConfig, WardInstance } from '../../lib/wards.ts';
 import type { BrowserEvent, Cmd } from '../../lib/browser/session.ts';
+import type { BrowserExtension } from '../../lib/browser/extensions.ts';
 
 type Tabs = Extract<BrowserEvent, { type: 'tabs' }>;
 
 interface Mount {
   w: WardInstance;
+  source: string;
   /** Nav bar + tab strip + view. Moves between the ward body and the dialog. */
   root: HTMLElement;
   view: HTMLElement;
@@ -32,7 +35,7 @@ interface Mount {
   expand: HTMLButtonElement;
   tabs: HTMLElement;
   toast: HTMLElement;
-  es?: EventSource;
+  es?: LiveEventSource;
   /** The local path (inside the app): the driver once open, `opening` meanwhile. */
   driver?: LocalDriver;
   opening?: boolean;
@@ -61,6 +64,10 @@ interface Mount {
 }
 
 const mounts = new Map<string, Mount>();
+const browserSource = (w: WardInstance): string => {
+  const cfg = w.config as BrowserConfig | undefined;
+  return JSON.stringify([cfg?.backend ?? 'local', cfg?.route, w.device]);
+};
 const editing = () => document.getElementById('wd-grid')?.classList.contains('editing') ?? false;
 
 // ------------------------------------------------------------------ stream
@@ -68,7 +75,7 @@ const editing = () => document.getElementById('wd-grid')?.classList.contains('ed
 function connect(m: Mount): void {
   if (m.stopped || m.closing || m.es || m.driver || m.opening || !m.visible || document.hidden) return;
   if (isLocal(m)) return void connectLocal(m);
-  const es = new EventSource(`/api/browser/stream/${m.w.i}`);
+  const es = new LiveEventSource(`/api/browser/stream/${m.w.i}`);
   m.es = es;
   // (Re)connected: the remote viewport must match THIS surface — the size sent
   // at mount may have landed before the ward was saved, or on a browser since
@@ -480,6 +487,83 @@ async function showDownloads(m: Mount, button: HTMLButtonElement): Promise<void>
   } catch (error) { flash(m, error instanceof Error ? error.message : 'Downloads unavailable.', 8000); }
 }
 
+async function showExtensions(m: Mount): Promise<void> {
+  const dialog = el('dialog', 'm-auto rounded-xl border border-line bg-surface-2 p-5 text-ink shadow-xl backdrop:bg-black/60');
+  dialog.style.width = 'min(560px, calc(100vw - 32px))';
+  dialog.style.maxHeight = '80vh';
+  const title = el('h2', 'text-lg font-semibold', 'Browser extensions');
+  title.id = `extensions-${m.w.i}`; dialog.setAttribute('aria-labelledby', title.id);
+  const status = el('p', 'my-3 text-sm'); status.setAttribute('role', 'status');
+  const list = el('div', 'grid gap-3');
+  const actions = el('div', 'mt-4 flex flex-wrap gap-2');
+  const upload = el('button', 'btn', 'Install ZIP'); upload.type = 'button';
+  const restart = el('button', 'btn', 'Restart browser to apply'); restart.type = 'button';
+  const glaze = el('button', 'btn', 'Restore Glaze'); glaze.type = 'button';
+  const close = el('button', 'btn', 'Close'); close.type = 'button';
+  const file = el('input'); file.type = 'file'; file.accept = '.zip,application/zip'; file.hidden = true;
+  close.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('close', () => dialog.remove());
+  dialog.append(title, el('p', 'mt-2 text-sm opacity-70', 'Saved for this browser ward. Glaze is included by default. Changes take effect when you restart this browser; finish any open forms first.'), status, list, actions, file);
+  actions.append(upload, glaze, restart, close);
+  document.body.append(dialog); dialog.showModal();
+  let busy = false;
+  const run = async (action: string, data: Record<string, unknown> | File = {}) => {
+    if (busy) return;
+    busy = true; dialog.querySelectorAll('button').forEach(button => { button.disabled = true; });
+    status.textContent = action === 'restart' ? 'Restarting browser…' : 'Saving…';
+    try {
+      const response = await fetch(`/api/browser/${m.w.i}?extension=${action}`, {
+        method: 'POST', headers: { 'content-type': data instanceof File ? 'application/zip' : 'application/json' },
+        body: data instanceof File ? data : JSON.stringify(data), signal: AbortSignal.timeout(120_000),
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) throw Error(result.error ?? 'Extension operation failed');
+      if (action === 'open') { dialog.close(); return; }
+      await refresh();
+      status.textContent = action === 'restart' ? 'Browser restarted.' : 'Saved. Restart this browser to apply your changes.';
+    } catch (error) { status.textContent = error instanceof Error ? error.message : 'Extensions unavailable'; }
+    finally { busy = false; dialog.querySelectorAll('button').forEach(button => { button.disabled = false; }); }
+  };
+  const refresh = async () => {
+    const response = await fetch(`/api/browser/${m.w.i}?extensions=1`, { signal: AbortSignal.timeout(30_000) });
+    const result = await response.json();
+    if (!response.ok) throw Error(result.error ?? 'Extensions unavailable');
+    glaze.hidden = result.extensions.some((entry: BrowserExtension) => entry.bundled);
+    list.replaceChildren();
+    if (result.hosted) list.append(el('p', 'text-sm opacity-70', 'Browserbase supports one enabled extension per session. Disable it before enabling another.'));
+    for (const entry of result.extensions as BrowserExtension[]) {
+      const row = el('section', 'rounded-lg border border-white/15 p-3');
+      row.append(el('h3', 'font-medium', `${entry.name} · ${entry.version}`));
+      const permissions = el('p', 'my-2 break-words text-xs opacity-70', `Permissions: ${entry.permissions.join(', ') || 'None'}`);
+      row.append(permissions);
+      const controls = el('div', 'flex flex-wrap gap-2');
+      const toggle = el('button', 'btn text-sm', entry.enabled ? 'Disable' : 'Enable'); toggle.type = 'button';
+      toggle.setAttribute('aria-label', `${entry.enabled ? 'Disable' : 'Enable'} ${entry.name}`);
+      toggle.addEventListener('click', () => void run('toggle', { id: entry.id, enabled: !entry.enabled }));
+      const remove = el('button', 'btn text-sm', 'Remove'); remove.type = 'button';
+      remove.setAttribute('aria-label', `Remove ${entry.name}`);
+      remove.addEventListener('click', () => void run('remove', { id: entry.id }));
+      controls.append(toggle);
+      if (entry.popup && entry.enabled) {
+        const settings = el('button', 'btn text-sm', 'Settings'); settings.type = 'button';
+        settings.setAttribute('aria-label', `Settings for ${entry.name}`);
+        settings.addEventListener('click', () => void run('open', { id: entry.id })); controls.append(settings);
+      }
+      controls.append(remove); row.append(controls); list.append(row);
+    }
+    if (!result.extensions.length) list.append(el('p', 'text-sm', 'No extensions installed.'));
+  };
+  upload.addEventListener('click', () => file.click());
+  file.addEventListener('change', () => {
+    const selected = file.files?.[0]; file.value = '';
+    if (selected && selected.size > 10 * 1024 * 1024) status.textContent = 'Extension ZIP must be at most 10 MB';
+    else if (selected) void run('install', selected);
+  });
+  restart.addEventListener('click', () => void run('restart'));
+  glaze.addEventListener('click', () => void run('glaze'));
+  try { await refresh(); } catch (error) { status.textContent = String(error); }
+}
+
 function build(w: WardInstance): Mount {
   const root = el('div', 'bw flex h-full w-full min-h-0 flex-col gap-1');
   const bar = el('form', 'flex items-center gap-1');
@@ -507,6 +591,7 @@ function build(w: WardInstance): Mount {
 
   const m: Mount = {
     w,
+    source: browserSource(w),
     root,
     view,
     canvas,
@@ -546,6 +631,10 @@ function build(w: WardInstance): Mount {
   downloads.type = 'button'; downloads.title = 'Downloads'; downloads.setAttribute('aria-label', 'Downloads');
   downloads.append(icon('download'));
   downloads.addEventListener('click', event => { event.stopPropagation(); void showDownloads(m, downloads); });
+  const extensions = el('button', 'btn min-h-0 shrink-0 px-1.5 py-0.5 text-xs');
+  extensions.type = 'button'; extensions.title = 'Extensions'; extensions.setAttribute('aria-label', 'Extensions');
+  extensions.append(icon('puzzle'));
+  extensions.addEventListener('click', () => void showExtensions(m));
   restoreExpandedWard(w.i, () => openDialog(m));
   bar.append(
     navButton(m, '◀', 'Back', { t: 'back' }),
@@ -554,6 +643,7 @@ function build(w: WardInstance): Mount {
     url,
     navButton(m, '＋', 'New tab', { t: 'newtab' }),
     downloads,
+    extensions,
     expand
   );
   root.append(bar, tabs, view);
@@ -613,14 +703,20 @@ function dialog(): HTMLDialogElement | null {
 function openDialog(m: Mount): void {
   const dlg = dialog();
   if (!dlg) return;
-  if (dialogMount) dlg.close();
+  if (dialogMount === m && dlg.open) return;
+  if (dialogMount && dialogMount !== m) {
+    const previous = dialogMount;
+    previous.expand.hidden = false;
+    const home = body(previous.w.i);
+    if (home) home.append(previous.root); else destroy(previous);
+  }
   dialogMount = m;
   expandedDesktopWard(m.w.i);
   const title = document.querySelector(`[data-wd="${m.w.i}"] [data-wd-title]`)?.textContent ?? 'Browser';
   dlg.querySelector('[data-bw-title]')!.textContent = title;
   m.expand.hidden = true; // the dialog's ✕ is the way out
   dlg.querySelector('[data-bw-host]')!.append(m.root);
-  dlg.showModal();
+  if (!dlg.open) dlg.showModal();
   m.canvas.focus();
 }
 
@@ -630,6 +726,19 @@ function renderBrowser(w: WardInstance): void {
   const b = body(w.i);
   if (!b) return;
   const old = mounts.get(w.i);
+  if (old && old.source === browserSource(w)) {
+    old.w = w;
+    if (dialogMount !== old && old.root.parentElement !== b) b.append(old.root);
+    if (dialogMount === old) {
+      const title = document.querySelector(`[data-wd="${w.i}"] [data-wd-title]`)?.textContent ?? 'Browser';
+      dialog()?.querySelector('[data-bw-title]')?.replaceChildren(document.createTextNode(title));
+    }
+    scheduleResize(old);
+    connect(old);
+    return;
+  }
+  const expanded = old && dialogMount === old;
+  if (expanded) dialogMount = null;
   if (old) destroy(old);
   b.textContent = '';
   b.classList.add('flex');
@@ -637,6 +746,7 @@ function renderBrowser(w: WardInstance): void {
   const m = build(w);
   mounts.set(w.i, m);
   b.append(m.root);
+  if (expanded) openDialog(m);
 }
 
 document.addEventListener('fd:layout-saved', () => {
@@ -649,4 +759,4 @@ window.addEventListener('blur', () => {
   for (const m of mounts.values()) if (document.activeElement === m.canvas) m.canvas.blur();
 });
 
-RENDERERS.browser = { render: renderBrowser, stop: id => { const m = mounts.get(id); if (m) destroy(m); } }; // event-driven — no poll
+RENDERERS.browser = { preserveBody: true, render: renderBrowser, stop: id => { const m = mounts.get(id); if (m) destroy(m); } }; // event-driven — no poll

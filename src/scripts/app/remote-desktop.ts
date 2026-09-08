@@ -158,7 +158,7 @@ function render(w: WardInstance) {
     const cw = canvas.width || 1, ch = canvas.height || 1, vw = viewport.clientWidth, vh = viewport.clientHeight;
     const s = scaling === 'actual' ? zoom : scaling === 'fill' ? Math.max(vw / cw, vh / ch) : Math.min(vw / cw, vh / ch);
     frame.style.width = `${Math.max(1, Math.round(cw * s))}px`; frame.style.height = `${Math.max(1, Math.round(ch * s))}px`;
-    viewport.dataset.scaling = scaling; input.drawCursor();
+    viewport.dataset.scaling = scaling; input.drawCursor(); input.repaintCursor();
   };
   const resize = new ResizeObserver(fit); resize.observe(viewport);
   // ---- toolbar
@@ -606,7 +606,7 @@ function render(w: WardInstance) {
     }).finally(() => { keepaliveBusy = false; });
   }, 10000);
   const stop = () => {
-    stopped = true; void disconnect(); transfer.stop(); abort.abort(); clearInterval(heartbeat); observer.disconnect();
+    stopped = true; void disconnect(); input.stop(); transfer.stop(); abort.abort(); clearInterval(heartbeat); observer.disconnect();
     clearInterval(clipboardTimer); clearInterval(transferHeartbeat); resize.disconnect(); barResize.disconnect(); clearTimeout(barTimer);
     document.removeEventListener('visibilitychange', visibility); document.removeEventListener('fullscreenchange', onFullscreen);
     window.removeEventListener('pagehide', stop); window.removeEventListener('blur', windowBlur);

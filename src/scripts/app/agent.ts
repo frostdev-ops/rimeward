@@ -10,12 +10,15 @@ import type { ContextUsage } from '../../lib/agent/context.ts';
 // below builds DOM nodes and never touches innerHTML.
 
 import { ACTIONS } from '../../lib/logic.ts';
+import { createAgentVoice, type VoiceState } from './agent-voice.ts';
 import { completeCommand, parseCommand, type CommandSpec } from '../../lib/agent/commands.ts';
 import type { AgentTask } from '../../lib/agent/tasks.ts';
-import { CATALOG, type WardInstance } from '../../lib/wards.ts';
-import { RENDERERS, body, note } from './wards.ts';
+import { CATALOG, pageOf, wardTitle, type WardInstance } from '../../lib/wards.ts';
+import { RENDERERS, body, note, readLayout } from './wards.ts';
 import { el, getJson, postJson, tapToast, toast } from './dom.ts';
 import { icon } from './icon.ts';
+import { currentPage, readPages } from './pages.ts';
+import { activeMentions, mentionPattern, tagMentionMessage, plainMentionText, MAX_WARD_MENTIONS, type WardMention } from '../../lib/agent/mentions.ts';
 import { dialog } from './workspace-dialogs.ts';
 import '../../styles/conversation.css';
 import { ensureStream, flushPendingLayout, onAgentLive, onAgentPing, reloadHolds } from './logic.ts';
@@ -47,6 +50,11 @@ function inline(text: string, into: Node): void {
       const cut = tok.indexOf('](');
       const label = tok.slice(1, cut);
       const href = tok.slice(cut + 2, -1);
+      if (/^ward:[a-z0-9-]{1,32}$/.test(href)) {
+        into.appendChild(mentionTag(label, href.slice(5)));
+        rest = rest.slice(m.index + tok.length);
+        continue;
+      }
       // Only navigable schemes — no javascript:/data:, and no protocol-
       // relative //host smuggled past the leading-slash test.
       const safe = /^(https?:\/\/|mailto:|\/(?!\/))/i.test(href);
@@ -317,6 +325,9 @@ interface Ui {
   stop: HTMLButtonElement;
   background: HTMLButtonElement;
   tasksButton: HTMLButtonElement;
+  microphone: HTMLButtonElement;
+  voiceStop: HTMLButtonElement;
+  voiceStatus: HTMLElement;
   chips: HTMLElement;
   pendingBox: HTMLElement;
   pendingText: HTMLElement;
@@ -340,16 +351,21 @@ interface State {
   /** A turn is running somewhere else — another tab, another device, or an
    *  automation. Painted from the mirror; the composer waits it out. */
   remote: boolean;
+  revision: number;
+  refresh: number;
   abort: AbortController | null;
   attachments: { id: string; name: string }[];
   uploading: number;
   draft: string;
+  mentions: WardMention[];
   clearing: boolean;
   tasks: AgentTask[];
   sharedStatus?: string;
   configured?: boolean;
   context?: ContextUsage;
   uis: Set<Ui>;
+  voice?: ReturnType<typeof createAgentVoice>;
+  voiceState?: VoiceState;
 }
 
 const kTokens = (t: number) => t < 1000 ? `${Math.round(t)}` : `${Math.round(t / 1000)}k`;
@@ -368,15 +384,29 @@ function paintContext(el: HTMLElement, c: State['context']): void {
 
 const states = new Map<string, State>();
 
+function voiceFor(st: State) {
+  return st.voice ??= createAgentVoice({
+    ward: st.w.i,
+    getDraft: () => st.draft,
+    setDraft: value => setDraft(st, value),
+    isAlive: () => [...st.uis].some(ui => ui.root.isConnected && (!ui.root.matches('dialog') || ui.root.matches('[open]'))),
+    onState: state => { st.voiceState = state; paint(st); },
+  });
+}
+
+
 function stateFor(w: WardInstance): State {
   let st = states.get(w.i);
   if (!st) {
-    st = { w, items: [], pending: null, busy: false, remote: false, abort: null, attachments: [], uploading: 0, draft: '', clearing: false, tasks: [], uis: new Set() };
-    const saved = readDesktopState<{ draft?: string; attachments?: { id: string; name: string }[] }>(`agent:${w.i}:${w.device ?? ''}`);
+    st = { w, items: [], pending: null, busy: false, remote: false, revision: 0, refresh: 0, abort: null, attachments: [], uploading: 0, draft: '', mentions: [], clearing: false, tasks: [], uis: new Set() };
+    const saved = readDesktopState<{ draft?: string; mentions?: WardMention[]; attachments?: { id: string; name: string }[] }>(`agent:${w.i}:${w.device ?? ''}`);
     if (typeof saved?.draft === 'string') st.draft = saved.draft;
     if (Array.isArray(saved?.attachments)) st.attachments = saved.attachments.filter(a => typeof a?.id === 'string' && typeof a?.name === 'string');
+    if (Array.isArray(saved?.mentions)) st.mentions = saved.mentions.filter(m => typeof m?.ward === 'string' && typeof m?.title === 'string').slice(0, MAX_WARD_MENTIONS);
     states.set(w.i, st);
+    watchAgent(w.i);
   }
+  if (st.w.device !== w.device) st.voice?.dispose();
   st.w = w; // config changes keep the same id — track the live instance
   return st;
 }
@@ -410,14 +440,34 @@ function copyButton(text: string, label: string): HTMLButtonElement {
   return button;
 }
 
+function mentionTag(label: string, ward: string): HTMLElement {
+  const tag = el('span', 'ag-mention-tag');
+  tag.dataset.agMention = ward;
+  const w = readLayout().find(w => w.i === ward);
+  tag.append(icon(CATALOG[w?.type ?? '']?.icon ?? 'attach'), el('span', 'truncate', label));
+  tag.title = `${label} · Attached ward context`;
+  tag.setAttribute('aria-label', `Attached ward: ${label.replace(/^@/, '')}`);
+  return tag;
+}
+
+/** User prose stays literal; only our persisted ward tags receive inline styling. */
+function appendMentionText(text: string, into: HTMLElement): void {
+  let from = 0;
+  for (const m of text.matchAll(/\[(@[^\]]+)\]\(ward:([a-z0-9-]{1,32})\)/g)) {
+    into.append(document.createTextNode(text.slice(from, m.index)), mentionTag(m[1]!, m[2]!));
+    from = m.index + m[0].length;
+  }
+  into.append(document.createTextNode(text.slice(from)));
+}
+
 function bubble(role: 'user' | 'assistant', text: string): HTMLElement {
   const wrap = el('article', `ag-message ag-${role}`);
   wrap.setAttribute('aria-label', role === 'user' ? 'You' : 'Assistant');
   const inner = el('div', 'ag-prose');
-  if (role === 'user') inner.textContent = text;
+  if (role === 'user') appendMentionText(text, inner);
   else inner.append(markdown(text));
   const actions = el('div', 'ag-message-actions');
-  actions.append(copyButton(text, 'Copy message'));
+  actions.append(copyButton(plainMentionText(text), 'Copy message'));
   wrap.append(inner, actions);
   return wrap;
 }
@@ -519,7 +569,16 @@ function buildLog(st: State, ui: Ui): void {
     }
     entries.push({ signature: JSON.stringify([label, group.length ? group : it]), create: () => {
       let node: HTMLElement;
-      if (it.k === 'msg') node = bubble(it.role, it.text);
+      if (it.k === 'msg') {
+        node = bubble(it.role, it.text);
+        if (it.role === 'assistant') {
+          const read = el('button', 'ag-copy');
+          read.type = 'button'; read.title = 'Read this message aloud'; read.setAttribute('aria-label', 'Read this message aloud');
+          read.append(icon('volume'), el('span', undefined, 'Read aloud'));
+          read.onclick = () => { void voiceFor(st).speak(it.text); };
+          node.querySelector('.ag-message-actions')!.append(read);
+        }
+      }
       else if (it.k === 'step') {
         const activity = el('details', 'ag-activity');
         const running = group.filter(g => g.running).length;
@@ -585,12 +644,27 @@ function setDraft(st: State, value: string): void {
   for (const ui of st.uis) {
     if (ui.input.value !== value) ui.input.value = value;
     autoGrow(ui.input);
+    paintChips(st, ui.chips);
     ui.send.disabled = st.configured === false || st.uploading > 0 || st.clearing || (!value.trim() && !st.attachments.length);
   }
 }
 
 function paintChips(st: State, chips: HTMLElement): void {
   chips.replaceChildren();
+  for (const m of activeMentions(st.draft, st.mentions)) {
+    const chip = el('button', 'ag-mention-chip');
+    chip.type = 'button';
+    const w = readLayout().find(w => w.i === m.ward);
+    chip.append(icon(CATALOG[w?.type ?? '']?.icon ?? 'folder'), el('span', 'truncate', `@${m.title}`), icon('close'));
+    chip.title = `${w ? mentionSummary(w.type) : 'Ward unavailable'} · Captured when sent · Click to remove`;
+    chip.setAttribute('aria-label', `Remove mention ${m.title}`);
+    chip.onclick = () => {
+      setDraft(st, st.draft.replace(mentionPattern(m), ''));
+      st.mentions = st.mentions.filter(x => x.ward !== m.ward);
+      paint(st);
+    };
+    chips.append(chip);
+  }
   for (const a of st.attachments) {
     const chip = el('span', 'inline-flex max-w-[12rem] items-center gap-1.5 rounded-lg bg-surface-2 px-2 py-1 text-xs');
     chip.append(el('span', 'truncate', a.name));
@@ -619,11 +693,12 @@ function paintChips(st: State, chips: HTMLElement): void {
  *  desync — transcripts are short and streams emit tens of frames, not
  *  thousands. */
 function saveDraft(st: State) {
-  saveDesktopState(`agent:${st.w.i}:${st.w.device ?? ''}`, { draft: st.draft, attachments: st.attachments });
+  saveDesktopState(`agent:${st.w.i}:${st.w.device ?? ''}`, { draft: st.draft, mentions: st.mentions, attachments: st.attachments });
 }
 window.addEventListener('fd:before-workspace-navigation', event => {
   (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(Promise.resolve().then(() => {
     for (const st of states.values()) {
+      st.voice?.dispose();
       if (st.uploading) throw Error('Wait for Rime attachments to finish uploading before relaunching.');
       saveDraft(st);
       const ui = [...st.uis].find(ui => ui.root.closest('dialog[open]')) ?? [...st.uis][0];
@@ -632,10 +707,23 @@ window.addEventListener('fd:before-workspace-navigation', event => {
   }));
 });
 function paint(st: State): void {
+  if (st.busy || st.remote) reloadHolds.add(st.w.i);
+  else reloadHolds.delete(st.w.i);
   try { saveDraft(st); } catch { /* Retain the in-memory draft until recovery can be saved. */ }
   for (const ui of [...st.uis]) if (!ui.root.isConnected) st.uis.delete(ui);
   for (const ui of st.uis) {
     buildLog(st, ui);
+    const voicePhase = st.voiceState?.phase ?? 'idle';
+    const voiceActive = voicePhase !== 'idle' && voicePhase !== 'error';
+    ui.microphone.disabled = st.clearing || voicePhase === 'finishing';
+    ui.microphone.setAttribute('aria-pressed', String(voicePhase === 'listening'));
+    const microphoneLabel = voicePhase === 'listening' ? 'Finish dictation' : voiceActive ? 'Stop voice' : 'Dictate message';
+    ui.microphone.title = microphoneLabel;
+    ui.microphone.setAttribute('aria-label', microphoneLabel);
+    ui.voiceStop.hidden = !voiceActive;
+    ui.voiceStatus.hidden = !st.voiceState?.message;
+    ui.voiceStatus.textContent = st.voiceState?.message ?? '';
+    ui.voiceStatus.dataset.error = String(voicePhase === 'error');
     // Mid-turn the composer stays open: a send steers the running turn.
     ui.send.disabled = st.configured === false || st.uploading > 0 || st.clearing || (!st.draft.trim() && !st.attachments.length);
     const working = st.busy || st.remote;
@@ -666,19 +754,23 @@ function paint(st: State): void {
  *  turn-finished ping: the chain hasn't released `busy` yet at that instant, so
  *  trusting it there would strand a spinner and a disabled composer. */
 async function refetch(st: State, settled = false): Promise<void> {
+  if (!st.uis.size) return; // The initial render owns mounting; a reconnect must not supersede it.
+  const revision = st.revision;
+  const refresh = ++st.refresh;
   const { status, data } = await getJson(`/api/agent/${encodeURIComponent(st.w.i)}`).catch(() => ({ status: 0, data: null }));
   if (status !== 200 || !data) return;
-  if (st.busy) return; // a local stream started mid-fetch — it owns the log
+  if (st.busy || st.revision !== revision || st.refresh !== refresh) return;
   st.configured = data.configured;
   st.context = data.context ?? undefined;
   st.tasks = data.tasks ?? [];
-  st.items = itemsFrom(data.transcript ?? []);
+  if (!st.remote || !data.busy) st.items = itemsFrom(data.transcript ?? []);
   st.pending = data.pending ?? null;
   // A turn is running elsewhere (another client, or an automation) — its live
   // frames repaint over this, but the thread is busy either way.
   st.remote = !settled && !!data.busy;
-  if (st.remote) st.items.push({ k: 'thinking' });
+  if (st.remote && !st.items.some(it => it.k === 'thinking' || (it.k === 'step' && it.running))) st.items.push({ k: 'thinking' });
   paint(st);
+  if (settled) flushPendingLayout();
 }
 
 // --------------------------------------------------------------- turn flow
@@ -696,6 +788,7 @@ function dropThinking(st: State): void {
 
 /** What a send that didn't land puts back. */
 interface Restore {
+  mentions?: WardMention[];
   text?: string;
   files?: { id: string; name: string }[];
   /** The confirm decide() hid optimistically — the server still has it parked. */
@@ -705,6 +798,7 @@ interface Restore {
 function fail(st: State, msg: string, restore: Restore): void {
   st.items.push({ k: 'note', err: true, text: msg });
   // Nothing typed, uploaded or parked is lost — the request didn't land.
+  if (restore.mentions?.length) st.mentions = [...new Map([...st.mentions, ...restore.mentions].map(m => [m.ward, m])).values()];
   if (restore.files?.length) st.attachments = [...restore.files, ...st.attachments];
   if (restore.pending) st.pending = restore.pending;
   paint(st);
@@ -715,6 +809,7 @@ function fail(st: State, msg: string, restore: Restore): void {
  *  stream and the SSE mirror of headless runs ('user' only ever arrives on the
  *  mirror). Returns false for the types the caller owns (done/error). */
 function applyEvent(st: State, run: Run, e: any, src?: TurnSource): boolean {
+  st.revision++;
   switch (e.type) {
     case 'user':
       dropThinking(st);
@@ -772,7 +867,15 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource): boolean {
   return false;
 }
 
+async function flushMentionedWards(wards: string[]): Promise<void> {
+  if (!wards.length) return;
+  const pending: Promise<unknown>[] = [];
+  window.dispatchEvent(new CustomEvent('fd:ward-context', { detail: { wards, waitUntil: (p: Promise<unknown>) => pending.push(p) } }));
+  await Promise.all(pending);
+}
+
 async function post(st: State, payload: Record<string, unknown>, back: Restore = {}): Promise<void> {
+  st.revision++;
   st.busy = true;
   // Hold off any server-side layout reload until this turn is done — the
   // agent's own edits broadcast 'layout' mid-stream.
@@ -785,13 +888,25 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
   paint(st);
   const restore: Restore = { text: typeof payload.message === 'string' ? payload.message : '', ...back };
   const running = newRun();
+  let accepted = false;
+  let completed = false;
+  const reconnect = () => {
+    st.busy = false;
+    st.remote = true;
+    remoteRuns.set(st.w.i, running);
+    st.items.push({ k: 'note', text: 'Response connection lost. Checking the running turn…' });
+    paint(st);
+    void refetch(st);
+  };
 
   const dispatch = (e: any): void => {
     if (!applyEvent(st, running, e)) {
       if (e.type === 'done') {
+        completed = true;
         endTurn(st);
         st.pending = e.pending ?? null;
       } else if (e.type === 'error') {
+        completed = true;
         endTurn(st);
         // A stream means the server took the request — the confirm is spent,
         // so this one doesn't put the bar back.
@@ -803,6 +918,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
   };
 
   try {
+    await flushMentionedWards(Array.isArray(payload.ward_ids) ? payload.ward_ids : []);
     const res = await fetch(`/api/agent/${encodeURIComponent(st.w.i)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -841,6 +957,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
       return;
     }
 
+    accepted = true;
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let buf = '';
@@ -858,9 +975,9 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
         } catch {}
       }
     }
-    endTurn(st);
-    paint(st);
+    if (!completed) reconnect();
   } catch (err) {
+    if (accepted && !completed) { reconnect(); return; }
     endTurn(st);
     if ((err as Error)?.name === 'AbortError') {
       st.items.push({ k: 'note', icon: 'stop', text: 'Stopped.' });
@@ -871,7 +988,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
     fail(st, err instanceof Error ? err.message : 'network error', restore);
   } finally {
     st.abort = null;
-    reloadHolds.delete(st.w.i);
+    if (!st.remote) reloadHolds.delete(st.w.i);
     flushPendingLayout(); // a layout broadcast that landed mid-turn can go now
   }
 }
@@ -879,6 +996,8 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
 function submit(st: State, ui: Ui): void {
   if (st.configured === false) return;
   const text = ui.input.value.trim();
+  if (text.length > 8000) { toast('Your draft exceeds 8,000 characters. Shorten it before sending.'); return; }
+  const mentions = activeMentions(text, st.mentions);
   if ((!text && !st.attachments.length) || st.uploading > 0 || st.clearing) return;
   for (const view of st.uis) view.follow = true;
   if (parseCommand(text)?.name === 'tasks') {
@@ -899,29 +1018,33 @@ function submit(st: State, ui: Ui): void {
       return;
     }
     setDraft(st, '');
-    void steer(st, text);
+    st.mentions = [];
+    void steer(st, text, mentions);
     return;
   }
   if (st.busy) return; // a command while this client streams — the server answers it, the stream stays
   setDraft(st, '');
-  if (text) st.items.push({ k: 'msg', role: 'user', text });
+  if (text) st.items.push({ k: 'msg', role: 'user', text: tagMentionMessage(text, mentions) });
   const sent = st.attachments;
   const file_ids = sent.map((a) => a.id);
   if (sent.length) st.items.push({ k: 'note', icon: 'attach', text: sent.map((a) => a.name).join(', ') });
   st.attachments = [];
-  void post(st, file_ids.length ? { message: text, file_ids } : { message: text }, { files: sent });
+  st.mentions = [];
+  void post(st, { message: text, file_ids, ward_mentions: mentions, ward_ids: mentions.map(m => m.ward) }, { files: sent, mentions });
 }
 
 /** Steer the running turn. steered:false = it ended first, so send normally. */
-async function steer(st: State, text: string): Promise<void> {
-  const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { message: text, mode: 'steer' });
+async function steer(st: State, text: string, mentions: WardMention[] = []): Promise<void> {
+  try { await flushMentionedWards(mentions.map(m => m.ward)); }
+  catch (e) { fail(st, e instanceof Error ? e.message : 'Could not save ward context', { text, mentions }); return; }
+  const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { message: text, ward_mentions: mentions, ward_ids: mentions.map(m => m.ward), mode: 'steer' });
   if (status === 200 && data?.steered) return;
   if (status === 200 && data && !st.busy) {
-    st.items.push({ k: 'msg', role: 'user', text });
-    void post(st, { message: text });
+    st.items.push({ k: 'msg', role: 'user', text: tagMentionMessage(text, mentions) });
+    void post(st, { message: text, ward_mentions: mentions, ward_ids: mentions.map(m => m.ward) }, { mentions });
     return;
   }
-  fail(st, data?.error ?? 'could not reach the agent', { text });
+  fail(st, data?.error ?? 'could not reach the agent', { text, mentions });
 }
 
 /** The Stop button: the server ends the turn at its next round boundary. */
@@ -1055,6 +1178,7 @@ function decide(st: State, action: 'confirm' | 'decline'): void {
 
 async function clearChat(st: State): Promise<void> {
   if (st.busy || st.remote || st.clearing || st.uploading) return;
+  st.voice?.dispose();
   st.clearing = true;
   paint(st);
   const { ok, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'clear' });
@@ -1063,6 +1187,7 @@ async function clearChat(st: State): Promise<void> {
   st.items = [];
   st.pending = null;
   st.attachments = [];
+  st.mentions = [];
   setDraft(st, '');
   for (const ui of st.uis) ui.follow = true;
   paint(st);
@@ -1113,7 +1238,15 @@ function autoGrow(input: HTMLTextAreaElement): void {
  * The command list comes from lib/agent/commands.ts — the same module the
  * server parses with, so the menu can never offer something that does not run.
  */
-function wireCommandMenu(ui: Ui, run: () => void): void {
+function mentionSummary(type: string): string {
+  if (type === 'browser') return 'Screenshot, active page, tabs and page text';
+  if (type === 'note') return 'Note text and drawing';
+  if (['editor', 'project-files', 'changes', 'terminal'].includes(type)) return 'Current project, file or terminal context';
+  if (type === 'remote-desktop') return 'Computer and screen-access status';
+  return 'Current ward content and settings';
+}
+
+function wireCommandMenu(ui: Ui, run: () => void, cur: () => State | undefined): void {
   const anchor = ui.input.parentElement!;
   anchor.style.position = 'relative'; // set here, not as a class — this is the one thing that needs it
   const menu = el('div', 'fd-cmd hidden');
@@ -1124,7 +1257,8 @@ function wireCommandMenu(ui: Ui, run: () => void): void {
   ui.input.setAttribute('aria-expanded', 'false');
   anchor.append(menu);
 
-  let items: CommandSpec[] = [];
+  let items: (CommandSpec | WardInstance)[] = [];
+  let mentionStart = -1;
   let active = 0;
   const isOpen = () => !menu.classList.contains('hidden');
 
@@ -1143,11 +1277,23 @@ function wireCommandMenu(ui: Ui, run: () => void): void {
       row.tabIndex = -1;
       row.setAttribute('role', 'option');
       row.setAttribute('aria-selected', String(i === active));
-      row.append(el('span', 'fd-cmd-name', `/${c.name}`));
-      if (c.args) row.append(el('span', 'fd-cmd-args', c.args));
-      row.append(el('span', 'fd-cmd-desc', c.summary));
+      if ('i' in c) {
+        row.classList.add('ag-mention-row');
+        row.append(icon(CATALOG[c.type]?.icon ?? 'folder'));
+        const label = el('span', 'ag-mention-label');
+        label.append(el('span', 'fd-cmd-name', wardTitle(c)));
+        const pages = readPages(), layout = readLayout();
+        const page = pages.find(p => p.id === pageOf(c, pages, layout));
+        label.append(el('span', 'ag-mention-detail', `${CATALOG[c.type]?.title ?? c.type} · ${page?.title ?? 'Page'}${c.hidden ? ' · Hidden' : ''} · ${c.i}`));
+        row.append(label);
+        row.title = mentionSummary(c.type);
+      } else {
+        row.append(el('span', 'fd-cmd-name', `/${c.name}`));
+        if (c.args) row.append(el('span', 'fd-cmd-args', c.args));
+        row.append(el('span', 'fd-cmd-desc', c.summary));
+      }
       // mousedown, not click: the textarea must not lose focus before we act.
-      row.addEventListener('mousedown', (e) => {
+      row.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         active = i;
         pick(true);
@@ -1169,6 +1315,32 @@ function wireCommandMenu(ui: Ui, run: () => void): void {
   function pick(now: boolean): void {
     const c = items[active];
     if (!c) return;
+    if ('i' in c) {
+      const st = cur();
+      if (!st) return;
+      const selected = activeMentions(ui.input.value, st.mentions);
+      if (selected.length >= MAX_WARD_MENTIONS && !selected.some(m => m.ward === c.i)) {
+        toast(`Mention up to ${MAX_WARD_MENTIONS} wards per message.`); return;
+      }
+      let title = wardTitle(c).replace(/\s+/g, ' ').trim();
+      const layout = readLayout(), pages = readPages();
+      const duplicates = layout.filter(w => wardTitle(w).replace(/\s+/g, ' ').trim() === title);
+      if (duplicates.length > 1) {
+        const page = pageOf(c, pages, layout);
+        title += ` · ${pages.find(p => p.id === page)?.title ?? 'Page'}`;
+        const samePage = duplicates.filter(w => pageOf(w, pages, layout) === page);
+        if (samePage.length > 1) title += ` · ${samePage.findIndex(w => w.i === c.i) + 1}`;
+      }
+      const m = st.mentions.find(m => m.ward === c.i) ?? { ward: c.i, title };
+      const token = `@${m.title} `;
+      if (ui.input.value.length - (ui.input.selectionStart - mentionStart) + token.length > ui.input.maxLength) return;
+      ui.input.setRangeText(token, mentionStart, ui.input.selectionStart, 'end');
+      st.mentions = [...selected.filter(x => x.ward !== m.ward), m];
+      close();
+      ui.input.focus();
+      setDraft(st, ui.input.value);
+      return;
+    }
     ui.input.value = now ? `/${c.name}` : `/${c.name} `;
     close();
     if (now) run();
@@ -1179,9 +1351,18 @@ function wireCommandMenu(ui: Ui, run: () => void): void {
   }
 
   function sync(): void {
-    const next = completeCommand(ui.input.value);
-    if (!next?.length) { close(); return; }
-    items = next;
+    if (ui.input.selectionStart !== ui.input.selectionEnd) { close(); return; }
+    const before = ui.input.value.slice(0, ui.input.selectionStart);
+    const match = /(?:^|[\s(])@([^@\n]*)$/.exec(before);
+    mentionStart = match ? before.length - match[1]!.length - 1 : -1;
+    if (match) {
+      const query = match[1]!.toLocaleLowerCase().trim();
+      const pages = readPages(), layout = readLayout();
+      items = layout.filter(w => w.i !== cur()?.w.i &&
+        `${wardTitle(w)} ${CATALOG[w.type]?.title} ${w.i} ${pages.find(p => p.id === pageOf(w, pages, layout))?.title ?? ''}`.toLocaleLowerCase().includes(query))
+        .sort((a, b) => Number(pageOf(b, pages, layout) === currentPage()) - Number(pageOf(a, pages, layout) === currentPage()));
+    } else items = completeCommand(ui.input.value) ?? [];
+    if (!items.length) { close(); return; }
     active = 0;
     menu.classList.remove('hidden');
     ui.input.setAttribute('aria-expanded', 'true');
@@ -1205,6 +1386,8 @@ function wireCommandMenu(ui: Ui, run: () => void): void {
     }
   });
   ui.input.addEventListener('input', sync);
+  ui.input.addEventListener('click', sync);
+  ui.input.addEventListener('keyup', e => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) sync(); });
   ui.input.addEventListener('blur', close);
   // Escape on a <dialog> closes it through the `cancel` event, which a keydown
   // preventDefault does not reach — so the menu would take the whole dialog with it.
@@ -1220,12 +1403,25 @@ function wireCommandMenu(ui: Ui, run: () => void): void {
  *  at event time — the dialog rebinds wards without re-adding listeners. */
 function wireComposer(ui: Ui, cur: () => State | undefined): void {
   const file = ui.root.querySelector<HTMLInputElement>('input[type="file"]')!;
-  const go = () => {
+  let sending = false;
+  const go = async () => {
     const st = cur();
-    if (st) submit(st, ui);
+    if (!st || sending) return;
+    sending = true;
+    try {
+      await st.voice?.stop();
+      if (cur() === st && ui.root.isConnected) submit(st, ui);
+    } finally { sending = false; }
   };
+  ui.microphone.addEventListener('click', () => {
+    const st = cur();
+    if (!st) return;
+    if (st.voiceState && !['idle', 'error'].includes(st.voiceState.phase)) void st.voice?.stop();
+    else void voiceFor(st).dictate();
+  });
+  ui.voiceStop.addEventListener('click', () => { const st = cur(); if (st) void st.voice?.stop(); });
   // FIRST, so its keydown listener sees Enter/Tab/arrows before the send below.
-  wireCommandMenu(ui, go);
+  wireCommandMenu(ui, go, cur);
   ui.send.addEventListener('click', go);
   ui.background.addEventListener('click', () => { const st = cur(); if (st) void background(st); });
   ui.tasksButton.addEventListener('click', () => { const st = cur(); if (st) openTasks(st); });
@@ -1339,7 +1535,7 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   attach.title = 'Attach files'; attach.setAttribute('aria-label', 'Attach files');
   attach.append(icon('attach'));
   const file = el('input', 'hidden'); file.type = 'file'; file.multiple = true;
-  const hint = el('span', 'ag-hint', 'Type / for commands');
+  const hint = el('span', 'ag-hint', '@ wards · / commands');
   const tasksButton = el('button', 'ag-icon-button ag-tasks-button');
   tasksButton.type = 'button'; tasksButton.append(icon('tasks'));
   const background = el('button', 'ag-icon-button hidden');
@@ -1351,12 +1547,20 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   const send = el('button', 'ag-send');
   send.type = 'button'; send.title = 'Send message'; send.setAttribute('aria-label', 'Send message');
   send.append(icon('send'));
-  controls.append(attach, file, tasksButton, hint, background, stop, send);
+  const microphone = el('button', 'ag-icon-button');
+  microphone.type = 'button'; microphone.append(icon('microphone'));
+  microphone.title = 'Dictate message'; microphone.setAttribute('aria-label', 'Dictate message');
+  const voiceStop = el('button', 'ag-icon-button');
+  voiceStop.type = 'button'; voiceStop.hidden = true; voiceStop.append(icon('volume-off'));
+  voiceStop.title = 'Stop voice · agent work continues'; voiceStop.setAttribute('aria-label', 'Stop voice');
+  controls.append(attach, file, tasksButton, microphone, hint, voiceStop, background, stop, send);
   form.append(chips, input, controls);
   const help = el('p', 'ag-composer-help', matchMedia('(pointer: coarse)').matches ? 'Tap send when you’re ready' : 'Enter to send · Shift + Enter for a new line');
-  footer.append(pendingBox, form, help);
+  const voiceStatus = el('p', 'ag-voice-status');
+  voiceStatus.hidden = true; voiceStatus.setAttribute('role', 'status');
+  footer.append(pendingBox, form, voiceStatus, help);
   host.append(stage, footer);
-  return { root, log, input, send, stop, background, tasksButton, chips, pendingBox, pendingText, pendingDetails, pendingPatch, status, context, jump, follow: true, rendered: [] };
+  return { root, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, chips, pendingBox, pendingText, pendingDetails, pendingPatch, status, context, jump, follow: true, rendered: [] };
 }
 
 // ------------------------------------------------------------ shared dialog
@@ -1430,6 +1634,9 @@ interface AgentPing {
 const unread = new Map<string, number>();
 /** In-flight step cards from a remote (headless) turn, keyed per ward. */
 const remoteRuns = new Map<string, Run>();
+window.addEventListener('fd:agent-reconnect', () => {
+  for (const st of states.values()) if (!st.busy && st.uis.size) void refetch(st);
+});
 
 function paintBadge(ward: string): void {
   const span = document.querySelector<HTMLElement>(`[data-wd="${ward}"] .wd-status`);
@@ -1522,9 +1729,14 @@ async function openHistory(w:WardInstance) {
 async function renderAgent(w: WardInstance): Promise<void> {
   ensureStream();
   const st = stateFor(w);
+  const revision = st.revision;
+  const refresh = ++st.refresh;
   const { status, data } = await getJson(`/api/agent/${encodeURIComponent(w.i)}`).catch(() => ({ status: 0, data: null }));
+  if (st.refresh !== refresh) return;
   const b = body(w.i);
   if (!b) return;
+  const mounted = [...st.uis].some(ui => b.contains(ui.root));
+  if (mounted && (status !== 200 || !data)) return; // Keep the last usable view through a transient outage.
   if (status === 400) {
     note(w.i, 'Save the layout first.');
     unsaved.set(w.i, w);
@@ -1547,7 +1759,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   st.sharedStatus=data.sync?.server?data.sync.online?'Rime':'Rime · working offline':undefined;
   st.configured = data.configured;
   st.context = data.context ?? undefined;
-  if (!data.configured && !data.transcript?.length && !data.tasks?.length) {
+  if (!data.configured && !data.transcript?.length && !data.tasks?.length && !st.items.length && !st.busy && !st.remote) {
     const setup = el('div', 'ag-empty ag-setup');
     const mark = el('div', 'ag-empty-mark');
     mark.append(icon('sparkle'));
@@ -1561,12 +1773,13 @@ async function renderAgent(w: WardInstance): Promise<void> {
 
   // A rerender mid-stream must not clobber the live turn's log.
   st.tasks = data.tasks ?? st.tasks;
-  if (!st.busy) {
-    st.items = itemsFrom(data.transcript ?? []);
+  if (!st.busy && st.revision === revision) {
+    if (!st.remote || !data.busy) st.items = itemsFrom(data.transcript ?? []);
     st.pending = data.pending ?? null;
     st.remote = !!data.busy; // a turn already running when this client loaded
-    if (st.remote) st.items.push({ k: 'thinking' });
+    if (st.remote && !st.items.some(it => it.k === 'thinking' || (it.k === 'step' && it.running))) st.items.push({ k: 'thinking' });
   }
+  if (mounted) { paint(st); return; }
 
   // The ward chrome: log + pending bar + composer, body flex-managed.
   b.textContent = '';
@@ -1601,21 +1814,25 @@ async function renderAgent(w: WardInstance): Promise<void> {
   wrap.addEventListener('pointerdown', () => clearUnread(w.i));
   paint(st);
   paintBadge(w.i); // a grid rebuild blanks the header span; the count outlives it
+  if (st.revision !== revision && !st.busy) void refetch(st);
+}
 
+function watchAgent(ward: string): void {
   // Headless runs (a logic rule, a scheduled wake) broadcast 'agent' over the
   // logic stream. The payload says who asked and whether it earns an interrupt.
-  onAgentPing(w.i, (p?: AgentPing) => {
-    const live = states.get(w.i);
+  onAgentPing(ward, (p?: AgentPing) => {
+    const live = states.get(ward);
     if (!live) return;
     const headless = !!p && !!p.source && p.source !== 'chat';
     // A silenced rule still owes the user a trace — quiet isn't invisible.
-    if (headless && !logVisible(w.i)) {
-      unread.set(w.i, (unread.get(w.i) ?? 0) + 1);
-      paintBadge(w.i);
+    if (headless && !logVisible(ward)) {
+      unread.set(ward, (unread.get(ward) ?? 0) + 1);
+      paintBadge(ward);
     }
     if (headless && p!.toast) announce(live, p!);
     // The turn is over: the stored transcript is the record now.
-    remoteRuns.delete(w.i);
+    remoteRuns.delete(ward);
+    live.revision++;
     live.remote = false;
     if (!live.busy) void refetch(live, true);
   });
@@ -1623,20 +1840,22 @@ async function renderAgent(w: WardInstance): Promise<void> {
   // Every turn — chat, automation or wake — mirrors its stream frames as
   // 'agent-live'. This is what makes one thread look the same in every open
   // client at the same moment; the settle ping then reconciles against storage.
-  onAgentLive(w.i, (d) => {
-    const live = states.get(w.i);
+  onAgentLive(ward, (d) => {
+    const live = states.get(ward);
     if (live && d?.event?.type === 'task') { updateTask(live, d.event.task); return; }
     if (!live || live.busy || !d) return; // this client's own stream owns the log
-    let running = remoteRuns.get(w.i);
-    if (!running) { running = newRun(); remoteRuns.set(w.i, running); }
+    let running = remoteRuns.get(ward);
+    if (!running) { running = newRun(); remoteRuns.set(ward, running); }
     if (d.event?.type === 'end') {
       // The turn died without settling — no ping is coming, so release here.
-      remoteRuns.delete(w.i);
+      remoteRuns.delete(ward);
+      live.revision++;
       live.remote = false;
       for (const it of live.items) if (it.k === 'step') it.running = false;
       live.items = live.items.filter((it) => it.k !== 'thinking');
       if (d.event.error) live.items.push({ k: 'note', err: true, text: d.event.error });
       paint(live);
+      flushPendingLayout();
       return;
     }
     live.remote = true;
@@ -1647,4 +1866,4 @@ async function renderAgent(w: WardInstance): Promise<void> {
 
 // ------------------------------------------------------------------- registry
 
-RENDERERS.agent = { render: (w) => renderAgent(w) }; // event-driven — no poll
+RENDERERS.agent = { render: (w) => renderAgent(w), preserveBody: true, stop: id => states.get(id)?.voice?.dispose() }; // event-driven — no poll

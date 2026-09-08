@@ -1,3 +1,4 @@
+import { liveStreamFixture } from './live-stream-fixture.mjs';
 // Built UI, disposable account and synthetic agent events; never calls a provider.
 // Run after npm run build. Chromium comes from the staged desktop runtime.
 import fs from 'node:fs';
@@ -38,15 +39,7 @@ try {
   let commsPosts=0,commReads=0;
   const configure = async (ctx) => {
     await ctx.addCookies([{name:'rimeward_session',value:info.cookie,url:origin}]);
-    await ctx.addInitScript(()=>{
-      const Native=window.EventSource;
-      window.__streams=[];
-      window.EventSource=class extends EventTarget {
-        static CLOSED=2;
-        constructor(url){super();this.url=url;this.readyState=1;window.__streams.push(this);}
-        close(){this.readyState=2;}
-      };
-    });
+    await ctx.addInitScript(liveStreamFixture, { mockAll: true });
     await ctx.route('**/api/comms/**',async route=>{
       if(route.request().method()==='POST'){commsPosts++;return route.fulfill({status:503,json:{error:'Delivery unavailable'}});}
       commReads++;

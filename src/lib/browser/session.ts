@@ -13,6 +13,7 @@ import { connectApp } from './app-backend.ts';
 import { publicAddress } from '../net-guard.ts';
 import { openStream, subscribeTunnel, tunnelOnline, tunnelStatus } from '../tunnel.ts';
 import { captureDownload, listDownloads, moveDownloads, type BrowserDownload } from './downloads.ts';
+import { extensionPaths, extensionStorage, cleanExtensions, extensionMaintenance } from './extensions.ts';
 
 // One live browser per browser ward, keyed `${userId}:${ward}`. The human
 // (screencast out over SSE, input in over POST) and the agent (tools) share
@@ -77,8 +78,11 @@ export interface Session {
   lastUsed: number;
   /** Agent operations serialize here; the human's input never waits on it. */
   chain: Promise<unknown>;
+  operations?: number;
   close: () => Promise<void>;
+  closing?: Promise<void>;
   cast?: Promise<CDPSession>;
+  castStop?: Promise<void>;
   unsubRoute?: () => void;
 }
 
@@ -99,6 +103,7 @@ export function open(userId: number, ward: string, cfg: BrowserConfig): Promise<
   const key = `${userId}:${ward}`;
   const live = sessions.get(key);
   if (live) {
+    if (live.closing) return live.closing.then(() => open(userId, ward, cfg));
     live.lastUsed = Date.now();
     return Promise.resolve(live);
   }
@@ -119,6 +124,8 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
     : cfg.backend === 'app' ? await connectApp(userId, ward)
     : await launchLocal(userId, ward, cfg);
   const { context } = backend;
+  try { if (cfg.backend === 'browserbase') await extensionStorage(context, userId, ward, true); }
+  catch (error) { await backend.close(); throw error; }
   const restored = restoreDesktop() && cfg.backend !== 'browserbase' ? await restoreView(context, userId, ward) : null;
   const page = restored?.page ?? context.pages()[0] ?? (await context.newPage());
   const s: Session = {
@@ -141,6 +148,7 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
   if (s.route === 'home') s.unsubRoute = subscribeTunnel(userId, (online) => emit(s, { type: 'route', online }));
   // Popups (OAuth consent, "open in new window") become tabs and take focus.
   context.on('page', (p) => {
+    if (extensionMaintenance(context)) return;
     s.pages.push(p);
     watchPage(s, p);
     const ready = activate(s, p);
@@ -179,6 +187,8 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig): Pr
   const home = cfg.route === 'home' ? await guardFor(homeDial(userId)) : undefined;
   const port = home?.port ?? (await guardPort());
   const profile = profileDir(userId, ward);
+  cleanExtensions(userId, ward);
+  const extensions = extensionPaths(userId, ward);
   const downloads = path.join(profile, 'rimeward-transfers');
   fs.mkdirSync(downloads, { recursive: true });
   const owner = fs.statSync(profile);
@@ -204,8 +214,10 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig): Pr
     downloadsPath: downloads,
     // Chromium restores history, scroll positions and form state itself. A
     // forced blank startup tab would take the place of the restored page.
-    ...(restoreDesktop() ? { ignoreDefaultArgs: ['about:blank'] } : {}),
+    ignoreDefaultArgs: ['--disable-extensions', ...(restoreDesktop() ? ['about:blank'] : [])],
     args: [
+      '--enable-unsafe-extension-debugging',
+      ...(extensions.length ? [`--load-extension=${extensions.join(',')}`] : []),
       ...(restoreDesktop() ? ['--restore-last-session'] : []),
       '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', // no unproxied UDP out of ICE
       '--disk-cache-size=52428800', // the profile's size cap, in effect
@@ -283,7 +295,7 @@ function profileDir(userId: number, ward: string): string {
 /** Cap live browsers: evict the longest-idle unwatched one, else refuse. */
 async function makeRoom(): Promise<void> {
   if (sessions.size < MAX) return;
-  const idle = [...sessions.values()].filter((s) => !s.subs.size).sort((a, b) => a.lastUsed - b.lastUsed)[0];
+  const idle = [...sessions.values()].filter((s) => !s.subs.size && !s.operations && !s.closing).sort((a, b) => a.lastUsed - b.lastUsed)[0];
   if (!idle) throw new Error(`too many live browsers (${MAX}) — close one first`);
   await closeSession(idle);
 }
@@ -341,11 +353,12 @@ export async function pushState(s: Session): Promise<void> {
 /** Switch the active tab; the screencast (if running) follows. */
 export async function activate(s: Session, page: Page): Promise<void> {
   if (s.page !== page) {
-    const casting = !!s.cast;
-    await stopCast(s);
     s.page = page;
+    await stopCast(s);
+    if (s.page !== page || s.closing) return; // A newer tab selection owns the cast.
     await page.setViewportSize(s.viewport).catch(() => {});
-    if (casting) startCast(s);
+    if (s.page !== page) return;
+    startCast(s);
   }
   await pushState(s);
 }
@@ -491,7 +504,12 @@ export async function runCmds(s: Session, cmds: unknown): Promise<void> {
 /** Serialize the agent's operations on one session. Human input goes around
  *  this on purpose: a person mid-click must never queue behind a 30s goto. */
 export function withSession<T>(s: Session, fn: () => Promise<T>): Promise<T> {
-  const run = s.chain.then(fn, fn);
+  if (s.closing) return Promise.reject(new Error('Browser is closing — retry after it reconnects.'));
+  s.operations = (s.operations ?? 0) + 1;
+  const run = s.chain.then(fn, fn).finally(() => {
+    s.operations!--;
+    s.lastUsed = Date.now();
+  });
   s.chain = run.catch(() => {});
   s.lastUsed = Date.now();
   return run;
@@ -513,43 +531,53 @@ export function subscribe(s: Session, fn: (e: BrowserEvent) => void): () => void
 }
 
 function startCast(s: Session): void {
-  if (s.cast) return;
+  if (s.cast || !s.subs.size || s.closing) return;
   const page = s.page;
-  s.cast = (async () => {
+  const stopped = s.castStop;
+  const cast = (async () => {
+    await stopped;
     const cdp = await s.context.newCDPSession(page);
     cdp.on('Page.screencastFrame', (e: { data: string; sessionId: number }) => {
       // Ack first, always — chromium stops sending without it.
       void cdp.send('Page.screencastFrameAck', { sessionId: e.sessionId }).catch(() => {});
-      emit(s, { type: 'frame', data: e.data, width: s.viewport.width, height: s.viewport.height });
+      if (s.cast === cast && s.page === page) emit(s, { type: 'frame', data: e.data, width: s.viewport.width, height: s.viewport.height });
     });
-    await cdp.send('Page.startScreencast', {
+    try { await cdp.send('Page.startScreencast', {
       format: 'jpeg',
       quality: 60,
       maxWidth: s.viewport.width,
       maxHeight: s.viewport.height,
       everyNthFrame: 1,
-    });
+    }); } catch (error) { await cdp.detach().catch(() => {}); throw error; }
     return cdp;
   })();
-  s.cast.catch(() => {
-    s.cast = undefined;
+  s.cast = cast;
+  cast.catch(() => {
+    if (s.cast === cast) s.cast = undefined;
   });
 }
 
-async function stopCast(s: Session): Promise<void> {
+function stopCast(s: Session): Promise<void> {
   const cast = s.cast;
-  if (!cast) return;
+  if (!cast) return s.castStop ?? Promise.resolve();
   s.cast = undefined;
-  const cdp = await cast.catch(() => null);
-  if (!cdp) return;
-  await cdp.send('Page.stopScreencast').catch(() => {});
-  await cdp.detach().catch(() => {});
+  // A new cast waits for this stop; an old stop must never stop its replacement.
+  return s.castStop = (async () => {
+    const cdp = await cast.catch(() => null);
+    if (!cdp) return;
+    await cdp.send('Page.stopScreencast').catch(() => {});
+    await cdp.detach().catch(() => {});
+  })();
 }
 
 // -------------------------------------------------------------- lifecycle
 
-export async function closeSession(s: Session): Promise<void> {
-  if (sessions.get(s.key) === s) sessions.delete(s.key);
+export function closeSession(s: Session): Promise<void> {
+  return s.closing ??= closeBrowser(s);
+}
+
+async function closeBrowser(s: Session): Promise<void> {
+  if (s.backend === 'browserbase') await extensionStorage(s.context, s.userId, s.ward, false).catch(error => console.warn('[browser] Could not save extension settings:', error instanceof Error ? error.message : error));
   s.unsubRoute?.();
   await Promise.race([saveView(s), sleep(1_000)]);
   // Graceful first (Browser.close flushes the profile); if the browser won't
@@ -557,6 +585,7 @@ export async function closeSession(s: Session): Promise<void> {
   // that deadline from starting.
   const closed = await Promise.race([(async () => { await stopCast(s); await s.close(); return true; })().catch(() => true), sleep(CLOSE_MS).then(() => false)]);
   if (!closed && s.backend === 'local') killByProfile(path.join(PROFILES, String(s.userId), s.ward));
+  if (sessions.get(s.key) === s) sessions.delete(s.key);
   emit(s, { type: 'closed' });
 }
 
@@ -613,7 +642,7 @@ export function killByProfile(prefix: string): number {
 
 function reap(): void {
   const now = Date.now();
-  for (const s of sessions.values()) if (!s.subs.size && now - s.lastUsed > IDLE_MS) void closeSession(s);
+  for (const s of sessions.values()) if (!s.subs.size && !s.operations && now - s.lastUsed > IDLE_MS) void closeSession(s);
 }
 
 async function shutdown(): Promise<void> {
@@ -631,7 +660,8 @@ export function ensureBrowser(): void {
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.once(sig, () => {
       const terminals = isDesktop() ? import('../dev/terminals.ts').then(m => m.shutdownTerminals()) : Promise.resolve();
-      void Promise.race([Promise.all([shutdown(), terminals]), sleep(CLOSE_MS + 1_000)]).finally(() => process.exit(0));
+      const voice = import('../agent/voice.ts').then(m => m.shutdownVoice());
+      void Promise.race([Promise.all([shutdown(), terminals, voice]), sleep(CLOSE_MS + 1_000)]).finally(() => process.exit(0));
     });
   }
 }

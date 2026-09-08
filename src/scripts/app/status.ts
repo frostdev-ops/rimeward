@@ -1,3 +1,4 @@
+import { LiveEventSource } from './live-stream.ts';
 // SSE client: a snapshot store with pub/sub. Ward renderers (host,
 // service, service-group — registered into RENDERERS below) subscribe and
 // draw wards; applink status dots update from the same stream. Page-level
@@ -483,7 +484,7 @@ export function bootStatus(): void {
   };
 
   const connect = () => {
-    const es = new EventSource('/api/status/stream');
+    const es = new LiveEventSource('/api/status/stream');
     es.addEventListener('status', (ev) => {
       lastMessage = Date.now();
       banner?.classList.add('hidden');

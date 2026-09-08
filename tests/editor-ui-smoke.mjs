@@ -1,3 +1,4 @@
+import { liveStreamFixture } from './live-stream-fixture.mjs';
 // Real local backend, CodeMirror and bundled Biome; no model calls or native app launch.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,7 +33,7 @@ try {
   const url=await ready, origin=new URL(url).origin;
   browser=await chromium.launch({headless:true,channel:'chromium',args:['--disable-gpu']});
   const pc=await browser.newContext({viewport:{width:1440,height:1000}}), page=await pc.newPage(), errors=[];
-  await pc.addInitScript(()=>{const Native=EventSource;window.__streams=[];window.EventSource=class extends Native{constructor(...args){super(...args);window.__streams.push(this);}};});
+  await pc.addInitScript(liveStreamFixture);
   page.on('pageerror',e=>errors.push(e.message));
   await page.goto(url); await page.waitForURL('**/desktop/start');
   await page.getByRole('button',{name:'Continue without connecting'}).click(); await page.waitForURL('**/dash');

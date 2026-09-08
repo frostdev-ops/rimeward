@@ -525,6 +525,10 @@ export function projectEditor(host: HTMLElement, options: {
     await flush(); checkpointEditor(); await remember();
   }));
   window.addEventListener("fd:before-workspace-navigation", beforeNavigate);
+  const beforeMention = (e: Event) => {
+    if ((e as CustomEvent<{ wards: string[] }>).detail.wards.includes(options.ward)) beforeNavigate(e);
+  };
+  window.addEventListener("fd:ward-context", beforeMention);
   const unload = (e: BeforeUnloadEvent) => { if (pending) { e.preventDefault(); e.returnValue = ""; } };
   window.addEventListener("beforeunload", unload);
   wrap = recovered?.wrap === true;
@@ -534,6 +538,7 @@ export function projectEditor(host: HTMLElement, options: {
   return () => {
     stopped = true; clearTimeout(recoveryTimer); clearTimeout(lintTimer); lintGeneration++; stopPoll(); stopMenu(); stopChrome(); explorer.stop(); themeObserver.disconnect(); tabResize.disconnect();
     window.removeEventListener("fd:before-workspace-navigation", beforeNavigate);
+    window.removeEventListener("fd:ward-context", beforeMention);
     window.removeEventListener("fd:open-file", onOpen); window.removeEventListener("beforeunload", unload); host.removeEventListener("keydown", onKey);
     void flush().catch(() => {}).finally(() => editor.destroy());
   };

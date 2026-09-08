@@ -36,13 +36,23 @@ export const press = (keys: Key[]): RemoteEvent[] => [...keys.map(down), ...[...
 const clamp = (v: number) => Math.max(0, Math.min(0.999999, v));
 const clamp100 = (v: number) => Math.max(-100, Math.min(100, v));
 
+/** Resolve theme colours on a real element: SVG image cursors cannot inherit CSS variables. */
+export function themedCursor(element: HTMLElement): string {
+  const style = getComputedStyle(element);
+  const xml = (s: string) => s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+  const shape = 'M5 3V25L11 19L16 29L21 26L16 17H25Z';
+  // Both light and dark edges keep the pointer visible over arbitrary remote pixels.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><g stroke-linejoin="round"><path d="${shape}" stroke="#000" stroke-width="4"/><path d="${shape}" fill="#fff" stroke="#fff" stroke-width="2"/><path d="${shape}" fill="${xml(style.color)}" stroke="${xml(style.outlineColor)}" stroke-width="0.75"/></g></svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
 export interface InputHost {
   canvas: HTMLCanvasElement;
   /** The drawn box of the remote display (canvas + video share it) — pointer coordinates map off it in every scaling mode. */
   frame: HTMLElement;
   /** The offscreen textarea that owns keyboard focus while controlling (opens the OS keyboard on phones). */
   catcher: HTMLTextAreaElement;
-  /** The touchpad mode's virtual cursor dot, positioned inside its offsetParent. */
+  /** The touchpad mode's virtual SVG pointer, positioned inside its offsetParent. */
   cursor: HTMLElement;
   send(events: RemoteEvent[]): void;
   controlling(): boolean;
@@ -63,6 +73,18 @@ export interface InputHost {
 
 export function wireInput(h: InputHost) {
   const { canvas, catcher } = h;
+  h.cursor.setAttribute('aria-hidden', 'true');
+  const repaintCursor = () => {
+    const image = themedCursor(h.cursor);
+    canvas.style.setProperty('--rd-pointer', `${image} 5 3, default`);
+    h.cursor.style.backgroundImage = image;
+  };
+  const theme = new MutationObserver(repaintCursor);
+  const themeAttrs = { attributes: true, attributeFilter: ['style', 'class', 'data-themed', 'data-ward-theme', 'data-ward-mode'] };
+  theme.observe(document.documentElement, themeAttrs);
+  const ward = canvas.closest('[data-wd]');
+  if (ward) theme.observe(ward, themeAttrs);
+  repaintCursor();
   const at = (x: number, y: number): RemoteEvent => {
     const r = h.frame.getBoundingClientRect();
     return { type: 'move', x: clamp((x - r.left) / r.width), y: clamp((y - r.top) / r.height) };
@@ -180,5 +202,5 @@ export function wireInput(h: InputHost) {
   catcher.addEventListener('compositionend', flushText);
   const reset = () => { touches.clear(); stopHold(); heldMods = []; heldKeys.clear(); dragging = false; twoAt = 0; twoMoved = false; catcher.value = ''; };
   catcher.addEventListener('blur', () => { reset(); h.blurred(); });
-  return { reset, drawCursor, resetCursor: () => { cur.x = 0.5; cur.y = 0.5; drawCursor(); } };
+  return { reset, drawCursor, repaintCursor, stop: () => { reset(); theme.disconnect(); }, resetCursor: () => { cur.x = 0.5; cur.y = 0.5; drawCursor(); } };
 }

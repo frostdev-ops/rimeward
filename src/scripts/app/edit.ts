@@ -673,11 +673,9 @@ function revealShell(shell: HTMLElement): void {
 
 const TOUCH_MS = 1200;
 
-/** A push we could not apply and cannot hand back: same fallback logic.ts uses
- *  — reload, unless that would eat an edit in progress. */
+/** A push we could not apply must leave live wards and unsaved work mounted. */
 function refuseLayout(): void {
-  if (isEditing()) toast('The agent changed your layout.', { label: 'Reload', fn: () => location.reload() });
-  else location.reload();
+  toast('The agent changed your layout.', { label: 'Reload', fn: () => location.reload() });
 }
 
 const onScreen = (n: Element): boolean => {
@@ -711,7 +709,7 @@ const sameCfg = (a: WardInstance, b: WardInstance) =>
   JSON.stringify([b.title ?? null, b.hidden ?? false, b.config ?? null]);
 
 let applying = false;
-let queued: WardInstance[] | null = null;
+let queued: { layout: WardInstance[]; pages?: PageDef[] } | null = null;
 
 /**
  * Apply a server-pushed layout to the live grid, animated. Returns false when
@@ -732,7 +730,7 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
     // Only a server push may queue — `queued` carries no local flag, and an
     // undo that silently lands 150ms later is worse than one that says no.
     if (local) return false;
-    queued = next;
+    queued = { layout: next, pages };
     return true;
   }
 
@@ -776,6 +774,14 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
 
   const touched: HTMLElement[] = [];
   const settleIn = () => {
+    // A turn may start during the exit animation, after the initial hold check.
+    if ([...gone.map(([id]) => id), ...repaint.map(w => w.i)].some(id => held.has(id))) {
+      for (const [, node] of gone) for (const animation of node.getAnimations()) if (animation.id === 'fd-exit') animation.cancel();
+      applying = false;
+      queued = null;
+      refuseLayout();
+      return;
+    }
     flip(() => {
       for (const [id, node] of gone) {
         node.remove();
@@ -856,7 +862,7 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
       // can no longer be applied — the user entered edit mode or opened the
       // configure dialog during the fade — there is no caller left to fall
       // back for us, so do it here.
-      if (!applyLayout(q, held)) refuseLayout();
+      if (!applyLayout(q.layout, held, false, q.pages)) refuseLayout();
     }
   };
 

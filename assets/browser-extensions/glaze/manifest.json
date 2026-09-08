@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "Glaze for Blackboard Ultra",
+  "version": "1.0.0",
+  "description": "A customizable colour theme with motion and glass for Blackboard Ultra. Toggleable, every colour and animation yours to set.",
+  "permissions": [
+    "storage"
+  ],
+  "minimum_chrome_version": "113",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "glaze@frostdev.io",
+      "strict_min_version": "121.0"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Glaze",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/ultra/*"
+      ],
+      "js": [
+        "defaults.js",
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "theme.css"
+      ],
+      "matches": [
+        "https://*/*"
+      ],
+      "use_dynamic_url": true
+    }
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxhJ++AQ1pC0c0VeLCS4eUF9EGU6pWwu2cO75bHVaiH1Bc9e+bNaDfpjw1bTOV2UxtJcunuO+ehHAkFujZiEYxX2PRnuxGxZ7+QtyxQ4357F3dJqc+UUbbxyRUfMV/1JnGiq8ll/acaROMAOGGKvzjww/oa08zeLE1MTogGJfVCKXFj2iWrpTSJm45tJwqH3yrmfSFTwUTz7zqU4PaxJ4SuTg3qnscBHERzbSo7RbifPJxNcSArRFC6QGGy3aTTnPraAq09h++5w7GsjFJPEQv+JNZ1kq3QbgIDlfcbvrabtD0Vvw/wB5rrD9TWo1Dvheeaik3tP8N48q8ZRPZvwAqQIDAQAB"
+}

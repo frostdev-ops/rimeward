@@ -340,6 +340,35 @@ async fn stream_task(
     tx: mpsc::Sender<Vec<u8>>,
     shared: Shared,
 ) {
+    if let Some(ward) = target.strip_prefix("extensions:") {
+        if tx.send(frame(id, OPENED, b"")).await.is_err() {
+            return;
+        }
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut bytes = Vec::new();
+            while let Some(chunk) = rx.recv().await {
+                if bytes.len() + chunk.len() > 64 * 1024 * 1024 {
+                    return Err("Extension upload exceeds 64 MB".to_string());
+                }
+                bytes.extend(chunk);
+                if bytes.last() == Some(&b'\n') {
+                    return chromium::store_extensions(&shared, ward, &bytes).await;
+                }
+            }
+            Err("Extension upload interrupted".to_string())
+        })
+        .await
+        .unwrap_or_else(|_| Err("Extension upload timed out".into()));
+        let reply = match result {
+            Ok(()) => serde_json::json!({"ok":true}),
+            Err(error) => serde_json::json!({"error":error}),
+        };
+        let _ = tx
+            .send(frame(id, DATA, format!("{reply}\n").as_bytes()))
+            .await;
+        let _ = tx.send(frame(id, CLOSE, b"")).await;
+        return;
+    }
     let ward = target.strip_prefix("cdp:").map(str::to_string);
     let (tcp, opened) = match dial(&target, &shared).await {
         Ok(t) => t,

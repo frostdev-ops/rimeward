@@ -527,6 +527,8 @@ export interface Renderer {
   /** Present → jittered poll; absent → render once (capture, wards, embeds). */
   intervalMs?: number;
   render: (w: WardInstance) => void | Promise<void>;
+  /** Stateful views reconcile their own DOM, including while a refresh waits. */
+  preserveBody?: boolean;
   /** Release what render() holds outside the DOM (a WebGL context) when the
    *  ward leaves the layout. */
   stop?: (id: string) => void;
@@ -606,12 +608,12 @@ export function unbootInstance(id: string): void {
  *  config too; this just repaints now instead of next tick. */
 export function rerenderInstance(w: WardInstance): void {
   if (w.type === 'container') return; // its body holds live wards, not a paint
+  const r = RENDERERS[w.type];
   const b = body(w.i);
-  if (b) {
+  if (b && !r?.preserveBody) {
     b.textContent = '';
     b.classList.add('overflow-y-auto');
   }
-  const r = RENDERERS[w.type];
   if (r) void r.render(w);
 }
 

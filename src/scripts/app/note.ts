@@ -738,6 +738,19 @@ window.addEventListener('fd:note', (e) => {
   const st = states.get(String((e as CustomEvent<{ ward?: string }>).detail?.ward ?? ''));
   if (st && !st.docDirty) void load(st);
 });
+window.addEventListener('fd:ward-context', event => {
+  const { wards, waitUntil } = (event as CustomEvent<{ wards: string[]; waitUntil(p: Promise<unknown>): void }>).detail;
+  waitUntil((async () => {
+    await Promise.all(pendingWrites);
+    for (const id of wards) {
+      const st = states.get(id);
+      if (!st) continue;
+      if (st.busy) throw Error('Wait for the note operation to finish before mentioning it.');
+      await Promise.all([flushDoc(st), flushInk(st)]);
+      if (st.docDirty || st.inkDirty) throw Error('The mentioned note could not be saved. Your message is still a draft.');
+    }
+  })());
+});
 window.addEventListener('fd:before-workspace-navigation', event => {
   (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil((async () => {
     await Promise.all(pendingWrites);

@@ -21,7 +21,7 @@ import {
   saveGraph,
   timerOp,
 } from '../logic-engine.ts';
-import { getSnapshot } from '../status.ts';
+import { getSnapshot, getHistory, recentIncidents } from '../status.ts';
 import { forecastFor } from '../weather.ts';
 import { agenda } from '../calendar.ts';
 import { MAIL_ACCOUNTS } from '../wards.ts';
@@ -308,9 +308,11 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   service_status: {
     kind: 'read',
-    description: 'Live status of every monitored service plus host CPU/memory/disk.',
-    parameters: obj({}),
-    run: () => {
+    description: 'Live status of every monitored service plus host CPU/memory/disk. Optionally read one service history or recent incidents.',
+    parameters: obj({ service: str('service id for history'), hours: num('history lookback, 1–168 hours'), incidents: bool('include recent incident spans instead of current status') }),
+    run: async (a) => {
+      if (a.incidents === true) return { hours: 24, incidents: await recentIncidents() };
+      if (typeof a.service === 'string' && a.service) return { service: a.service, rows: getHistory(a.service, Number(a.hours) || 24) };
       const snap = getSnapshot();
       if (!snap) throw new Error('no status snapshot yet — the engine just booted, try again shortly');
       return snap;
@@ -318,10 +320,10 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   get_weather: {
     kind: 'read',
-    description: 'Current conditions and the short forecast, for the first weather ward on the board that has a place.',
-    parameters: obj({}),
-    run: async (_a, ctx) => {
-      const f = await forecastFor(ctx.userId);
+    description: 'Current conditions and the short forecast for a weather ward, or the first configured place if no ward is specified.',
+    parameters: obj({ ward: str('optional weather ward id') }),
+    run: async (a, ctx) => {
+      const f = await forecastFor(ctx.userId, typeof a.ward === 'string' ? a.ward : undefined);
       if (!f) throw new Error('weather unavailable — no weather ward has a place');
       return f;
     },

@@ -4,24 +4,39 @@ import { TerminalInput } from "../src/scripts/app/terminal-input.ts";
 import { terminalEvents } from "../src/scripts/app/terminal-stream.ts";
 
 test("terminal streams share a connection per desktop and reconnect using a remaining ward", t => {
-  const opened: FakeSource[] = [];
-  class FakeSource {
-    static CLOSED = 2;
+  const opened: { url: string; readyState: number; onmessage: (message: { data: string }) => void; onerror: () => void; close: () => void }[] = [];
+  class FakeSocket {
+    static OPEN = 1;
     readyState = 1;
-    url: string;
+    onopen?: () => void;
     onmessage?: (message: { data: string }) => void;
-    onerror?: () => void;
-    constructor(url: string) { this.url = url; opened.push(this); }
-    close() { this.readyState = 2; }
+    onclose?: () => void;
+    subscriptions = new Map<number, typeof opened[number]>();
+    constructor(_url: string) { setTimeout(() => this.onopen?.(), 0); }
+    send(raw: string) {
+      const frame = JSON.parse(raw);
+      if (frame.close) { const source = this.subscriptions.get(frame.id); if (source) source.readyState = 2; return; }
+      const emit = (value: unknown) => this.onmessage?.({ data: JSON.stringify(value) });
+      const source = {
+        url: frame.path, readyState: 1,
+        onmessage: (message: { data: string }) => emit({ id: frame.id, data: `data: ${message.data}\n\n` }),
+        onerror: () => emit({ id: frame.id, error: 404 }),
+        close() { this.readyState = 2; },
+      };
+      this.subscriptions.set(frame.id, source); opened.push(source);
+      emit({ id: frame.id, open: true });
+    }
+    close() { this.readyState = 2; this.onclose?.(); }
   }
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const original = globalThis.EventSource;
-  globalThis.EventSource = FakeSource as unknown as typeof EventSource;
+  const original = { WebSocket: globalThis.WebSocket, EventSource: globalThis.EventSource, window: globalThis.window, location: globalThis.location };
+  Object.assign(globalThis, { WebSocket: FakeSocket, EventSource: { CLOSED: 2 }, window: {}, location: { protocol: 'http:', host: 'fixture', origin: 'http://fixture' } });
   const received: unknown[] = [];
   let stopA = () => {}, stopB = () => {}, stopC = () => {};
   try {
     stopA = terminalEvents("desktop", "ward-a", event => received.push(event));
     stopB = terminalEvents("desktop", "ward-b", event => received.push(event));
+    t.mock.timers.tick(0);
     assert.equal(opened.length, 1);
     opened[0]?.onmessage?.({ data: JSON.stringify({ type: "reset", sequence: 0, id: "" }) });
     assert.deepEqual(received, [null, { type: "reset", sequence: 0, id: "" }, { type: "reset", sequence: 0, id: "" }]);
@@ -30,6 +45,7 @@ test("terminal streams share a connection per desktop and reconnect using a rema
     assert.deepEqual(late, [{ type: "reset", sequence: 0, id: "" }], "a new ward can attach to an already-connected stream");
     stopLate();
     stopA(); stopA = () => {};
+    t.mock.timers.tick(0);
     assert.equal(opened[0]?.readyState, 2);
     assert.match(opened[1]?.url ?? "", /ward-b/);
     opened[1]?.close(); opened[1]?.onerror?.();
@@ -40,7 +56,7 @@ test("terminal streams share a connection per desktop and reconnect using a rema
     assert.equal(opened.length, 4);
   } finally {
     stopA(); stopB(); stopC();
-    globalThis.EventSource = original;
+    Object.assign(globalThis, original);
     t.mock.timers.reset();
   }
   assert.ok(opened.every(source => source.readyState === 2));
