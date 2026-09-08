@@ -166,6 +166,9 @@ pub fn resources(app: &AppHandle) -> tauri::Result<std::path::PathBuf> {
         if runtime.is_dir() {
             return Ok(runtime);
         }
+        if cfg!(debug_assertions) {
+            return Ok(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime"));
+        }
     }
     Ok(app.path().resource_dir()?.join("runtime"))
 }

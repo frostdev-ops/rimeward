@@ -43,8 +43,8 @@ keep their project and terminal functionality and require an OS/app upgrade for
 this ward. macOS requires version 14 or newer.
 
 Linux DEB/AppImage packages keep the private runtime under `usr/share/Rimeward/runtime`.
-The parent resolves that directory beside `usr/bin`; development builds retain
-Tauri's resource directory. This prevents linuxdeploy from merging the helper's
+The parent resolves that directory beside `usr/bin`; Linux development builds use
+the prebuilt `desktop/runtime` directory. This prevents linuxdeploy from merging the helper's
 GStreamer libraries into Tauri/WebKit or rewriting its checksummed files. Linux
 packaging checks compare the extracted runtime and run the existing standalone
 and four-viewer media checks against the AppImage's actual files.
