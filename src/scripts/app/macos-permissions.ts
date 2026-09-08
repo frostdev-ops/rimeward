@@ -7,12 +7,13 @@ const native = (window as unknown as { __TAURI__?: { core: { invoke<T>(command: 
 const entry = document.querySelector<HTMLButtonElement>('#macos-permissions');
 if (native && entry && document.querySelector('meta[name="fd-mac-user"]')) {
   const invoke = (action: string) => native.invoke<Permissions>('macos_permissions', { action });
-  let dialog: HTMLDialogElement | undefined, busy = false, relaunching = false;
+  let dialog: HTMLDialogElement | undefined, busy = false, relaunching = false, raising = false;
   let armed = readDesktopState<boolean>('permission-pending') === true;
   const snapshot = () => saveDesktopState('window', { x: scrollX, y: scrollY });
   const checkpoint = async () => {
     await prepareWorkspaceNavigation();
     snapshot();
+    saveDesktopState('permission-dialog', dialog?.open === true);
     await invoke('checkpoint');
     armed = true;
     saveDesktopState('permission-pending', true);
@@ -67,11 +68,17 @@ if (native && entry && document.querySelector('meta[name="fd-mac-user"]')) {
       try { await invoke('relaunch'); } catch (error) { relaunching = false; throw error; }
     }), close);
     d.append(heading, message, rows, status, el('p', 'text-sm text-ink-muted', 'Relaunch keeps your workspace and drafts. Running local commands and remote-control sessions will stop.'), footer); document.body.append(d);
-    d.onclose = () => { d.remove(); dialog = undefined; };
+    d.onclose = () => {
+      if (raising) { raising = false; d.showModal(); return; }
+      d.remove(); dialog = undefined;
+    };
     d.showModal();
     try { await refresh(); } catch (error) { status.textContent = String(error); }
   };
   entry.onclick = () => { void open(); };
+  window.addEventListener('fd:desktop-expanded-restored', () => {
+    if (dialog?.open) { raising = true; dialog.close(); }
+  });
   document.addEventListener('click', event => { if (event.target instanceof Element && event.target.closest('[data-macos-permissions]')) void open(); });
   window.addEventListener('pagehide', () => { if (armed) snapshot(); });
   // Keep the return page current while System Settings is open. Explicit requests
@@ -80,7 +87,7 @@ if (native && entry && document.querySelector('meta[name="fd-mac-user"]')) {
   void invoke('status').then(p => {
     entry.textContent = p.screen && p.input ? 'Mac permissions' : 'Set up Mac permissions';
     document.querySelectorAll<HTMLElement>('[data-macos-permissions]').forEach(b => { b.hidden = false; });
-    if ((!p.screen || !p.input) && !readDesktopState('permission-intro-seen')) {
+    if (readDesktopCheckpoint('permission-dialog') === true || ((!p.screen || !p.input) && !readDesktopState('permission-intro-seen'))) {
       try { saveDesktopState('permission-intro-seen', true); } catch { /* Setup stays available if storage is full. */ }
       void open();
     }

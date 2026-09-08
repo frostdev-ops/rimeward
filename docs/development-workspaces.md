@@ -31,6 +31,8 @@ All appearance knobs are shared, including light/dark mode, icon set/style/strok
 
 The native shell retains its restricted navigation commands for older bookmarks and browser clients, but normal navigation uses one page list and one origin. Phone clients stay on `/dash`; per-ward relay requests run underneath it. Offline desktop pages and saved appearance remain accessible, while services requiring the server report connection loss. Reconnection reconciles state without replaying terminal input or uncertain mutations.
 
+An unassigned **My computer** browser ward runs on the current desktop after account pairing. An explicit ward or page device still selects that computer; **This server** and Browserbase keep their server connection.
+
 ## Editor analysis
 
 CodeMirror provides editing, syntax support, completion, search/replace, and diff views. The pinned [Biome package](https://biomejs.dev/) supplies the actual lint and formatting rules; Rimeward has no custom linter. Live diagnostics cover JavaScript/TypeScript (including JSX/TSX), JSON/JSONC, CSS, GraphQL, and HTML. Other languages retain syntax support where available and explicitly show that no linter is configured. The **Problems** panel lists current-file diagnostics and jumps to their locations. Dark themes use CodeMirror’s One Dark syntax colors.

@@ -1,5 +1,5 @@
 import type { APIContext } from 'astro';
-import { getDashboard, getPages } from '../dashboard.ts';
+import { browserWard, getDashboard, getPages } from '../dashboard.ts';
 import { getSetting } from '../settings.ts';
 import { sharedRime, syncRime } from '../agent/sync.ts';
 import { isDesktop, DevError } from './runtime.ts';
@@ -51,6 +51,9 @@ export async function routeInstance(context: APIContext): Promise<Response | und
       if (desktop) return await instanceRequest(user, `/runtime/${device}${path}`, request);
       return await relayRequest(user, device, path, request);
     }
+    // An unplaced "My computer" browser belongs to this desktop even after
+    // account pairing. Other backends and explicitly placed wards keep their route.
+    if (desktop && !device && id && /^\/api\/browser(?:\/stream)?\/[^/]+$/.test(url.pathname) && browserWard(user, id)?.backend === 'app') return;
     if (!desktop || !connection || !joined || device === connection.id) return;
     if (url.pathname === '/account') {
       await syncRime(user, true);

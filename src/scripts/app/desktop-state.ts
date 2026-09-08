@@ -25,7 +25,10 @@ window.addEventListener('fd:before-workspace-navigation', event => {
   (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(Promise.resolve().then(() => saveDesktopState('expanded', expanded)));
 });
 export function restoreExpandedWard(ward: string, open: () => void) {
-  if (readDesktopCheckpoint('expanded') === ward) requestAnimationFrame(open);
+  if (readDesktopCheckpoint('expanded') === ward) requestAnimationFrame(() => {
+    open();
+    window.dispatchEvent(new Event('fd:desktop-expanded-restored'));
+  });
 }
 document.querySelector('form[action="/api/logout"]')?.addEventListener('submit', () => {
   if (prefix) for (const key of Object.keys(localStorage)) if (key.startsWith(prefix)) localStorage.removeItem(key);

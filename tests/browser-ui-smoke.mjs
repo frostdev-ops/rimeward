@@ -88,6 +88,16 @@ try {
   const canvas = ward.locator('canvas');
   await canvas.evaluate(c => { c.dataset.sameElement = 'yes'; });
   await canvas.click({ position: { x: 120, y: 100 } });
+  const beforeShortcut = calls.length;
+  await canvas.evaluate(c => {
+    // A native shortcut (or focus gained mid-modifier) can carry the modifier
+    // flag without the canvas having received its separate keydown.
+    c.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, cancelable: true, bubbles: true }));
+    c.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', metaKey: false, bubbles: true }));
+  });
+  await page.waitForTimeout(100);
+  assert.deepEqual(calls.slice(beforeShortcut).flatMap(c => c.cmds).filter(c => c.t === 'key').map(c => [c.key, c.type]),
+    [['Meta', 'down'], ['a', 'down'], ['Meta', 'up'], ['a', 'up']], 'modifier flags preserve shortcut ordering and release');
   assert.equal(await canvas.evaluate(c => c.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', metaKey: true, cancelable: true, bubbles: true }))), true, 'paste shortcut allows the client paste event');
   await canvas.evaluate(c => {
     const clipboardData = new DataTransfer(); clipboardData.setData('text/plain', 'generated paste');

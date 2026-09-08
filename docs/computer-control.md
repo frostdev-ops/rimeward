@@ -28,7 +28,7 @@ editor recovery/selection/undo history, unsent Rime drafts, expanded ward and la
 edits, plus Account theme undo history. Pending Account autosaves finish first;
 unfinished credential/password forms must be saved or cleared. **Save & relaunch
 Rimeward** uses graceful shutdown and restores those UI
-states. A failed recovery write prevents the permission request/relaunch. Notes
+states, with permission setup reopened above any expanded ward. A failed recovery write prevents the permission request/relaunch. Notes
 must finish saving and attachment uploads must finish first. Local commands and
 remote-control sessions stop on relaunch; input ownership and commands are never
 replayed. Permission setup is local to the signed macOS app and does not clear

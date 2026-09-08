@@ -75,6 +75,9 @@ export async function macosPermissionsSmoke(page, screenshots) {
   await setup.getByRole('button', { name: 'Save & relaunch Rimeward', exact: true }).click();
   await page.waitForEvent('load');
   assert.equal(page.url(), before, 'the current workspace/page is retained');
+  await setup.waitFor();
+  assert.equal(calls.filter(action => action === 'screen').length, 1, 'restoring setup does not repeat the OS permission request');
+  await setup.getByRole('button', { name: 'Done', exact: true }).click();
   await page.locator('.dev-expanded .cm-content').filter({ hasText: 'permissionRecovery' }).waitFor();
   assert.equal(await composer.inputValue(), 'Unsent task retained through permission relaunch');
   const restored = page.locator('.dev-expanded .cm-content');
@@ -85,5 +88,5 @@ export async function macosPermissionsSmoke(page, screenshots) {
   assert.deepEqual(await page.locator('#wd-grid [data-wd]').evaluateAll(cards => cards.map(card => card.dataset.wd)), order, 'unsaved layout order is restored');
   await page.locator('.dev-expanded').getByRole('button', { name: 'Close', exact: true }).click();
   await page.unroute('**/dash**');
-  console.log('macOS permission UI passed: no unsolicited request, denied state, failed-save gate, ordered checkpoint, page/draft/editor/expanded restoration and undo.');
+  console.log('macOS permission UI passed: no unsolicited request, denied state, failed-save gate, ordered checkpoint, setup modal/page/draft/editor/expanded restoration and undo.');
 }

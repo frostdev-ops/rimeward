@@ -31,9 +31,9 @@ temporary files, with no model calls or personal application input.
 | Local Developer ID signing | 96 nested binaries and six bundles signed; app version 0.5.0 passed deep strict verification; not notarized |
 | Web deployment | 0.23.0 at `5ffef5e`; online database/application/nginx rollback backup retained, migrations 021/022 applied, database integrity and public/origin HTTP health passed |
 | Apple Silicon installation | Signed 0.5.0 installed after graceful shutdown and profile backup; 29 wards and recovery records restored, paired server sync and authenticated public relay read passed |
-| macOS permission setup and restoration | Request/settings/recheck/relaunch UI, denied status, failed-recovery gating, page/draft/editor/undo/expanded/layout restoration fixtures passed; native local-origin and safe-destination tests passed |
-| Local browser | Installed failure reproduced; local routing, paste, batched tab input, independent resize, reconnect, native Chromium session restoration, stalled capture shutdown and half-closed proxy cleanup checks passed; installed fixed-app check pending |
-| Connected Account page | Reproduced Cloudflare script rewriting, missing server-build CSS and a native redirect loop; Cloudflare exclusion applied, mixed-build asset/tab checks passed; fixed-app installation pending |
+| macOS permission setup and restoration | Request/settings/recheck/relaunch UI, denied status, failed-recovery gating, setup modal above restored expanded wards, page/draft/editor/undo/layout restoration fixtures passed; native local-origin and safe-destination tests passed |
+| Local browser | Installed paired-routing failure reproduced and isolated with explicit device placement; actual paired-runtime frames and backend/device routing passed, along with modifier ordering, tab captions, paste, resizing, reconnect, session restoration and bounded shutdown. Installed navigation/input/history/expansion passed with explicit placement; final unassigned-ward check pending |
+| Connected Account page | Cloudflare rewriting, missing server-build CSS and native redirect loop fixed; installed app served all eight assets, all seven sections and the preset picker worked, and Dashboard navigation stayed local |
 | Installed macOS permissions | Screen recording and Accessibility are off; host accurately reports permission-required and local permission instructions |
 
 The one-hour run used the shared-capture implementation before the later isolated

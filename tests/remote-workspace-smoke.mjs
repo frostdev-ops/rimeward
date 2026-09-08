@@ -23,6 +23,7 @@ const marker = "HANDOFF_" + crypto.randomUUID(),
   children = [];
 let browser, proxy, unavailableNavigation = false, unavailableHarness = false;
 let modelFixture = null, modelRequests = 0;
+let browserRouteProbe = false;
 let nativeHandler = async () => {
   throw new Error("Native test adapter not ready");
 };
@@ -118,6 +119,9 @@ try {
   proxy = https.createServer(
     { key: fs.readFileSync(key), cert: fs.readFileSync(cert) },
     (req, res) => {
+      if (browserRouteProbe && /\/api\/browser\//.test(req.url)) {
+        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ routed: req.url })); return;
+      }
       const accountAssets = {
         '/_astro/account-server-build.css': ['text/css', ':root { --account-server-build: ready; }'],
         '/_astro/account-server-build.js': ['text/javascript', 'import "./account-server-dependency.js";'],
@@ -292,6 +296,38 @@ try {
     const r=await fetch(localOrigin+route,{method,headers:{...localHeaders,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
     const value=await r.json();assert.equal(r.ok,true,JSON.stringify(value));return value;
   };
+  // Exercise the real paired routing boundary; frontend-only stream mocks do
+  // not catch a local ward accidentally forwarded to the legacy server tunnel.
+  const beforeBrowser = await localRequest('/api/runtime');
+  const ownDevice = (await localRequest('/api/instance')).ownDevice;
+  const otherDevice = crypto.randomUUID();
+  const browserWards = [
+    ['paired-browser', 'app'], ['server-browser', 'local'], ['hosted-browser', 'browserbase'],
+    ['own-browser', 'app', ownDevice], ['other-browser', 'app', otherDevice],
+  ].map(([i, backend, device]) => ({ i, type: 'browser', size: '2x2', config: { backend }, ...(device ? { device } : {}), page: 'browser-fixture' }));
+  browserWards.push({ i: 'page-browser', type: 'browser', size: '2x2', config: { backend: 'app' }, page: 'browser-remote-fixture' });
+  await localRequest('/api/dashboard', 'PUT', { layout: [...beforeBrowser.layout, ...browserWards], pages: [...beforeBrowser.pages,
+    { id: 'browser-fixture', title: 'Browser fixture' }, { id: 'browser-remote-fixture', title: 'Browser remote fixture', device: otherDevice }] });
+  browserRouteProbe = true;
+  try {
+    assert.deepEqual(await localRequest('/api/browser/paired-browser', 'POST', { cmds: [{ t: 'resize', w: 640, h: 480 }] }), { ok: true });
+    const stream = await fetch(localOrigin + '/api/browser/stream/paired-browser', { headers: localHeaders, signal: AbortSignal.timeout(15000) });
+    assert.match(stream.headers.get('content-type'), /text\/event-stream/);
+    const reader = stream.body.getReader(); let frames = '';
+    try { while (!frames.includes('event: frame')) { const { value, done } = await reader.read(); assert.equal(done, false); frames += Buffer.from(value).toString(); } }
+    finally { await reader.cancel(); }
+    assert.doesNotMatch(frames, /Rimeward offline/);
+    const own = await fetch(localOrigin + '/api/browser/own-browser', { method: 'POST', headers: { ...localHeaders, 'content-type': 'application/json' }, body: '{}' });
+    assert.deepEqual(await own.json(), { error: 'bad body' }, 'explicit current desktop stays local');
+    for (const ward of ['server-browser', 'hosted-browser'])
+      assert.equal((await localRequest('/api/browser/' + ward, 'POST', {})).routed, '/api/browser/' + ward);
+    for (const ward of ['other-browser', 'page-browser'])
+      assert.equal((await localRequest('/api/browser/' + ward, 'POST', {})).routed, '/runtime/' + otherDevice + '/api/browser/' + ward);
+    assert.equal((await localRequest('/api/browser/stream/other-browser')).routed, '/runtime/' + otherDevice + '/api/browser/stream/other-browser');
+  } finally {
+    browserRouteProbe = false;
+    await localRequest('/api/dashboard', 'PUT', { layout: beforeBrowser.layout, pages: beforeBrowser.pages });
+  }
   await localRequest('/api/agent/history','POST',{action:'sync'});
   const initialHistory=await localRequest('/api/agent/history');
   assert.equal(initialHistory.sync.online,true,JSON.stringify(initialHistory.sync));

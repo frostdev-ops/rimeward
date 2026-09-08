@@ -323,6 +323,15 @@ function keyName(e: KeyboardEvent): string {
 
 function wireInput(m: Mount): void {
   const c = m.canvas;
+  const modifiers = (e: KeyboardEvent) => {
+    // Focus can arrive while a modifier is already held; native WebKit may
+    // report only the flags on the shortcut, without a separate keydown.
+    for (const [key, down] of [['Alt', e.altKey], ['Control', e.ctrlKey], ['Meta', e.metaKey], ['Shift', e.shiftKey]] as const) {
+      if (key === e.key || down === m.held.has(key)) continue;
+      if (down) m.held.add(key); else m.held.delete(key);
+      push(m, { t: 'key', type: down ? 'down' : 'up', key }, true);
+    }
+  };
   c.addEventListener('pointerdown', (e) => {
     if (editing()) return;
     e.preventDefault();
@@ -353,6 +362,7 @@ function wireInput(m: Mount): void {
   c.addEventListener('contextmenu', (e) => e.preventDefault());
   c.addEventListener('keydown', (e) => {
     if (editing()) return;
+    modifiers(e);
     // Paste arrives through the paste event with the CLIENT's clipboard; the
     // remote one is empty, so the shortcut itself must not also fire there.
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') return;
@@ -363,8 +373,10 @@ function wireInput(m: Mount): void {
     push(m, { t: 'key', type: 'down', key }, true);
   });
   c.addEventListener('keyup', (e) => {
+    if (editing()) return;
+    modifiers(e);
     const key = keyName(e);
-    if (!key || editing()) return;
+    if (!key) return;
     m.held.delete(key);
     push(m, { t: 'key', type: 'up', key }, true);
   });

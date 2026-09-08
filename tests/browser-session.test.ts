@@ -111,7 +111,13 @@ test('local desktop browser: tabs, input batches, live frames and native session
     await runCmds(s, [{ t: 'back' }]); assert.equal(s.page.url(), 'https://browser.fixture/one');
     await runCmds(s, [{ t: 'forward' }]); assert.equal(s.page.url(), 'https://browser.fixture/two');
     const first = s.page;
+    let tabTitle = '';
+    const tabs = (event: import('../src/lib/browser/session.ts').BrowserEvent) => { if (event.type === 'tabs') tabTitle = event.tabs[event.active]?.title ?? ''; };
+    s.subs.add(tabs);
     await runCmds(s, [{ t: 'newtab' }, { t: 'goto', url: 'https://browser.fixture/three' }]);
+    for (let attempt = 0; tabTitle !== '/three' && attempt < 100; attempt++) await new Promise(r => setTimeout(r, 20));
+    s.subs.delete(tabs);
+    assert.equal(tabTitle, '/three', 'navigation updates the tab caption without switching tabs');
     const second = s.page;
     await first.locator('input').focus(); await second.locator('input').focus();
     await runCmds(s, [{ t: 'tab', i: 0 }, { t: 'text', text: 'first only' }, null, {}, 5]);

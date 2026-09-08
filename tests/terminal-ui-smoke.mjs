@@ -191,6 +191,7 @@ try {
   assert.equal(await mobileWard.locator('.term-toolbar').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
   await mobileWard.getByRole('button',{name:'Expand terminal'}).click();
   await mobile.waitForFunction(marker=>document.querySelector('.xterm')?.textContent?.includes(marker),marker);
+  await mobile.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await mobile.screenshot({path:path.join(screenshotDir,'rimeward-terminal-phone.png'),animations:'disabled'});
   await mobile.locator('.dev-expanded').getByRole('button',{name:'Close',exact:true}).click();
   await ward.getByRole('button',{name:'Take control',exact:true}).click();

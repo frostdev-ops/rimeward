@@ -72,7 +72,7 @@ try {
   const ward = page.locator('[data-wd="remote-test"]');
   await ward.getByRole('button', { name: 'Connect', exact: true }).waitFor();
   assert.equal(calls.some(c => c.action === 'acquire'), false);
-  await ward.screenshot({ path: path.join(screenshots, 'rimeward-remote-desktop-disconnected.png') });
+  await ward.screenshot({ path: path.join(screenshots, 'rimeward-remote-desktop-disconnected.png'), animations: 'disabled' });
   await ward.getByRole('button', { name: 'Connect', exact: true }).click();
   await ward.getByText(/Compatibility mode.*View-only/).waitFor();
   await page.waitForFunction(() => document.querySelector('.rd-screen')?.width === 1280);

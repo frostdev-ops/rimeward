@@ -274,6 +274,7 @@ function emit(s: Session, ev: BrowserEvent): void {
 function watchPage(s: Session, p: Page): void {
   const nav = () => {
     if (s.page === p) void pushNav(s);
+    void pushTabs(s);
   };
   p.on('framenavigated', (f) => f === p.mainFrame() && nav());
   p.on('load', nav);
