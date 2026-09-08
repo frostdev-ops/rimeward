@@ -120,9 +120,13 @@ try {
   send({command:'stop'});clearInterval(heartbeat);helper.stdin.end();
   console.log(`remote media smoke passed: ${turn?'forced TURN':'direct'} DTLS-bound WebRTC, generated 1080p video, Opus audio, explicit stop`);
 } catch(error) {
-  const state = await page?.evaluate(async()=>({ connection:window.peer?.connectionState, ice:window.peer?.iceConnectionState, errors:window.iceErrors,
-    candidates:[...(await window.peer.getStats()).values()].filter(s=>s.type.endsWith('-candidate')).map(s=>({type:s.type,kind:s.candidateType,protocol:s.protocol,relay:s.relayProtocol})) })).catch(()=>null);
-  const detail = error.message+'\n'+logs+'\n'+JSON.stringify({state,events:events.map(e=>({event:e.event,reason:e.reason}))});
+  const state = await Promise.all([...peers].map(async ([session, viewer]) => ({ session, ...await viewer.page.evaluate(async()=>({
+    connection:window.peer?.connectionState, ice:window.peer?.iceConnectionState, errors:window.iceErrors,
+    video:{width:document.querySelector('video').videoWidth,height:document.querySelector('video').videoHeight,time:document.querySelector('video').currentTime},
+    streams:[...(await window.peer.getStats()).values()].filter(s=>s.type==='inbound-rtp').map(s=>({kind:s.kind,width:s.frameWidth,height:s.frameHeight,frames:s.framesDecoded,packets:s.packetsReceived,lost:s.packetsLost,bytes:s.bytesReceived})),
+    candidates:[...(await window.peer.getStats()).values()].filter(s=>s.type.endsWith('-candidate')).map(s=>({type:s.type,kind:s.candidateType,protocol:s.protocol,relay:s.relayProtocol}))
+  })).catch(()=>null) })));
+  const detail = error.stack+'\n'+logs+'\n'+JSON.stringify({state,events:events.map(e=>({event:e.event,session:e.session,reason:e.reason}))});
   throw Error(detail.replace(/turns?:\/\/[^\s@]+@/g,'turn://[redacted]@').replace(/(ufrag:|pwd:)\S+/g,'$1[redacted]'));
 }
 finally { clearInterval(heartbeat);await browser?.close();helper.kill(); }
