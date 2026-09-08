@@ -1,6 +1,6 @@
 # Remote Desktop acceptance record
 
-Implementation target: web **0.23.3**, desktop **0.5.3**, remote-desktop protocol **1**.
+Implementation target: web **0.23.4**, desktop **0.5.4**, remote-desktop protocol **1**.
 Recorded 2026-09-07. This is an implementation/verification record, not a release
 or installed-platform certification. Fixtures use generated pixels/audio and
 temporary files, with no model calls or personal application input.
@@ -40,6 +40,15 @@ temporary files, with no model calls or personal application input.
 | Installed final-tab closure | 0.5.1 passed three immediate close/navigation cycles through the authenticated API with exactly one tab and real frames; native UI confirmed replacement navigation. Window inspection interrupted the final typing check; temporary fixtures were removed and the Spanish page restored |
 | Intel native CI | Native lint/tests passed; run `34173656106` then caught a final-browser-tab replacement race. Replacement creation/activation now finishes before closing the original; failed creation preserves it. Repeated immediate close/navigation checks passed locally, including restored sessions and live screencasting; Intel revalidation remains required |
 | Distributed release | Tags `desktop-v0.5.0`, `desktop-v0.5.1` and `desktop-v0.5.2` remain unchanged. Installer runs `34175413579`, `34176085313` and `34177028750` were canceled before publication for the browser race, installed permission-modal failure and dashboard shortcut regression respectively; none has a published release. Main CI `34178425073` passed at `2773ff5`; after installed keyboard verification, `desktop-v0.5.3` was pushed at that revision and queued installer run `34178912203`. Distributed signing, notarization and publication remain unconfirmed |
+
+Packaging follow-up: installer run `34178912203` passed Apple Silicon signing,
+notarization (Accepted) and draft asset upload, but Linux failed when linuxdeploy
+scanned the private media directory and could not resolve `libgstwebrtc-1.0.so.0`.
+Commit `2c4556d` relocates the Linux runtime to `usr/share/Rimeward/runtime` and
+adds extracted-AppImage byte comparison plus the existing standalone and
+four-viewer media checks. Local checks passed (476 Node tests, TypeScript, lint,
+and twelve Rust tests); Linux validation run `34180823056` is in progress.
+The `desktop-v0.5.3` tag remains unchanged; packaging corrections target 0.5.4.
 
 The one-hour run used the shared-capture implementation before the later isolated
 pipeline-error handling change; the four-viewer fault test covers that change.
