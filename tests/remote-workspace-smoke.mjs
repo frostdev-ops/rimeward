@@ -254,8 +254,17 @@ try {
     errors.push("Unexpected browser dialog: " + d.type());
     void d.dismiss();
   });
-  await desktopPage.goto(url);
+  // A native restart enters loopback from the bundled app origin. Exercise
+  // the cross-site bootstrap redirect instead of injecting its restore marker.
+  const restoreBoot = new URL(url); restoreBoot.searchParams.set('restore', '/desktop/start');
+  await desktopPage.goto(origin + '/login');
+  await desktopPage.evaluate(target => location.assign(target), restoreBoot.href);
   await desktopPage.waitForURL("**/desktop/start");
+  if (process.platform === 'darwin') {
+    assert.equal(await desktopPage.locator('meta[name="fd-mac-user"]').getAttribute('data-restore'), '1', 'native bootstrap must carry restoration across the initial cross-site redirect');
+    await desktopPage.reload();
+    assert.equal(await desktopPage.locator('meta[name="fd-mac-user"]').getAttribute('data-restore'), null, 'restoration is consumed by the first app document');
+  }
   await desktopPage.screenshot({path:"/tmp/rimeward-first-run.png",fullPage:true,animations:"disabled"});
   await desktopPage
     .getByRole("textbox", { name: "Rimeward server address" })

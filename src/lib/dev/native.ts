@@ -58,7 +58,9 @@ export function nativeRequest(context: APIContext): Response | undefined {
       sessionCookieOptions(session.expiresAt),
     );
     const restore = restoredDesktopPath(url.searchParams.get('restore'));
-    if (restore && process.platform === 'darwin') cookies.set('rimeward_ui_restore', '1', { path: '/', httpOnly: true, sameSite: 'strict', maxAge: 60 });
+    // Startup redirects from the bundled app origin into loopback. Strict
+    // cookies are withheld on that first document, losing the restore marker.
+    if (restore && process.platform === 'darwin') cookies.set('rimeward_ui_restore', '1', { path: '/', httpOnly: true, sameSite: 'lax', maxAge: 60 });
     return context.redirect(restore ?? "/desktop/start", 303);
   }
   if (trusted) {
