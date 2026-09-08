@@ -1,6 +1,6 @@
 # Remote Desktop acceptance record
 
-Implementation target: web **0.23.0**, desktop **0.5.0**, remote-desktop protocol **1**.
+Implementation target: web **0.23.1**, desktop **0.5.1**, remote-desktop protocol **1**.
 Recorded 2026-09-07. This is an implementation/verification record, not a release
 or installed-platform certification. Fixtures use generated pixels/audio and
 temporary files, with no model calls or personal application input.
@@ -36,7 +36,8 @@ temporary files, with no model calls or personal application input.
 | Local browser | Installed `0c9b548`: unassigned ward connected locally; two tabs, their order, active tab and exact draft survived installation/restart. Command-A, typing, paste and navigation title updates passed. Earlier navigation/history/expansion checks and automated routing, resize, reconnect and bounded shutdown checks passed. Dedicated test ward/page removed and original Spanish page restored |
 | Connected Account page | Cloudflare rewriting, missing server-build CSS and native redirect loop fixed; installed app served all eight assets, all seven sections and the preset picker worked, and Dashboard navigation stayed local |
 | Installed macOS permissions | Both permissions report Allowed after the user's changes; authenticated paired-host capabilities report available screen, input, clipboard, files and audio. Save & relaunch restarted the installed app/runtime and preserved all 29 wards and recovery records; final modal visibility needs confirmation because UI inspection selected the exited process |
-| Distributed release | Tag `desktop-v0.5.0` points to `0c9b548`; four-platform installer run `34175413579` started. Signing, notarization and publication are not yet confirmed |
+| Intel native CI | Native lint/tests passed; run `34173656106` then caught a final-browser-tab replacement race. Replacement creation/activation now finishes before closing the original; failed creation preserves it. Repeated immediate close/navigation checks passed locally, including restored sessions and live screencasting; Intel revalidation remains required |
+| Distributed release | Tag `desktop-v0.5.0` remains at `0c9b548`; installer run `34175413579` was canceled for the Intel browser failure before publication. The corrected release will use a new version; signing, notarization and publication remain unconfirmed |
 
 The one-hour run used the shared-capture implementation before the later isolated
 pipeline-error handling change; the four-viewer fault test covers that change.

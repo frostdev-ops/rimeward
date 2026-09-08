@@ -66,6 +66,7 @@ export interface Session {
   route?: BrowserConfig['route'];
   context: BrowserContext;
   pages: Page[];
+  pageReady: WeakMap<Page, Promise<void>>;
   /** The active tab — what the screencast shows and the agent acts on. */
   page: Page;
   viewport: { width: number; height: number };
@@ -125,6 +126,7 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
     route: cfg.route,
     context,
     pages: restored?.pages ?? context.pages(),
+    pageReady: new WeakMap(),
     page,
     viewport: { ...DEFAULT_VIEWPORT },
     subs: new Set(),
@@ -138,7 +140,9 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
   context.on('page', (p) => {
     s.pages.push(p);
     watchPage(s, p);
-    void activate(s, p);
+    const ready = activate(s, p);
+    s.pageReady.set(p, ready);
+    void ready.catch(() => {}); // explicit new-tab commands await and report it
   });
   context.on('close', () => {
     // Crashed, or closed by us: either way the viewers reconnect and relaunch.
@@ -287,7 +291,7 @@ function watchPage(s: Session, p: Page): void {
     s.pages = s.pages.filter((x) => x !== p);
     if (s.page === p) {
       if (s.pages.length) void activate(s, s.pages[s.pages.length - 1]!);
-      else void s.context.newPage().catch(() => {}); // the 'page' event activates it
+      else void newPage(s).catch(() => {}); // a page can also close itself
     } else void pushTabs(s);
   });
 }
@@ -320,6 +324,14 @@ export async function activate(s: Session, page: Page): Promise<void> {
     if (casting) startCast(s);
   }
   await pushState(s);
+}
+
+async function newPage(s: Session): Promise<Page> {
+  const page = await s.context.newPage();
+  // The context event installs the tab before newPage resolves, but its
+  // screencast/selection work is asynchronous. Do not activate it twice.
+  await s.pageReady.get(page);
+  return page;
 }
 
 export async function goto(s: Session, url: string): Promise<void> {
@@ -426,16 +438,22 @@ export async function runCmds(s: Session, cmds: unknown): Promise<void> {
           break;
         }
         case 'newtab':
-          if (s.pages.length < 8) await s.context.newPage(); // 'page' event activates it
+          if (s.pages.length < 8) await newPage(s);
           break;
         case 'closetab': {
           const p = s.pages[num(c.i, 99)];
-          if (p) await p.close();
+          if (p) {
+            // Keep a live page throughout the operation. Creating one from
+            // the close event leaves subsequent input targeting a closed tab.
+            const next = s.pages.findLast(tab => tab !== p && !tab.isClosed()) ?? await newPage(s);
+            if (s.page === p) await activate(s, next);
+            await p.close();
+          }
           break;
         }
       }
     } catch (err) {
-      if (c.t === 'goto' || c.t === 'back' || c.t === 'forward' || c.t === 'reload') throw err;
+      if (c.t === 'goto' || c.t === 'back' || c.t === 'forward' || c.t === 'reload' || c.t === 'newtab' || c.t === 'closetab') throw err;
     }
   }
 }

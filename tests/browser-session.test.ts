@@ -150,11 +150,30 @@ test('local desktop browser: tabs, input batches, live frames and native session
       s = await open(uid, 'desktop-browser', { backend: 'app' });
       assert.equal(s.pages.length, 2, 'invalid optional tab metadata never deletes native restored tabs');
     }
+    await fixture(s.context);
     await runCmds(s, [{ t: 'closetab', i: 1 }]);
     assert.equal(s.pages.length, 1);
-    await runCmds(s, [{ t: 'closetab', i: 0 }]);
-    for (let attempt = 0; !s.pages.length && attempt < 20; attempt++) await new Promise(r => setTimeout(r, 20));
-    assert.equal(s.pages.length, 1, 'closing the final tab leaves a usable new tab');
+    const original = s.page;
+    const failed = t.mock.method(s.context, 'newPage', async () => { throw Error('fixture page creation failed'); });
+    try {
+      await assert.rejects(runCmds(s, [{ t: 'closetab', i: 0 }]), /fixture page creation failed/);
+      assert.equal(original.isClosed(), false, 'failed replacement preserves the only existing tab');
+      assert.equal(s.page, original);
+    } finally { failed.mock.restore(); }
+    const off = subscribe(s, () => {});
+    try {
+      await s.cast;
+      for (let cycle = 0; cycle < 3; cycle++) {
+        const previous: import('playwright-core').Page = s.page;
+        const url = `https://browser.fixture/replacement-${cycle}`;
+        await runCmds(s, [{ t: 'closetab', i: 0 }, { t: 'goto', url }]);
+        assert.equal(s.pages.length, 1, 'closing the final tab completes with exactly one replacement');
+        assert.equal(s.context.pages().length, 1, 'close events do not create duplicate replacements');
+        assert.equal(previous.isClosed(), true);
+        assert.equal(s.page, s.pages[0]);
+        assert.equal(s.page.url(), url, 'same-batch navigation uses the live replacement immediately');
+      }
+    } finally { off(); }
     // A stalled Page.startScreencast reply cannot bypass graceful-close's
     // deadline and leave the real Chromium process alive indefinitely.
     s.cast = new Promise(() => {});
