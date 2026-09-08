@@ -158,9 +158,21 @@ fn encryption_key(service: &str) -> Result<String, Box<dyn std::error::Error + S
         Err(e) => Err(e.into()),
     }
 }
+pub fn resources(app: &AppHandle) -> tauri::Result<std::path::PathBuf> {
+    // Keep private Node/Chromium/media libraries outside linuxdeploy's usr/lib scan.
+    #[cfg(target_os = "linux")]
+    if let Some(directory) = std::env::current_exe()?.parent() {
+        let runtime = directory.join("../share/Rimeward/runtime");
+        if runtime.is_dir() {
+            return Ok(runtime);
+        }
+    }
+    Ok(app.path().resource_dir()?.join("runtime"))
+}
+
 pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     startup_stage(&app, "files");
-    let resources = app.path().resource_dir()?.join("runtime");
+    let resources = resources(&app)?;
     let data = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data)?;
     let executable = std::env::current_exe()?;

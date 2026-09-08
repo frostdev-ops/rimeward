@@ -142,7 +142,7 @@ jobs:
       - name: Validate native application build
         if: github.event_name == 'workflow_dispatch' && inputs.validation_only
         working-directory: desktop
-        run: npx tauri build --no-bundle ${{ env.TAURI_BUILD_ARGS }}
+        run: npx tauri build ${{ matrix.platform == 'ubuntu-24.04' && '--bundles deb,appimage' || '--no-bundle' }} ${{ env.TAURI_BUILD_ARGS }}
 
       - name: App Store Connect key
         if: startsWith(matrix.platform, 'macos-') && (github.event_name == 'push' || !inputs.validation_only)
@@ -174,6 +174,28 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --verbose ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Validate packaged Linux runtime
+        if: matrix.platform == 'ubuntu-24.04'
+        shell: bash
+        run: |
+          package_dir=$(mktemp -d)
+          appimage=$(realpath desktop/target/release/bundle/appimage/*.AppImage)
+          (cd "$package_dir" && "$appimage" --appimage-extract >/dev/null)
+          packaged_runtime="$package_dir/squashfs-root/usr/share/Rimeward/runtime"
+          # Check the shipped bytes: linuxdeploy must not rewrite private libraries.
+          diff -qr desktop/runtime "$packaged_runtime"
+          mkdir -p "$package_dir/tests" "$package_dir/desktop/binaries"
+          cp tests/standalone-smoke.mjs "$package_dir/tests/"
+          ln -s "$packaged_runtime" "$package_dir/desktop/runtime"
+          ln -s "$package_dir/squashfs-root/usr/bin/rimeward-node" "$package_dir/desktop/binaries/rimeward-node-x86_64-unknown-linux-gnu"
+          node "$package_dir/tests/standalone-smoke.mjs"
+          RIMEWARD_MEDIA_SDK="$packaged_runtime/media" \
+            RIMEWARD_MEDIA_HELPER="$packaged_runtime/media/rimeward-media" \
+            PLAYWRIGHT_BROWSERS_PATH="$packaged_runtime/browsers" \
+            RIMEWARD_MEDIA_VIEWERS=4 RIMEWARD_MEDIA_FAULTS=1 \
+            node tests/remote-media-smoke.mjs
+          rm -rf "$package_dir"
 
   publish:
     needs: build

@@ -2,8 +2,17 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "targets": ["deb", "appimage"],
+    "resources": ["computer-control-licenses.txt"],
     "linux": {
+      "appimage": {
+        "files": {
+          "/usr/share/Rimeward/runtime": "runtime"
+        }
+      },
       "deb": {
+        "files": {
+          "/usr/share/Rimeward/runtime": "runtime"
+        },
         "depends": [
           "libc6 (>= 2.39)",
           "unzip",

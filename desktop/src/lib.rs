@@ -60,7 +60,7 @@ pub fn run() {
         ])
         .setup(|app| {
             computer::initialize(app.path().app_data_dir()?);
-            remote_media::initialize(app.path().resource_dir()?.join("runtime/media"));
+            remote_media::initialize(runtime::resources(app.handle())?.join("media"));
             #[cfg(desktop)]
             setup_tray(app.handle())?;
             // The dashboard's origin is the one Chrome will let onto a ward's
