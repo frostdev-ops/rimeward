@@ -1,3 +1,4 @@
+import { expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
 // The browser ward: a live view of a real Chromium session the server runs for
 // this ward (lib/browser/session.ts), driven from here by the human and from
 // Rime's tools by the agent — one session, two drivers. Frames arrive over SSE
@@ -37,13 +38,19 @@ interface Mount {
   localFailed?: boolean;
   touchT?: ReturnType<typeof setInterval>;
   retryT?: ReturnType<typeof setTimeout>;
+  resizeT?: ReturnType<typeof setTimeout>;
+  epoch: number;
+  stopped?: boolean;
   visible: boolean;
   queue: Cmd[];
   moveIdx: number;
   flushT?: ReturnType<typeof setTimeout>;
-  inflight: boolean;
+  inflight?: Promise<void>;
+  closing?: Promise<void>;
   held: Set<string>;
   buttons: Set<number>;
+  submittedKeys: Set<string>;
+  submittedButtons: Set<number>;
   decoding: boolean;
   pendingFrame?: string;
   toastT?: ReturnType<typeof setTimeout>;
@@ -57,18 +64,19 @@ const editing = () => document.getElementById('wd-grid')?.classList.contains('ed
 // ------------------------------------------------------------------ stream
 
 function connect(m: Mount): void {
-  if (m.es || m.driver || m.opening || !m.visible || document.hidden) return;
+  if (m.stopped || m.closing || m.es || m.driver || m.opening || !m.visible || document.hidden) return;
   if (isLocal(m)) return void connectLocal(m);
   const es = new EventSource(`/api/browser/stream/${m.w.i}`);
   m.es = es;
   // (Re)connected: the remote viewport must match THIS surface — the size sent
   // at mount may have landed before the ward was saved, or on a browser since
   // closed and relaunched at the default.
-  es.onopen = () => scheduleResize(m);
+  es.onopen = () => { if (m.es === es) scheduleResize(m); };
   for (const type of ['frame', 'nav', 'tabs', 'dialog', 'route'] as const) {
-    es.addEventListener(type, (e) => onEvent(m, JSON.parse((e as MessageEvent).data) as BrowserEvent));
+    es.addEventListener(type, (e) => { if (m.es === es) onEvent(m, JSON.parse((e as MessageEvent).data) as BrowserEvent); });
   }
   es.onerror = () => {
+    if (m.es !== es) return;
     // A closed stream (the server closed the browser) reconnects by itself; a
     // refused one (not a browser ward, too many live browsers) does not.
     if (es.readyState !== EventSource.CLOSED) return;
@@ -76,20 +84,41 @@ function connect(m: Mount): void {
     // A ward added in edit mode is not in the STORED layout until Done saves
     // it, and the server resolves wards against the stored layout.
     flash(m, editing() ? 'Press Done to save the layout — the browser starts then.' : 'Browser unavailable — retrying…', 5000);
-    setTimeout(() => connect(m), 5000);
+    m.retryT = setTimeout(() => connect(m), 5000);
   };
 }
 
 function disconnect(m: Mount): void {
+  if (m.closing) return;
+  m.epoch++;
+  m.opening = false;
   m.es?.close();
   m.es = undefined;
   const d = m.driver;
   m.driver = undefined;
-  d?.close();
   if (m.touchT) clearInterval(m.touchT);
   m.touchT = undefined;
   if (m.retryT) clearTimeout(m.retryT);
   m.retryT = undefined;
+  if (m.flushT) clearTimeout(m.flushT);
+  m.flushT = undefined;
+  // Discard commands whose outcome is still unknown; only releases may follow
+  // the in-flight batch. Physical key-up may itself be waiting in that queue.
+  m.queue = []; m.moveIdx = -1;
+  const releases: Cmd[] = [
+    ...[...new Set([...m.held, ...m.submittedKeys])].map(key => ({ t: 'key' as const, type: 'up' as const, key })),
+    ...[...new Set([...m.buttons, ...m.submittedButtons])].map(button => ({ t: 'up' as const, x: 0, y: 0, button })),
+  ];
+  m.held.clear(); m.buttons.clear();
+  const pending = m.inflight;
+  m.closing = (async () => {
+    await pending;
+    if (releases.length) await send(m, releases, d);
+  })().finally(() => {
+    d?.close();
+    m.closing = undefined;
+    connect(m);
+  });
 }
 
 /** Every event either path produces, handled once. */
@@ -119,22 +148,25 @@ interface Tauri {
   core: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
 }
 const tauri = (): Tauri | undefined => (window as { __TAURI__?: Tauri }).__TAURI__;
-const isLocal = (m: Mount): boolean => document.getElementById('runtime-picker')?.dataset.desktop!=='1' && !m.localFailed && !!tauri() && (m.w.config as BrowserConfig | undefined)?.backend === 'app';
+const isLocal = (m: Mount): boolean => document.getElementById('instance-status')?.dataset.desktop !== '1' && !m.localFailed && !!tauri() && (m.w.config as BrowserConfig | undefined)?.backend === 'app';
 
 /** The app names the ward's Chromium (launching or downloading it first);
  *  the page then speaks CDP to it over loopback. A webview that refuses the
  *  loopback socket falls back to the server's view of the same browser. */
 async function connectLocal(m: Mount): Promise<void> {
   m.opening = true;
+  const epoch = m.epoch;
   let info: { ws: string; platform: string };
   try {
     info = (await tauri()!.core.invoke('ward_browser', { ward: m.w.i })) as { ws: string; platform: string };
   } catch (err) {
+    if (m.epoch !== epoch) return;
     m.opening = false;
     flash(m, String(err), 8000);
     m.retryT = setTimeout(() => connect(m), 5000);
     return;
   }
+  if (m.epoch !== epoch) return;
   let ws: WebSocket;
   try {
     ws = new WebSocket(info.ws);
@@ -149,6 +181,7 @@ async function connectLocal(m: Mount): Promise<void> {
   const driver = new LocalDriver(tr, (ev) => onEvent(m, ev), info.platform === 'darwin');
   let opened = false;
   ws.onopen = () => {
+    if (m.epoch !== epoch) { ws.close(); return; }
     opened = true;
     m.opening = false;
     if (!m.visible || document.hidden) {
@@ -156,17 +189,22 @@ async function connectLocal(m: Mount): Promise<void> {
       return;
     }
     m.driver = driver;
-    void driver.start().then(() => scheduleResize(m), (err: unknown) => flash(m, String(err), 5000));
+    void driver.start().then(() => scheduleResize(m), (err: unknown) => {
+      if (m.driver !== driver) return;
+      flash(m, String(err), 5000);
+      driver.close();
+    });
     // The app reaps an instance nobody touched for 10 min; this page is somebody.
     m.touchT = setInterval(() => void tauri()?.core.invoke('ward_touch', { ward: m.w.i }).catch(() => {}), 60_000);
   };
   ws.onclose = () => {
+    tr.onclose?.();
+    if (m.epoch !== epoch) return;
     m.opening = false;
     if (m.touchT) clearInterval(m.touchT);
     m.touchT = undefined;
     const mine = m.driver === driver;
     if (mine) m.driver = undefined;
-    tr.onclose?.();
     if (!opened) {
       m.localFailed = true;
       connect(m);
@@ -209,6 +247,7 @@ async function onFrame(m: Mount, f: Extract<BrowserEvent, { type: 'frame' }>): P
 // ------------------------------------------------------------------- input
 
 function push(m: Mount, c: Cmd, urgent = false): void {
+  if (m.stopped || m.closing) return;
   if (c.t === 'move') {
     // Coalesce: only the latest position matters.
     if (m.moveIdx >= 0) m.queue[m.moveIdx] = c;
@@ -222,23 +261,39 @@ function push(m: Mount, c: Cmd, urgent = false): void {
 async function flush(m: Mount): Promise<void> {
   if (m.flushT) clearTimeout(m.flushT);
   m.flushT = undefined;
-  if (!m.queue.length || m.inflight) return;
+  if (m.inflight) return m.inflight;
+  if (!m.queue.length || m.closing || m.stopped) return;
   const cmds = m.queue;
   m.queue = [];
   m.moveIdx = -1;
-  m.inflight = true;
-  try {
-    if (m.driver) {
-      await m.driver.run(cmds).catch((err: unknown) => flash(m, err instanceof Error ? err.message : 'failed', 5000));
-    } else {
-      const res = await postJson(`/api/browser/${m.w.i}`, { cmds });
-      if (!res.ok && res.data?.error) flash(m, res.data.error, 5000);
-    }
-  } catch {
-    /* offline — the stream's own retry covers it */
-  } finally {
-    m.inflight = false;
+  m.inflight = send(m, cmds, m.driver).finally(() => {
+    m.inflight = undefined;
     if (m.queue.length) void flush(m);
+  });
+  return m.inflight;
+}
+
+async function send(m: Mount, cmds: Cmd[], driver?: LocalDriver): Promise<void> {
+  for (const c of cmds) {
+    if (c.t === 'key' && c.type === 'down') m.submittedKeys.add(c.key);
+    if (c.t === 'down') m.submittedButtons.add(c.button ?? 0);
+  }
+  try {
+    if (driver) {
+      await driver.run(cmds);
+    } else {
+      const navigation = cmds.some(c => ['goto', 'back', 'forward', 'reload'].includes(c.t));
+      const res = await postJson(`/api/browser/${m.w.i}`, { cmds }, 'POST', { signal: AbortSignal.timeout(navigation ? 35_000 : 5_000) });
+      if (!res.ok) throw Error(res.data?.error ?? 'Browser disconnected');
+    }
+    for (const c of cmds) {
+      if (c.t === 'key' && c.type === 'up') m.submittedKeys.delete(c.key);
+      if (c.t === 'up') m.submittedButtons.delete(c.button ?? 0);
+    }
+  } catch (err) {
+    m.queue = []; m.moveIdx = -1;
+    flash(m, err instanceof Error ? err.message : 'Browser disconnected', 5000);
+    if (!m.closing && !m.stopped) disconnect(m);
   }
 }
 
@@ -298,10 +353,10 @@ function wireInput(m: Mount): void {
   c.addEventListener('contextmenu', (e) => e.preventDefault());
   c.addEventListener('keydown', (e) => {
     if (editing()) return;
-    e.preventDefault();
     // Paste arrives through the paste event with the CLIENT's clipboard; the
     // remote one is empty, so the shortcut itself must not also fire there.
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') return;
+    e.preventDefault();
     const key = keyName(e);
     if (!key) return;
     m.held.add(key);
@@ -332,6 +387,7 @@ function wireInput(m: Mount): void {
 // ---------------------------------------------------------------- chrome
 
 function flash(m: Mount, text: string, ms: number): void {
+  if (m.stopped) return;
   m.toast.textContent = text;
   m.toast.hidden = false;
   if (m.toastT) clearTimeout(m.toastT);
@@ -405,11 +461,13 @@ function build(w: WardInstance): Mount {
     tabs,
     toast,
     visible: false,
+    epoch: 0,
     queue: [],
     moveIdx: -1,
-    inflight: false,
     held: new Set(),
     buttons: new Set(),
+    submittedKeys: new Set(),
+    submittedButtons: new Set(),
     decoding: false,
     ro: new ResizeObserver(() => scheduleResize(m)),
     io: new IntersectionObserver((entries) => {
@@ -429,6 +487,7 @@ function build(w: WardInstance): Mount {
   });
   url.addEventListener('focus', () => url.select());
   expand.addEventListener('click', () => openDialog(m));
+  restoreExpandedWard(w.i, () => openDialog(m));
   bar.append(
     navButton(m, '◀', 'Back', { t: 'back' }),
     navButton(m, '▶', 'Forward', { t: 'forward' }),
@@ -444,10 +503,10 @@ function build(w: WardInstance): Mount {
   return m;
 }
 
-let resizeT: ReturnType<typeof setTimeout> | undefined;
 function scheduleResize(m: Mount): void {
-  if (resizeT) clearTimeout(resizeT);
-  resizeT = setTimeout(() => {
+  if (m.stopped) return;
+  if (m.resizeT) clearTimeout(m.resizeT);
+  m.resizeT = setTimeout(() => {
     const w = Math.round(m.view.clientWidth);
     const h = Math.round(m.view.clientHeight);
     if (w > 0 && h > 0) push(m, { t: 'resize', w, h });
@@ -455,10 +514,14 @@ function scheduleResize(m: Mount): void {
 }
 
 function destroy(m: Mount): void {
+  m.stopped = true;
   disconnect(m);
   m.ro.disconnect();
   m.io.disconnect();
   if (m.flushT) clearTimeout(m.flushT);
+  if (m.resizeT) clearTimeout(m.resizeT);
+  if (m.toastT) clearTimeout(m.toastT);
+  m.queue = [];
   m.root.remove();
   mounts.delete(m.w.i);
 }
@@ -477,6 +540,7 @@ function dialog(): HTMLDialogElement | null {
   dlg.addEventListener('close', () => {
     const m = dialogMount;
     dialogMount = null;
+    expandedDesktopWard();
     if (!m) return;
     m.expand.hidden = false;
     const home = body(m.w.i);
@@ -491,6 +555,7 @@ function openDialog(m: Mount): void {
   if (!dlg) return;
   if (dialogMount) dlg.close();
   dialogMount = m;
+  expandedDesktopWard(m.w.i);
   const title = document.querySelector(`[data-wd="${m.w.i}"] [data-wd-title]`)?.textContent ?? 'Browser';
   dlg.querySelector('[data-bw-title]')!.textContent = title;
   m.expand.hidden = true; // the dialog's ✕ is the way out
@@ -520,5 +585,8 @@ document.addEventListener('fd:layout-saved', () => {
 document.addEventListener('visibilitychange', () => {
   for (const m of mounts.values()) if (document.hidden) disconnect(m); else connect(m);
 });
+window.addEventListener('blur', () => {
+  for (const m of mounts.values()) if (document.activeElement === m.canvas) m.canvas.blur();
+});
 
-RENDERERS.browser = { render: renderBrowser }; // event-driven — no poll
+RENDERERS.browser = { render: renderBrowser, stop: id => { const m = mounts.get(id); if (m) destroy(m); } }; // event-driven — no poll

@@ -290,6 +290,12 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                 if let Some(url) = message["url"].as_str() {
                     startup_stage(&app, "window");
                     let bootstrap = url::Url::parse(url)?;
+                    #[cfg(target_os = "macos")]
+                    let bootstrap = {
+                        let mut bootstrap = bootstrap;
+                        crate::permissions::restore(&app, &mut bootstrap);
+                        bootstrap
+                    };
                     let token = bootstrap
                         .query_pairs()
                         .find(|(key, _)| key == "token")
@@ -302,7 +308,8 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                             .local(false)
                             .remote(format!("{}/*", origin.origin().ascii_serialization()))
                             .permission("allow-workspace-navigation")
-                            .permission("allow-open-workspace"),
+                            .permission("allow-open-workspace")
+                            .permission("allow-macos-permissions"),
                     )?;
                     *app.state::<Workspace>().0.lock().await = Some((origin, token));
                     if let Some(window) = app.get_webview_window("main") {

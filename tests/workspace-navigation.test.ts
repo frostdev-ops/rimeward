@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createUser } from "../src/lib/users.ts";
 import { saveDashboard } from "../src/lib/dashboard.ts";
-import { runtimeNavigation, rememberPage, workspacePath } from "../src/lib/dev/navigation.ts";
+import { runtimeNavigation, rememberPage, workspacePath, restoredDesktopPath } from "../src/lib/dev/navigation.ts";
 import { authenticatedDevice, deviceServerSession } from "../src/lib/dev/device-auth.ts";
 import { claimEnrollment, enroll, revoke, allowedRelayPath } from "../src/lib/dev/devices.ts";
 import { getSession } from "../src/lib/auth.ts";
@@ -53,4 +53,12 @@ test("native workspace navigation admits only app destinations and cannot be rem
   assert.throws(() => workspacePath(undefined, "shell"));
   for (const route of ["navigation", "navigate", "pairings", "open-server"]) assert.equal(allowedRelayPath(`/api/dev/${route}`), false);
   assert.equal(allowedRelayPath("/api/runtime?navigation=1"), true);
+});
+
+
+test("permission relaunch restores only app screens without replaying credentials or actions", () => {
+  for (const path of ["/dash#p=project", "/dash?workspace=project#p=project", "/desktop/start?setup=1", "/account"])
+    assert.equal(restoredDesktopPath(path), path);
+  for (const path of [null, "//evil.example/dash", "/\\evil.example/dash", "/api/logout", "/api/native/bootstrap?token=x", "/dash?token=x", "/dash?workspace=x&token=y", "/dash" + "x".repeat(3000)])
+    assert.equal(restoredDesktopPath(path), null);
 });

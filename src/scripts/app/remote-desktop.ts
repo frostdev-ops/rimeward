@@ -1,3 +1,4 @@
+import { expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
 import { RENDERERS, body, readLayout } from './wards.ts';
 import { el } from './dom.ts';
 import type { WardInstance } from '../../lib/wards.ts';
@@ -344,8 +345,9 @@ function render(w: WardInstance) {
   expand.onclick = () => {
     if (dialog) { dialog.close(); return; }
     dialog = el('dialog', 'fd-dialog fd-dialog-full rd-dialog'); document.body.append(dialog);
+    expandedDesktopWard(w.i);
     dialog.append(root); expand.textContent = 'Collapse'; dialog.showModal();
-    dialog.onclose = () => { container.append(root); dialog?.remove(); dialog = undefined; expand.textContent = 'Expand'; };
+    dialog.onclose = () => { expandedDesktopWard(); container.append(root); dialog?.remove(); dialog = undefined; expand.textContent = 'Expand'; };
   };
   const visibility = () => {
     const active = visible && !document.hidden;
@@ -379,6 +381,7 @@ function render(w: WardInstance) {
     dialog?.close(); dialog?.remove(); mounts.delete(w.i);
   };
   mounts.set(w.i, stop); window.addEventListener('pagehide', stop);
+  restoreExpandedWard(w.i, () => expand.click());
   paintControl();
   void request('devices', undefined, 'GET', abort.signal).then(r => r.json()).then(list => {
     if (stopped) return;

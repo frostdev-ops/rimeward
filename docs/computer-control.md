@@ -16,7 +16,23 @@ supported. The latter is bound to the host process's boot nonce.
 The tray **Stop remote access** disables viewing and synthetic input immediately
 and persists a local suspension latch. Only a local action can resume it. Terminal
 commands continue independently. OS permissions cannot be granted through the relay.
-On macOS, allow Rimeward in Accessibility and Screen & System Audio Recording.
+On macOS, open **Mac permissions** from the account menu or **Set up Mac
+permissions** in Connections. **Request access** asks macOS for Screen & System
+Audio Recording (displays and optional system sound) or Accessibility (mouse and
+keyboard control). **Open System Settings** opens the corresponding privacy pane
+if access was denied. Microphone, Input Monitoring and Full Disk Access are not
+required for remote desktop control.
+
+Before a permission request, Rimeward checkpoints the current page, window,
+editor recovery/selection/undo history, unsent Rime drafts, expanded ward and layout
+edits, plus Account theme undo history. Pending Account autosaves finish first;
+unfinished credential/password forms must be saved or cleared. **Save & relaunch
+Rimeward** uses graceful shutdown and restores those UI
+states. A failed recovery write prevents the permission request/relaunch. Notes
+must finish saving and attachment uploads must finish first. Local commands and
+remote-control sessions stop on relaunch; input ownership and commands are never
+replayed. Permission setup is local to the signed macOS app and does not clear
+the tray's Stop latch.
 
 ## Current transport and platform support
 

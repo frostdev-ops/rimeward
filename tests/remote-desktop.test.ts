@@ -24,8 +24,14 @@ test('remote desktop deployment routes retain relay privacy and backpressure set
   for (const setting of ['proxy_buffering off;', 'proxy_request_buffering off;', 'proxy_cache off;', 'proxy_max_temp_file_size 0;', 'access_log off;', 'error_log /dev/null crit;'])
     assert.ok(route[2].includes(setting), setting);
   const rulesets = JSON.parse(readFileSync(new URL('../ops/cloudflare-relay.json', import.meta.url), 'utf8'));
-  for (const ruleset of rulesets) for (const rule of ruleset.rules)
-    assert.ok(rule.expression.includes('starts_with(http.request.uri.path, "/api/remote-desktop/")'));
+  for (const ruleset of rulesets) {
+    const rule = ruleset.rules.find((r: { ref: string }) => r.ref.startsWith('rimeward_relay_'));
+    assert.ok(rule?.expression.includes('starts_with(http.request.uri.path, "/api/remote-desktop/")'));
+  }
+  const accountRule = rulesets.flatMap((r: { rules: unknown[] }) => r.rules).find((r: { ref: string }) => r.ref === 'rimeward_account_no_transform');
+  assert.equal(accountRule.action_parameters.rocket_loader, false);
+  assert.equal(accountRule.action_parameters.email_obfuscation, false);
+  assert.equal(accountRule.action_parameters.request_body_buffering, undefined, 'account forms retain body inspection');
 });
 
 test('owner authorization, capability categories and policy compare-and-swap', () => {

@@ -60,7 +60,18 @@ export async function routeInstance(context: APIContext): Promise<Response | und
     if (localPaths.test(path)) return;
     if (url.pathname.startsWith('/api/') || url.pathname === '/account' || url.pathname.startsWith('/admin')) {
       // Server-owned services must never silently fall through to a different local account.
-      return await instanceRequest(user, path, request);
+      const response = await instanceRequest(user, path, request);
+      if ((url.pathname === '/account' || url.pathname.startsWith('/admin')) && response.headers.get('content-type')?.includes('text/html')) {
+        // Server-owned HTML is still inside this app's local window. Preserve
+        // that fact for navigation and permission restoration; account IDs differ.
+        const restoring = process.platform === 'darwin' && context.cookies.get('rimeward_ui_restore')?.value === '1';
+        const markers = `<meta name="rimeward-local" content="1">${process.platform === 'darwin'
+          ? `<meta name="fd-mac-user" content="${user}"${restoring ? ' data-restore="1"' : ''}>` : ''}`;
+        const html = await response.text();
+        if (restoring) context.cookies.delete('rimeward_ui_restore', { path: '/' });
+        return new Response(html.replace(/<head(?:\s[^>]*)?>/i, head => head + markers), response);
+      }
+      return response;
     }
   } catch (e) {
     return Response.json({ error: e instanceof DevError ? e.message : 'Connection lost. Local projects are still available. Check the result before retrying an action.' },

@@ -45,6 +45,14 @@ export default defineConfig({
   adapter: node({ mode: 'standalone' }),
   integrations: [
     {
+      name: 'connected-instance-assets',
+      hooks: {
+        'astro:config:setup': ({ injectRoute }) => injectRoute({
+          pattern: '/_astro/[...asset]', entrypoint: './src/lib/dev/instance-assets.ts', prerender: false,
+        }),
+      },
+    },
+    {
       // Dev only: the desktop app's tunnel (src/lib/tunnel.ts) needs the raw
       // `upgrade` event, which no Astro route can see. Prod does the same in
       // server.mjs. Vite's own HMR socket upgrades here too — left alone.

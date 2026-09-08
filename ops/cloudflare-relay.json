@@ -34,6 +34,18 @@
           "request_body_buffering": "none",
           "response_body_buffering": "none"
         }
+      },
+      {
+        "ref": "rimeward_account_no_transform",
+        "description": "Preserve Account and Admin pages in desktop apps",
+        "expression": "http.request.uri.path eq \"/account\" or http.request.uri.path eq \"/admin\" or starts_with(http.request.uri.path, \"/admin/\")",
+        "action": "set_config",
+        "action_parameters": {
+          "disable_rum": true,
+          "disable_zaraz": true,
+          "rocket_loader": false,
+          "email_obfuscation": false
+        }
       }
     ]
   }

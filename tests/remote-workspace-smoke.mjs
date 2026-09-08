@@ -118,6 +118,15 @@ try {
   proxy = https.createServer(
     { key: fs.readFileSync(key), cert: fs.readFileSync(cert) },
     (req, res) => {
+      const accountAssets = {
+        '/_astro/account-server-build.css': ['text/css', ':root { --account-server-build: ready; }'],
+        '/_astro/account-server-build.js': ['text/javascript', 'import "./account-server-dependency.js";'],
+        '/_astro/account-server-dependency.js': ['text/javascript', 'document.documentElement.dataset.accountServerBuild = "ready";'],
+      };
+      if (accountAssets[req.url]) {
+        assert.match(req.headers.cookie ?? '', /rimeward_session=/);
+        res.writeHead(200, { 'content-type': accountAssets[req.url][0] }); res.end(accountAssets[req.url][1]); return;
+      }
       if (unavailableHarness && req.url.startsWith('/api/devices/harness')) { res.writeHead(503); res.end(); return; }
       if (modelFixture && req.url === '/api/devices/harness/model') {
         const chunks=[];req.on('data',chunk=>chunks.push(chunk));req.on('end',()=>{
@@ -176,11 +185,11 @@ try {
     JSON.stringify({
       key: Buffer.alloc(32, 7).toString("base64"),
       data: path.join(temporary, "desktop"),
-      browsers: path.join(runtime, "browsers"),
+      browsers: process.env.PLAYWRIGHT_BROWSERS_PATH || path.join(runtime, "browsers"),
     }) + "\n",
   );
   const { url } = await boot;
-  process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(runtime, "browsers");
+  process.env.PLAYWRIGHT_BROWSERS_PATH ||= path.join(runtime, "browsers");
   const { chromium } = await import("playwright-core");
   browser = await chromium.launch({
     headless: true,
@@ -298,6 +307,43 @@ try {
   assert.equal(localImage.headers.get('content-type'), 'image/webp');
   await desktopPage.reload();
   assert.equal(JSON.parse(await desktopPage.locator('html').getAttribute('data-icons')).set, 'tabler');
+  // A server-owned Account page must work across independently built apps.
+  await desktopPage.route(localOrigin + '/account', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace('</head>', '<link rel="stylesheet" href="/_astro/account-server-build.css"><script type="module" src="/_astro/account-server-build.js"></script></head>') });
+  });
+  await desktopPage.goto(localOrigin + '/account');
+  await desktopPage.waitForFunction(() => document.documentElement.dataset.accountServerBuild === 'ready');
+  assert.equal(await desktopPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--account-server-build').trim()), 'ready');
+  assert.equal(await desktopPage.locator('.acct-panel:visible').count(), 1);
+  for (const name of ['Background', 'Header', 'Dashboard', 'Accounts', 'Agent', 'Security', 'Theme']) {
+    await desktopPage.getByRole('tab', { name, exact: true }).click();
+    assert.equal(await desktopPage.locator('.acct-panel:visible').count(), 1);
+    assert.equal(await desktopPage.locator('.acct-panel:visible').getAttribute('id'), name.toLowerCase());
+  }
+  assert.ok(await desktopPage.locator('#theme .fd-ss-trigger').count(), 'searchable controls initialize');
+  await desktopPage.locator('#th-alpha').fill('0.61');
+  const checkpointAccount = () => desktopPage.evaluate(async () => {
+    const waits = [];
+    window.dispatchEvent(new CustomEvent('fd:before-workspace-navigation', { detail: { waitUntil(p) { waits.push(p); } } }));
+    await Promise.all(waits);
+  });
+  await checkpointAccount();
+  assert.equal(JSON.parse((await localRequest('/api/runtime')).theme).glassAlpha, 0.61, 'permission checkpoint flushes pending theme saves');
+  if (process.platform === 'darwin') {
+    await pc.addCookies([{ name: 'rimeward_ui_restore', value: '1', url: localOrigin, httpOnly: true, sameSite: 'Strict' }]);
+    await desktopPage.reload();
+    await desktopPage.locator('#acct-undo:not(.hidden)').waitFor();
+    assert.equal(await desktopPage.locator('meta[name="fd-mac-user"]').getAttribute('data-restore'), '1');
+  }
+  await desktopPage.screenshot({ path: '/tmp/rimeward-account-local.png', animations: 'disabled' });
+  await desktopPage.getByRole('tab', { name: 'Security', exact: true }).click();
+  await desktopPage.locator('#next').fill('unsaved-fixture-only');
+  await assert.rejects(checkpointAccount, /finish editing your account forms/);
+  await desktopPage.locator('#next').fill('');
+  assert.equal((await fetch(localOrigin + '/_astro/account-server-build.css')).status, 401, 'server assets require the local session');
+  await desktopPage.unroute(localOrigin + '/account');
+  await desktopPage.goto(localOrigin + '/dash');
   unavailableHarness=true;
   await localRequest('/api/agent/history','POST',{action:'sync'});
   assert.equal((await localRequest('/api/agent/history')).sync.online,false);

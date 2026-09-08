@@ -1,3 +1,4 @@
+import { expandedDesktopWard, restoreExpandedWard, readDesktopCheckpoint, saveDesktopState } from "./desktop-state.ts";
 // The notepad ward (type `note`): a rich-text document — contenteditable and
 // execCommand, the browser's own editor, no library — with an ink layer over it
 // (pointer strokes on a canvas that scrolls with the page) and a footer. Both
@@ -200,6 +201,7 @@ function mount(st: State, b: HTMLElement): void {
   b.classList.remove('overflow-y-auto');
   b.classList.add('flex');
   b.append(st.root);
+  restoreExpandedWard(st.w.i, () => openDialog(st));
   fit(st);
 }
 
@@ -285,9 +287,12 @@ function fail(st: State, text: string): void {
   st.err.title = text;
 }
 
+const pendingWrites = new Set<Promise<unknown>>();
 async function put(st: State, patch: { html?: string; ink?: string }, unload = false): Promise<boolean> {
   setStatus(st, 'Saving…');
-  const res = await postJson(`/api/note/${st.w.i}`, patch, 'PUT', unload && JSON.stringify(patch).length < KEEPALIVE_MAX ? { keepalive: true } : {});
+  const saving = postJson(`/api/note/${st.w.i}`, patch, 'PUT', unload && JSON.stringify(patch).length < KEEPALIVE_MAX ? { keepalive: true } : {});
+  pendingWrites.add(saving);
+  const res = await saving.finally(() => pendingWrites.delete(saving));
   if (!res.ok) {
     fail(st, res.status === 0 ? 'Save failed — offline?' : (res.data?.error ?? 'Save failed'));
     return false;
@@ -343,6 +348,13 @@ async function load(st: State): Promise<void> {
   updateCount(st);
   setStatus(st, d.updated ? `Saved ${fmtTime(d.updated)}` : '');
   fit(st);
+  const saved = readDesktopCheckpoint<{ tool: Tool; color: string; width: string; top: number; left: number }>(`note:${st.w.i}`);
+  if (saved) {
+    if (['text', 'pen', 'eraser'].includes(saved.tool)) setTool(st, saved.tool);
+    if (/^#[0-9a-f]{6}$/i.test(saved.color)) st.color.value = saved.color;
+    if (Number(saved.width) >= 1 && Number(saved.width) <= 12) st.width.value = saved.width;
+    requestAnimationFrame(() => st.page.scrollTo(saved.left, saved.top));
+  }
 }
 
 // ------------------------------------------------------------------- ink
@@ -679,6 +691,7 @@ function dialog(): HTMLDialogElement | null {
   d.addEventListener('close', () => {
     const st = shown;
     shown = null;
+    expandedDesktopWard();
     if (!st) return;
     delete st.root.dataset.full;
     st.btn.expand!.hidden = false;
@@ -693,6 +706,7 @@ function openDialog(st: State): void {
   if (!d) return;
   if (shown) d.close();
   shown = st;
+  expandedDesktopWard(st.w.i);
   d.querySelector('[data-nd-title]')!.textContent = wardTitle(st.w);
   st.root.dataset.full = '';
   st.btn.expand!.hidden = true; // the dialog's ✕ is the way back
@@ -723,6 +737,17 @@ document.addEventListener('selectionchange', () => {
 window.addEventListener('fd:note', (e) => {
   const st = states.get(String((e as CustomEvent<{ ward?: string }>).detail?.ward ?? ''));
   if (st && !st.docDirty) void load(st);
+});
+window.addEventListener('fd:before-workspace-navigation', event => {
+  (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil((async () => {
+    await Promise.all(pendingWrites);
+    for (const st of states.values()) {
+      if (st.busy) throw Error('Wait for the note operation to finish before relaunching.');
+      await Promise.all([flushDoc(st), flushInk(st)]);
+      if (st.docDirty || st.inkDirty) throw Error('The note could not be saved. Try again before relaunching.');
+      saveDesktopState(`note:${st.w.i}`, { tool: st.tool, color: st.color.value, width: st.width.value, top: st.page.scrollTop, left: st.page.scrollLeft });
+    }
+  })());
 });
 window.addEventListener('pagehide', () => {
   for (const st of states.values()) {

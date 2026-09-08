@@ -84,7 +84,7 @@ reloading. The server listens on loopback behind nginx; leave desktop-only envir
 flags unset. Keep the existing `/api/tunnel` websocket route for older clients and stream
 `/api/logic/stream` without buffering for chat and layout updates.
 
-[Cloudflare templates](../ops/cloudflare-relay.json) add two narrowly scoped rules:
+[Cloudflare templates](../ops/cloudflare-relay.json) add narrowly scoped rules:
 cache bypass and content settings for `/runtime/`, `/api/devices/connect`, `/api/devices/harness`, and automatically routed development, agent, browser, note, and instance APIs. Add these
 rules to the zone's existing phase rulesets without replacing unrelated rules. They turn
 off RUM/Zaraz, Rocket Loader, email rewriting, and body buffering for the relay.
@@ -92,6 +92,12 @@ Cloudflare's [configuration settings](https://developers.cloudflare.com/rules/co
 document these controls; body inspection is intentionally unavailable on this authenticated
 stream. Keep application authentication in place. Check legacy Page Rules, Workers routes,
 Logpush jobs, security payload capture, and any additional proxy when applying this setup.
+
+Account and Admin HTML also exclude Rocket Loader, email rewriting and analytics injection:
+Cloudflare-only script URLs cannot run under the desktop's loopback origin. Their separate
+rule leaves body inspection unchanged. Astro serves bundled assets first; authenticated
+desktop requests for missing `/_astro/` files load those content-hashed files from the
+connected server, so a newer server page keeps its matching scripts, styles and fonts.
 
 Before deployment, create an online backup of the server database and its data directory,
 retain its encryption key securely, and save the current application and proxy configuration

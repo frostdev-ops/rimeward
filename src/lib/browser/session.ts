@@ -2,6 +2,7 @@ import { isDesktop } from '../dev/runtime.ts';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { chromium, type BrowserContext, type CDPSession, type Page } from 'playwright-core';
 import { DATA_DIR } from '../db.ts';
 import { httpUrl, type BrowserConfig } from '../wards.ts';
@@ -43,6 +44,7 @@ const MIN_VIEW = { width: 320, height: 240 };
 const MAX_VIEW = { width: 1920, height: 1200 };
 /** wards.ts ID_RE — the ward id becomes a path segment, so re-check it here. */
 const WARD_RE = /^[a-z0-9-]{1,32}$/;
+const restoreDesktop = () => isDesktop() && process.platform === 'darwin';
 
 export type BrowserEvent =
   /** jpeg, base64 — exactly as CDP hands it over, never re-encoded. */
@@ -113,7 +115,8 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
     : cfg.backend === 'app' ? await connectApp(userId, ward)
     : await launchLocal(userId, ward, cfg);
   const { context } = backend;
-  const page = context.pages()[0] ?? (await context.newPage());
+  const restored = restoreDesktop() && cfg.backend !== 'browserbase' ? await restoreView(context, userId, ward) : null;
+  const page = restored?.page ?? context.pages()[0] ?? (await context.newPage());
   const s: Session = {
     key,
     userId,
@@ -121,7 +124,7 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
     backend: cfg.backend,
     route: cfg.route,
     context,
-    pages: context.pages(),
+    pages: restored?.pages ?? context.pages(),
     page,
     viewport: { ...DEFAULT_VIEWPORT },
     subs: new Set(),
@@ -176,11 +179,17 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig): Pr
     proxy: { server: `http://127.0.0.1:${port}`, bypass: '<-loopback>' },
     viewport: DEFAULT_VIEWPORT,
     acceptDownloads: false,
+    // Chromium restores history, scroll positions and form state itself. A
+    // forced blank startup tab would take the place of the restored page.
+    ...(restoreDesktop() ? { ignoreDefaultArgs: ['about:blank'] } : {}),
     args: [
+      ...(restoreDesktop() ? ['--restore-last-session'] : []),
       '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', // no unproxied UDP out of ICE
       '--disk-cache-size=52428800', // the profile's size cap, in effect
     ],
   });
+  if (restoreDesktop() && context.pages().length === 1 && context.pages()[0]!.url().startsWith('chrome://new-tab-page'))
+    await context.pages()[0]!.goto('about:blank');
   return {
     context,
     close: async () => {
@@ -188,6 +197,52 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig): Pr
       home?.close();
     },
   };
+}
+
+/** CDP discovery order is not tab-strip order after Chromium restores a
+ * profile. Keep only Rimeward's tab selection here; Chromium owns page data. */
+async function tabView(context: BrowserContext, page: Page): Promise<{ url: string; key: string }> {
+  const cdp = await context.newCDPSession(page);
+  try {
+    const history = await cdp.send('Page.getNavigationHistory');
+    return {
+      url: history.entries[history.currentIndex]?.url ?? page.url(),
+      key: createHash('sha256').update(JSON.stringify([history.currentIndex, history.entries.map(e => e.url)])).digest('hex'),
+    };
+  } finally { await cdp.detach(); }
+}
+
+async function restoreView(context: BrowserContext, userId: number, ward: string): Promise<{ pages: Page[]; page: Page } | null> {
+  try {
+    const file = path.join(PROFILES, String(userId), ward, 'rimeward-view.json');
+    if (fs.statSync(file).size > 128 * 1024) return null;
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { tabs: { url: string; key: string }[]; active: number };
+    if (!Array.isArray(saved.tabs) || saved.tabs.length > 32 || !Number.isInteger(saved.active) || !saved.tabs[saved.active] ||
+      saved.tabs.some(t => !t || typeof t.url !== 'string' || !/^[a-f0-9]{64}$/.test(t.key))) return null;
+    const available = await Promise.all(context.pages().map(async page => ({ page, ...await tabView(context, page) })));
+    const pages: Page[] = [];
+    let active: Page | undefined;
+    for (const [i, tab] of saved.tabs.entries()) {
+      let found = available.findIndex(p => p.key === tab.key);
+      if (found < 0) found = available.findIndex(p => p.url === tab.url);
+      if (found < 0) continue;
+      const page = available.splice(found, 1)[0]!.page;
+      pages.push(page);
+      if (i === saved.active) active = page;
+    }
+    pages.push(...available.map(p => p.page));
+    return pages.length ? { pages, page: active ?? pages[0]! } : null;
+  } catch { return null; } // A missing/corrupt checkpoint never discards restored tabs.
+}
+
+async function saveView(s: Session): Promise<void> {
+  if (!restoreDesktop() || s.backend !== 'local') return;
+  try {
+    const tabs = await Promise.all(s.pages.map(page => tabView(s.context, page)));
+    const file = path.join(PROFILES, String(s.userId), s.ward, 'rimeward-view.json');
+    fs.writeFileSync(file + '.tmp', JSON.stringify({ tabs, active: s.pages.indexOf(s.page) }), { mode: 0o600 });
+    fs.renameSync(file + '.tmp', file);
+  } catch { console.warn('[browser] Could not save tab selection; Chromium will restore its last session.'); }
 }
 
 function profileDir(userId: number, ward: string): string {
@@ -314,12 +369,12 @@ const num = (v: unknown, max: number) => (typeof v === 'number' && Number.isFini
 export async function runCmds(s: Session, cmds: unknown): Promise<void> {
   if (!Array.isArray(cmds) || cmds.length > 200) throw new Error('bad batch');
   s.lastUsed = Date.now();
-  const { mouse, keyboard } = s.page;
-  const vw = s.viewport.width;
-  const vh = s.viewport.height;
   const remoteMac = s.backend === 'app' ? tunnelStatus(s.userId).platform === 'darwin' : s.backend === 'local' && process.platform === 'darwin';
   for (const raw of cmds) {
+    if (!raw || typeof raw !== 'object') continue;
     const c = raw as Partial<Cmd> & Record<string, unknown>;
+    const { mouse, keyboard } = s.page;
+    const { width: vw, height: vh } = s.viewport;
     try {
       switch (c.t) {
         case 'move':
@@ -447,6 +502,7 @@ async function stopCast(s: Session): Promise<void> {
 export async function closeSession(s: Session): Promise<void> {
   if (sessions.get(s.key) === s) sessions.delete(s.key);
   s.unsubRoute?.();
+  await Promise.race([saveView(s), sleep(1_000)]);
   await stopCast(s);
   // Graceful first (Browser.close flushes the profile); if the browser won't
   // go, the process scan below will.

@@ -3,12 +3,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { getDb } from '../src/lib/db.ts';
 import { saveDashboard } from '../src/lib/dashboard.ts';
-import { closeSession, killByProfile, open, peek, runCmds } from '../src/lib/browser/session.ts';
+import { closeSession, killByProfile, open, peek, runCmds, subscribe } from '../src/lib/browser/session.ts';
 import { TOOLS } from '../src/lib/agent/tools.ts';
 
 // The one end-to-end check: a real headless Chromium through session.ts, the
@@ -89,4 +89,69 @@ test('one session, two drivers', async (t) => {
     await closeSession(s);
   }
   assert.equal(peek(uid, 'bw1'), undefined);
+});
+
+test('local desktop browser: tabs, input batches, live frames and native session restore', async (t) => {
+  const oldDesktop = process.env.RIMEWARD_DESKTOP, oldToken = process.env.RIMEWARD_NATIVE_TOKEN;
+  process.env.RIMEWARD_DESKTOP = '1'; process.env.RIMEWARD_NATIVE_TOKEN = 'browser-fixture';
+  const uid = seedUser('desktop-browser@test');
+  let s;
+  const fixture = async (context: import('playwright-core').BrowserContext) => context.route('https://browser.fixture/**', route =>
+    route.fulfill({ contentType: 'text/html', body: `<title>${new URL(route.request().url()).pathname}</title><h1>Generated fixture</h1><input name="draft" aria-label="Draft"><a href="/third" target="_blank">Popup</a>` }));
+  try {
+    try { s = await open(uid, 'desktop-browser', { backend: 'app' }); }
+    catch (err) {
+      if (existsSync(process.env.BROWSER_EXECUTABLE ?? chromium.executablePath())) throw err;
+      t.skip('no Chromium installed'); return;
+    }
+    assert.equal(s.backend, 'local', 'My computer on the desktop uses its local runtime, never the server tunnel');
+    assert.equal(await open(uid, 'desktop-browser', { backend: 'app' }), s, 'reconnecting reuses the session');
+    await fixture(s.context);
+    await runCmds(s, [{ t: 'goto', url: 'https://browser.fixture/one' }, { t: 'goto', url: 'https://browser.fixture/two' }]);
+    await runCmds(s, [{ t: 'back' }]); assert.equal(s.page.url(), 'https://browser.fixture/one');
+    await runCmds(s, [{ t: 'forward' }]); assert.equal(s.page.url(), 'https://browser.fixture/two');
+    const first = s.page;
+    await runCmds(s, [{ t: 'newtab' }, { t: 'goto', url: 'https://browser.fixture/three' }]);
+    const second = s.page;
+    await first.locator('input').focus(); await second.locator('input').focus();
+    await runCmds(s, [{ t: 'tab', i: 0 }, { t: 'text', text: 'first only' }, null, {}, 5]);
+    assert.equal(await first.inputValue('input'), 'first only', 'commands after tab selection use the selected page');
+    assert.equal(await second.inputValue('input'), '');
+    await assert.rejects(runCmds(s, [{ t: 'goto', url: 'javascript:alert(1)' }]), /http/);
+    await assert.rejects(runCmds(s, [{ t: 'goto', url: 'file:///private/test' }]), /http/);
+    await assert.rejects(runCmds(s, Array(201).fill({ t: 'reload' })), /bad batch/);
+    const frame = new Promise<void>(resolve => {
+      const off = subscribe(s!, event => { if (event.type === 'frame') { off(); resolve(); } });
+    });
+    await Promise.race([frame, new Promise((_, reject) => setTimeout(() => reject(Error('no live frame')), 5000))]);
+    await runCmds(s, [{ t: 'resize', w: 900, h: 600 }]);
+    assert.deepEqual(s.viewport, { width: 900, height: 600 });
+    if (process.platform === 'darwin') {
+      await closeSession(s);
+      s = await open(uid, 'desktop-browser', { backend: 'app' });
+      const restored = await Promise.all(s.pages.map(async page => {
+        const cdp = await s!.context.newCDPSession(page);
+        try { const h = await cdp.send('Page.getNavigationHistory'); return h.entries[h.currentIndex]!.url; }
+        finally { await cdp.detach(); }
+      }));
+      assert.deepEqual(restored, ['https://browser.fixture/two', 'https://browser.fixture/three']);
+      assert.equal(s.page, s.pages[0], 'native restoration keeps ward tab selection');
+      await fixture(s.context);
+      await runCmds(s, [{ t: 'back' }]);
+      assert.equal(s.page.url(), 'https://browser.fixture/one', 'Chromium retained history; URLs were not replayed');
+      await closeSession(s);
+      writeFileSync(path.join(process.env.HOMEPAGE_DATA_DIR!, 'browser', String(uid), 'desktop-browser', 'rimeward-view.json'), '{broken');
+      s = await open(uid, 'desktop-browser', { backend: 'app' });
+      assert.equal(s.pages.length, 2, 'invalid optional tab metadata never deletes native restored tabs');
+    }
+    await runCmds(s, [{ t: 'closetab', i: 1 }]);
+    assert.equal(s.pages.length, 1);
+    await runCmds(s, [{ t: 'closetab', i: 0 }]);
+    for (let attempt = 0; !s.pages.length && attempt < 20; attempt++) await new Promise(r => setTimeout(r, 20));
+    assert.equal(s.pages.length, 1, 'closing the final tab leaves a usable new tab');
+  } finally {
+    if (s) await closeSession(s);
+    if (oldDesktop === undefined) delete process.env.RIMEWARD_DESKTOP; else process.env.RIMEWARD_DESKTOP = oldDesktop;
+    if (oldToken === undefined) delete process.env.RIMEWARD_NATIVE_TOKEN; else process.env.RIMEWARD_NATIVE_TOKEN = oldToken;
+  }
 });

@@ -8,6 +8,7 @@ import {once} from 'node:events';
 import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
 import {GENERAL_ICON_SETS,ICON_SETS} from '../src/lib/icon-names.ts';
+import {macosPermissionsSmoke} from './macos-permissions-smoke.mjs';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const screenshotDir=process.env.RIMEWARD_GOLDEN_DIR ?? os.tmpdir();
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'rimeward-editor-ui-'));
@@ -180,6 +181,8 @@ try {
   await phoneEditor.getByRole('button',{name:'binary.dat',exact:true}).click();
   await phoneEditor.getByText('Read-only file · original encoding and contents are preserved.',{exact:true}).waitFor();
   assert.equal(await phoneEditor.locator('.cm-content').getAttribute('contenteditable'),'false');
+  await mobile.close();
+  await macosPermissionsSmoke(page, screenshotDir);
   assert.deepEqual(errors,[]);
   console.log('Editor UI passed: integrated files, reusable project page, tabs/undo/recovery, real Biome diagnostics/formatting, find/replace, quick open, creation/rename, external conflict diff, phone takeover, binary read-only. No model calls.');
 } catch(e) { if(browser)for(const c of browser.contexts())for(const p of c.pages())console.error(JSON.stringify(await p.evaluate(()=>[...document.querySelectorAll('.editor-tabs')].map(el=>({scroll:el.scrollLeft,width:el.clientWidth,overflow:getComputedStyle(el).overflowX,children:[...el.children].map(t=>({active:t.dataset.active,left:t.getBoundingClientRect().left,right:t.getBoundingClientRect().right})),rect:el.getBoundingClientRect().toJSON()}))))); if(browser) {const page=browser.contexts()[0]?.pages()[0];if(page)await page.screenshot({path:path.join(screenshotDir,'rimeward-editor-failure.png'),fullPage:true}).catch(()=>{});} throw e; }

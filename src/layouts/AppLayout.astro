@@ -28,6 +28,8 @@ const monitorCatalog = sharedCatalog ? JSON.parse(sharedCatalog) : { targets: TA
 // rides the <img> so the account editor's live preview can switch back to it.
 const brand = parseTheme(me.theme) ?? normalizeTheme({});
 const defaultLogo = '/brand/mark';
+const restoring = isDesktop() && process.platform === 'darwin' && Astro.cookies.get('rimeward_ui_restore')?.value === '1';
+if (restoring) Astro.cookies.delete('rimeward_ui_restore', { path: '/' });
 // ONLY the faces this page paints: the catalogue is 43 families and declaring
 // all of them costs ~42KB of head CSS on every load for nothing. The two the
 // theme names are preloaded (they paint immediately); a ward's override is
@@ -46,6 +48,7 @@ const declared = [...new Set([brand.uiFont, brand.brandFont, ...(Astro.props.fon
         astro.config.mjs, and this list is derived rather than literal. */}
     {faces.map((v) => <Font cssVariable={v as any} preload={themeFaces.includes(v)} />)}
     <meta name="fd-faces" content={declared} />
+    {isDesktop() && process.platform === 'darwin' && <meta name="fd-mac-user" content={String(me.userId)} data-restore={restoring ? '1' : undefined} />}
     {/* The monitor registry for the client's pure helpers: lib/targets.ts reads it as it loads. */}
     <script is:inline type="application/json" id="fd-monitors" set:html={JSON.stringify(monitorCatalog).replace(/</g, '\\u003c')} />
   </Fragment>
@@ -99,6 +102,7 @@ const declared = [...new Set([brand.uiFont, brand.brandFont, ...(Astro.props.fon
         <div class="card absolute right-0 z-30 mt-1 flex w-44 flex-col gap-1 p-2 shadow-lg">
           <a href="/account" class="btn w-full text-xs">Account</a>
           <button type="button" id="manage-environments" class="btn w-full text-xs">Connections</button>
+          <button type="button" id="macos-permissions" class="btn w-full text-xs" hidden>Mac permissions</button>
           {me.role === 'admin' && <a href="/admin/users" class="btn w-full text-xs">Users</a>}
           <form method="post" action="/api/logout">
             <button type="submit" class="btn w-full text-xs">Sign out</button>
@@ -120,6 +124,7 @@ const declared = [...new Set([brand.uiFont, brand.brandFont, ...(Astro.props.fon
 
   <script>
     import '../scripts/app/runtime-picker.ts';
+    import '../scripts/app/macos-permissions.ts';
     import { bootNotionSearch } from '../scripts/app/notion-search.ts';
     bootNotionSearch();
     const searchToggle = document.getElementById('header-search-toggle');

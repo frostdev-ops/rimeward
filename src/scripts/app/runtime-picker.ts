@@ -7,7 +7,7 @@ import '../../styles/workspaces.css';
 type NativeWindow = Window & { __TAURI__?: { core: { invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> } } };
 const native = (window as NativeWindow).__TAURI__?.core;
 const host = document.getElementById('instance-status');
-const local = host?.dataset.desktop === '1';
+const local = host?.dataset.desktop === '1' || !!document.querySelector('meta[name="rimeward-local"]');
 const base = document.querySelector<HTMLMetaElement>('meta[name="rimeward-runtime-base"]')?.content;
 
 async function connections() {

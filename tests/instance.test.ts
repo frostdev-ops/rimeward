@@ -8,6 +8,7 @@ import { createUser } from '../src/lib/users.ts';
 import { getDb } from '../src/lib/db.ts';
 import { setSetting } from '../src/lib/settings.ts';
 import { POST as backgroundPost } from '../src/pages/api/account/background.ts';
+import { POST as themePost } from '../src/pages/api/account/theme.ts';
 import type { APIContext } from 'astro';
 import { getDashboard, getPages, saveDashboard } from '../src/lib/dashboard.ts';
 import { DEFAULT_LAYOUT, DEFAULT_PAGES, validateLayout, validatePages } from '../src/lib/wards.ts';
@@ -69,6 +70,14 @@ test('appearance and dashboard sync remap account IDs, preserve icons/scenes and
   process.env.RIMEWARD_DESKTOP = '1'; process.env.RIMEWARD_NATIVE_TOKEN = 'test';
   setSetting(`instance:joined:${target}`, 'test-profile');
   try {
+    const themeForm = new URLSearchParams({ preset: 'glass', background: 'image', bgImage: name, brandLogo: name });
+    await themePost({ request: new Request('http://localhost/api/account/theme', { method: 'POST', body: themeForm }),
+      locals: { user: { userId: target, theme: JSON.stringify(localTheme) } },
+      redirect: (url: string, status: number) => new Response(null, { status, headers: { location: url } }),
+    } as unknown as APIContext);
+    const savedTheme = JSON.parse((getDb().prepare('SELECT theme FROM users WHERE id=?').get(target) as { theme: string }).theme);
+    assert.equal(savedTheme.bgImage, localTheme.bgImage, 'connected Account saves keep the local image owner');
+    assert.equal(savedTheme.brandLogo, localTheme.brandLogo);
     const form = new FormData(); form.set('delete', name);
     await backgroundPost({ request: new Request('http://localhost/api/account/background', { method: 'POST', body: form }),
       locals: { user: { userId: target, theme: JSON.stringify(localTheme) } },

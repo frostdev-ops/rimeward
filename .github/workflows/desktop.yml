@@ -77,6 +77,22 @@ jobs:
       - name: Bundle standalone runtime
         run: node desktop/prebuild.mjs
 
+      - name: Allow bundled Chromium's sandbox on the Ubuntu runner
+        if: matrix.platform == 'ubuntu-24.04'
+        shell: bash
+        run: |
+          chromium=$(node --input-type=module -e "import { chromium } from 'playwright-core'; process.stdout.write(chromium.executablePath())")
+          sudo tee /etc/apparmor.d/rimeward-ci-chromium >/dev/null <<PROFILE
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile rimeward-ci-chromium "$chromium" flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser -r /etc/apparmor.d/rimeward-ci-chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/desktop/runtime/browsers
+
       - name: Sign nested macOS runtime code
         if: startsWith(matrix.platform, 'macos-')
         env:

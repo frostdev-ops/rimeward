@@ -8,6 +8,7 @@ import {
 } from "../auth.ts";
 import { getDb } from "../db.ts";
 import type { APIContext } from "astro";
+import { restoredDesktopPath } from './navigation.ts';
 
 export function secretEqual(
   a: string | null | undefined,
@@ -56,7 +57,9 @@ export function nativeRequest(context: APIContext): Response | undefined {
       session.id,
       sessionCookieOptions(session.expiresAt),
     );
-    return context.redirect("/desktop/start", 303);
+    const restore = restoredDesktopPath(url.searchParams.get('restore'));
+    if (restore && process.platform === 'darwin') cookies.set('rimeward_ui_restore', '1', { path: '/', httpOnly: true, sameSite: 'strict', maxAge: 60 });
+    return context.redirect(restore ?? "/desktop/start", 303);
   }
   if (trusted) {
     context.locals.user = getDb()

@@ -147,7 +147,7 @@ pub fn release_remote_owner(id: &str) {
         }
     }
 }
-fn screen_permission() -> bool {
+pub(crate) fn screen_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
         objc2_core_graphics::CGPreflightScreenCaptureAccess()
@@ -161,7 +161,7 @@ fn screen_permission() -> bool {
         supported()
     }
 }
-fn input_permission() -> bool {
+pub(crate) fn input_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
         #[link(name = "ApplicationServices", kind = "framework")]

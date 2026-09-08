@@ -7,6 +7,7 @@ fn main() {
             "workspace_navigation",
             "open_workspace",
             "startup_status",
+            "macos_permissions",
         ]),
     ))
     .expect("tauri-build");

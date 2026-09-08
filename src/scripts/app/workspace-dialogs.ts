@@ -216,5 +216,7 @@ export async function prepareWorkspaceNavigation() {
   window.dispatchEvent(new CustomEvent("fd:before-workspace-navigation", {
     detail: { waitUntil: (promise: Promise<unknown>) => pending.push(promise) },
   }));
-  await Promise.all(pending);
+  const results = await Promise.allSettled(pending);
+  const failed = results.find(result => result.status === "rejected");
+  if (failed?.status === "rejected") throw failed.reason;
 }

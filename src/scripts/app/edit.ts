@@ -1,3 +1,4 @@
+import { readDesktopCheckpoint, saveDesktopState } from "./desktop-state.ts";
 // Dashboard editing: a pointer drag engine (drag anywhere on a card, works
 // on touch), right-click context menus on wards and the grid, the
 // add/configure catalog dialog, and FLIP animation for every reorder.
@@ -8,7 +9,7 @@
 
 import { calcGeneratorDuration, spring } from 'motion';
 import { icon, relabel } from './icon.ts';
-import { CATALOG, CHART_SOURCES, DEFAULT_LAYOUT, MAX_H, MAX_W, TASK_WARDS, httpUrl, notionIdFrom, sizeParts, wardTitle, type WardInstance, type WardSize } from '../../lib/wards.ts';
+import { validateLayout, validatePages, CATALOG, CHART_SOURCES, DEFAULT_LAYOUT, MAX_H, MAX_W, TASK_WARDS, httpUrl, notionIdFrom, sizeParts, wardTitle, type WardInstance, type WardSize } from '../../lib/wards.ts';
 import { normalizeWardTheme, wardThemeAttrs, WARD_STYLE_PROPS, type WardTheme } from '../../lib/theme.ts';
 import { ensureFonts } from './fonts.ts';
 import { ACTIONS, TRIGGERS } from '../../lib/logic.ts';
@@ -2390,13 +2391,14 @@ export function bootEdit(): void {
     const ok = await save();
     btn('edit').disabled = false;
     if (ok) {
+      saveDesktopState('layout-draft', undefined);
       setEditing(false);
       toast('Layout saved.');
     } else {
       toast('Saving the layout failed — still in edit mode.', undefined, true);
     }
   });
-  btn('cancel').addEventListener('click', () => location.reload());
+  btn('cancel').addEventListener('click', () => { saveDesktopState('layout-draft', undefined); location.reload(); });
   btn('add').addEventListener('click', () => openDialog());
 
   // Undo appears once there is something to undo — in edit mode and out of it,
@@ -2431,4 +2433,24 @@ export function bootEdit(): void {
   bootMenu();
   bootDialog();
   bootGroups();
+  const recovered = readDesktopCheckpoint<{ layout: unknown; pages: unknown; undo?: unknown[]; editing: boolean; page?: string }>('layout-draft');
+  const pages = recovered && validatePages(recovered.pages);
+  const layout = pages && validateLayout(recovered?.layout, pages);
+  if (recovered && pages && layout) {
+    if (recovered.editing) {
+      setEditing(true);
+      publishPages(pages);
+      applyLayout(layout, new Set(), true);
+      if (recovered.page && pages.some(page => page.id === recovered.page)) showPage(recovered.page);
+    }
+    undoStack.splice(0, undoStack.length, ...(recovered.undo ?? []).map(value => validateLayout(value, pages)).filter((value): value is WardInstance[] => !!value));
+    syncUndo();
+  }
+  window.addEventListener('fd:before-workspace-navigation', event => {
+    (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(Promise.resolve().then(async () => {
+      if (pendingSecrets.size) throw Error('Save the ward credentials with Done before opening macOS permission settings.');
+      if (!isEditing() && !(await save())) throw Error('The dashboard could not be saved. Try again before relaunching.');
+      saveDesktopState('layout-draft', { layout: layoutOf(), pages: readPages(), undo: undoStack, editing: isEditing(), page: currentPage() });
+    }));
+  });
 }

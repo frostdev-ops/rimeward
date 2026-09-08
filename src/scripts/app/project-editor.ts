@@ -1,10 +1,11 @@
+import { readDesktopCheckpoint, saveDesktopState } from "./desktop-state.ts";
 import type { searchFiles, bufferCopies } from "../../lib/dev/projects.ts";
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine } from "@codemirror/view";
 import { Compartment, EditorState, Transaction } from "@codemirror/state";
 import { LanguageDescription, indentUnit, syntaxHighlighting, foldGutter, indentOnInput, defaultHighlightStyle, bracketMatching, foldKeymap } from "@codemirror/language";
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { languages } from "@codemirror/language-data";
-import { indentWithTab, history, defaultKeymap, historyKeymap } from "@codemirror/commands";
+import { indentWithTab, history, historyField, defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { openSearchPanel, gotoLine, highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { lintGutter, lintKeymap, setDiagnostics, type Diagnostic } from "@codemirror/lint";
@@ -162,10 +163,12 @@ export function fileExplorer(host: HTMLElement, api: Api, project: string, open:
 }
 
 export function projectEditor(host: HTMLElement, options: {
-  api: Api; owner: string; project: Project; state: { tabs?: string[]; active?: string }; remember: () => Promise<unknown>;
+  api: Api; owner: string; ward: string; project: Project; state: { tabs?: string[]; active?: string }; remember: () => Promise<unknown>;
   changeProject: () => unknown; expand: () => void; page?: string;
 }) {
   const { api, owner, project, state, remember } = options;
+  const recoveryKey = `editor:${options.ward}:${project.id}`;
+  const recovered = readDesktopCheckpoint<{ files: Record<string, { state: { doc?: string; [key: string]: unknown }; top: number; left: number }>; hidden: boolean; wrap: boolean; problems: boolean }>(recoveryKey);
   const toolbar = el("div", "editor-toolbar"), shell = el("div", "editor-shell"), side = el("aside"), main = el("div", "editor-main");
   const tabs = el("div", "editor-tabs"), breadcrumb = el("div", "editor-breadcrumb"), editorHost = el("div", "dev-editor"), footer = el("div", "editor-statusbar");
   const empty = el("div", "editor-welcome"), notice = el("div", "editor-notice"), message = el("span"), problems = el("section", "editor-problems");
@@ -194,6 +197,7 @@ export function projectEditor(host: HTMLElement, options: {
   let queue = Promise.resolve(), operation = Promise.resolve<unknown>(undefined), recoveryTimer: ReturnType<typeof setTimeout>, lintTimer: ReturnType<typeof setTimeout>;
   let lintGeneration = 0, linting = false, lintLabel = "Open a file to check it", diagnostics: Diagnostic[] = [], wrap = false;
   const language = new Compartment(), editable = new Compartment(), wrapping = new Compartment(), theme = new Compartment();
+  const positions = new Map<string, { top: number; left: number }>();
   const fileStates = new Map<string, EditorState>(), dirtyFiles = new Set<string>();
   const canEdit = () => !!current && !current.readonly && !busy && !uncertain && (!current.owner || current.owner === owner);
   const permissions = () => [EditorView.editable.of(canEdit()), EditorState.readOnly.of(!canEdit())];
@@ -326,7 +330,10 @@ export function projectEditor(host: HTMLElement, options: {
   async function load(file: string, line?: number) {
     await runExclusive(async () => {
       await flush(); if (stopped) return;
-      if (current) fileStates.set(current.path, editor.state);
+      if (current) {
+        fileStates.set(current.path, editor.state);
+        positions.set(current.path, { top: editor.scrollDOM.scrollTop, left: editor.scrollDOM.scrollLeft });
+      }
       let next: BufferView = await api("buffer", { project: project.id, path: file });
       if (!next.readonly && !next.owner) {
         try { next = await api("buffer", { project: project.id, path: next.path }, "POST"); }
@@ -336,15 +343,24 @@ export function projectEditor(host: HTMLElement, options: {
       current = next; pending = false; uncertain = false; lintGeneration++; diagnostics = []; lintLabel = "Checking…";
       state.tabs = [...new Set([...(state.tabs ?? []), next.path])]; state.active = next.path;
       if (next.dirty) dirtyFiles.add(next.path); else dirtyFiles.delete(next.path);
-      const cached = fileStates.get(next.path);
+      let cached = fileStates.get(next.path);
+      const saved = recovered?.files?.[next.path];
+      if (!cached && saved?.state?.doc === next.text) {
+        try { cached = EditorState.fromJSON(saved.state, { extensions }, { history: historyField }); positions.set(next.path, saved); }
+        catch { /* Disk/recovery text remains the authority if UI history is invalid. */ }
+      }
       editor.setState(cached?.doc.toString() === next.text ? cached : EditorState.create({ doc: next.text, extensions }));
       const lang = LanguageDescription.matchFilename(languages, next.path), support = await lang?.load();
       editor.dispatch({ effects: [language.reconfigure(support ?? []), wrapping.reconfigure(wrap ? EditorView.lineWrapping : [])] });
       languageLabel.textContent = lang?.name ?? "Plain text";
       if (line) { const target = editor.state.doc.line(Math.min(Math.max(1, line), editor.state.doc.lines)); editor.dispatch({ selection: { anchor: target.from }, scrollIntoView: true }); }
       renderTabs(); explorer.select(next.path); renderProblems(); scheduleLint(); await remember();
-      requestAnimationFrame(revealTab);
-      if (host.clientWidth < 620) { host.classList.add("editor-files-hidden"); toggle.setAttribute("aria-expanded", "false"); }
+      requestAnimationFrame(() => {
+        revealTab();
+        const position = positions.get(next.path);
+        if (!line && position) editor.scrollDOM.scrollTo(position.left, position.top);
+      });
+      if (recovered ? recovered.hidden : host.clientWidth < 620) { host.classList.add("editor-files-hidden"); toggle.setAttribute("aria-expanded", "false"); }
     });
     editor.focus();
   }
@@ -488,10 +504,24 @@ export function projectEditor(host: HTMLElement, options: {
   }, 2000, () => !host.getClientRects().length);
   const themeObserver = new MutationObserver(() => editor.dispatch({ effects: theme.reconfigure(editorTheme()) }));
   themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-mode"] });
-  const beforeNavigate = (e: Event) => (e as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(runExclusive(flush));
+  function checkpointEditor() {
+    if (current) {
+      fileStates.set(current.path, editor.state);
+      positions.set(current.path, { top: editor.scrollDOM.scrollTop, left: editor.scrollDOM.scrollLeft });
+    }
+    saveDesktopState(recoveryKey, { files: Object.fromEntries([...fileStates].filter(([file]) => state.tabs?.includes(file)).map(([file, value]) => [file, {
+      state: value.toJSON({ history: historyField }), ...positions.get(file),
+    }])), hidden: host.classList.contains('editor-files-hidden'), wrap, problems: !problems.hidden });
+  }
+  const beforeNavigate = (e: Event) => (e as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(runExclusive(async () => {
+    await flush(); checkpointEditor(); await remember();
+  }));
   window.addEventListener("fd:before-workspace-navigation", beforeNavigate);
   const unload = (e: BeforeUnloadEvent) => { if (pending) { e.preventDefault(); e.returnValue = ""; } };
   window.addEventListener("beforeunload", unload);
+  wrap = recovered?.wrap === true;
+  problems.hidden = recovered?.problems !== true;
+  problemToggle.setAttribute('aria-expanded', String(!problems.hidden));
   renderTabs(); refreshStatus(); renderProblems(); const active = state.active; if (active) run(() => load(active));
   return () => {
     stopped = true; clearTimeout(recoveryTimer); clearTimeout(lintTimer); lintGeneration++; stopPoll(); stopMenu(); stopChrome(); explorer.stop(); themeObserver.disconnect(); tabResize.disconnect();

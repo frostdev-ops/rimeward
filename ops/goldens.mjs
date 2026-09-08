@@ -126,6 +126,7 @@ try {
   await page.screenshot({ path: `${OUT}/wards.png` });
   await frame(`${OUT}/wards.png`);
   console.log('wrote', `${OUT}/wards.png`);
+  await shot('/account', 'account');
   await browser.close();
   browser = undefined;
   const shots = fs.mkdtempSync(path.join(os.tmpdir(), 'rimeward-golden-shots-'));
@@ -147,6 +148,19 @@ try {
         fs.copyFileSync(path.join(shots, `rimeward-remote-desktop-${state}.png`), file);
         await frame(file); console.log('wrote', file);
       }
+      if (test === 'editor') {
+        const file = `${OUT}/macos-permissions.png`;
+        fs.copyFileSync(path.join(shots, 'rimeward-macos-permissions.png'), file);
+        await frame(file); console.log('wrote', file);
+      }
+    }
+    execFileSync(process.execPath, ['tests/browser-ui-smoke.mjs'], {
+      stdio: 'inherit', env: { ...process.env, RIMEWARD_GOLDEN_DIR: shots },
+    });
+    for (const suffix of ['', '-phone']) {
+      const file = `${OUT}/browser-local${suffix}.png`;
+      fs.copyFileSync(path.join(shots, `rimeward-browser-local${suffix}.png`), file);
+      await frame(file); console.log('wrote', file);
     }
   } finally { fs.rmSync(shots, { recursive: true, force: true }); }
 } finally {

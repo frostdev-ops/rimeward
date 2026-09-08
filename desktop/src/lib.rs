@@ -5,6 +5,8 @@ mod chromium;
 mod commands;
 mod computer;
 mod input_guardian;
+#[cfg(target_os = "macos")]
+mod permissions;
 mod remote_control;
 #[cfg(target_os = "linux")]
 mod remote_eis;
@@ -52,7 +54,9 @@ pub fn run() {
             commands::ward_touch,
             commands::workspace_navigation,
             commands::open_workspace,
-            runtime::startup_status
+            runtime::startup_status,
+            #[cfg(target_os = "macos")]
+            permissions::macos_permissions
         ])
         .setup(|app| {
             computer::initialize(app.path().app_data_dir()?);

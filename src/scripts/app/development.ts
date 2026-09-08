@@ -1,3 +1,4 @@
+import { expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
 import type { terminalCapabilities, readSession } from "../../lib/dev/terminals.ts";
 import type { gitView } from "../../lib/dev/projects.ts";
 import { icon } from "./icon.ts";
@@ -75,6 +76,7 @@ const select = (label: string, choices: string[]) => {
 };
 const states = new Map<string, { stop: () => void }>();
 function expand(host: HTMLElement) {
+  expandedDesktopWard(host.dataset.ward);
   const placeholder = document.createComment("expanded ward"),
     dlg = el("dialog", "fd-dialog dev-expanded");
   host.before(placeholder);
@@ -91,6 +93,7 @@ function expand(host: HTMLElement) {
   dlg.append(nav, host);
   document.body.append(dlg);
   dlg.onclose = () => {
+    expandedDesktopWard();
     placeholder.replaceWith(host);
     dlg.remove();
   };
@@ -114,6 +117,7 @@ async function mount(w: WardInstance) {
     bar = el("div", "dev-bar"),
     content = el("div", "dev-content");
   host.dataset.kind = w.type;
+  host.dataset.ward = w.i;
   host.dataset.title = w.title ?? CATALOG[w.type]?.title ?? w.type;
   host.append(bar, content);
   b.replaceChildren(host);
@@ -155,6 +159,7 @@ async function mount(w: WardInstance) {
     });
     bar.append(picker, projectButton, button("Expand", () => expand(host)));
     const project = projects.find(p => p.id === state.project);
+    restoreExpandedWard(w.i, () => expand(host));
     if (!project) {
       if (w.type === "terminal" || w.type === "editor") bar.hidden = true;
       const empty = el("div", "dev-empty");
@@ -174,7 +179,7 @@ async function mount(w: WardInstance) {
       const { projectEditor } = await import("./project-editor.ts");
       if (stopped) return;
       cleanup.push(projectEditor(host, {
-        api, owner, project, state, remember,
+        api, owner, ward: w.i, project, state, remember,
         changeProject: () => projectButton.click(), expand: () => expand(host), page: pageOfCard(w.i),
       }));
     } else if (w.type === "terminal") {

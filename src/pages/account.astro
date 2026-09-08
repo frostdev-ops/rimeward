@@ -1396,6 +1396,7 @@ const TABS = [
     import { gfxImpact, gfxLoad, type GfxKey } from '../lib/gfx.ts';
     import { applyThemeLive } from '../scripts/app/theme-live.ts';
     import { paintScenePreviews } from '../scripts/app/scene-thumbs.ts';
+    import { readDesktopCheckpoint, saveDesktopState } from '../scripts/app/desktop-state.ts';
 
     // Renders each scene once into the pickers' <option data-preview>. Only
     // this page has scene selects, and a WebGL failure leaves them plain.
@@ -1417,31 +1418,58 @@ const TABS = [
      *  /account; `redirect: 'manual'` stops fetch from re-rendering this whole
      *  page (Notion calls included) for every slider nudge. Forms that have a
      *  real error path opt into following it, and read ?err= off the final URL. */
-    async function post(form: HTMLFormElement): Promise<void> {
-      const follow = form.hasAttribute('data-autosave-check');
-      flash('Saving…', 'busy');
-      // The attribute, not the property: a hidden <input name="action"> shadows
-      // form.action with the element itself, and fetch(input) 404s.
-      const res = await fetch(form.getAttribute('action')!, {
-        method: 'POST',
-        body: new FormData(form),
-        redirect: follow ? 'follow' : 'manual',
-      }).catch(() => null);
-      if (!res || res.status >= 400) return flash('Not saved', 'err');
-      const err = follow ? new URL(res.url).searchParams.get('err') : null;
-      if (err) return flash(err.replace(/[-+]/g, ' '), 'err');
-      flash('Saved', 'ok');
-      onSaved?.(form);
+    const formState = (form: HTMLFormElement) => JSON.stringify([...new FormData(form)].map(([key, value]) =>
+      [key, typeof value === 'string' ? value : value.name || value.size ? [value.name, value.size, value.lastModified] : null]));
+    const settled = new Map([...document.forms].map(form => [form, formState(form)]));
+    const saving = new Map<HTMLFormElement, Promise<boolean>>();
+    const failed = new Set<HTMLFormElement>();
+    function post(form: HTMLFormElement): Promise<boolean> {
+      const work = (saving.get(form) ?? Promise.resolve()).then(async () => {
+        const follow = form.hasAttribute('data-autosave-check');
+        const state = formState(form);
+        flash('Saving…', 'busy');
+        // The attribute, not the property: a hidden <input name="action"> shadows
+        // form.action with the element itself, and fetch(input) 404s.
+        const res = await fetch(form.getAttribute('action')!, {
+          method: 'POST',
+          body: new FormData(form),
+          redirect: follow ? 'follow' : 'manual',
+          signal: AbortSignal.timeout(15000),
+        }).catch(() => null);
+        if (!res || res.status >= 400) { failed.add(form); flash('Not saved', 'err'); return false; }
+        const err = follow ? new URL(res.url).searchParams.get('err') : null;
+        if (err) { failed.add(form); flash(err.replace(/[-+]/g, ' '), 'err'); return false; }
+        failed.delete(form);
+        flash('Saved', 'ok');
+        settled.set(form, state);
+        onSaved?.(form);
+        return true;
+      });
+      saving.set(form, work);
+      void work.finally(() => { if (saving.get(form) === work) saving.delete(form); });
+      return work;
     }
 
     /** Set by the theme block below — its undo stack records a step per save. */
     let onSaved: ((f: HTMLFormElement) => void) | null = null;
 
-    const pending = new WeakMap<HTMLFormElement, number>();
+    const pending = new Map<HTMLFormElement, number>();
     function autosave(form: HTMLFormElement, delay = 0): void {
       clearTimeout(pending.get(form));
-      pending.set(form, window.setTimeout(() => void post(form), delay));
+      pending.set(form, window.setTimeout(() => { pending.delete(form); void post(form); }, delay));
     }
+    let checkpointTheme = () => {};
+    window.addEventListener('fd:before-workspace-navigation', event => {
+      (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil((async () => {
+        for (const [form, timer] of pending) { clearTimeout(timer); void post(form); }
+        pending.clear();
+        const results = await Promise.all([...saving.values()]);
+        if (failed.size || results.some(ok => !ok)) throw Error('Account changes could not be saved. Retry before relaunching.');
+        if ([...settled].some(([form, state]) => form.isConnected && state !== formState(form)))
+          throw Error('Save or finish editing your account forms before relaunching.');
+        checkpointTheme();
+      })());
+    });
 
     // `change` (not `input`) everywhere but the theme form: it fires once a
     // select settles or a text field blurs, so a half-typed API key is never
@@ -1563,6 +1591,11 @@ const TABS = [
       const snap = () => new URLSearchParams([...new FormData(form)] as [string, string][]).toString();
       let base = snap();
       const syncUndo = () => undoBtn.classList.toggle('hidden', !stack.length);
+      const remembered = readDesktopCheckpoint<{ base: string; stack: string[] }>('account-theme-undo');
+      if (remembered?.base === base && Array.isArray(remembered.stack) && remembered.stack.every(s => typeof s === 'string')) {
+        stack.push(...remembered.stack.slice(-50)); syncUndo();
+      }
+      checkpointTheme = () => saveDesktopState('account-theme-undo', { base, stack });
 
       onSaved = (f) => {
         if (f !== form) return;

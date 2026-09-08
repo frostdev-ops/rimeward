@@ -22,3 +22,14 @@ export function workspacePath(page?: string, screen?: string) {
     throw new DevError("Invalid workspace destination.");
   return `/dash${page ? `#p=${encodeURIComponent(page)}` : ""}`;
 }
+
+/** Only read-only app screens may be replayed after a native permission restart. */
+export function restoredDesktopPath(raw: string | null) {
+  if (!raw || raw.length > 2048 || !raw.startsWith('/')) return null;
+  const base = new URL('http://localhost');
+  let url: URL;
+  try { url = new URL(raw, base); } catch { return null; }
+  return url.origin === base.origin && ['/dash', '/desktop/start', '/account', '/devices'].includes(url.pathname)
+    && [...url.searchParams.keys()].every(key => ['setup', 'workspace'].includes(key))
+    ? url.pathname + url.search + url.hash : null;
+}

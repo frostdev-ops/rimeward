@@ -1,3 +1,4 @@
+import { readDesktopState, readDesktopCheckpoint, saveDesktopState, expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
 import type { ContextUsage } from '../../lib/agent/context.ts';
 // Agent wards: a chat client over the streamed POST /api/agent/<ward>
 // protocol. One per-ward State drives every attached view — the compact ward
@@ -326,6 +327,7 @@ interface Ui {
   context: HTMLElement;
   jump: HTMLButtonElement;
   follow: boolean;
+  restored?: boolean;
   rendered: { signature: string; node: HTMLElement }[];
 }
 
@@ -370,6 +372,9 @@ function stateFor(w: WardInstance): State {
   let st = states.get(w.i);
   if (!st) {
     st = { w, items: [], pending: null, busy: false, remote: false, abort: null, attachments: [], uploading: 0, draft: '', clearing: false, tasks: [], uis: new Set() };
+    const saved = readDesktopState<{ draft?: string; attachments?: { id: string; name: string }[] }>(`agent:${w.i}:${w.device ?? ''}`);
+    if (typeof saved?.draft === 'string') st.draft = saved.draft;
+    if (Array.isArray(saved?.attachments)) st.attachments = saved.attachments.filter(a => typeof a?.id === 'string' && typeof a?.name === 'string');
     states.set(w.i, st);
   }
   st.w = w; // config changes keep the same id — track the live instance
@@ -562,11 +567,21 @@ function buildLog(st: State, ui: Ui): void {
   for (const old of ui.rendered.slice(entries.length)) old.node.remove();
   ui.rendered = rendered;
   log.scrollTop = ui.follow ? log.scrollHeight : top;
+  if (!ui.restored && entries.length) {
+    ui.restored = true;
+    const saved = readDesktopCheckpoint<{ follow: boolean; top: number; details: number[] }>(`agent-view:${st.w.i}:${st.w.device ?? ''}`);
+    if (saved && Number.isFinite(saved.top)) {
+      ui.follow = saved.follow === true;
+      log.querySelectorAll('details').forEach((detail, index) => { detail.open = saved.details?.includes(index) ?? false; });
+      log.scrollTop = ui.follow ? log.scrollHeight : saved.top;
+    }
+  }
   ui.jump.hidden = ui.follow || log.scrollHeight - log.clientHeight < 48;
 }
 
 function setDraft(st: State, value: string): void {
   st.draft = value;
+  try { saveDraft(st); } catch { /* Explicit permission checkpoint reports storage failure. */ }
   for (const ui of st.uis) {
     if (ui.input.value !== value) ui.input.value = value;
     autoGrow(ui.input);
@@ -603,7 +618,21 @@ function paintChips(st: State, chips: HTMLElement): void {
 /** Repaint every attached view from the item model. Cheap and impossible to
  *  desync — transcripts are short and streams emit tens of frames, not
  *  thousands. */
+function saveDraft(st: State) {
+  saveDesktopState(`agent:${st.w.i}:${st.w.device ?? ''}`, { draft: st.draft, attachments: st.attachments });
+}
+window.addEventListener('fd:before-workspace-navigation', event => {
+  (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(Promise.resolve().then(() => {
+    for (const st of states.values()) {
+      if (st.uploading) throw Error('Wait for Rime attachments to finish uploading before relaunching.');
+      saveDraft(st);
+      const ui = [...st.uis].find(ui => ui.root.closest('dialog[open]')) ?? [...st.uis][0];
+      if (ui) saveDesktopState(`agent-view:${st.w.i}:${st.w.device ?? ''}`, { follow: ui.follow, top: ui.log.scrollTop, details: [...ui.log.querySelectorAll('details')].flatMap((detail, index) => detail.open ? [index] : []) });
+    }
+  }));
+});
 function paint(st: State): void {
+  try { saveDraft(st); } catch { /* Retain the in-memory draft until recovery can be saved. */ }
   for (const ui of [...st.uis]) if (!ui.root.isConnected) st.uis.delete(ui);
   for (const ui of st.uis) {
     buildLog(st, ui);
@@ -1351,6 +1380,7 @@ function ensureDialog(): HTMLDialogElement | null {
   dlg.addEventListener('close', () => {
     const st = cur();
     dialogWard = null;
+    expandedDesktopWard();
     if (st) {
       st.uis.delete(ui);
       void refetch(st); // the ward view catches up on whatever happened
@@ -1371,6 +1401,7 @@ function openDialog(st: State): void {
   dialogUi.follow = true;
   dialogUi.input.style.height = '';
   dialogWard = st.w.i;
+  expandedDesktopWard(st.w.i);
   st.uis.add(dialogUi);
   const title = document.querySelector(`[data-wd="${st.w.i}"] [data-wd-title]`)?.textContent ?? 'Rime';
   dlg.querySelector('[data-ag-title]')!.textContent = title;
@@ -1565,6 +1596,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   ui.input.value = st.draft;
   wireComposer(ui, () => states.get(w.i));
   expand.addEventListener('click', () => openDialog(stateFor(w)));
+  restoreExpandedWard(w.i, () => openDialog(stateFor(w)));
   // Touching the ward at all counts as having seen it.
   wrap.addEventListener('pointerdown', () => clearUnread(w.i));
   paint(st);
