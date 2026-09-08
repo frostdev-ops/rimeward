@@ -10,7 +10,7 @@ const connect = (port: number, target: string) =>
   new Promise<number>((resolve, reject) => {
     http
       .request({ host: '127.0.0.1', port, method: 'CONNECT', path: target })
-      .on('connect', (res) => resolve(res.statusCode!))
+      .on('connect', (res, socket) => { socket.destroy(); resolve(res.statusCode!); })
       .on('response', (res) => resolve(res.statusCode!))
       .on('error', reject)
       .end();
@@ -56,6 +56,26 @@ test('guard rejects malformed targets outright', async () => {
   assert.equal((await get(port, 'ftp://example.com/')).status, 400);
 });
 
+test('CONNECT status checks close the upgraded socket even when the response body arrives later', async () => {
+  let closed: Promise<unknown> | undefined;
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer(socket => {
+    sockets.add(socket);
+    closed = once(socket, 'close', { signal: AbortSignal.timeout(2000) });
+    socket.once('data', () => {
+      socket.write('HTTP/1.1 403 Forbidden\r\ncontent-length: 12\r\n\r\n');
+      const timer = setTimeout(() => socket.end('private host'), 20);
+      socket.once('close', () => clearTimeout(timer));
+    });
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  try {
+    assert.equal(await connect((server.address() as net.AddressInfo).port, '127.0.0.1:1'), 403);
+    assert.ok(closed);
+    await closed;
+  } finally { for (const socket of sockets) socket.destroy(); server.close(); }
+});
+
 test('closing a browser request closes its unfinished upstream connection', async () => {
   const upstream = http.createServer(); upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
   const port = (upstream.address() as net.AddressInfo).port;
@@ -70,4 +90,30 @@ test('closing a browser request closes its unfinished upstream connection', asyn
     const closed = once(response, 'close', { signal: AbortSignal.timeout(2000) });
     request.destroy(); await closed;
   } finally { request.destroy(); guard.close(); upstream.closeAllConnections(); upstream.close(); }
+});
+
+test('a browser CONNECT client sending FIN closes its upstream without waiting for the peer', async () => {
+  const peers = new Set<net.Socket>();
+  const upstream = net.createServer({ allowHalfOpen: true }, socket => { peers.add(socket); socket.resume(); });
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  let outbound: net.Socket | undefined;
+  const guard = await guardFor(() => new Promise((resolve, reject) => {
+    outbound = net.connect((upstream.address() as net.AddressInfo).port, '127.0.0.1', () => resolve(outbound!));
+    outbound.once('error', reject);
+  }));
+  const client = net.connect(guard.port, '127.0.0.1');
+  try {
+    await once(client, 'connect');
+    const response = once(client, 'data');
+    client.write('CONNECT fixture.test:443 HTTP/1.1\r\nHost: fixture.test\r\n\r\n');
+    assert.match(String((await response)[0]), /200 Connection Established/);
+    const closed = once(outbound!, 'close', { signal: AbortSignal.timeout(2000) });
+    client.end();
+    await closed;
+    assert.equal(outbound!.destroyed, true);
+  } finally {
+    client.destroy(); outbound?.destroy();
+    for (const peer of peers) peer.destroy();
+    guard.close(); upstream.close();
+  }
 });

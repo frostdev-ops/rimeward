@@ -149,6 +149,14 @@ test('local desktop browser: tabs, input batches, live frames and native session
     await runCmds(s, [{ t: 'closetab', i: 0 }]);
     for (let attempt = 0; !s.pages.length && attempt < 20; attempt++) await new Promise(r => setTimeout(r, 20));
     assert.equal(s.pages.length, 1, 'closing the final tab leaves a usable new tab');
+    // A stalled Page.startScreencast reply cannot bypass graceful-close's
+    // deadline and leave the real Chromium process alive indefinitely.
+    s.cast = new Promise(() => {});
+    const closed = new Promise<void>(resolve => s!.context.once('close', () => resolve()));
+    const started = Date.now();
+    await closeSession(s);
+    assert.ok(Date.now() - started < 10_000, 'screencast cleanup shares the close deadline');
+    await Promise.race([closed, new Promise((_, reject) => setTimeout(() => reject(Error('Chromium survived close deadline')), 5000))]);
   } finally {
     if (s) await closeSession(s);
     if (oldDesktop === undefined) delete process.env.RIMEWARD_DESKTOP; else process.env.RIMEWARD_DESKTOP = oldDesktop;

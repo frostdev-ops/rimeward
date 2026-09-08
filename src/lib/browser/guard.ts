@@ -106,8 +106,9 @@ async function tunnel(dial: Dial, req: http.IncomingMessage, sock: net.Socket, h
     sock.end(`HTTP/1.1 ${code} ${code === 403 ? 'Forbidden' : 'Bad Gateway'}\r\ncontent-type: text/plain\r\ncontent-length: ${Buffer.byteLength(up.message)}\r\n\r\n${up.message}`);
     return;
   }
-  if (sock.destroyed) {
+  if (sock.destroyed || sock.readableEnded) {
     up.destroy();
+    sock.destroy();
     return;
   }
   sock.write('HTTP/1.1 200 Connection Established\r\n\r\n');
@@ -118,5 +119,7 @@ async function tunnel(dial: Dial, req: http.IncomingMessage, sock: net.Socket, h
     sock.destroy();
   };
   up.on('error', drop).on('close', drop);
-  sock.on('close', drop);
+  // Upgraded HTTP sockets permit half-open connections. Chromium quitting
+  // can send FIN without reaching `close` while an upstream waits forever.
+  sock.on('end', drop).on('close', drop);
 }

@@ -503,10 +503,10 @@ export async function closeSession(s: Session): Promise<void> {
   if (sessions.get(s.key) === s) sessions.delete(s.key);
   s.unsubRoute?.();
   await Promise.race([saveView(s), sleep(1_000)]);
-  await stopCast(s);
   // Graceful first (Browser.close flushes the profile); if the browser won't
-  // go, the process scan below will.
-  const closed = await Promise.race([s.close().then(() => true, () => true), sleep(CLOSE_MS).then(() => false)]);
+  // go, the process scan below will. A stalled CDP screencast must not prevent
+  // that deadline from starting.
+  const closed = await Promise.race([(async () => { await stopCast(s); await s.close(); return true; })().catch(() => true), sleep(CLOSE_MS).then(() => false)]);
   if (!closed && s.backend === 'local') killByProfile(path.join(PROFILES, String(s.userId), s.ward));
   emit(s, { type: 'closed' });
 }

@@ -7,7 +7,7 @@ temporary files, with no model calls or personal application input.
 
 | Check | Result |
 | --- | --- |
-| Full Node suite | 474 passed, none skipped |
+| Full Node suite | 476 passed, none skipped |
 | TypeScript and desktop lint | Passed |
 | macOS native formatting, Clippy and unit tests | Passed; twelve unit tests |
 | Linux parent Clippy | Passed in isolated Linux build environment |
@@ -32,7 +32,7 @@ temporary files, with no model calls or personal application input.
 | Web deployment | 0.23.0 at `5ffef5e`; online database/application/nginx rollback backup retained, migrations 021/022 applied, database integrity and public/origin HTTP health passed |
 | Apple Silicon installation | Signed 0.5.0 installed after graceful shutdown and profile backup; 29 wards and recovery records restored, paired server sync and authenticated public relay read passed |
 | macOS permission setup and restoration | Request/settings/recheck/relaunch UI, denied status, failed-recovery gating, page/draft/editor/undo/expanded/layout restoration fixtures passed; native local-origin and safe-destination tests passed |
-| Local browser | Installed failure reproduced; local routing, paste, batched tab input, independent resize, reconnect and native Chromium session restoration checks passed; installed fixed-app check pending |
+| Local browser | Installed failure reproduced; local routing, paste, batched tab input, independent resize, reconnect, native Chromium session restoration, stalled capture shutdown and half-closed proxy cleanup checks passed; installed fixed-app check pending |
 | Connected Account page | Reproduced Cloudflare script rewriting, missing server-build CSS and a native redirect loop; Cloudflare exclusion applied, mixed-build asset/tab checks passed; fixed-app installation pending |
 | Installed macOS permissions | Screen recording and Accessibility are off; host accurately reports permission-required and local permission instructions |
 
