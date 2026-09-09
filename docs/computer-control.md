@@ -1,5 +1,7 @@
 # Remote Desktop and Rime computer control
 
+For user setup, permissions, and everyday operation, see the wiki's [Remote Desktop guide](https://github.com/frostdev-ops/rimeward/wiki/Remote-Screen-Control). This document describes the implementation and its validation boundaries.
+
 A Remote Desktop ward targets one paired computer using `WardInstance.device`.
 It opens view-only; **Take control** acquires the physical desktop's single input
 lease. Human takeover preempts Rime. Taking over another viewer is explicit.
@@ -148,6 +150,8 @@ each saved prefix chunk, and appends only after it matches. This avoids server f
 storage but rereads the saved prefix. A changed prefix leaves the partial copy intact.
 
 ## TURN and operational monitoring
+
+The adapter and provisioning script currently target `turn.frostdev.io` explicitly. Self-hosters using another domain must adapt both the adapter/health check and provisioning configuration; setting a secret does not change the TURN hostname. See the [self-hosting caveat](https://github.com/frostdev-ops/rimeward/wiki/Remote-Screen-Control#turn-is-an-advanced-deployment-specific-step) before using the deployment-specific sequence below.
 
 Create a DNS-only `turn.frostdev.io` A record for the deployment host, then run
 `sudo bash ops/turn-setup.sh` there from the reviewed checkout. The script backs up

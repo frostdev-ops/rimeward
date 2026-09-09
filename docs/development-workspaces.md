@@ -1,5 +1,7 @@
 # One Rimeward instance, across desktop and browser
 
+This is the engineering reference for runtime behavior and validation. For installation and daily use, start with the wiki's [desktop-only guide](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup) or [remote/web guide](https://github.com/frostdev-ops/rimeward/wiki/Remote-Web-Setup).
+
 The Tauri app runs the existing Astro 7 backend and Rimeward harness locally. Node 22.22.0 is a Tauri sidecar; application code, native dependencies, migrations, assets, and pinned Chromium are bundled for each target OS/architecture. The local owner is created on first launch. When a server is connected, the app shares its dashboard, pages, appearance, and Rime profile. Integration requests use that account automatically; credentials stay on the installation that holds them. Standalone installations can configure their own integrations. The desktop keeps a stable loopback port; register its displayed origin and callback paths with any OAuth clients you configure locally. Initial integration authorization is performed on the desktop.
 
 ## Use

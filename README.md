@@ -3,278 +3,133 @@
 </p>
 
 <p align="center">
-  An agentic harness with a dashboard for a face: Rime, leylines, wards. And a standalone desktop development environment.
-  <br>
-  <a href="https://github.com/frostdev-ops/rimeward/releases/latest">Published desktop installers</a> · macOS (Apple Silicon) · Windows · Linux
+  <strong>A workspace for your agents, your work, and your sense of style.</strong><br>
+  An open-source agentic harness built around aesthetics, productivity, and making yourself at home.
 </p>
-
-Rimeward is an agentic harness in the shape of a personal dashboard. **Rime**, the built-in
-agent, has real tools over everything on the board. **Leylines** wire what happens in one ward
-to what another one does. Every **ward**, from the inbox to a real browser, is one thing to
-watch or one thing to do. All of it is yours to shape: what runs, how it looks, and what the
-agent may do on its own.
-
-## Screens
 
 <p align="center">
-  <img src="docs/goldens/splash.png" alt="The splash: living topography" width="880">
+  <a href="https://github.com/frostdev-ops/rimeward/releases/latest">Download desktop</a> ·
+  <a href="https://github.com/frostdev-ops/rimeward/wiki">Read the wiki</a> ·
+  <a href="https://github.com/frostdev-ops/rimeward/wiki/Remote-Web-Setup">Self-host</a> ·
+  <a href="CONTRIBUTING.md">Contribute</a>
 </p>
-<p align="center">
-  <img src="docs/goldens/dashboard.png" alt="The dashboard, default layout" width="880">
-</p>
-
-## What it does
-
-- **An agent with the run of the place.** Rime reads and edits the same wards you do: the
-  layout, the theme, the leylines, service status, weather, mail, calendar, Notion, timers,
-  packets, a bash sandbox, the web, and a browser you both drive. It keeps its memory and skills
-  as wards, speaks to MCP servers, wakes on a schedule or on a message, and asks before anything
-  leaves the building. Several Rime wards can run side by side, each with its own model,
-  approvals and caps. The chat context meter uses live model limits from Codex/OpenRouter,
-  includes instructions and tools, and labels estimated usage and cached or unavailable capacity.
-- **Leylines, the automations.** A routine finishing, a button pressed, a service going down,
-  mail arriving, a chat message, the weather turning, a time of day; then a timer starts, a
-  Notion task is checked, a message is sent, a packet moves, Rime is asked. Conditions,
-  templates and fan-out, drawn on a canvas across every page.
-- **Wards for what you already use.** Service status for your own servers (http, tcp, pm2,
-  docker, systemd) with history, incidents and charts; one inbox over Gmail, Outlook, Zoho and
-  IMAP; a merged agenda over Google, Outlook, iCloud and a Notion database; Notion databases
-  and pages as tables, lists, calendars and capture lines; chat wards for Discord, Telegram,
-  Slack, Twilio, Matrix, Teams and push; routine timers, launchers, buttons and flows; a notepad
-  with ink, whose handwriting Rime transcribes.
-- **Make it yours.** Per-user themes with presets, accent and glass; 43 typefaces; six icon
-  sets; eighteen animated shader backgrounds or your own photo, and a header banner that runs
-  the same scenes; pages, containers and a Configure dialog on every ward. The splash, the
-  name and the brand art belong to the instance, not the repo.
-- **Develop on your desktop, pick up on your phone.** Open a local project into an editor
-  with a left-hand file explorer, tabs, search/replace, recovery diffs, and bundled Biome
-  linting and formatting. Real terminals run your shell, Codex, or Claude Code; Rime can
-  coordinate their assignments and Git worktrees. A paired server relays the same live
-  desktop environment through one dashboard. Pages, settings, icons, backgrounds, branding,
-  and Rime stay in sync; the app routes work automatically. Project folders stay on their
-  computer, and its tools become unavailable remotely while that computer is offline.
-
-## The words
-
-Rimeward has its own vocabulary, and the code follows it.
-
-**Rimeward** is the dashboard behind the login and the desktop app; the splash in front of it
-says whatever your instance's site settings say. Rime is the frost that grows on the windward
-side of things; Rimeward is where you keep watch.
-
-A **ward** is one card on the dashboard. Every ward is one thing to watch or one thing to do: the
-weather, an inbox, a Notion database, a routine timer, a real browser. Wards come from a catalog,
-grouped by what they are for: *At a glance*, *Mail*, *Chat & messaging*, *Notion*, *Write &
-capture*, *Leylines & automation*, *Rime* (including development wards), and *Layout & looks*. Wards live on **pages**, the tabs
-across the top; a **container** groups wards; a **spacer** is breathing room.
 
 <p align="center">
-  <img src="docs/goldens/wards.png" alt="The ward catalog, in edit mode" width="880">
+  <a href="https://github.com/frostdev-ops/rimeward/actions/workflows/test.yml"><img src="https://github.com/frostdev-ops/rimeward/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-89cbd5" alt="MIT license"></a>
 </p>
-
-A **leyline** is a wire from something that happens in one ward to something another ward does:
-a routine finishing, a button being pressed, a service going down, mail arriving, a message in a
-chat, the weather turning; then a timer starts, a Notion task is checked, a message is sent, a
-flow packet moves, Rime is asked. A leyline can carry conditions, and every leyline is one
-trigger, one action; fan-out is more leylines. **Leylines mode** is where you draw them, across
-every page at once.
 
 <p align="center">
-  <img src="docs/goldens/leylines.png" alt="Leylines mode" width="880">
+  <img src="docs/goldens/splash.png" alt="Rimeward's animated topographic welcome screen" width="960">
 </p>
 
-**Rime** is the agent that lives in the dashboard. It reads the same wards you do, keeps its own
-memory and skills as wards, drives the same browser you drive, and asks before anything leaves
-the building: mail, chat, and the rest of the outbound tools wait for a confirm. A **routine** is
-a timer with rounds. A **packet** is what moves between flow wards. The **home route** is the
-desktop app's tunnel: a browser ward on the server egressing from your own connection, or running
-its Chromium on your machine entirely. It remains compatible with earlier clients. One shared dashboard brings pages, appearance, and Rime together without a server/local selector. Execution placement and connection recovery are handled by the app. A **project** is an approved local folder referenced by a page's
-development wards.
+## Make room for the way you work
+
+Rimeward brings an AI agent, a development workspace, and your everyday tools into a place you can shape. Write code beside a live terminal. Keep your notes, calendar, inbox, and browser within reach. Give your agent context from the things you're looking at, then keep working while it handles a task.
+
+It's an **agentic harness**: the environment around a model that gives it tools, context, memory, approvals, and a way to do useful work. The built-in agent, **Rime**, can work with your projects and dashboard, use a browser, coordinate other agents, and follow automations you set up. You choose its provider and model, what it can access, and when it needs your approval.
+
+The aesthetics are part of the idea. Arrange your own pages, choose the typography and icons, tune the colors and glass, and set a living background or a favorite photo. Build a quiet place to focus, a personal command center, or something in between.
+
+**Start with the desktop app on its own.** Add a server later if you want a web dashboard, services that stay online, or access to your desktop from another device.
+
+## What you can do
+
+| | In Rimeward |
+| --- | --- |
+| **Work with an agent** | Chat with Rime, attach files, mention a ward with `@`, inspect tool activity, and follow background tasks. Give separate agent wards their own roles and models. |
+| **Build things** | Open a local project with an editor, real shell terminals, Git changes, recovery diffs, and bundled linting and formatting. Run your installed Codex or Claude Code CLI in a terminal. |
+| **Bring your day together** | Put notes, routines, weather, service health, mail, calendars, Notion, and messaging tools on pages that make sense to you. Connect only the services you use. |
+| **Connect actions** | Draw **Leylines** between wards: a button starts a routine, a service incident asks Rime to investigate, or an event feeds the next step of a workflow. |
+| **Share a browser with Rime** | Browse in a real Chromium session, keep logins on its owning computer, manage downloads and extensions, and ask Rime about the current page. |
+| **Make it feel like yours** | Choose themes, fonts, icon packs, backgrounds, header scenes, page layouts, and instance branding. Appearance belongs to your workspace. |
+| **Pick up elsewhere** | With a paired server, use your live desktop-owned editor and terminals from a browser or phone. Add a Remote Desktop ward when you need the computer's screen, too. |
 
 <p align="center">
-  <img src="docs/goldens/rime.png" alt="The Rime ward" width="430">
-  <img src="docs/goldens/browser.png" alt="A browser ward" width="430">
+  <img src="docs/goldens/dashboard.png" alt="A Rimeward page with Rime, a browser, notes, routines, and everyday tools" width="960">
 </p>
 
-In the code the words keep their engineering names where they were there first: a ward is a
-`WardInstance` from the `CATALOG` in `src/lib/wards.ts`; leylines are logic edges in
-`src/lib/logic*.ts` (triggers, conditions, actions, the `.wiring` mode); Rime is `src/lib/agent/`.
-User-facing copy always says ward, leyline, Rime.
+### A few words you'll see
 
-## Stack
+A **ward** is a tool on a page: an editor, an inbox, a notepad, an agent. **Pages** organize your wards. **Rime** is the agent. **Leylines** connect events in one ward to actions in another. That's enough vocabulary to get started.
 
-Astro 7 (SSR, Node adapter) · TypeScript · Tailwind 4 · SQLite (`better-sqlite3`) · three.js
-for the splash · Playwright for the browser wards · Tauri 2 (Rust) for the desktop app ·
-CodeMirror 6 + Biome for editing · xterm.js + node-pty for terminals.
-Node 22.18 or newer.
+## Choose how to run it
 
-## Run it
+| | Desktop only | Remote / web |
+| --- | --- | --- |
+| **Best for** | A personal workspace on one computer. | A browser dashboard, always-on services, or reaching a paired desktop elsewhere. |
+| **What you install** | The desktop app. Node and Chromium are bundled. | A Rimeward server; add the desktop app for local projects and native tools. |
+| **What you manage** | Your app, files, model connection, and optional integrations. | Server updates, HTTPS, accounts, backups, integrations, and relay configuration. |
+| **Where work runs** | On your computer; cloud model calls use your chosen provider. | Web features on the server; project files, shells, and native tools on the paired desktop. |
+| **When the desktop is off** | Local work and local automations stop. | Server features remain available; that desktop's tools and screen do not. |
+| **Complexity** | The easiest starting point. Local models and OAuth integrations add setup. | More flexibility and more administration. Screen streaming adds permissions and network considerations. |
+| **Guide** | [Desktop setup](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup) | [Remote / web setup](https://github.com/frostdev-ops/rimeward/wiki/Remote-Web-Setup) |
 
-```sh
-npm install
-cp .env.example .env            # PUBLIC_BASE_URL and TOKEN_ENC_KEY are required
-node bin/rimeward.mjs users create you@example.com --admin   # prints the password once
-npm run dev:env                 # http://localhost:4321 (.env loaded)
-npm test                        # node --test
-npm run build && npm run preview
-```
+### Desktop: get started in a few steps
 
-`node bin/rimeward.mjs doctor` lists what is still missing. The CLI also manages users,
-settings, the splash, the brand files, and backups (`--help`).
+1. Download an installer from [Releases](https://github.com/frostdev-ops/rimeward/releases/latest): **Apple Silicon macOS**, **Windows**, or **Linux**. See the [platform requirements](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup#requirements).
+2. Launch Rimeward. Under **Start right here**, choose **Continue without connecting** or **Open or create a project**.
+3. Open **Account → Agent** to connect a model provider when you're ready to use Rime.
+4. Open a project, or edit a page and add the wards you want.
 
-## Configure
+No Rimeward server, domain, Docker installation, or separate Node installation is needed. A standalone app can still use online services: **desktop-only does not mean every feature works offline**. For offline AI, configure a local model endpoint and download its model first.
 
-Everything an instance is comes from `.env`, the settings table, and the data directory. The
-repo carries nothing of yours.
+[Set up the desktop →](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup)
 
-| Variable | What it is |
-|---|---|
-| `PUBLIC_BASE_URL` | The URL people reach the site on. Redirect URIs, the CSRF check and the Secure cookie flag derive from it. |
-| `PORT`, `HOST` | `3005` and `127.0.0.1` behind a reverse proxy; `0.0.0.0` in a container. |
-| `HOMEPAGE_DATA_DIR` | The database, uploads, browser profiles and the agent's files. Default `./data`. |
-| `TOKEN_ENC_KEY` | 32 bytes base64. Seals every stored credential; part of every backup. |
-| `GOOGLE_CLIENT_ID/SECRET` | Google sign-in and the Gmail / Calendar links. |
-| `SSO_WORKSPACE_DOMAIN` | A Google Workspace domain that may sign in without an invite (its first user becomes admin). Unset: invited addresses only. |
-| `MS_CLIENT_ID/SECRET`, `MS_TENANT_ID` | Outlook and Teams. The tenant defaults to `common`. |
-| `NOTION_CLIENT_ID/SECRET`, `ZOHO_CLIENT_ID/SECRET` | Notion pages and databases; Zoho Mail. |
-| `BROWSER_EXECUTABLE`, `BROWSER_PROFILES` | A Chromium (or a wrapper that drops root) and where its profiles live. Unset: playwright-core's own, under the data dir. |
-| `PM2_BIN`, `DOCKER_BIN`, `SYSTEMCTL_BIN` | The tools behind pm2 / docker / systemd monitor targets when PATH does not carry them. |
-| `PUBLIC_APP_BUILD` | The build stamp on the dashboard. Default: the package version. |
-| `TZ` | Set in the process manager, not `.env`: the logic engine's clocks and due dates run in it. |
+### Remote / web: start with a server
 
-**Site and brand.** The name, tagline, splash cards and footer are settings, edited on the
-admin page or with `node bin/rimeward.mjs splash`. The wordmark, emblem, header mark and icons
-are files in `data/brand/` (`brand install <slot> <file>` normalises them); without one the
-Rimeward crystal serves.
+Rimeward's web application works on its own for dashboards, integrations, and server-side agents. Pair the desktop app when you want local development tools or screen control from the web. Pairing uses **Connections** and approval in your normal browser.
 
-**Monitoring.** The monitors the Services wards watch are a registry in the database, edited by an
-admin at `/admin/monitors` (or `node bin/rimeward.mjs monitors add|remove|import`): `http` and `tcp`
-probes, and the pm2 processes, docker containers and systemd units of the machine the app runs on —
-it sees no other machine. A Services ward shows a group, a hand-picked set, or everything.
+The [server guide](https://github.com/frostdev-ops/rimeward/wiki/Remote-Web-Setup) covers Docker and Node installations, first login, HTTPS, and the required streaming proxy configuration. The [remote guide](https://github.com/frostdev-ops/rimeward/wiki/Remote-Access) walks through pairing and daily use.
 
-**Browser wards** drive playwright-core's Chromium (`npx playwright-core install chromium`). Run
-the server as a non-root user, or point `BROWSER_EXECUTABLE` at a wrapper that drops root; as
-root without one, Chromium runs without its sandbox. Every host a user names is checked against
-the private address ranges before it is dialled, the Docker bridge range included — reach a
-sibling container by its public name or with host networking.
+**Your projects stay on their computer.** Remote clients control the live desktop; project folders are not mirrored to the server. Shared Rime history, attachments, and memory can contain code and tool output. The server is trusted and can see relayed content; this is not end-to-end encryption against its operator.
 
-The browser toolbar's **Downloads** menu retains website downloads and can download the
-current file, including PDFs displayed inline. Files stay on the browser's computer;
-save a copy or remove them from that menu. Transfers are limited to 25 MB, two minutes,
-and one active download per ward, with up to 100 retained files. Rime uses
-`browser_downloads` and `browser_download` to import a file into its conversation,
-then `read_document`, `search_document`, or `render_document_page` to inspect text,
-scans, diagrams and page layout. Imported attachments follow normal conversation sync.
-Direct file URLs use Chromium's authenticated network stack, including existing logins.
-
-Human controls and Rime tools follow the browser ward's computer placement. An unplaced
-“My computer” ward binds when opened in the desktop app; a server can also discover its
-unique active/profile-owning desktop. An offline or ambiguous owner never silently
-falls back to a different computer. Update both server and desktop for these routes.
-
-## Deploy
-
-`server.mjs` is the production entry: Astro's standalone server plus the websocket upgrade the
-desktop app needs. Run it under a process manager with `.env` loaded
-(`node --env-file=.env server.mjs`, `TZ` set there too) behind a reverse proxy that does not
-buffer live event streams and passes `Upgrade` on `/api/tunnel` and `/api/devices/connect`.
-`ops/nginx.example.conf` includes `ops/runtime-relay.nginx.conf`: install that file at the
-path named by the include. `/runtime/` must have request/response buffering, disk spill,
-caching, and payload logging disabled at the origin and edge. The application adds
-`Cache-Control: no-store`; review CDN overrides before enabling remote access. See the
-[deployment and verification steps](docs/development-workspaces.md#server-configuration-required-for-remote-access).
-
-Give the process ten seconds to stop: browser wards
-close Chromium gracefully so a fresh login's cookies are not lost.
-
-**Docker.** `compose.yaml` builds the image, keeps the data directory in a volume, and runs
-Chromium with the seccomp profile that lets it keep its sandbox as a non-root user.
-
-```sh
-cp .env.example .env            # HOST is set by the image; PUBLIC_BASE_URL is yours
-docker compose up -d --build
-docker compose exec app node bin/rimeward.mjs users create you@example.com --admin
-```
-
-**Back up** the whole data directory and `TOKEN_ENC_KEY`: `node bin/rimeward.mjs backup <dir>`
-takes an online copy of the database and the files beside it. The database alone restores to an
-agent with no memory and tokens nobody can decrypt.
-
-**Limits, on purpose.** Per user and hour: 10 mails, 30 button presses, 60 one-shot model
-calls, 60 chat messages (20 SMS), and each Rime ward's own cap on unattended turns. One server
-timezone. The login throttle keys on the address the server sees, which behind a proxy is the
-proxy's — stricter than trusting a forwarded header without a trusted-proxy list.
-
-## Desktop app
-
-`desktop/` is a standalone Tauri 2 installation of the same backend and Rimeward harness. It bundles Node and Chromium, owns its projects and recovery data locally, and provides modular project, editor, terminal, and Git wards. Browser and phone clients remotely control a paired desktop through an independently usable server. Project folders are never replicated to that server.
-
-```sh
-npm ci  # includes the pinned Tauri CLI
-npm run desktop:dev
-npm run desktop:build
-```
-
-One shared dashboard brings server pages and desktop projects together. The app routes each ward automatically, without a local/server selector; phones control the same live editors and terminals through the server. Returning restores the last page. Project files stay on their original computer.
-
-**Rime can choose a computer.** Ask it to list your paired devices, browse folders, read/edit a project or run commands on a named Mac, Windows PC or Linux machine. Screen control adds screenshots, mouse and keyboard input after you enable it locally in **Connections**; stop it from the tray menu. Linux screen input currently requires X11. See [computer control, platform limits and setup](docs/computer-control.md).
-
-**Rime follows you.** The first connected server supplies Rime's default persona/model and provider access. Rime's own files, memories, skills, attachments, and chat history sync to a local copy. Offline edits reconcile on reconnect; conflicting local versions remain in **Chat history → Recovered version**. Model credentials stay on the server: an offline desktop needs its own configured provider to make new model calls. Chat history and its code/tool excerpts are shared Rime data; project folders, terminal processes, and pending actions are not replicated.
-
-Terminal sessions use keyboard-accessible tabs with visible close buttons, without resizing the ward. Closing a tab keeps its process running; reopen it from the terminal menu. Rime can page through project searches, directories, and Git changes, and retain task reviews with file hashes and reported check results. Long model waits show elapsed time and relay activity; failures include a reference for metadata-only diagnostics.
-
-Rime can make targeted disk edits with [apply_patch](docs/apply-patch.md), including add, update, move, and delete operations. Confirmations expose the full patch; preflight checks protect dirty or human-owned buffers, and recovery copies precede destructive writes. Cancelled or signal-terminated commands carry explicit termination metadata and a null exit code.
-
-**Keep working while a task runs.** Press **Ctrl+B** in chat, or use **Run in background**, to release Rime from a running shell command, terminal wait, or peer-agent request — or, with no tool in the foreground, to hand the whole turn to a background child run over a copy of the thread, so the ward is free for you at once. **Tasks** (also `/tasks`) shows progress, native command output, results, and Stop controls. Rime can start these tools with `background:true`; desktop `terminal_exec` runs project builds, tests, and development servers under the ward's approval policy without opening terminal tabs. Inspect command output in **Tasks**, or explicitly open a retained screen from Terminal **… → Rime commands…**. Completion notices arrive without an extra model call. Task records survive reloads; a runtime restart marks unfinished tasks interrupted and never replays commands.
-
-**Delegation.** Rime can start child runs (`spawn_agent`): independent Rime runs on a task, each with its own thread, that inherit the ward's tools, project and approval policy and never more. Children run unattended — confirm-gated tools decline there and the child reports what needs your confirmation — cannot start children of their own, and are capped at four at once within eight tasks in all. Rime and a child exchange messages through the same inbox peer wards use: a note to a child lands between its rounds; a child's question waits for Rime's answer (an explicit reply, or Rime's end-of-turn reply if the question arrived mid-turn); a child's progress note gets no automatic reply. A child's final report reaches the thread that started it exactly once, as a task notice at Rime's next round — with a short wake-up turn if Rime is idle — and the Tasks drawer shows each child's progress, messages, declined approvals, result, and its provider and model, with Stop. Children belong to the thread that started them: after `/clear` a running child still finishes and its report is filed into the archived thread. Stopping a child aborts its model request and the tools it started; partial results stay; a runtime restart marks it interrupted, never replayed.
-
-**Models.** Rime's providers are the ChatGPT backend (codex), OpenRouter, the OpenAI API with a key, and any number of your own OpenAI-compatible endpoints (Ollama, LM Studio, vLLM, a hosted OpenAI-style API), all configured under **Account → Agent** with credentials sealed at rest. Rime can browse them (`list_models`: exact ids, context windows, reasoning efforts, tool and vision support and prices where a provider reports them, and whether each list is live or cached), choose a provider and model for a child at spawn time, and switch its own model at a round boundary within its provider — a thread is pinned to the provider it started on, and a different provider means a new thread or a child with the context it needs. An id the live catalog does not list is refused, never swapped. A remote endpoint must be https; plain http is allowed only to this machine, from the desktop app, and credentials are never sent through a redirect.
-
-Pair servers in **Connections** after launch. See [development workspace setup and validation](docs/development-workspaces.md), including the required proxy privacy configuration. The desktop release workflow builds for Apple Silicon macOS, Windows, and Linux on a `desktop-v*` tag: macOS DMGs, Windows installers, and Linux DEB/AppImage packages. Intel Macs are not supported. Signing uses the Apple secrets listed in that workflow; publication waits for every supported platform to pass.
-
-The Windows launcher preserves Tauri's resolved runtime path to avoid Node 22's canonical-path startup failure. The startup screen now reports the failing stage and a safe diagnostic code instead of blaming every failure on the operating system credential store. See [startup diagnostics](docs/development-workspaces.md#desktop-startup-diagnostics) for troubleshooting.
-
-First launch offers **Bring your dashboard** or **Start right here**. To connect, enter your
-server address and approve the desktop in your normal browser; the remote dashboard is
-still there. **Open project** reuses an existing project page or creates Editor and Rime
-side by side, with Terminal and Changes below. Rime inherits the page's project context.
-There is no separate development page type. Integrations and CLI
-credentials remain independent on each installation; connecting does not copy them.
+## A closer look
 
 <p align="center">
-  <img src="docs/goldens/editor.png" alt="Editor with project files and Biome diagnostics" width="880">
-  <img src="docs/goldens/terminal.png" alt="A live shell in the streamlined terminal" width="880">
-  <img src="docs/goldens/chat.png" alt="Expanded Rime conversation with activity and code" width="880">
+  <img src="docs/goldens/editor.png" alt="The desktop editor with a project explorer, file tabs, and inline diagnostics" width="960">
+</p>
+
+<details>
+<summary><strong>Agent conversations, automations, and remote access</strong></summary>
+
+<p align="center">
+  <img src="docs/goldens/chat.png" alt="An expanded Rime conversation with tool activity and code" width="960">
+  <img src="docs/goldens/leylines.png" alt="Leylines connecting ward events and actions" width="960">
 </p>
 <p align="center">
-  <img src="docs/goldens/editor-phone.png" alt="The same desktop-owned editor on a phone" width="260">
-  <img src="docs/goldens/terminal-phone.png" alt="Phone terminal with shared control and extra keys" width="260">
-  <img src="docs/goldens/chat-phone.png" alt="Rime conversation on a phone" width="260">
+  <img src="docs/goldens/editor-phone.png" alt="A desktop-owned editor viewed on a phone" width="260">
+  <img src="docs/goldens/terminal-phone.png" alt="A live terminal viewed on a phone" width="260">
+  <img src="docs/goldens/chat-phone.png" alt="Rime on a phone" width="260">
 </p>
 
-All interface icons follow the selected icon or emoji pack, style, tint, size, opacity, and
-stroke settings. Terminals stream output over a shared connection, preserve Unicode widths,
-and recover missed output without replaying input. **Allow Rime to type** takes effect
-immediately and remains separate from **Standard / Unrestricted** CLI launch permissions,
-which change on the next start. New sessions keep Rime input off. Language servers, cross-file
-type checking, debugging, and VS Code extensions remain outside this release. The published
-installer link may lag the source; build this checkout for the new workspace experience
-until a corresponding desktop release is published.
+Screenshots use demonstration data. Available features depend on your installed version, platform, and connected services.
 
-## Layout
+</details>
 
-- `src/pages` routes · `src/lib` the server (auth, site, brand, wards, status, logic engine,
-  agent, tunnel, browser sessions, comms, device relay and local development runtime) ·
-  `src/scripts/app` the dashboard client · `src/styles/frost.css` the token system,
-  `development.css` and `conversation.css` the focused workspace surfaces
-- `bin/rimeward.mjs` the CLI · `migrations/` numbered SQL, applied on first open
-- `desktop/` the Tauri app · `ops/` the nginx example, the seccomp profile, the brand and
-  goldens generators
+## Models, permissions, and expectations
 
-Regenerate the screenshots with `npm run goldens`; the generator uses disposable data and
-the browser/UI smoke tests, without personal accounts or model calls. See [Contributing](CONTRIBUTING.md).
+Rime supports the **ChatGPT backend (Codex)**, **OpenRouter**, the **OpenAI API**, and **OpenAI-compatible endpoints** such as local model servers. Configure providers under **Account → Agent**. Provider access, billing, model availability, and any separately installed CLI authentication remain your responsibility; downloading Rimeward does not include model credits.
+
+Approvals are configurable per agent ward. Native terminal commands use your desktop account's permissions. Review those settings before enabling unattended work. Local files and shells do not depend on a Rimeward server, but connected integrations and cloud models need their respective services.
+
+Rimeward is actively developed. Its editor includes file editing, recovery, and Biome diagnostics; language servers, a full debugger, and VS Code extension compatibility are outside the current editor. Intel Mac installers are not provided. Check release notes before relying on a feature described by the latest source.
+
+## Documentation
+
+The [wiki](https://github.com/frostdev-ops/rimeward/wiki) has two sections:
+
+- **[Desktop only](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup)** — install, connect a model, build your workspace, work with Rime, and look after your local data.
+- **[Remote / web](https://github.com/frostdev-ops/rimeward/wiki/Remote-Web-Setup)** — host the web app, configure integrations, pair computers, use remote tools, and maintain the server.
+
+For implementation details, see the [documentation index](docs/README.md). Wiki sources live in [docs/wiki](docs/wiki/Home.md) so documentation changes can be reviewed with the code.
+
+## Built with
+
+[Astro](https://astro.build), TypeScript, Tailwind CSS, and SQLite power the application. [Tauri](https://tauri.app) wraps the desktop with a bundled Node runtime and Chromium. CodeMirror and Biome power editing; xterm.js and node-pty provide real terminals.
+
+To work on Rimeward itself, follow [CONTRIBUTING.md](CONTRIBUTING.md) for the development environment and checks. Bug reports and focused improvements are welcome in [Issues](https://github.com/frostdev-ops/rimeward/issues) and pull requests.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Make it your own.

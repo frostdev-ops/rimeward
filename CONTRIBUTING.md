@@ -1,9 +1,11 @@
 # Contributing
 
+This guide is for working on Rimeward's source. To install and use the app, start with the [desktop-only](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup) or [remote/web](https://github.com/frostdev-ops/rimeward/wiki/Remote-Web-Setup) wiki guide. User-guide sources are in `docs/wiki/`; update them alongside affected setup or behavior changes.
+
 ## Run it
 
 ```sh
-npm install
+npm ci
 cp .env.example .env                         # PUBLIC_BASE_URL and TOKEN_ENC_KEY at least
 node bin/rimeward.mjs users create you@example.com --admin
 npm run dev:env                              # http://localhost:4321
