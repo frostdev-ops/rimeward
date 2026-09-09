@@ -267,7 +267,7 @@ function stepCard(step: Step, running = false, ward = ''): HTMLElement {
       (typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 1));
     pre.textContent = text.length > 20_000 ? `${text.slice(0, 20_000)}\n… (truncated for display)` : text;
     det.append(sum, pre);
-    if (['computer_screenshot', 'render_document_page'].includes(step.tool) && step.result && typeof step.result === 'object' && 'image_sha256' in step.result && typeof step.result.image_sha256 === 'string' && /^[a-f0-9]{64}$/.test(step.result.image_sha256)) {
+    if (['computer_screenshot', 'computer_app_state', 'computer_app_input', 'render_document_page'].includes(step.tool) && step.result && typeof step.result === 'object' && 'image_sha256' in step.result && typeof step.result.image_sha256 === 'string' && /^[a-f0-9]{64}$/.test(step.result.image_sha256)) {
       const image = el('img', 'mt-2 max-w-full rounded'); image.alt = step.tool === 'render_document_page' ? 'Rime PDF page' : 'Rime computer screenshot'; image.loading = 'lazy';
       image.src = `/api/agent/files?sha=${step.result.image_sha256}&_ward=${encodeURIComponent(ward)}`;
       det.append(image);

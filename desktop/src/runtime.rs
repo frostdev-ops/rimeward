@@ -427,6 +427,9 @@ async fn desktop_request(
     use tauri_plugin_opener::OpenerExt;
     let value = &message["value"];
     match message["op"].as_str() {
+        Some(op) if op.starts_with("computer-app") => {
+            crate::background_apps::request(op, value).await
+        }
         Some(op) if op.starts_with("computer-") => {
             let op = op.to_string();
             let value = value.clone();

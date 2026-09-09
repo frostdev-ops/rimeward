@@ -46,6 +46,9 @@ cap-std = "=4.0.3"
 sha2 = "=0.10.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+cua-driver-sdk = { git = "https://github.com/trycua/cua", rev = "6c0348b059595e63d1df96e6df2047ca7dbbbf1c" }
+platform-macos = { git = "https://github.com/trycua/cua", rev = "6c0348b059595e63d1df96e6df2047ca7dbbbf1c" }
+libc = "0.2"
 objc2-core-graphics = "0.3"
 objc2-core-foundation = "0.3"
 

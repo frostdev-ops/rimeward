@@ -65,6 +65,9 @@ pub fn initialize(profile: std::path::PathBuf) {
             let wake = now().saturating_sub(last) > 1000 || now() < last;
             last = now();
             let available = crate::remote_session::active() && !wake;
+            crate::background_apps::tick(
+                available && remote_enabled() && screen_permission() && input_permission(),
+            );
             crate::remote_files::expire(
                 now(),
                 CONTROL.load(Ordering::SeqCst) & 1 == 1 && available,
@@ -90,6 +93,7 @@ pub fn initialize(profile: std::path::PathBuf) {
 }
 /// Runtime loss/quit closes access without changing the user's persisted Stop latch.
 pub fn disconnect() {
+    crate::background_apps::stop("Computer disconnected");
     CONTROL.fetch_and(!1, Ordering::SeqCst);
     crate::remote_media::stop();
     #[cfg(target_os = "linux")]
@@ -104,6 +108,7 @@ use xcap::Monitor;
 static CONTROL: AtomicU64 = AtomicU64::new(0);
 
 pub fn stop() {
+    crate::background_apps::stop("Stopped locally");
     let _ = CONTROL.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
         Some(n.wrapping_add(2) & !1)
     });
@@ -130,6 +135,16 @@ fn supported() -> bool {
 }
 pub fn remote_enabled() -> bool {
     CONTROL.load(Ordering::SeqCst) & 1 == 1
+}
+#[cfg(target_os = "macos")]
+pub fn has_controller() -> bool {
+    let Ok(mut c) = CONTROLLER.lock() else {
+        return true;
+    };
+    if c.authority.expire(now()) {
+        c.release_inputs();
+    }
+    c.authority.owner.is_some()
 }
 pub fn release_remote_input() {
     if let Ok(mut c) = CONTROLLER.lock() {
@@ -295,6 +310,7 @@ pub(crate) fn physical_key(value: &str) -> Result<u16, String> {
 
 pub fn request(op: &str, value: &Value) -> Result<Value, String> {
     if op == "computer-revoke" {
+        crate::background_apps::stop("Account permissions changed");
         release_remote_input();
         crate::remote_media::stop();
         crate::remote_files::expire(now(), false);
@@ -305,6 +321,7 @@ pub fn request(op: &str, value: &Value) -> Result<Value, String> {
         return Ok(json!({"closed": true}));
     }
     if op == "computer-configure" {
+        crate::background_apps::stop("Computer permissions changed");
         let enable = value["enabled"]
             .as_bool()
             .ok_or("Invalid control permission")?;
@@ -363,6 +380,7 @@ pub fn request(op: &str, value: &Value) -> Result<Value, String> {
             capabilities = crate::remote_wayland::status();
         }
         return Ok(json!({"enabled": control & 1 == 1, "generation": control,
+            "backgroundApps": crate::background_apps::capability(),
             "media": crate::remote_media::available(),
             "clipboardPermission":capabilities["clipboard"], "textPermission":capabilities["text"],
             "screenPermission": screen_permission(), "inputPermission": input_permission(),
@@ -764,6 +782,9 @@ fn clipboard_request(value: &Value) -> Result<Value, String> {
 }
 
 fn controller_request(op: &str, value: &Value) -> Result<Value, String> {
+    if op == "computer-acquire" || op == "computer-agent-acquire" {
+        crate::background_apps::stop("Physical desktop takeover");
+    }
     let current = if matches!(
         op,
         "computer-event" | "computer-acquire" | "computer-agent-acquire"

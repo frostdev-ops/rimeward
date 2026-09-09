@@ -159,6 +159,7 @@ try {
   );
   fs.rmSync(node);
   run(process.execPath, [path.join(here, 'media-runtime.mjs')]);
+  run(process.execPath, [path.join(here, 'cua-runtime.mjs')]);
   rustNotices(path.join(here, 'Cargo.toml'), path.join(runtime, 'rust-licenses'), target);
   fs.writeFileSync(
     path.join(runtime, "runtime.json"),

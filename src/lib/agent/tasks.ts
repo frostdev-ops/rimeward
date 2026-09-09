@@ -33,7 +33,11 @@ interface Running {
   cancellable: boolean;
   release: () => void;
   done: Promise<unknown>;
+  /** Who asked for the cancel — the run's own interrupt line names them. */
+  cancelledBy?: string;
 }
+/** Who cancelled a running job, once someone has. */
+export const cancelledBy = (id: string): string | undefined => live.get(id)?.cancelledBy;
 const live = new Map<string, Running>();
 const OUTPUT_KEEP = 64_000;
 const RESULT_KEEP = 128_000;
@@ -113,11 +117,12 @@ export function backgroundTasks(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id?: stri
   }
   return changed;
 }
-export function cancelTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string): AgentTask {
+export function cancelTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string, by = 'the user'): AgentTask {
   const r = row(ctx, id), run = live.get(id);
   if (!run || !['running', 'stopping'].includes(r.state)) return view(r);
   if (!run.cancellable) throw Error('This tool cannot be stopped safely. It will retain its result when it finishes.');
   db().prepare("UPDATE agent_jobs SET state='stopping' WHERE id=?").run(id);
+  run.cancelledBy ??= by;
   run.ac.abort();
   const updated = row(ctx, id); publish(updated);
   return view(updated);
@@ -272,7 +277,12 @@ export async function runTask(name: string, args: Record<string, unknown>, ctx: 
     flushOutput();
     live.delete(id);
     publish(row(ctx, id));
-    if (def.spawn) void wakeParent(ctx, id);
+    if (def.spawn) {
+      // A question the child was still waiting on closes with the run — an explicit
+      // receipt, never a row left open — BEFORE the completion wake is sent, which is
+      // a note (wait = 0) and stays one.
+      void import('./inbox.ts').then(({ closeChildQuestions }) => { closeChildQuestions(ctx.userId, id, row(ctx, id).state); return wakeParent(ctx, id); });
+    }
   });
   // A spawn detaches itself once its arguments have validated (ToolCtx.detach):
   // a bad spawn is an error to the caller, not a task id that failed at once.

@@ -35,10 +35,17 @@ export async function configureControl(user: number, value: Record<string, unkno
   for (const id of observations.keys()) discard(id);
   return controlSettings(user);
 }
+const appSessions = new Map<string, { session: string; revision: number; timer: ReturnType<typeof setInterval>; cleanup: () => void }>();
+function forgetAppSession(owner: string) {
+  const previous = appSessions.get(owner);
+  if (previous) { clearInterval(previous.timer); previous.cleanup(); }
+  appSessions.delete(owner);
+}
 const policies = new Map<string, { value: DeviceAccessPolicy; at: number }>();
 let policyGeneration = 0;
 export async function invalidateComputerPolicy() {
   policyGeneration++; policies.clear();
+  for (const owner of appSessions.keys()) forgetAppSession(owner);
   for (const id of observations.keys()) discard(id);
   await Promise.all([nativeDesktop('computer-revoke'), import('./remote-desktop-host.ts').then(m => m.stopRemoteHostSessions())]);
 }
@@ -127,4 +134,58 @@ export async function computerInput(user: number, args: Record<string, unknown>,
     discard(String(args.observation));
     return nativeDesktop('computer-input', { ...args, owner: `${owner}:${user}`, ownership: observation.ownership, topology: observation.topology, geometry: observation.geometry, generation: observation.generation, expires: observation.at + 60000 });
   });
+}
+
+/** A separate native session: these operations can never acquire the physical controller. */
+export async function computerApp(user: number, operation: 'apps' | 'state' | 'input' | 'release', args: Record<string, unknown>, owner: string, signal?: AbortSignal) {
+  requireDesktop();
+  const controller = `${owner}:${user}`;
+  if (operation === 'release') {
+    // Revocation must remain possible after access is disabled.
+    const result = await nativeDesktop('computer-app-release', { owner: controller, session: args.session });
+    if (appSessions.get(controller)?.session === args.session) forgetAppSession(controller);
+    return result;
+  }
+  const generation = policyGeneration;
+  const policy = await authorizeRime(user);
+  if (operation === 'input' && !policy.input) throw new DevError('Input is disabled for this account.', 403);
+  const state = await enabled();
+  const capability = state.backgroundApps as { supported?: boolean; reason?: string } | undefined;
+  if (!capability?.supported) throw new DevError(capability?.reason ?? 'Update this desktop to a version with validated background app support.', 409);
+  if (policy.connection === 'approval' && appSessions.get(controller)?.revision !== policy.revision) {
+    const { requireRimeApproval } = await import('./remote-desktop-host.ts');
+    requireRimeApproval(controller, policy.revision);
+  }
+  signal?.throwIfAborted();
+  const release = async (session: string) => {
+    if (appSessions.get(controller)?.session === session) forgetAppSession(controller);
+    await nativeDesktop('computer-app-release', { owner: controller, session }).catch(() => {});
+  };
+  const onAbort = () => {
+    const session = appSessions.get(controller)?.session;
+    if (session) void release(session);
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  let retained = false;
+  try {
+    if (generation !== policyGeneration) throw new DevError('Account authorization changed.', 403);
+    const result = await nativeDesktop(operation === 'apps' ? 'computer-apps' : `computer-app-${operation}`, { ...args, owner: controller }) as Record<string, unknown>;
+    if (signal?.aborted || generation !== policyGeneration) {
+      if (typeof result.session === 'string') await release(result.session);
+      signal?.throwIfAborted();
+      throw new DevError('Account authorization changed during the observation.', 403);
+    }
+    if (typeof result.session === 'string') {
+      const session = result.session, observed = Date.now();
+      forgetAppSession(controller);
+      const timer = setInterval(() => {
+        if (Date.now() - observed >= 60000) { void release(session); return; }
+        void authorizeRime(user).then(() => nativeDesktop('computer-app-heartbeat', { owner: controller, session }))
+          .catch(() => release(session));
+      }, 2000).unref();
+      appSessions.set(controller, { session, revision: policy.revision, timer, cleanup: () => signal?.removeEventListener('abort', onAbort) });
+      retained = true;
+    }
+    return result;
+  } finally { if (!retained) signal?.removeEventListener('abort', onAbort); }
 }

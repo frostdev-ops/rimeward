@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "background-preview",
+  "description": "Local background app preview only. No remote origins or agent control commands.",
+  "windows": ["background-preview"],
+  "permissions": ["allow-background-preview"]
+}

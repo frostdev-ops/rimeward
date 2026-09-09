@@ -37,10 +37,12 @@ export function rustNotices(manifest, output, target) {
     }
     if (!copied.length) {
       // Some published crates omit their repository-wide license. These copies are pinned to the crate's commit.
-      const vcs = JSON.parse(fs.readFileSync(path.join(root, '.cargo_vcs_info.json'), 'utf8'));
+      const gitSource = pkg.source?.match(/^git\+(.+?)(?:\?[^#]*)?#([a-f0-9]{40})$/);
+      const revision = gitSource?.[2] ?? JSON.parse(fs.readFileSync(path.join(root, '.cargo_vcs_info.json'), 'utf8')).git.sha1;
+      const repository = gitSource?.[1] ?? pkg.repository?.replace(/\/$/, '') ?? pkg.name;
       const bundled = fileURLToPath(new URL('./licenses/', import.meta.url));
       const index = JSON.parse(fs.readFileSync(path.join(bundled, 'sources.json'), 'utf8'));
-      const files = index[`${pkg.repository?.replace(/\/$/, '') ?? pkg.name}@${vcs.git.sha1}`] ?? (pkg.license === 'MPL-2.0' ? index['MPL-2.0'] : undefined);
+      const files = index[`${repository}@${revision}`] ?? (pkg.license === 'MPL-2.0' ? index['MPL-2.0'] : undefined);
       for (const record of files ?? []) {
         const bytes = fs.readFileSync(path.join(bundled, record.file));
         if (createHash('sha256').update(bytes).digest('hex') !== record.sha256) throw Error(`License checksum mismatch: ${pkg.name}`);
@@ -51,9 +53,9 @@ export function rustNotices(manifest, output, target) {
     }
     if (!copied.length) throw Error(`Missing upstream license text: ${pkg.name} ${pkg.version}`);
     notices.push({ name: pkg.name, version: pkg.version, license: pkg.license, repository: pkg.repository,
-      source: `https://crates.io/api/v1/crates/${pkg.name}/${pkg.version}/download`, authors: pkg.authors, notices: copied, licenseSources });
+      source: pkg.source.startsWith('git+') ? pkg.source : `https://crates.io/api/v1/crates/${pkg.name}/${pkg.version}/download`, authors: pkg.authors, notices: copied, licenseSources });
   }
   fs.writeFileSync(path.join(output, 'index.json'), JSON.stringify(notices, null, 2));
-  fs.copyFileSync(path.join(path.dirname(manifest), 'Cargo.lock'), path.join(output, 'Cargo.lock'));
+  fs.copyFileSync(path.join(metadata.workspace_root, 'Cargo.lock'), path.join(output, 'Cargo.lock'));
   return notices.length;
 }

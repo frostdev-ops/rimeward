@@ -171,5 +171,40 @@
       "url": "https://raw.githubusercontent.com/nashaofu/wayshot/4351de93758fa02e3c01b712aabbb8fdb8d7ef19/LICENSE",
       "sha256": "5e7ded91ff4154ae6787c6abafba9d63d2b12a0167382fb9ca50ce73e1b9e8ab"
     }
+  ],
+  "https://github.com/trycua/cua@6c0348b059595e63d1df96e6df2047ca7dbbbf1c": [
+    {
+      "file": "cua-6c0348b0/LICENSE.md",
+      "url": "https://raw.githubusercontent.com/trycua/cua/6c0348b059595e63d1df96e6df2047ca7dbbbf1c/LICENSE.md",
+      "sha256": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9"
+    }
+  ],
+  "https://github.com/madsmtm/objc2@4fc083f1c6d6784577e38b0ee8dbd344481e2fd2": [
+    {
+      "file": "objc2-4fc083f1/LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/madsmtm/objc2/4fc083f1c6d6784577e38b0ee8dbd344481e2fd2/LICENSE.txt",
+      "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+    }
+  ],
+  "https://github.com/madsmtm/objc2@e282618be4c3a3b9542957e0c8540e9588472ce8": [
+    {
+      "file": "objc2-e282618b/LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt",
+      "sha256": "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+    }
+  ],
+  "https://github.com/Stranger6667/jsonschema@ecaeceac2340908a8fbf71404442296bd1536520": [
+    {
+      "file": "jsonschema-ecaeceac/LICENSE",
+      "url": "https://raw.githubusercontent.com/Stranger6667/jsonschema/ecaeceac2340908a8fbf71404442296bd1536520/LICENSE",
+      "sha256": "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038"
+    }
+  ],
+  "https://github.com/Nugine/simd@d74c030d9dc4f3cae02146d1f497ff62726ef09a": [
+    {
+      "file": "simd-d74c030d/LICENSE",
+      "url": "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE",
+      "sha256": "71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d"
+    }
   ]
 }

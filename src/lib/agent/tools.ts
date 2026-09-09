@@ -1306,7 +1306,7 @@ export const TOOLS: Record<string, ToolDef> = {
     kind: 'confirm',
     description: 'Request cancellation of a cancellable task in this chat. Native commands terminate their terminal process. Stopping is not rollback; inspect files/output for partial changes. Non-cancellable tools must finish.',
     parameters: obj({ id: str('Task ID') }, ['id']),
-    run: (a, ctx) => cancelTask(ctx, String(a.id)),
+    run: (a, ctx) => cancelTask(ctx, String(a.id), ctx.task ? `child run ${ctx.task}` : 'the parent agent (task_cancel)'),
   },
   inbox: {
     kind: 'read',

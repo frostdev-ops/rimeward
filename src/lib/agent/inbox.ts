@@ -296,6 +296,22 @@ export async function sweepInbox(boot = false): Promise<number> {
 
 // ---------------------------------------------------------------- the tool's entry
 
+/** The run is over: every question it still had open closes with the run's own
+ *  outcome (cancelled, or failed for anything else) — a waiting tool call was
+ *  already released; this is the receipt. */
+export function closeChildQuestions(userId: number, child: string, state: string): number {
+  const cancelled = state === 'cancelled';
+  const rows = getDb()
+    .prepare(`UPDATE agent_inbox SET status = ?, result = ?, finished_at = datetime('now') WHERE user_id = ? AND sender = ? AND wait = 1 AND status IN ('queued', 'delivered') RETURNING id`)
+    .all(cancelled ? 'cancelled' : 'failed', cancelled ? 'the child run was cancelled while waiting for the answer' : `the child run ${state} before the answer came`, userId, child) as { id: number }[];
+  for (const r of rows) {
+    const w = waiters.get(r.id);
+    waiters.delete(r.id);
+    w?.reject(new Error(cancelled ? 'cancelled' : 'the child run ended'));
+  }
+  return rows.length;
+}
+
 /** A child's question the parent has not answered yet, oldest first. */
 function openQuestion(userId: number, child: string, parentWard: string): InboxRow | null {
   return (getDb()

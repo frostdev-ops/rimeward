@@ -13,6 +13,7 @@ import { secretEqual } from './native.ts';
 
 const endpoint = '/api/dev/agent-tools';
 const deviceId = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
+const remoteAppCleanup = new Map<string, () => void>();
 export async function agentDevices(user: number) {
   if (!isDesktop()) return { devices: listDevices(user) };
   const local = { id: 'local', name: os.hostname(), platform: process.platform, online: true };
@@ -34,7 +35,7 @@ export function deviceTool(name: string, args: Record<string, unknown>, ctx: Too
   if (args.device === undefined || args.device === 'local') {
     if (!isDesktop()) throw new DevError('Choose a device ID from list_devices; local tools are unavailable on the server.');
     const value = local(args, ctx);
-    return name === 'computer_screenshot' ? Promise.resolve(value).then(v => storeImage(v, args, ctx)) : value;
+    return ['computer_screenshot', 'computer_app_state', 'computer_app_input'].includes(name) ? Promise.resolve(value).then(v => storeImage(v, args, ctx)) : value;
   }
   return remoteDeviceTool(name, args, ctx, local);
 }
@@ -44,10 +45,11 @@ async function remoteDeviceTool(name: string, args: Record<string, unknown>, ctx
   const pair = isDesktop() ? await rimeConnection(ctx.userId) : undefined;
   if (args.device === pair?.id) value = await local(args, ctx);
   else {
-    const caller = createHash('sha256').update(`${pair?.id ?? `server:${ctx.userId}`}:${ctx.ward}`).digest('hex');
+    const agent = name.startsWith('computer_app') ? `${ctx.conv}:${ctx.task ?? ''}` : '';
+    const caller = createHash('sha256').update(`${pair?.id ?? `server:${ctx.userId}`}:${ctx.ward}${agent ? `:${agent}` : ''}`).digest('hex');
     const request = new Request(`https://rimeward.invalid${endpoint}`, { method: 'POST',
       headers: { 'content-type': 'application/json' }, signal: ctx.signal,
-      body: JSON.stringify({ name, args: { ...args, device: 'local' }, ward: ctx.ward }) });
+      body: JSON.stringify({ name, args: { ...args, device: 'local' }, ward: ctx.ward, ...(agent ? { agent } : {}) }) });
     try {
       const response = isDesktop()
         ? await instanceRequest(ctx.userId, `/runtime/${args.device}${endpoint}`, request)
@@ -79,14 +81,30 @@ async function remoteDeviceTool(name: string, args: Record<string, unknown>, ctx
       throw new DevError(`${e instanceof Error ? e.message : 'Computer disconnected.'} The operation may have completed. Inspect the same device before retrying; commands are never replayed automatically.`, e instanceof DevError ? e.status : 502);
     }
   }
-  return name === 'computer_screenshot' ? storeImage(value, args, ctx) : value;
+  if (['computer_app_state', 'computer_app_input'].includes(name) && value && typeof value === 'object' && 'session' in value && typeof value.session === 'string' && ctx.signal) {
+    const session = value.session, signal = ctx.signal;
+    const key = `${ctx.userId}:${ctx.ward}:${ctx.conv}:${ctx.task ?? ''}:${args.device}`;
+    remoteAppCleanup.get(key)?.();
+    const cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', cancel); remoteAppCleanup.delete(key); };
+    const cancel = () => {
+      cleanup();
+      void import('./tools.ts').then(m => deviceTool('computer_app_release', { runtime: 'desktop', device: args.device, session }, { ...ctx, signal: undefined }, m.LOCAL_DEV_TOOLS.computer_app_release.run)).catch(() => {});
+    };
+    const timer = setTimeout(cleanup, 60000).unref();
+    remoteAppCleanup.set(key, cleanup);
+    signal.addEventListener('abort', cancel, { once: true });
+    if (signal.aborted) { cancel(); signal.throwIfAborted(); }
+  }
+  return ['computer_screenshot', 'computer_app_state', 'computer_app_input'].includes(name) ? storeImage(value, args, ctx) : value;
 }
 async function storeImage(value: unknown, args: Record<string, unknown>, ctx: ToolCtx) {
   // Store image bytes on the conversation's runtime, never a foreign attachment ID.
   if (value && typeof value === 'object' && 'image' in value) {
     const { image, ...receipt } = value as { image: unknown; [key: string]: unknown };
     if (typeof image !== 'string' || image.length > 7 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image)) throw new DevError('Invalid computer image.');
-    const file = await storeAttachment({ userId: ctx.userId, conversationId: ctx.conv, name: 'computer-screen.jpg', mime: 'image/jpeg', bytes: Buffer.from(image, 'base64') });
+    const mime = receipt.imageMime ?? 'image/jpeg';
+    if (mime !== 'image/png' && mime !== 'image/jpeg') throw new DevError('Unsupported computer image format.');
+    const file = await storeAttachment({ userId: ctx.userId, conversationId: ctx.conv, name: `computer-screen.${mime === 'image/png' ? 'png' : 'jpg'}`, mime, bytes: Buffer.from(image, 'base64') });
     return { ...receipt, device: args.device ?? 'local', file_id: file.id, image_sha256: file.sha256 };
   }
   return value;
@@ -115,7 +133,9 @@ export async function relayAgentCaller(user: number, authentication: string | un
   const body = await toolBody(request);
   const ward = getDashboard(user).find(w => w.i === body?.ward && w.type === 'agent');
   if (!source || !ward || wardDevice(user, ward.i) !== source.id) throw new DevError('The agent source must match its signed-in computer and ward.', 403);
-  return createHash('sha256').update(`${source.id}:${ward.i}`).digest('hex');
+  const agent = typeof body.name === 'string' && body.name.startsWith('computer_app') ? body.agent : '';
+  if (agent !== '' && (typeof agent !== 'string' || !/^[0-9]+:[a-zA-Z0-9:-]{0,100}$/.test(agent))) throw new DevError('Invalid background agent identity.', 403);
+  return createHash('sha256').update(`${source.id}:${ward.i}${agent ? `:${agent}` : ''}`).digest('hex');
 }
 /** Only native tools are callable here. Caller identity arrives on the private paired channel. */
 export async function serveDeviceTool(user: number, request: Request) {

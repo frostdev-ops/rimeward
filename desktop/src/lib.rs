@@ -1,6 +1,7 @@
 //! Rimeward desktop: a supervised local backend, persistent native workspaces,
 //! and optional live access through paired remote Rimeward servers.
 
+mod background_apps;
 mod chromium;
 mod commands;
 mod computer;
@@ -55,6 +56,7 @@ pub fn run() {
             commands::workspace_navigation,
             commands::open_workspace,
             runtime::startup_status,
+            background_apps::background_preview,
             #[cfg(target_os = "macos")]
             permissions::macos_permissions
         ])
@@ -62,6 +64,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             input_guardian::initialize(app.handle().clone());
             computer::initialize(app.path().app_data_dir()?);
+            background_apps::initialize(app.handle().clone());
             remote_media::initialize(runtime::resources(app.handle())?.join("media"));
             #[cfg(desktop)]
             setup_tray(app.handle())?;
@@ -99,6 +102,10 @@ pub fn run() {
             // Close = hide: the tunnel only helps while the app is alive.
             #[cfg(desktop)]
             if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "background-preview" {
+                    background_apps::stop("Preview closed locally");
+                    return;
+                }
                 api.prevent_close();
                 let _ = window.hide();
             }

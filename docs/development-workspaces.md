@@ -179,3 +179,9 @@ The effective ward approval policy controls confirmation. Local filesystem owner
 Model waits display elapsed time and last observed relay progress separately from context usage. A heartbeat proves relay activity, not provider token generation. Relay failure receipts carry a category, HTTP status when known and request reference. The last 100 metadata-only failure records per account are retained in `agent_diagnostics:<user>` in the application settings database. Native runtime diagnostics retain fixed stderr categories and lifecycle events in `runtime-diagnostics.jsonl` under the app data directory, rotating at 64 KiB to one previous file; raw stderr and payloads are never logged there. Unix files use owner-only permissions; Windows uses the user's app-data directory access controls. Relayed calls disable automatic inference retries in both adapters and the OpenRouter SDK. Codex can refresh a rejected credential once; it never retries an uncertain relayed inference. Direct provider calls retain their existing transient retry policy.
 
 Source search uses Git’s tracked and non-ignored untracked files for the selected working-tree scope. It does not recurse into nested checkouts. `project_read` search accepts `includeIgnored:true` to explicitly inspect ignored files or another checkout under an approved project root. Non-Git folders use the filesystem walker, excluding hidden and dependency/build directories by default. Binary and oversized file contents remain excluded. The response describes its scope; Git file enumeration uses the existing 2 MiB command-output limit, so narrow the path for larger listings.
+
+## Background app control
+
+The macOS background app integration is staged behind a disabled capability while
+its pinned worker cancellation behavior and signed-host compatibility are validated.
+See [Background app control](background-app-control.md) for the tool contract and release gate.
