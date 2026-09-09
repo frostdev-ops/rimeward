@@ -3,6 +3,8 @@
 
 mod background_apps;
 #[cfg(target_os = "macos")]
+mod background_sharing;
+#[cfg(target_os = "macos")]
 mod background_worker;
 mod chromium;
 mod commands;
@@ -62,7 +64,6 @@ pub fn run() {
             commands::workspace_navigation,
             commands::open_workspace,
             runtime::startup_status,
-            background_apps::background_preview,
             #[cfg(target_os = "macos")]
             permissions::macos_permissions
         ])
@@ -108,10 +109,6 @@ pub fn run() {
             // Close = hide: the tunnel only helps while the app is alive.
             #[cfg(desktop)]
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "background-preview" {
-                    background_apps::stop("Preview closed locally");
-                    return;
-                }
                 api.prevent_close();
                 let _ = window.hide();
             }
@@ -171,6 +168,26 @@ pub fn set_status(app: &AppHandle, text: &str) {
     let _ = (app, text);
 }
 
+#[cfg(target_os = "macos")]
+struct BackgroundTray {
+    status: MenuItem<tauri::Wry>,
+    toggle: MenuItem<tauri::Wry>,
+    stop: MenuItem<tauri::Wry>,
+}
+#[cfg(target_os = "macos")]
+pub fn set_background_status(app: &AppHandle, text: &str, active: bool, paused: bool) {
+    if let Some(menu) = app.try_state::<BackgroundTray>() {
+        let _ = menu.status.set_text(text);
+        let _ = menu.toggle.set_text(if paused {
+            "Resume background control"
+        } else {
+            "Pause background control"
+        });
+        let _ = menu.toggle.set_enabled(active);
+        let _ = menu.stop.set_enabled(active && !paused);
+    }
+}
+
 #[cfg(desktop)]
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{CheckMenuItem, Menu};
@@ -196,6 +213,39 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let menu = Menu::with_items(app, &[&status, &open, &autostart, &stop_control, &quit])?;
+    #[cfg(target_os = "macos")]
+    {
+        let status = MenuItem::new(app, "No background app session", false, None::<&str>)?;
+        let toggle = MenuItem::with_id(
+            app,
+            "background-toggle",
+            "Pause background control",
+            false,
+            None::<&str>,
+        )?;
+        let stop = MenuItem::with_id(
+            app,
+            "background-stop",
+            "Stop background control",
+            false,
+            None::<&str>,
+        )?;
+        menu.insert_items(
+            &[
+                &tauri::menu::PredefinedMenuItem::separator(app)?,
+                &status,
+                &toggle,
+                &stop,
+                &tauri::menu::PredefinedMenuItem::separator(app)?,
+            ],
+            2,
+        )?;
+        app.manage(BackgroundTray {
+            status,
+            toggle,
+            stop,
+        });
+    }
     app.manage(TrayStatus(status));
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().cloned().expect("bundle icon"))
@@ -203,6 +253,10 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main(app),
+            #[cfg(target_os = "macos")]
+            "background-toggle" => background_apps::local_action("toggle"),
+            #[cfg(target_os = "macos")]
+            "background-stop" => background_apps::local_action("stop"),
             "stop-control" => computer::stop(),
             "autostart" => {
                 let launch = app.autolaunch();

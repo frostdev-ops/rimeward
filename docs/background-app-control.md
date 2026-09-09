@@ -55,8 +55,8 @@ Input consumes the observation before dispatch. No uncertain input is replayed.
 Only one app session is retained per host. Native permission/lock/disconnect
 checks and the existing Stop paths invalidate it. Physical takeover invalidates
 background authority. Bringing the target app forward pauses it. Only the local
-preview can Resume, after the app is background again, and input then requires
-a fresh observation. Sessions and image previews are in memory; screenshots
+Rimeward menu bar can Resume, after the app is background again, and input then requires
+a fresh observation. Sessions are in memory; screenshots
 requested by Rime follow existing conversation attachment persistence.
 
 Background operations share a FIFO queue per device, with a 25-second queue
@@ -93,12 +93,21 @@ label immediately before each image, including after approval. Error and list
 receipts also retain the device. The prompt tells Rime to inspect the returned
 image first rather than unconditionally capturing another screenshot.
 
-The compact native preview has its own local-only Tauri capability, opens with
-`focused(false)`, uses the native draggable window frame, and labels its images
-as observations. It shows the app, image age, Rime's screenshot cursor, Pause /
-Resume, Take over (pause), and Stop. Images update on observations around actions;
-it does not claim to be live video. No ordinary web or remote page can invoke
-its resume command.
+The native macOS sharing menu replaces the floating preview window. A
+ScreenCaptureKit stream in the signed host captures only the selected window
+at up to 2 fps and 640 pixels on its longest side. macOS supplies its live preview
+and Stop Sharing control; Rimeward discards the stream frames locally. Agent
+screenshots still come from fresh Cua observations. No display-wide stream,
+audio, camera, or content-changing picker is enabled.
+
+Stop Sharing immediately cancels the worker through its independent Stop channel.
+A local pause latch survives tool release and session expiry; the agent cannot
+resume itself. Rimeward's existing menu-bar dropdown shows the app and pause reason,
+with Pause/Resume and Stop background control. Bringing the target window forward
+also pauses input. Resume stays local, verifies the target when one is retained,
+and requires a new worker and observation. No webview command grants Resume.
+The stream ends on Pause, release, expiry, disconnect, or Quit. Apple's system UI
+is described in [What's new in ScreenCaptureKit](https://developer.apple.com/videos/play/wwdc2023/10136/).
 
 ## Cancellation and release
 
@@ -127,7 +136,7 @@ AX-only snapshot argument. Unconfirmed text pauses for local inspection.
 Disposable native apps and a separate VS Code profile were used on macOS 27
 `26A5416b`. The probe was a Developer ID signed Rimeward bundle, running the actual
 worker and host session code; only app setup/policy plumbing was replaced by the
-scratch harness. The production preview and full installed runtime are checked
+scratch harness. The production sharing menu and full installed runtime are checked
 separately during installation. No model calls or real documents were used.
 
 - Worker metadata, embedded mode, Accessibility/Screen Recording attribution,

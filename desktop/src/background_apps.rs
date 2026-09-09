@@ -1,7 +1,5 @@
 //! Window-only computer control. The native host owns authorization and lifecycle.
 use serde_json::{json, Value};
-#[cfg(target_os = "macos")]
-use tauri::Manager;
 
 pub const REVISION: &str = "6c0348b059595e63d1df96e6df2047ca7dbbbf1c";
 static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
@@ -15,7 +13,7 @@ pub fn capability() -> Value {
     #[cfg(not(target_os = "macos"))]
     let supported = false;
     json!({"supported": supported, "backend": "cua-driver", "version": "0.25.0",
-        "revision": REVISION, "preview": "observations", "webViewText": false, "reason":
+        "revision": REVISION, "preview": "macos-sharing-menu", "webViewText": false, "reason":
         if supported { "Native app background control available. Web-view text requires browser tools or an explicit physical handoff." }
         else { "Background app control has not been validated on this OS build." }})
 }
@@ -47,45 +45,27 @@ pub async fn request(op: &str, args: &Value) -> Result<Value, String> {
     }
 }
 
-#[tauri::command]
-pub fn background_preview(
-    window: tauri::WebviewWindow,
-    action: String,
-    session: Option<String>,
-) -> Result<Value, String> {
-    if window.label() != "background-preview" {
-        return Err("Local preview required".into());
-    }
-    #[cfg(target_os = "macos")]
-    return macos::preview(&action, session.as_deref());
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (action, session);
-        Err("Background app control requires macOS".into())
+#[cfg(target_os = "macos")]
+pub fn sharing_stopped() {
+    macos::latch_pause();
+    refresh_menu();
+}
+#[cfg(target_os = "macos")]
+pub fn local_action(action: &str) {
+    if let Err(error) = macos::local_action(action) {
+        // A failed Resume stays paused and explains why in the native menu.
+        crate::set_background_status(APP.get().unwrap(), &error, true, true);
     }
 }
 #[cfg(target_os = "macos")]
-fn show_preview() {
-    let Some(app) = APP.get() else {
-        return;
-    };
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        if handle.get_webview_window("background-preview").is_none() {
-            let _ = tauri::WebviewWindowBuilder::new(
-                &handle,
-                "background-preview",
-                tauri::WebviewUrl::App("background-preview.html".into()),
-            )
-            .title("Rime · Background app")
-            .inner_size(360.0, 310.0)
-            .min_inner_size(280.0, 240.0)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .focused(false)
-            .build();
-        }
-    });
+fn refresh_menu() {
+    if let Some(app) = APP.get() {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let (text, active, paused) = macos::menu_status();
+            crate::set_background_status(&handle, &text, active, paused);
+        });
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -116,11 +96,19 @@ mod macos {
         target: Target,
         driver: Arc<CuaDriver>,
         observation: Option<Observation>,
-        preview: Value,
+        sharing: Option<crate::background_sharing::Sharing>,
+        label: String,
+        reason: String,
         paused: bool,
         needs_worker: bool,
         heartbeat: u64,
         read_args: Value,
+    }
+    // Local Pause/Stop survives an agent's release and session expiry.
+    static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    pub fn latch_pause() {
+        PAUSED.store(true, Ordering::SeqCst);
+        EPOCH.fetch_add(1, Ordering::SeqCst);
     }
     static SESSION: Mutex<Option<Session>> = Mutex::new(None);
     static BUSY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -370,17 +358,19 @@ mod macos {
             s.driver.cancel();
         }
         let _ = reason;
+        refresh_menu();
     }
     fn pause(reason: &str) {
-        EPOCH.fetch_add(1, Ordering::SeqCst);
+        latch_pause();
         if let Some(s) = SESSION.lock().unwrap().as_mut() {
             s.driver.cancel();
             s.paused = true;
             s.needs_worker = true;
             s.observation = None;
-            s.preview["paused"] = json!(true);
-            s.preview["reason"] = json!(reason);
+            s.sharing = None;
+            s.reason = reason.into();
         }
+        refresh_menu();
     }
     pub fn release(args: &Value) -> Result<Value, String> {
         let owner = args["owner"].as_str().ok_or("Missing agent owner")?;
@@ -399,46 +389,73 @@ mod macos {
         if let Some(s) = old {
             s.driver.cancel();
         }
+        refresh_menu();
         Ok(json!({"released":true}))
     }
-    pub fn preview(action: &str, id: Option<&str>) -> Result<Value, String> {
-        if action == "state" {
-            return Ok(SESSION
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|s| s.preview.clone())
-                .unwrap_or(json!({"active":false})));
+    pub fn menu_status() -> (String, bool, bool) {
+        match SESSION.lock().unwrap().as_ref() {
+            Some(s) => (
+                format!(
+                    "{} · {}",
+                    s.label,
+                    if s.paused {
+                        &s.reason
+                    } else {
+                        "Background control"
+                    }
+                ),
+                true,
+                s.paused,
+            ),
+            None if PAUSED.load(Ordering::SeqCst) => (
+                "Background control paused · Resume required".into(),
+                true,
+                true,
+            ),
+            None => ("No background app session".into(), false, false),
         }
+    }
+    pub fn local_action(action: &str) -> Result<(), String> {
         let mut session = SESSION.lock().unwrap();
-        let s = session.as_mut().ok_or("Background session ended")?;
-        if id != Some(&s.id) {
-            return Err("Background session changed".into());
-        }
-        match action {
-            "pause" | "takeover" => {
+        let Some(s) = session.as_mut() else {
+            if action == "toggle" && PAUSED.load(Ordering::SeqCst) {
+                permitted()?;
+                PAUSED.store(false, Ordering::SeqCst);
                 drop(session);
-                pause("Paused by you. Resume requires a fresh observation.");
+                refresh_menu();
+                return Ok(());
             }
-            "resume" => {
+            return Err("Background session ended".into());
+        };
+        match action {
+            "toggle" if s.paused || PAUSED.load(Ordering::SeqCst) => {
                 permitted()?;
                 geometry(&s.target)?;
                 if BUSY.try_lock().is_err() {
                     return Err("Wait for the current operation to settle before resuming".into());
                 }
+                PAUSED.store(false, Ordering::SeqCst);
+                s.sharing = None;
+                s.needs_worker = true;
                 s.paused = false;
                 s.observation = None;
                 s.heartbeat = now();
-                s.preview["paused"] = json!(false);
-                s.preview["reason"] = json!("Resumed; waiting for a fresh observation");
+                s.reason = "Resumed; waiting for a fresh observation".into();
+                drop(session);
+                refresh_menu();
+            }
+            "toggle" => {
+                drop(session);
+                pause("Paused by you. Resume requires a fresh observation.");
             }
             "stop" => {
                 drop(session);
-                stop("Stopped locally");
+                // Retain the pause latch: an agent cannot reopen sharing after a local Stop.
+                pause("Stopped by you. Resume required.");
             }
-            _ => return Err("Unknown preview action".into()),
+            _ => return Err("Unknown background control action".into()),
         }
-        Ok(json!({"ok":true}))
+        Ok(())
     }
     pub fn tick(available: bool) {
         let mut session = SESSION.lock().unwrap();
@@ -448,6 +465,11 @@ mod macos {
         if !available || now().saturating_sub(s.heartbeat) > 60000 {
             drop(session);
             stop("Background session expired or unavailable");
+            return;
+        }
+        if !s.paused && s.sharing.as_ref().is_some_and(|sharing| sharing.ended()) {
+            drop(session);
+            pause("Sharing stopped in macOS. Resume required.");
             return;
         }
         if !s.paused && geometry(&s.target).is_err() {
@@ -542,6 +564,11 @@ mod macos {
             }
             return result;
         }
+        if PAUSED.load(Ordering::SeqCst) {
+            return Err(
+                "Background control is paused. Resume from the local Rimeward menu bar".into(),
+            );
+        }
         if op == "computer-app-state" {
             let read_args = json!({"max_elements":integer(args,"max_elements",300,1,300)?,
                 "max_depth":integer(args,"max_depth",15,1,25)?,"cursor":integer(args,"cursor",0,0,100000)?,"query":query(args)?});
@@ -565,10 +592,11 @@ mod macos {
                 let guard = SESSION.lock().unwrap();
                 match guard.as_ref() {
                     Some(s) if s.owner != owner || s.target.pid != pid || s.target.window != window || s.target.stamp != target.stamp => return Err("Release the current background session before selecting another app or window".into()),
-                    Some(s) if s.paused => return Err("Background app session is paused. Only the local preview can Resume".into()),
+                    Some(s) if s.paused || s.sharing.as_ref().is_some_and(|sharing| sharing.ended()) => return Err("Background app session is paused. Resume from the local Rimeward menu bar".into()),
                     Some(s) => s.driver.is_available().then(|| s.driver.clone()), None => None,
                 }
             };
+            let needs_sharing = existing.is_none();
             let driver = match existing {
                 Some(d) => d,
                 None => worker(Some(&target)).await?,
@@ -577,21 +605,49 @@ mod macos {
                 let _ = driver.shutdown().await;
                 return Err(error);
             }
+            let sharing = if needs_sharing {
+                let capture_worker = driver.clone();
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    tauri::async_runtime::spawn_blocking(move || {
+                        crate::background_sharing::Sharing::start(pid, window, capture_worker)
+                    }),
+                )
+                .await
+                .map_err(|_| "Sharing preview startup timed out".to_string())
+                .and_then(|v| v.map_err(|e| e.to_string()))
+                .and_then(|v| v);
+                match result {
+                    Ok(sharing) => Some(sharing),
+                    Err(error) => {
+                        driver.cancel();
+                        return Err(format!("Cannot start the macOS sharing menu: {error}"));
+                    }
+                }
+            } else {
+                None
+            };
+            check_epoch(epoch)?;
+            geometry(&target)?;
             {
                 let mut guard = SESSION.lock().unwrap();
                 if let Some(s) = guard.as_mut() {
                     s.driver = driver.clone();
                     s.needs_worker = false;
                     s.read_args = read_args.clone();
-                }
-                if guard.is_none() {
+                    if sharing.is_some() {
+                        s.sharing = sharing;
+                    }
+                } else {
                     *guard = Some(Session {
                         id: token()?,
                         owner: owner.into(),
                         target,
                         driver: driver.clone(),
                         observation: None,
-                        preview: json!({"active":true}),
+                        sharing,
+                        label: format!("Window {window}"),
+                        reason: String::new(),
                         paused: false,
                         needs_worker: false,
                         heartbeat: now(),
@@ -599,6 +655,7 @@ mod macos {
                     });
                 }
             }
+            refresh_menu();
             return observe(driver, epoch, None).await;
         }
         if op != "computer-app-input" {
@@ -607,7 +664,11 @@ mod macos {
         let (driver, target, observation) = {
             let mut guard = SESSION.lock().unwrap();
             let s = guard.as_mut().ok_or("Take a fresh app observation")?;
-            if s.owner != owner || s.paused || args["session"] != s.id {
+            if s.owner != owner
+                || s.paused
+                || s.sharing.as_ref().is_some_and(|sharing| sharing.ended())
+                || args["session"] != s.id
+            {
                 return Err("Background session changed or paused".into());
             }
             let o = s
@@ -737,31 +798,6 @@ mod macos {
         };
         check_epoch(epoch)?;
         geometry(&target)?;
-        {
-            let mut guard = SESSION.lock().unwrap();
-            let s = guard.as_mut().ok_or("Background session ended")?;
-            s.preview["cursor"] = if let Some(element) = element {
-                observation.state["elements"]
-                    .as_array()
-                    .and_then(|elements| {
-                        let frame =
-                            &elements.iter().find(|e| e["element_token"] == element)?["frame"];
-                        let bounds = &observation.state["window_bounds"];
-                        let x = (frame["x"].as_f64()? + frame["w"].as_f64()? / 2.0
-                            - bounds["x"].as_f64()?)
-                            / bounds["width"].as_f64()?
-                            * observation.state["screenshot_width"].as_f64()?;
-                        let y = (frame["y"].as_f64()? + frame["h"].as_f64()? / 2.0
-                            - bounds["y"].as_f64()?)
-                            / bounds["height"].as_f64()?
-                            * observation.state["screenshot_height"].as_f64()?;
-                        (x.is_finite() && y.is_finite()).then(|| json!({"x":x,"y":y}))
-                    })
-                    .unwrap_or(Value::Null)
-            } else {
-                json!({"x":input["x"],"y":input["y"]})
-            };
-        }
         let result = call(&driver, tool, input).await;
         if let Err(error) = check_epoch(epoch) {
             return Err(format!(
@@ -935,10 +971,14 @@ mod macos {
         state["coordinate_space"] = json!("window_screenshot_pixels");
         state["screenshot_hash"] = json!(image_hash);
         s.heartbeat = at;
-        s.preview = json!({"active":true,"paused":false,"session":s.id,"app":state["app_name"],"observedAt":at,
-            "image":image.data_base64,"imageMime":image.mime_type,"width":state["screenshot_width"],"height":state["screenshot_height"],"cursor":s.preview["cursor"]});
+        s.label = state["app_name"]
+            .as_str()
+            .unwrap_or("App")
+            .chars()
+            .take(80)
+            .collect();
         drop(guard);
-        show_preview();
+        refresh_menu();
         let rows = state["elements"].as_array().cloned().unwrap_or_default();
         // Keep control identity, geometry, and failure metadata ahead of optional tree detail.
         state.as_object_mut().unwrap().retain(|key, _| {
