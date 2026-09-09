@@ -5433,7 +5433,7 @@ dependencies = [
 
 [[package]]
 name = "rimeward"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "arboard",
  "ashpd",

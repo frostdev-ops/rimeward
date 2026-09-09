@@ -1,5 +1,6 @@
 # Rimeward (desktop/): signed + notarized macOS DMG, Windows and Linux
-# bundles, attached to a GitHub Release. Tag `desktop-vX.Y.Z` to run it.
+# bundles, attached to a draft GitHub Release. Tag `desktop-vX.Y.Z` to run it.
+# Publish manually only after Windows and Linux packaged startup is verified.
 #
 # Secrets (repo settings → Secrets → Actions):
 #   APPLE_CERTIFICATE            base64 of the Developer ID Application .p12
@@ -192,18 +193,3 @@ jobs:
             RIMEWARD_MEDIA_VIEWERS=4 RIMEWARD_MEDIA_FAULTS=1 \
             node tests/remote-media-smoke.mjs
           rm -rf "$package_dir"
-
-  publish:
-    needs: build
-    if: github.event_name == 'push' || !inputs.validation_only
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-      - name: Publish completed desktop release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag=$(node -p "'desktop-v' + require('./desktop/tauri.conf.json').version")
-          gh release edit "$tag" --draft=false --latest
