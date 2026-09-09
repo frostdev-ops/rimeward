@@ -503,8 +503,12 @@ pub fn request(op: &str, value: &Value) -> Result<Value, String> {
         return Err("Screenshot expired; take another screenshot".into());
     }
     let old = &value["geometry"];
+    // The JavaScript bridge serializes integral floats (1.0) as integers (1).
     for field in ["display", "x", "y", "width", "height", "scale", "rotation"] {
-        if old[field] != current[field] {
+        if old[field]
+            .as_f64()
+            .is_none_or(|number| Some(number) != current[field].as_f64())
+        {
             return Err("Display geometry changed; take another screenshot".into());
         }
     }

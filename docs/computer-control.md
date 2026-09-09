@@ -183,6 +183,11 @@ and ownership generation. Human takeover invalidates it; another viewer receivin
 a frame does not. Screenshot images follow the batch's tool replies and existing
 approval ordering in both provider dialects. Screenshot content remains untrusted.
 
+Input coordinates use the attachment's `imageWidth` and `imageHeight`, starting
+at its top-left corner. The display's `width`, `height`, `x` and `y` describe the
+native desktop geometry, not input pixels. The native geometry guard compares
+numeric values so JavaScript's `1.0` to `1` conversion does not invalidate a capture.
+
 ## Boundaries and verification
 
 `/api/remote-desktop/` is excluded from automatic runtime forwarding. Viewer calls
