@@ -621,7 +621,7 @@ export function killByProfile(prefix: string): number {
   try {
     out = process.platform === 'win32'
       ? execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand',
-          Buffer.from('$ProgressPreference = "SilentlyContinue"; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }', 'utf16le').toString('base64'),
+          Buffer.from('$ProgressPreference = "SilentlyContinue"; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process -Property ProcessId,CommandLine -Filter "CommandLine LIKE \'%--user-data-dir=%\'" | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }', 'utf16le').toString('base64'),
         ], { encoding: 'utf8', timeout: 10_000, windowsHide: true })
       : execFileSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8', timeout: 10_000 });
   } catch (error) {
