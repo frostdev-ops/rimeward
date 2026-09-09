@@ -12,18 +12,18 @@ This wiki has **two sections**. Start with desktop only if you want the fewest m
 
 ## 1. Desktop only
 
-1. **[Install and first launch](Desktop-Setup)** — platform requirements, no-server onboarding, and optional source builds.
-2. **[Make your workspace](Desktop-Workspace)** — pages, appearance, projects, editing, terminals, browsers, and useful everyday workflows.
-3. **[Work with Rime](Desktop-Rime)** — providers, local models, context, approvals, tasks, memory, and Leylines.
-4. **[Data, updates, and troubleshooting](Desktop-Care)** — offline behavior, backups, recovery, startup issues, and moving to remote access.
+1. **[Install and first launch](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup)** — platform requirements, no-server onboarding, and optional source builds.
+2. **[Make your workspace](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Workspace)** — pages, appearance, projects, editing, terminals, browsers, and useful everyday workflows.
+3. **[Work with Rime](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Rime)** — providers, local models, context, approvals, tasks, memory, and Leylines.
+4. **[Data, updates, and troubleshooting](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Care)** — offline behavior, backups, recovery, startup issues, and moving to remote access.
 
 ## 2. Remote / web
 
-1. **[Install the web application](Remote-Web-Setup)** — Docker or Node, configuration, an administrator account, HTTPS, and first checks.
-2. **[Connect services](Remote-Integrations)** — model access, OAuth callbacks, mail, calendar, Notion, messaging, and service monitoring.
-3. **[Pair and use a desktop](Remote-Access)** — connection approval, automatic routing, shared data, and working from another browser or phone.
-4. **[Use Remote Desktop](Remote-Screen-Control)** — screen viewing, human/Rime control, permissions, files, audio, and transport limitations.
-5. **[Operate and troubleshoot](Remote-Operations)** — backups, upgrades, server shutdown, connection diagnosis, and privacy checks.
+1. **[Install the web application](https://github.com/frostdev-ops/rimeward/wiki/Remote-Web-Setup)** — Docker or Node, configuration, an administrator account, HTTPS, and first checks.
+2. **[Connect services](https://github.com/frostdev-ops/rimeward/wiki/Remote-Integrations)** — model access, OAuth callbacks, mail, calendar, Notion, messaging, and service monitoring.
+3. **[Pair and use a desktop](https://github.com/frostdev-ops/rimeward/wiki/Remote-Access)** — connection approval, automatic routing, shared data, and working from another browser or phone.
+4. **[Use Remote Desktop](https://github.com/frostdev-ops/rimeward/wiki/Remote-Screen-Control)** — screen viewing, human/Rime control, permissions, files, audio, and transport limitations.
+5. **[Operate and troubleshoot](https://github.com/frostdev-ops/rimeward/wiki/Remote-Operations)** — backups, upgrades, server shutdown, connection diagnosis, and privacy checks.
 
 ### The three pieces
 

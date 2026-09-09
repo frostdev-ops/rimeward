@@ -1,8 +1,8 @@
-**Section 2 · Remote / web** · [Wiki home](Home) · Next: [Connect services](Remote-Integrations)
+**Section 2 · Remote / web** · [Wiki home](https://github.com/frostdev-ops/rimeward/wiki/Home) · Next: [Connect services](https://github.com/frostdev-ops/rimeward/wiki/Remote-Integrations)
 
 The web application is useful on its own: it hosts dashboards, integrations, browser wards, and server-side Rime work. Pairing a desktop adds access to that computer's projects and native tools. You do not need screen streaming just to use a remote editor or terminal.
 
-If someone already operates a Rimeward server for you, obtain an account from them and go to [Pair and use a desktop](Remote-Access). Only follow the hosting steps below when you are operating your own instance.
+If someone already operates a Rimeward server for you, obtain an account from them and go to [Pair and use a desktop](https://github.com/frostdev-ops/rimeward/wiki/Remote-Access). Only follow the hosting steps below when you are operating your own instance.
 
 ## What you take on
 
@@ -97,7 +97,7 @@ If using Cloudflare, adapt the [relay rule templates](https://github.com/frostde
 3. Check the public URL and timezone before connecting OAuth services or schedules.
 4. Configure a provider under **Account → Agent** and test it when you are ready to use model credits.
 5. Add only the service connections and wards you need.
-6. If using remote access, pair a desktop and verify live updates, offline behavior, and revocation using [the access guide](Remote-Access).
+6. If using remote access, pair a desktop and verify live updates, offline behavior, and revocation using [the access guide](https://github.com/frostdev-ops/rimeward/wiki/Remote-Access).
 
 ## Benefits and limits
 

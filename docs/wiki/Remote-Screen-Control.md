@@ -1,4 +1,4 @@
-**Section 2 · Remote / web** · [Wiki home](Home) · Previous: [Pairing](Remote-Access) · Next: [Operations](Remote-Operations)
+**Section 2 · Remote / web** · [Wiki home](https://github.com/frostdev-ops/rimeward/wiki/Home) · Previous: [Pairing](https://github.com/frostdev-ops/rimeward/wiki/Remote-Access) · Next: [Operations](https://github.com/frostdev-ops/rimeward/wiki/Remote-Operations)
 
 The **Remote Desktop** ward shows a paired computer's screen and can pass mouse/keyboard input to it. It is optional: remotely routed Editor and Terminal wards work without opening a screen session.
 

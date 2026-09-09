@@ -1,4 +1,4 @@
-**Section 1 · Desktop only** · [Wiki home](Home) · Previous: [Setup](Desktop-Setup) · Next: [Work with Rime](Desktop-Rime)
+**Section 1 · Desktop only** · [Wiki home](https://github.com/frostdev-ops/rimeward/wiki/Home) · Previous: [Setup](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup) · Next: [Work with Rime](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Rime)
 
 ## Build a place you want to work in
 
@@ -61,4 +61,4 @@ Mention the Browser or Notepad with **@** in Rime to provide context. Browser me
 - **Focus:** place a routine timer beside your notes and calendar; use a Leyline to start the next step when a round ends.
 - **Research:** keep Browser and Notepad beside Rime, mention the page you're reading, and ask for a summary tied to that context.
 
-Continue with [Rime and automations](Desktop-Rime) to configure the model and decide how much autonomy it gets.
+Continue with [Rime and automations](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Rime) to configure the model and decide how much autonomy it gets.

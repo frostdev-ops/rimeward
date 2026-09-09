@@ -1,4 +1,4 @@
-**Section 1 · Desktop only** · [Wiki home](Home) · Previous: [Work with Rime](Desktop-Rime)
+**Section 1 · Desktop only** · [Wiki home](https://github.com/frostdev-ops/rimeward/wiki/Home) · Previous: [Work with Rime](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Rime)
 
 ## Know what lives locally
 
@@ -50,4 +50,4 @@ When reporting a bug, include your OS, app version, the failing stage, and a sho
 
 ## Add remote access later
 
-You do not need to reinstall or relocate projects. Set up a server or obtain an account on one you trust, then use **Connections** in the desktop app. Read [Pair and use a desktop](Remote-Access) before connecting so you understand the shared dashboard and Rime-history synchronization.
+You do not need to reinstall or relocate projects. Set up a server or obtain an account on one you trust, then use **Connections** in the desktop app. Read [Pair and use a desktop](https://github.com/frostdev-ops/rimeward/wiki/Remote-Access) before connecting so you understand the shared dashboard and Rime-history synchronization.

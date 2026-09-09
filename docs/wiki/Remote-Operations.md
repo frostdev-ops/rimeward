@@ -1,4 +1,4 @@
-**Section 2 · Remote / web** · [Wiki home](Home) · Previous: [Screen control](Remote-Screen-Control)
+**Section 2 · Remote / web** · [Wiki home](https://github.com/frostdev-ops/rimeward/wiki/Home) · Previous: [Screen control](https://github.com/frostdev-ops/rimeward/wiki/Remote-Screen-Control)
 
 ## Keep the service understandable
 
@@ -44,7 +44,7 @@ docker compose cp app:/data/backups/rimeward-2026-09-09 ./backups/
 
 Use a unique name each time and move the exported backup to protected storage outside the server. The CLI's fixed subdirectory list does not recursively include `/data/backups`. Backups left only in the same Docker volume do not protect against losing that volume.
 
-A web backup does not back up desktop projects, `workspaces.db`, OS credentials, or native processes. Follow [desktop care](Desktop-Care) separately. Dashboard/history synchronization is not a substitute for either backup.
+A web backup does not back up desktop projects, `workspaces.db`, OS credentials, or native processes. Follow [desktop care](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Care) separately. Dashboard/history synchronization is not a substitute for either backup.
 
 ## Restore deliberately
 

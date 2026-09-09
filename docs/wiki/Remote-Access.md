@@ -1,4 +1,4 @@
-**Section 2 · Remote / web** · [Wiki home](Home) · Previous: [Integrations](Remote-Integrations) · Next: [Screen control](Remote-Screen-Control)
+**Section 2 · Remote / web** · [Wiki home](https://github.com/frostdev-ops/rimeward/wiki/Home) · Previous: [Integrations](https://github.com/frostdev-ops/rimeward/wiki/Remote-Integrations) · Next: [Screen control](https://github.com/frostdev-ops/rimeward/wiki/Remote-Screen-Control)
 
 Remote access connects a desktop you own to your Rimeward account on a server you trust. The server supplies the web entry point; the desktop continues to own project files, editor recovery, terminals, and native execution.
 

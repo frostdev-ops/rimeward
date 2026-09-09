@@ -1,4 +1,4 @@
-**Section 2 · Remote / web** · [Wiki home](Home) · Previous: [Web setup](Remote-Web-Setup) · Next: [Pair a desktop](Remote-Access)
+**Section 2 · Remote / web** · [Wiki home](https://github.com/frostdev-ops/rimeward/wiki/Home) · Previous: [Web setup](https://github.com/frostdev-ops/rimeward/wiki/Remote-Web-Setup) · Next: [Pair a desktop](https://github.com/frostdev-ops/rimeward/wiki/Remote-Access)
 
 Connect services in two stages: the operator enables any required application credentials, then each user authorizes their own account and configures its wards. Most installations can start with a model provider and add other services later.
 

@@ -1,4 +1,4 @@
-**Section 1 · Desktop only** · [Wiki home](Home) · Previous: [Workspace](Desktop-Workspace) · Next: [Data and troubleshooting](Desktop-Care)
+**Section 1 · Desktop only** · [Wiki home](https://github.com/frostdev-ops/rimeward/wiki/Home) · Previous: [Workspace](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Workspace) · Next: [Data and troubleshooting](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Care)
 
 Rime is the agent in your workspace. The model provides reasoning; Rimeward supplies the conversation, tools, project context, memory, and permission checks that let it act.
 

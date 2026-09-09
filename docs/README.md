@@ -27,7 +27,7 @@ Files named `*-audit.md`, `*-review.md`, `*-follow-up.md`, `*-plan.md`, and `*-a
 
 ## Maintaining the wiki
 
-User-guide sources live in `docs/wiki/`; GitHub serves them from its separate `rimeward.wiki.git` repository. Keep `_Sidebar.md` and `_Footer.md` with the pages. Wiki links use GitHub page names without `.md`; open the published wiki for navigation, or the local files above while editing.
+User-guide sources live in `docs/wiki/`; GitHub serves them from its separate `rimeward.wiki.git` repository. Keep `_Sidebar.md` and `_Footer.md` with the pages. Links between user guides target the published wiki so they also work when reading the checked-in Markdown. Use the local file links above while editing.
 
 Review the source guides with application changes, then publish those reviewed Markdown files to the wiki repository. Preserve unrelated wiki pages and review its diff before pushing. No generated site, extra documentation framework, or application deployment is required.
 

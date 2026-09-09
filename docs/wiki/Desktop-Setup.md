@@ -1,4 +1,4 @@
-**Section 1 · Desktop only** · [Wiki home](Home) · Next: [Make your workspace](Desktop-Workspace)
+**Section 1 · Desktop only** · [Wiki home](https://github.com/frostdev-ops/rimeward/wiki/Home) · Next: [Make your workspace](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Workspace)
 
 Use this path to run Rimeward entirely as a desktop application. You do not need a Rimeward account on a server, a domain, Docker, a reverse proxy, or an externally reachable port. The installed app bundles its backend, Node runtime, Chromium, and editor tools, and creates its local owner on first launch.
 
@@ -32,13 +32,13 @@ Open **Account → Agent**, choose a provider, and complete the connection shown
 
 A provider connection is required for new Rime responses. The editor, terminal, layout, and other non-AI tools do not require model credits. A terminal running Codex or Claude Code requires that CLI to be installed and authenticated separately; a Rime provider connection does not sign the CLI in.
 
-For local/offline AI, see [Work with Rime](Desktop-Rime#use-a-local-model). Desktop-only describes where Rimeward runs; cloud AI, online websites, weather, and integrations still need their own network connections.
+For local/offline AI, see [Work with Rime](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Rime#use-a-local-model). Desktop-only describes where Rimeward runs; cloud AI, online websites, weather, and integrations still need their own network connections.
 
 ## Optional integrations
 
 Start with notes, a routine timer, a browser, and a project. Add mail, calendar, Notion, or messaging only as needed through Account and the relevant ward's Configure dialog.
 
-A standalone installation can use its own service credentials. OAuth services also need an application registration, runtime client-credential configuration, and correct callbacks: use the desktop's actual stable loopback origin, not the example server URL. The [integration guide](Remote-Integrations) lists callback paths and the packaged desktop's configuration limitations. This advanced setup is optional and does not require hosting Rimeward remotely.
+A standalone installation can use its own service credentials. OAuth services also need an application registration, runtime client-credential configuration, and correct callbacks: use the desktop's actual stable loopback origin, not the example server URL. The [integration guide](https://github.com/frostdev-ops/rimeward/wiki/Remote-Integrations) lists callback paths and the packaged desktop's configuration limitations. This advanced setup is optional and does not require hosting Rimeward remotely.
 
 ## Optional: build the desktop from source
 
