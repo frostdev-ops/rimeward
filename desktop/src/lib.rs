@@ -2,6 +2,8 @@
 //! and optional live access through paired remote Rimeward servers.
 
 mod background_apps;
+#[cfg(target_os = "macos")]
+mod background_worker;
 mod chromium;
 mod commands;
 mod computer;
@@ -33,6 +35,10 @@ use tauri::menu::MenuItem;
 struct TrayStatus(MenuItem<tauri::Wry>);
 
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).as_deref() == Some("--rimeward-background-guardian") {
+        std::process::exit(background_worker::guardian());
+    }
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new("--rimeward-input-guardian"))
     {

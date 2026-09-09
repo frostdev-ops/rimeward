@@ -784,6 +784,12 @@ fn clipboard_request(value: &Value) -> Result<Value, String> {
 fn controller_request(op: &str, value: &Value) -> Result<Value, String> {
     if op == "computer-acquire" || op == "computer-agent-acquire" {
         crate::background_apps::stop("Physical desktop takeover");
+        #[cfg(target_os = "macos")]
+        if !crate::background_worker::settled() {
+            return Err(
+                "Background input is being released; retry physical takeover shortly".into(),
+            );
+        }
     }
     let current = if matches!(
         op,

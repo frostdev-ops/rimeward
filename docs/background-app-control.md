@@ -1,14 +1,18 @@
 # Background app control
 
-The integration is staged but **not enabled**. `computer_status.backgroundApps`
-reports the pinned backend and the validation blocker. No agent argument, account
-setting, environment variable, or remote request can enable it.
+Native background control is enabled only on Apple Silicon macOS 27 build
+`26A5416b`, validated on the owner's Mac. Other builds, including macOS 14,
+remain disabled. No environment variable or remote argument can opt a host in.
+Text in windows containing web content is refused before dispatch: isolated
+VS Code testing showed that background text could be ignored. Use browser tools
+or an explicit physical-control handoff for those fields. Click/scroll receipts
+remain best effort and include a new observation for inspection.
 
 ## Backend and ownership
 
 The macOS parent uses Cua Driver 0.25.0 at
 `6c0348b059595e63d1df96e6df2047ca7dbbbf1c`, through the Rust SDK's private worker
-constructor. The worker inherits anonymous pipes from the signed Rimeward parent;
+protocol. The worker inherits anonymous pipes from the signed Rimeward parent;
 there is no public socket, raw Cua tool endpoint, or automatic daemon attachment.
 Startup checks driver metadata, host permission attribution, and the observed
 parent application's bundle identity. Worker telemetry is disabled. Production
@@ -44,58 +48,60 @@ Resume, Take over (pause), and Stop. Images update on observations around action
 it does not claim to be live video. No ordinary web or remote page can invoke
 its resume command.
 
-## Release blocker
+## Cancellation and release
 
-The pinned SDK's `worker.rs::request_with_timeout` holds the child-process mutex
-while waiting for a response (up to 120 seconds). `shutdown_sync` acquires that
-same mutex and sends shutdown on the same serialized channel. The private
-worker also processes requests sequentially. Consequently a Stop, cancellation,
-foreground takeover, or permission loss can revoke host authority immediately,
-but cannot yet guarantee that already-running backend input stops immediately
-or that routed held input is released after abrupt worker death.
+The host uses the pinned SDK's private protocol with separate I/O and Stop
+channels. Stop drops an inherited pipe immediately, independently of a blocked
+request. A release-only child records each held key/button before the patched
+worker can post its down event. On Stop, target invalidation, worker death, or
+parent death, it terminates the sender before releasing retained input. Physical
+control waits for release to settle. There is no reconnect or automatic replay.
 
-The capability is therefore disabled in `desktop/src/background_apps.rs`.
-Enabling it requires fixing or replacing this cancellation behavior, not merely
-changing that flag. A dependency update must preserve the pinned-source,
-private-worker, exact-window, and no-physical-fallback contracts.
+The small pinned-source overlay guards public and private PID event posts and
+checks the Objective-C metaclass for the keyboard authentication factory. Fresh
+key-up events avoid carrying an obsolete authentication envelope from serialized
+down events. Mouse releases preserve exact window-routing fields. The host uses
+WindowServer's direct foreground check, since NSWorkspace can return stale
+activation state in a process without an AppKit event loop. The guardian also
+checks process start time, bounds, current Space, visibility and unlocked session.
 
-## Required live validation before enabling
+Local Pause retains the session but cancels the worker. Resume requires a fresh
+worker and observation. The snapshot excludes the application menu bar. Pixel
+input uses the host-bound snapshot geometry without incorrectly passing Cua's
+AX-only snapshot argument. Unconfirmed text pauses for local inspection.
 
-Run from a signed Rimeward app, first on the current macOS 27 build and separately
-at the macOS 14 boundary. Record the OS build, app signature, Cua revision and
-observed permission attribution. Keep typing in a foreground scratch document
-while background clicks, scrolls and text target a separate scratch app. Verify
-pointer position, typing destination, foreground app, and Space throughout.
+## Live validation recorded 2026-09-09
 
-Cover native and Electron apps, multiple windows, covered/minimized windows,
-dialogs and out-of-process panels, Retina scaling, and unavailable private APIs.
-Exercise stale observations, duplicate requests, foreground takeover, local Stop,
-remote takeover, cancellation during input, lock, permission revocation, worker
-failure, and relay disconnect. Verify no redirection, replay, or held input.
-Do not mark an OS supported based on compilation, unit tests, or an unsigned
-helper. Until these gates pass, older/unsupported hosts keep their existing
-physical Remote Desktop controls.
+Disposable native apps and a separate VS Code profile were used on macOS 27
+`26A5416b`. The probe was a Developer ID signed Rimeward bundle, running the actual
+worker and host session code; only app setup/policy plumbing was replaced by the
+scratch harness. The production preview and full installed runtime are checked
+separately during installation. No model calls or real documents were used.
 
-## Validation recorded 2026-09-09
+- Worker metadata, embedded mode, Accessibility/Screen Recording attribution,
+  and the observed signed parent bundle identity passed.
+- Exact-window native AX clicks, pixel clicks, text and scroll worked with a
+  separate foreground scratch document receiving concurrent typing. Neither the
+  physical pointer nor foreground app changed; the other target window was intact.
+- Synthetic native text delivered balanced key transitions and the expected text.
+- Stop during a stopped worker's held key, abrupt worker death, and abrupt parent
+  death released input without replay. The final parent-death probe recorded
+  27 key-downs/27 key-ups and a 50 ms release. Held-mouse Stop recorded two
+  downs/two ups. These are observations on this Mac, not universal timing bounds.
+- Host session checks passed duplicate-observation rejection, menu exclusion,
+  Pause/Resume with fresh observation, foreground takeover, local Stop and the
+  disconnect/revocation path (`tick(false)`).
+- VS Code text delivery failed its file-content check. The host now refuses text
+  in web-content windows before dispatch; a live refusal left the scratch file
+  unchanged. It does not silently switch to foreground input.
 
-- Existing `npm test`: 481 passed; no test code was added or removed.
-- Typecheck and desktop lint passed.
-- A disposable committed snapshot outside Documents completed prebuild, including
-  the pinned worker, bundled Node, native modules, Chromium, and license notices.
-- Staged `desktop:check` passed: formatting, Clippy, 12 Rust unit tests, and the
-  existing input-recovery harness. Its Linux OS acceptance run is not a macOS
-  background-input proof.
-- Packaged standalone and remote workspace smoke checks passed using disposable
-  data and model fixtures; no external provider calls were made.
-- Goldens completed and regenerated screens were inspected. The preview was also
-  rendered with a generated test state; this does not validate native focus behavior.
-- A disposable PNG receipt check exercised both new image-returning tools.
+Actual lock/permission-revocation UI, other Spaces, out-of-process dialogs and
+macOS 14 were not exercised. The host fails closed on unavailable target/session
+state; compatibility is intentionally limited to the recorded build and routes.
+Do not expand the OS allowlist without separate signed-host acceptance.
 
-The pinned upstream native code emits linker warnings for duplicate
-`CoreMediaBridge` Swift symbols, both in its own worker and in the linked SDK.
-The system Swift runtime search path needed by the SDK was added to the host.
-The duplicate-symbol warnings, signed-app permission attribution, concurrent
-foreground typing, immediate cancellation/held-input recovery, and separate
-macOS 27/macOS 14 compatibility still need resolution or live validation.
-These checks preceded deployment and desktop installation. Background control
-remains disabled in deployed and locally installed builds until the gates above pass.
+Existing JavaScript tests, typecheck, desktop lint, native checks and packaged
+standalone validation remain required for every build. No repository tests were
+added or removed. The pinned dependencies still emit duplicate CoreMediaBridge
+Swift linker warnings; the signed worker's capture/input paths were exercised,
+but those upstream warnings have not been eliminated.

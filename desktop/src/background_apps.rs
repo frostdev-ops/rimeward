@@ -10,11 +10,14 @@ pub fn initialize(app: tauri::AppHandle) {
     let _ = APP.set(app);
 }
 pub fn capability() -> Value {
-    // Empty until the signed host passes the compatibility and cancellation matrix.
-    // A release must add verified OS builds here; an agent cannot opt a host in.
-    json!({"supported": false, "backend": "cua-driver", "version": "0.25.0",
-        "revision": REVISION, "preview": "observations", "reason":
-        "Background app control is awaiting signed-host compatibility and cancellation validation."})
+    #[cfg(target_os = "macos")]
+    let supported = crate::background_worker::validated_host();
+    #[cfg(not(target_os = "macos"))]
+    let supported = false;
+    json!({"supported": supported, "backend": "cua-driver", "version": "0.25.0",
+        "revision": REVISION, "preview": "observations", "webViewText": false, "reason":
+        if supported { "Native app background control available. Web-view text requires browser tools or an explicit physical handoff." }
+        else { "Background app control has not been validated on this OS build." }})
 }
 pub fn stop(reason: &str) {
     #[cfg(target_os = "macos")]
@@ -86,10 +89,7 @@ fn show_preview() {
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
-    use cua_driver_sdk::{
-        ConfiguredDriverOptions, CuaDriver, EmbeddedEnvironmentVariable, PrivateWorkerOptions,
-        RuntimeAuthorizationOptions, SessionPermissionMode, ToolResult,
-    };
+    use crate::background_worker::{ToolResult, Worker as CuaDriver};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -113,6 +113,7 @@ mod macos {
         observation: Option<Observation>,
         preview: Value,
         paused: bool,
+        needs_worker: bool,
         heartbeat: u64,
     }
     static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -141,22 +142,7 @@ mod macos {
         Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
     }
     fn stamp(pid: i32) -> Option<(u64, u64)> {
-        // Kernel start time prevents a recycled pid from inheriting an observation.
-        unsafe {
-            let mut info: libc::proc_bsdinfo = std::mem::zeroed();
-            let size = std::mem::size_of_val(&info) as i32;
-            if libc::proc_pidinfo(
-                pid,
-                libc::PROC_PIDTBSDINFO,
-                0,
-                &mut info as *mut _ as *mut _,
-                size,
-            ) != size
-            {
-                return None;
-            }
-            Some((info.pbi_start_tvsec, info.pbi_start_tvusec))
-        }
+        crate::background_worker::stamp(pid)
     }
     fn permitted() -> Result<(), String> {
         crate::computer::permitted()?;
@@ -172,7 +158,9 @@ mod macos {
         if stamp(target.pid) != Some(target.stamp) {
             return Err("Target app exited or restarted".into());
         }
-        if platform_macos::apps::frontmost_pid().is_none_or(|pid| pid == target.pid) {
+        if platform_macos::input::skylight::front_process_matches(target.pid, target.window)
+            != Some(false)
+        {
             return Err(
                 "Target app is foreground; move to another app and explicitly Resume".into(),
             );
@@ -195,14 +183,14 @@ mod macos {
         }
         permitted()
     }
-    async fn call(driver: &CuaDriver, name: &str, args: Value) -> Result<ToolResult, String> {
+    async fn call(driver: &Arc<CuaDriver>, name: &str, args: Value) -> Result<ToolResult, String> {
         let result = driver
             .call_tool(name.into(), args.to_string())
             .await
             .map_err(|e| e.to_string())?;
         if result.is_error {
             return Err(format!(
-                "{}: {}",
+                "{}: {}. Do not replay this input; inspect the app and explicitly Resume locally.",
                 result
                     .error_code
                     .as_deref()
@@ -221,39 +209,20 @@ mod macos {
         )
         .map_err(|e| e.to_string())
     }
-    async fn worker() -> Result<Arc<CuaDriver>, String> {
+    async fn worker(target: Option<&Target>) -> Result<Arc<CuaDriver>, String> {
         let app = APP.get().ok_or("Native host unavailable")?;
         let path = crate::runtime::resources(app)
             .map_err(|e| e.to_string())?
             .join("cua/cua-driver");
-        let driver = tokio::task::spawn_blocking(move || {
-            CuaDriver::create_private_worker(PrivateWorkerOptions {
-                binary_path: path.to_string_lossy().into_owned(),
-                host_bundle_id: "io.frostdev.rimeward".into(),
-                startup_timeout_ms: Some(10000),
-                shutdown_timeout_ms: Some(2000),
-                environment: vec![EmbeddedEnvironmentVariable {
-                    name: "CUA_DRIVER_RS_TELEMETRY_ENABLED".into(),
-                    value: "false".into(),
-                }],
-                inherit_stderr: false,
-                configured_driver: ConfiguredDriverOptions {
-                    claude_code_compatibility: false,
-                    authorization: RuntimeAuthorizationOptions {
-                        allowed_modes: vec![SessionPermissionMode::Standard],
-                        compatibility_mode: SessionPermissionMode::Standard,
-                        compatibility_capability_manifest_path: None,
-                        compatibility_bounded_manifest_path: None,
-                        unrestricted_acknowledged: false,
-                        max_session_ttl_seconds: 3600,
-                        max_idle_ttl_seconds: 60,
-                    },
-                },
-            })
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        let target = target
+            .map(|t| crate::background_worker::Target::capture(t.pid, t.window))
+            .transpose()?;
+        let generation = token()?;
+        let driver =
+            tokio::task::spawn_blocking(move || CuaDriver::spawn(&path, target, generation))
+                .await
+                .map_err(|e| e.to_string())??;
+        driver.initialize().await?;
         let verified = async {
             let metadata = driver.metadata().await.map_err(|e| e.to_string())?;
             if metadata.driver_version != "0.25.0" || !metadata.embedded {
@@ -299,19 +268,16 @@ mod macos {
         EPOCH.fetch_add(1, Ordering::SeqCst);
         if let Some(mut s) = SESSION.lock().unwrap().take() {
             s.observation = None;
-            // The pinned SDK serializes shutdown behind in-flight input. Capability
-            // stays disabled until immediate cancellation and held-input recovery
-            // are certified; never advertise the 120s SDK timeout as a Stop control.
-            tauri::async_runtime::spawn(async move {
-                let _ = s.driver.shutdown().await;
-            });
+            s.driver.cancel();
         }
         let _ = reason;
     }
     fn pause(reason: &str) {
         EPOCH.fetch_add(1, Ordering::SeqCst);
         if let Some(s) = SESSION.lock().unwrap().as_mut() {
+            s.driver.cancel();
             s.paused = true;
+            s.needs_worker = true;
             s.observation = None;
             s.preview["paused"] = json!(true);
             s.preview["reason"] = json!(reason);
@@ -332,9 +298,7 @@ mod macos {
         EPOCH.fetch_add(1, Ordering::SeqCst);
         drop(session);
         if let Some(s) = old {
-            tauri::async_runtime::spawn(async move {
-                let _ = s.driver.shutdown().await;
-            });
+            s.driver.cancel();
         }
         Ok(json!({"released":true}))
     }
@@ -382,7 +346,7 @@ mod macos {
         let Some(s) = session.as_mut() else {
             return;
         };
-        if !available || now().saturating_sub(s.heartbeat) > 60000 || !s.driver.is_available() {
+        if !available || now().saturating_sub(s.heartbeat) > 60000 {
             drop(session);
             stop("Background session expired or unavailable");
             return;
@@ -390,6 +354,11 @@ mod macos {
         if !s.paused && geometry(&s.target).is_err() {
             drop(session);
             pause("Target became foreground or unavailable. Explicit Resume required.");
+            return;
+        }
+        if !s.paused && !s.needs_worker && !s.driver.is_available() {
+            drop(session);
+            pause("Background worker ended. Inspect the app before resuming.");
         }
     }
     pub async fn request(op: &str, args: &Value) -> Result<Value, String> {
@@ -410,7 +379,17 @@ mod macos {
         let _operation = exclusive()?;
         let epoch = EPOCH.load(Ordering::SeqCst);
         if op == "computer-apps" {
-            let driver = worker().await?;
+            let existing = SESSION
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|s| s.driver.is_available())
+                .map(|s| s.driver.clone());
+            let temporary = existing.is_none();
+            let driver = match existing {
+                Some(driver) => driver,
+                None => worker(None).await?,
+            };
             let result = async {
                 let apps = structured(&call(&driver, "list_apps", json!({})).await?)?;
                 let windows = structured(&call(&driver, "list_windows", json!({})).await?)?;
@@ -418,7 +397,9 @@ mod macos {
                 Ok(json!({"apps":apps["apps"],"windows":windows["windows"]}))
             }
             .await;
-            let _ = driver.shutdown().await;
+            if temporary {
+                let _ = driver.shutdown().await;
+            }
             return result;
         }
         if op == "computer-app-state" {
@@ -443,12 +424,12 @@ mod macos {
                 match guard.as_ref() {
                     Some(s) if s.owner != owner || s.target.pid != pid || s.target.window != window || s.target.stamp != target.stamp => return Err("Release the current background session before selecting another app or window".into()),
                     Some(s) if s.paused => return Err("Background app session is paused. Only the local preview can Resume".into()),
-                    Some(s) => Some(s.driver.clone()), None => None,
+                    Some(s) => s.driver.is_available().then(|| s.driver.clone()), None => None,
                 }
             };
             let driver = match existing {
                 Some(d) => d,
-                None => worker().await?,
+                None => worker(Some(&target)).await?,
             };
             if let Err(error) = check_epoch(epoch) {
                 let _ = driver.shutdown().await;
@@ -456,6 +437,10 @@ mod macos {
             }
             {
                 let mut guard = SESSION.lock().unwrap();
+                if let Some(s) = guard.as_mut() {
+                    s.driver = driver.clone();
+                    s.needs_worker = false;
+                }
                 if guard.is_none() {
                     *guard = Some(Session {
                         id: token()?,
@@ -465,6 +450,7 @@ mod macos {
                         observation: None,
                         preview: json!({"active":true}),
                         paused: false,
+                        needs_worker: false,
                         heartbeat: now(),
                     });
                 }
@@ -520,41 +506,54 @@ mod macos {
                 input[axis] = json!(coordinate);
             }
         }
-        input["snapshot_id"] = observation.state["snapshot_id"].clone();
-        let tool =
-            match args["action"].as_str() {
-                Some("click") => {
-                    input["button"] = json!("left");
-                    input["count"] = json!(1);
-                    "click"
+        if element.is_some() {
+            input["snapshot_id"] = observation.state["snapshot_id"].clone();
+        }
+        let tool = match args["action"].as_str() {
+            Some("click") => {
+                input["button"] = json!("left");
+                input["count"] = json!(1);
+                "click"
+            }
+            Some("scroll") => {
+                let direction = args["direction"]
+                    .as_str()
+                    .filter(|s| ["up", "down", "left", "right"].contains(s))
+                    .ok_or("Invalid scroll direction")?;
+                let amount = args["amount"]
+                    .as_u64()
+                    .filter(|v| (1..=20).contains(v))
+                    .ok_or("Scroll amount must be 1–20")?;
+                input["direction"] = json!(direction);
+                input["amount"] = json!(amount);
+                "scroll"
+            }
+            Some("text") => {
+                if observation.state["elements"]
+                    .as_array()
+                    .is_some_and(|elements| {
+                        elements
+                            .iter()
+                            .any(|e| e["in_web_content"] == true || e["role"] == "AXWebArea")
+                    })
+                {
+                    return Err("Background text in web views is unavailable on this host. Use browser tools or explicitly hand off to physical control.".into());
                 }
-                Some("scroll") => {
-                    let direction = args["direction"]
-                        .as_str()
-                        .filter(|s| ["up", "down", "left", "right"].contains(s))
-                        .ok_or("Invalid scroll direction")?;
-                    let amount = args["amount"]
-                        .as_u64()
-                        .filter(|v| (1..=20).contains(v))
-                        .ok_or("Scroll amount must be 1–20")?;
-                    input["direction"] = json!(direction);
-                    input["amount"] = json!(amount);
-                    "scroll"
-                }
-                Some("text") => {
-                    let text = args["text"]
-                        .as_str()
-                        .filter(|s| !s.is_empty() && s.chars().count() <= 4000)
-                        .ok_or("Text must contain 1–4000 characters")?;
-                    input["text"] = json!(text);
-                    input["delay_ms"] = json!(0);
-                    "type_text"
-                }
-                _ => return Err(
+                let text = args["text"]
+                    .as_str()
+                    .filter(|s| !s.is_empty() && s.chars().count() <= 4000)
+                    .ok_or("Text must contain 1–4000 characters")?;
+                input["text"] = json!(text);
+                input["delay_ms"] = json!(0);
+                "type_text"
+            }
+            _ => {
+                return Err(
                     "Unsupported background action. Physical input requires an explicit handoff"
                         .into(),
-                ),
-            };
+                )
+            }
+        };
         check_epoch(epoch)?;
         geometry(&target)?;
         {
@@ -590,10 +589,22 @@ mod macos {
         }
         match result {
             Ok(action) => {
-                let receipt = structured(&action)?;
+                let mut receipt = structured(&action)?;
+                if let Some(object) = receipt.as_object_mut() {
+                    object.remove("escalation");
+                }
+                let uncertain = !matches!(
+                    receipt["effect"].as_str(),
+                    Some("confirmed" | "unverifiable")
+                ) || tool == "type_text" && receipt["effect"] != "confirmed";
                 match observe(driver, epoch).await {
                     Ok(mut state) => {
                         state["action"] = receipt;
+                        if uncertain {
+                            pause("Delivery could not be confirmed. Inspect the app before resuming; do not replay input.");
+                            state["paused"] = json!(true);
+                            state["requires_local_resume"] = json!(true);
+                        }
                         Ok(state)
                     }
                     Err(error) => Ok(
@@ -622,6 +633,41 @@ mod macos {
             return Err("Window changed during capture; take a fresh observation".into());
         }
         let mut state = structured(&result)?;
+        // Cua includes the application menu bar in window snapshots. Keep only
+        // descendants of this window; menu actions are not window authority.
+        if let Some(elements) = state["elements"].as_array_mut() {
+            let mut indices = std::collections::HashSet::new();
+            elements.retain(|element| {
+                let inside = element["role"] == "AXWindow" && element["depth"] == 0
+                    || element["parent_index"]
+                        .as_u64()
+                        .is_some_and(|parent| indices.contains(&parent));
+                if inside {
+                    if let Some(index) = element["element_index"].as_u64() {
+                        indices.insert(index);
+                    }
+                }
+                inside
+            });
+        }
+        let count = state["elements"].as_array().map_or(0, Vec::len);
+        for field in [
+            "element_count",
+            "returned_element_count",
+            "total_element_count",
+        ] {
+            state[field] = json!(count);
+        }
+        state
+            .as_object_mut()
+            .ok_or("Invalid window receipt")?
+            .remove("tree_markdown");
+        if state["pid"] != target.pid
+            || state["window_id"] != target.window
+            || !state["snapshot_id"].as_str().is_some_and(|s| !s.is_empty())
+        {
+            return Err("Window observation identity mismatch".into());
+        }
         if state["screenshot_frame_valid"] != true {
             return Err("Driver could not prove the window screenshot geometry".into());
         }

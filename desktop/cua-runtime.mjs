@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { rustNotices } from './rust-notices.mjs';
+import { patchCua } from './cua/patch.mjs';
 
 export const CUA_REVISION = '6c0348b059595e63d1df96e6df2047ca7dbbbf1c';
 const desktop = path.dirname(fileURLToPath(import.meta.url));
@@ -20,6 +21,7 @@ if (process.platform === 'darwin') {
     const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: temporary, encoding: 'utf8' }).trim();
     if (revision !== CUA_REVISION) throw Error('Cua source revision mismatch');
     const source = path.join(temporary, 'libs/cua-driver/rust');
+    patchCua(source);
     const target = 'aarch64-apple-darwin';
     const targetDir = process.env.CARGO_TARGET_DIR ?? path.join(os.tmpdir(), 'rimeward-cua-rust-target');
     run('cargo', ['build', '--locked', '--release', '--bin', 'cua-driver', '--target', target, '--target-dir', targetDir], source);
@@ -30,6 +32,6 @@ if (process.platform === 'darwin') {
     fs.copyFileSync(path.join(temporary, 'LICENSE.md'), path.join(output, 'LICENSE.md'));
     rustNotices(path.join(source, 'crates/cua-driver/Cargo.toml'), path.join(output, 'rust-licenses'), target);
     fs.copyFileSync(path.join(source, 'Cargo.lock'), path.join(output, 'Cargo.lock'));
-    fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify({ version: '0.25.0', revision, target, validated: false }, null, 2));
+    fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify({ version: '0.25.0', revision, target, overlay: 'rimeward-release-guard-v1', validatedNativeOSBuilds: ['26A5416b'], webViewText: false }, null, 2));
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
