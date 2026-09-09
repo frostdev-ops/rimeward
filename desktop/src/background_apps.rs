@@ -108,6 +108,7 @@ mod macos {
         geometry: Value,
         state: Value,
         image_hash: String,
+        visible_elements: Vec<Value>,
     }
     struct Session {
         id: String,
@@ -598,7 +599,7 @@ mod macos {
                     });
                 }
             }
-            return observe(driver, epoch).await;
+            return observe(driver, epoch, None).await;
         }
         if op != "computer-app-input" {
             return Err("Unsupported background app operation".into());
@@ -627,11 +628,27 @@ mod macos {
             return Err("Window geometry or Space changed; take a fresh observation".into());
         }
         let mut input = json!({"pid":target.pid,"window_id":target.window,"delivery_mode":"background","scope":"window"});
-        let element = args["element"].as_str();
+        if args.get("element").is_some() && args.get("element_index").is_some() {
+            return Err("Use either element_index or element, not both".into());
+        }
+        let element = if args.get("element_index").is_some() {
+            let index = integer(args, "element_index", 0, 0, 100000)?;
+            Some(
+                observation
+                    .visible_elements
+                    .iter()
+                    .find(|e| e["element_index"] == index)
+                    .and_then(|e| e["element_token"].as_str())
+                    .ok_or("Element index is not in this observation's returned page")?,
+            )
+        } else {
+            args["element"].as_str()
+        };
         if let Some(element) = element {
-            if !observation.state["elements"]
-                .as_array()
-                .is_some_and(|elements| elements.iter().any(|e| e["element_token"] == element))
+            if !observation
+                .visible_elements
+                .iter()
+                .any(|e| e["element_token"] == element)
             {
                 return Err("Element is not in this observation".into());
             }
@@ -764,7 +781,7 @@ mod macos {
                     receipt["effect"].as_str(),
                     Some("confirmed" | "unverifiable")
                 ) || tool == "type_text" && receipt["effect"] != "confirmed";
-                match observe(driver, epoch).await {
+                match observe(driver, epoch, Some(&observation)).await {
                     Ok(mut state) => {
                         state["action"] = receipt;
                         state["verification"] = json!({"screenshot_changed":state["screenshot_hash"] != observation.image_hash,
@@ -784,6 +801,23 @@ mod macos {
                             state["page"]["returned"] = json!(count);
                             state["next"] =
                                 json!(state["page"]["cursor"].as_u64().unwrap_or(0) + count as u64);
+                        }
+                        let visible = state["elements"].as_array().cloned().unwrap_or_default();
+                        if let Some(changed) =
+                            state["changes"]["new_or_changed_elements"].as_array_mut()
+                        {
+                            changed.retain(|index| {
+                                visible.iter().any(|e| e["element_index"] == *index)
+                            });
+                        }
+                        if let Some(s) = SESSION.lock().unwrap().as_mut() {
+                            if let Some(o) = s
+                                .observation
+                                .as_mut()
+                                .filter(|o| state["observation"] == o.id)
+                            {
+                                o.visible_elements = visible;
+                            }
                         }
                         if let Some(image) = image {
                             state["image"] = image;
@@ -812,7 +846,11 @@ mod macos {
             }
         }
     }
-    async fn observe(driver: Arc<CuaDriver>, epoch: u64) -> Result<Value, String> {
+    async fn observe(
+        driver: Arc<CuaDriver>,
+        epoch: u64,
+        previous: Option<&Observation>,
+    ) -> Result<Value, String> {
         let (target, read_args) = {
             let guard = SESSION.lock().unwrap();
             let session = guard.as_ref().ok_or("Background session ended")?;
@@ -888,10 +926,13 @@ mod macos {
             geometry: before,
             state: state.clone(),
             image_hash: image_hash.clone(),
+            visible_elements: Vec::new(),
         });
         state["observation"] = json!(id);
         state["session"] = json!(s.id);
         state["observedAt"] = json!(at);
+        state["expiresAt"] = json!(at + 60000);
+        state["coordinate_space"] = json!("window_screenshot_pixels");
         state["screenshot_hash"] = json!(image_hash);
         s.heartbeat = at;
         s.preview = json!({"active":true,"paused":false,"session":s.id,"app":state["app_name"],"observedAt":at,
@@ -909,6 +950,8 @@ mod macos {
                 "session",
                 "observation",
                 "observedAt",
+                "expiresAt",
+                "coordinate_space",
                 "snapshot_id",
                 "screenshot_hash",
                 "screenshot_width",
@@ -929,6 +972,42 @@ mod macos {
         state["read_limits"] =
             json!({"max_elements":read_args["max_elements"],"max_depth":read_args["max_depth"]});
         state = page(state, "elements", rows, &read_args, 300)?;
+        if let Some(previous) = previous {
+            // Compare row content, never snapshot tokens. This is a bounded visual/AX diff,
+            // not a claim that the UI kept the same element identities or that an action succeeded.
+            let content = |row: &Value| {
+                let mut row = row.clone();
+                if let Some(o) = row.as_object_mut() {
+                    o.remove("element_token");
+                }
+                row.to_string()
+            };
+            let old: std::collections::HashSet<_> =
+                previous.visible_elements.iter().map(content).collect();
+            let current = state["elements"].as_array().unwrap();
+            let new: std::collections::HashSet<_> = current.iter().map(content).collect();
+            let changed: Vec<_> = current
+                .iter()
+                .filter(|row| !old.contains(&content(row)))
+                .map(|row| row["element_index"].clone())
+                .collect();
+            state["changes"] = json!({"compared_to":previous.id,"new_or_changed_elements":changed,
+                "removed_or_changed_rows":old.difference(&new).count(),"scope":"returned accessibility pages only"});
+        }
+        {
+            let mut guard = SESSION.lock().unwrap();
+            let s = guard.as_mut().ok_or("Background session ended")?;
+            if s.paused || EPOCH.load(Ordering::SeqCst) != epoch {
+                return Err("Background session paused during capture".into());
+            }
+            let observation = s
+                .observation
+                .as_mut()
+                .filter(|o| state["observation"] == o.id)
+                .ok_or("Background observation changed")?;
+            observation.visible_elements =
+                state["elements"].as_array().cloned().unwrap_or_default();
+        }
         state["image"] = json!(image.data_base64);
         state["imageMime"] = json!(image.mime_type);
         Ok(state)

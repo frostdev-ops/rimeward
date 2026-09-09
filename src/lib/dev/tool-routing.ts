@@ -35,7 +35,7 @@ export function deviceTool(name: string, args: Record<string, unknown>, ctx: Too
   if (args.device === undefined || args.device === 'local') {
     if (!isDesktop()) throw new DevError('Choose a device ID from list_devices; local tools are unavailable on the server.');
     const value = local(args, ctx);
-    return ['computer_screenshot', 'computer_app_state', 'computer_app_input'].includes(name) ? Promise.resolve(value).then(v => storeImage(v, args, ctx)) : value;
+    return name === 'computer_screenshot' || name.startsWith('computer_app') ? Promise.resolve(value).then(v => storeImage(v, args, ctx)) : value;
   }
   return remoteDeviceTool(name, args, ctx, local);
 }
@@ -95,7 +95,7 @@ async function remoteDeviceTool(name: string, args: Record<string, unknown>, ctx
     signal.addEventListener('abort', cancel, { once: true });
     if (signal.aborted) { cancel(); signal.throwIfAborted(); }
   }
-  return ['computer_screenshot', 'computer_app_state', 'computer_app_input'].includes(name) ? storeImage(value, args, ctx) : value;
+  return name === 'computer_screenshot' || name.startsWith('computer_app') ? storeImage(value, args, ctx) : value;
 }
 async function storeImage(value: unknown, args: Record<string, unknown>, ctx: ToolCtx) {
   // Store image bytes on the conversation's runtime, never a foreign attachment ID.
@@ -104,10 +104,11 @@ async function storeImage(value: unknown, args: Record<string, unknown>, ctx: To
     if (typeof image !== 'string' || image.length > 7 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image)) throw new DevError('Invalid computer image.');
     const mime = receipt.imageMime ?? 'image/jpeg';
     if (mime !== 'image/png' && mime !== 'image/jpeg') throw new DevError('Unsupported computer image format.');
-    const file = await storeAttachment({ userId: ctx.userId, conversationId: ctx.conv, name: `computer-screen.${mime === 'image/png' ? 'png' : 'jpg'}`, mime, bytes: Buffer.from(image, 'base64') });
+    const target = typeof receipt.pid === 'number' && typeof receipt.window_id === 'number' ? `pid${receipt.pid}-window${receipt.window_id}` : 'screen';
+    const file = await storeAttachment({ userId: ctx.userId, conversationId: ctx.conv, name: `computer-${args.device ?? 'local'}-${target}-${receipt.observation ?? 'capture'}.${mime === 'image/png' ? 'png' : 'jpg'}`, mime, bytes: Buffer.from(image, 'base64') });
     return { ...receipt, device: args.device ?? 'local', file_id: file.id, image_sha256: file.sha256 };
   }
-  return value;
+  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value, device: args.device ?? 'local' } : value;
 }
 
 async function toolBody(request: Request) {

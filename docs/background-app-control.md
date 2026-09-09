@@ -38,7 +38,9 @@ metadata below the agent's 12 KB limit. Long text fields are marked truncated;
 Screenshot bytes travel separately as attachments. The agent's final omission
 fallback also retains control IDs and action outcomes for older desktops.
 `computer_app_input` accepts left click, targeted scroll, or text, addressed by
-an observed element token or screenshot pixels. `computer_app_release` releases
+the short `element_index` in the current returned page, an observed element token,
+or screenshot pixels. Index lookup stays in the native host and requires the
+same one-use observation; hidden/paged-out indices are rejected. `computer_app_release` releases
 that agent's session. Launching, dragging, key chords, and other actions are not
 exposed in this initial integration; limitations do not invoke physical input.
 
@@ -70,6 +72,26 @@ the requested outcome. A changed image is not proof of success, and
 `effect: "unverifiable"` is never promoted to confirmed. Failed post-action
 captures retain the session/window, consumed observation, action receipt, and
 fresh-observation/local-resume requirements so the agent can inspect or release.
+
+## Agent feedback
+
+A live Codex native-tool probe on a disposable TextEdit document informed this
+interface: Codex returns readable accessibility roles/labels, short element
+numbers, the focused control, and automatic tree diffs; screenshots can be
+requested separately or alongside the tree. Its programmatic wrapper can filter
+text explicitly. These observations describe that tested tool surface, not
+undocumented Codex internals.
+
+Rime keeps fresh bounded rows with each action instead of relying on an implicit
+old tree. `changes` highlights current indices whose returned rows differ from
+the previous page, ignoring snapshot-token churn. It is a page comparison, not
+proof of stable UI identity, a complete app diff, or successful delivery. Each
+receipt gives `expiresAt` and the screenshot coordinate space. Images are
+automatically attached after observation/input; their names identify device,
+window and observation, and both model dialects receive an explicit file-ID
+label immediately before each image, including after approval. Error and list
+receipts also retain the device. The prompt tells Rime to inspect the returned
+image first rather than unconditionally capturing another screenshot.
 
 The compact native preview has its own local-only Tauri capability, opens with
 `focused(false)`, uses the native draggable window frame, and labels its images
