@@ -59,6 +59,8 @@ pub fn run() {
             permissions::macos_permissions
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            input_guardian::initialize(app.handle().clone());
             computer::initialize(app.path().app_data_dir()?);
             remote_media::initialize(runtime::resources(app.handle())?.join("media"));
             #[cfg(desktop)]

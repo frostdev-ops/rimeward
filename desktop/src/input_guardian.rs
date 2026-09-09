@@ -10,6 +10,32 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "macos")]
+pub fn initialize(app: tauri::AppHandle) {
+    let _ = APP.set(app);
+}
+
+#[cfg(target_os = "macos")]
+fn keycode(key: Key) -> InputResult<u16> {
+    // macOS input-source lookup asserts the main queue. Keep gestures and their
+    // release watchdog on the worker; only resolve the current keyboard layout here.
+    let unavailable = || InputError::Simulate("Keyboard layout lookup unavailable");
+    let (send, receive) = mpsc::sync_channel(1);
+    APP.get()
+        .ok_or_else(unavailable)?
+        .run_on_main_thread(move || {
+            let _ = send.send(u16::try_from(key));
+        })
+        .map_err(|_| unavailable())?;
+    receive
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| unavailable())?
+        .map_err(|_| InputError::InvalidInput("Use composed text for this character"))
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Held {
@@ -199,7 +225,7 @@ impl Input {
     pub fn has_key(&self, key: Key) -> bool {
         #[cfg(target_os = "macos")]
         if matches!(key, Key::Unicode(_)) {
-            return u16::try_from(key).is_ok_and(|code| self.has_raw(code));
+            return keycode(key).is_ok_and(|code| self.has_raw(code));
         }
         #[cfg(target_os = "windows")]
         if matches!(key, Key::Unicode(_)) {
@@ -216,12 +242,7 @@ impl Input {
         // Store the actual native key, never a Unicode fallback that could type during recovery.
         #[cfg(target_os = "macos")]
         if matches!(key, Key::Unicode(_)) {
-            return self.raw(
-                u16::try_from(key).map_err(|_| {
-                    InputError::InvalidInput("Use composed text for this character")
-                })?,
-                direction,
-            );
+            return self.raw(keycode(key)?, direction);
         }
         #[cfg(target_os = "windows")]
         let key = if matches!(key, Key::Unicode(_)) {

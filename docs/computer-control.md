@@ -187,6 +187,8 @@ Input coordinates use the attachment's `imageWidth` and `imageHeight`, starting
 at its top-left corner. The display's `width`, `height`, `x` and `y` describe the
 native desktop geometry, not input pixels. The native geometry guard compares
 numeric values so JavaScript's `1.0` to `1` conversion does not invalidate a capture.
+On macOS, character-key shortcuts resolve the current keyboard layout on the app's
+main queue. Input gestures and the release watchdog remain off the UI thread.
 
 ## Boundaries and verification
 
