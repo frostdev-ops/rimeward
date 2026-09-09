@@ -672,6 +672,19 @@ function pushOutput(provider: AgentProvider, items: unknown[], call: AgentToolCa
     const failed = failure !== null;
     json = JSON.stringify({
       resultOmitted: true,
+      // Older desktops and unexpected large receipts must still be releasable/inspectable.
+      ...(call.name.startsWith('computer_app') ? Object.fromEntries([
+        'device', 'session', 'observation', 'consumed_observation', 'pid', 'window_id', 'snapshot_id', 'observedAt',
+        'file_id', 'image_sha256', 'screenshot_hash', 'screenshot_width', 'screenshot_height',
+        'requires_fresh_observation', 'requires_local_resume', 'paused', 'replay_allowed',
+        'observation_error', 'released',
+      ].filter(key => ['string', 'number', 'boolean'].includes(typeof value[key]))
+        .map(key => [key, typeof value[key] === 'string' ? value[key].slice(0, 256) : value[key]])) : {}),
+      ...(call.name === 'computer_app_input' && value.action && typeof value.action === 'object' ? {
+        action: Object.fromEntries(Object.entries(value.action).filter(([key, val]) =>
+          ['effect', 'verified', 'delivery_mode', 'error', 'code', 'path'].includes(key) && ['string', 'number', 'boolean'].includes(typeof val))
+          .map(([key, val]) => [key, typeof val === 'string' ? val.slice(0, 256) : val])),
+      } : {}),
       outcome: value.declined || value.notRun ? 'not-run' : failed ? 'failed' : value.ok === true || value.exit_code === 0 ? 'succeeded' : 'unknown',
       ...(failed ? { error: failure?.slice(0, 500) } : {}),
       note: `Result omitted (${json.length} chars > ${OUTPUT_CAP}); omission does not establish success or failure. For reads, narrow the query or use pagination. For changes, inspect the current state; do not repeat an operation just because its response was omitted.`,

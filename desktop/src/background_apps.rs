@@ -37,7 +37,9 @@ pub async fn request(op: &str, args: &Value) -> Result<Value, String> {
             .into());
     }
     #[cfg(target_os = "macos")]
-    return macos::request(op, args).await;
+    return macos::request(op, args)
+        .await
+        .or_else(|error| macos::failure(args, error));
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (op, args);
@@ -90,7 +92,8 @@ fn show_preview() {
 mod macos {
     use super::*;
     use crate::background_worker::{ToolResult, Worker as CuaDriver};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone)]
@@ -104,6 +107,7 @@ mod macos {
         at: u64,
         geometry: Value,
         state: Value,
+        image_hash: String,
     }
     struct Session {
         id: String,
@@ -115,20 +119,114 @@ mod macos {
         paused: bool,
         needs_worker: bool,
         heartbeat: u64,
+        read_args: Value,
     }
     static SESSION: Mutex<Option<Session>> = Mutex::new(None);
-    static BUSY: AtomicBool = AtomicBool::new(false);
+    static BUSY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    struct Operation;
-    impl Drop for Operation {
-        fn drop(&mut self) {
-            BUSY.store(false, Ordering::SeqCst);
+    fn integer(
+        args: &Value,
+        name: &str,
+        default: usize,
+        min: usize,
+        max: usize,
+    ) -> Result<usize, String> {
+        match args.get(name) {
+            None => Ok(default),
+            Some(value) => value
+                .as_u64()
+                .and_then(|v| usize::try_from(v).ok())
+                .filter(|v| (min..=max).contains(v))
+                .ok_or_else(|| format!("Invalid {name}: expected {min}–{max}")),
         }
     }
-    fn exclusive() -> Result<Operation, String> {
-        BUSY.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .map_err(|_| "Another background operation is running")?;
-        Ok(Operation)
+    fn query(args: &Value) -> Result<String, String> {
+        match args.get("query") {
+            None => Ok(String::new()),
+            Some(value) => value
+                .as_str()
+                .filter(|s| s.chars().count() <= 256)
+                .map(str::to_lowercase)
+                .ok_or_else(|| "Query must contain at most 256 characters".into()),
+        }
+    }
+    fn matches_query(value: &Value, query: &str) -> bool {
+        match value {
+            Value::String(s) => s.to_lowercase().contains(query),
+            Value::Array(a) => a.iter().any(|v| matches_query(v, query)),
+            Value::Object(o) => o.values().any(|v| matches_query(v, query)),
+            _ => false,
+        }
+    }
+    fn bound_text(value: &mut Value) -> bool {
+        match value {
+            Value::String(s) if s.chars().count() > 256 => {
+                *s = s.chars().take(256).collect::<String>() + "…[truncated]";
+                true
+            }
+            Value::Array(a) => a.iter_mut().fold(false, |cut, v| bound_text(v) | cut),
+            Value::Object(o) => o.values_mut().fold(false, |cut, v| bound_text(v) | cut),
+            _ => false,
+        }
+    }
+    // Keep images out of the text budget; attachments are stored by the calling runtime.
+    fn page(
+        mut receipt: Value,
+        key: &str,
+        rows: Vec<Value>,
+        args: &Value,
+        limit: usize,
+    ) -> Result<Value, String> {
+        let cursor = integer(args, "cursor", 0, 0, 100000)?;
+        let query = query(args)?;
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|v| query.is_empty() || matches_query(v, &query))
+            .collect();
+        let cut = bound_text(&mut receipt);
+        receipt["text_truncated"] = json!(cut);
+        receipt["page"] = json!({"cursor":cursor,"total":rows.len(),"returned":0});
+        receipt[key] = json!([]);
+        // Leave room for attachment IDs and action receipts below the agent's 12 KB cap.
+        let mut remaining = 9000usize.saturating_sub(receipt.to_string().len() + 100);
+        let mut output = Vec::new();
+        for mut row in rows.iter().skip(cursor).take(limit).cloned() {
+            if bound_text(&mut row) {
+                row["text_truncated"] = json!(true);
+            }
+            let size = row.to_string().len() + 1;
+            if size > remaining {
+                break;
+            }
+            remaining -= size;
+            output.push(row);
+        }
+        let returned = output.len();
+        receipt["page"]["returned"] = json!(returned);
+        if cursor.saturating_add(returned) < rows.len() {
+            if returned == 0 {
+                receipt["row_omitted"] = json!({"cursor":cursor,"error":"Row exceeds the response budget. Inspect the screenshot or narrow the query."});
+                receipt["next"] = json!(cursor + 1);
+            } else {
+                receipt["next"] = json!(cursor + returned);
+            }
+        }
+        receipt[key] = json!(output);
+        if key == "elements" {
+            receipt["returned_element_count"] = json!(returned);
+        }
+        Ok(receipt)
+    }
+    pub fn failure(args: &Value, error: String) -> Result<Value, String> {
+        let guard = SESSION.lock().unwrap();
+        let Some(session) = guard.as_ref().filter(|s| args["owner"] == s.owner) else {
+            return Err(error);
+        };
+        Ok(
+            json!({"error":error.chars().take(1500).collect::<String>(),"session":session.id,
+            "pid":session.target.pid,"window_id":session.target.window,"paused":session.paused,
+            "requires_local_resume":session.paused,"requires_fresh_observation":true,"replay_allowed":false}),
+        )
     }
     fn now() -> u64 {
         std::time::SystemTime::now()
@@ -324,7 +422,7 @@ mod macos {
             "resume" => {
                 permitted()?;
                 geometry(&s.target)?;
-                if BUSY.load(Ordering::SeqCst) {
+                if BUSY.try_lock().is_err() {
                     return Err("Wait for the current operation to settle before resuming".into());
                 }
                 s.paused = false;
@@ -376,9 +474,24 @@ mod macos {
             s.heartbeat = now();
             return Ok(json!({"paused":s.paused}));
         }
-        let _operation = exclusive()?;
         let epoch = EPOCH.load(Ordering::SeqCst);
+        // One FIFO per host. Stop/Release bypass it; their epoch cancels queued work.
+        let _operation = tokio::time::timeout(std::time::Duration::from_secs(25), BUSY.lock())
+            .await
+            .map_err(|_| "Background operation queue timed out; nothing was dispatched")?;
+        check_epoch(epoch)?;
         if op == "computer-apps" {
+            let kind = match args.get("kind") {
+                None => "windows",
+                Some(value) => value.as_str().ok_or("Invalid app list kind")?,
+            };
+            if !["apps", "windows"].contains(&kind) {
+                return Err("Invalid app list kind".into());
+            }
+            let limit = integer(args, "limit", 20, 1, 50)?;
+            let pid = integer(args, "pid", 0, 1, i32::MAX as usize)?;
+            integer(args, "cursor", 0, 0, 100000)?;
+            query(args)?;
             let existing = SESSION
                 .lock()
                 .unwrap()
@@ -391,10 +504,36 @@ mod macos {
                 None => worker(None).await?,
             };
             let result = async {
-                let apps = structured(&call(&driver, "list_apps", json!({})).await?)?;
-                let windows = structured(&call(&driver, "list_windows", json!({})).await?)?;
+                let result = structured(
+                    &call(
+                        &driver,
+                        if kind == "apps" {
+                            "list_apps"
+                        } else {
+                            "list_windows"
+                        },
+                        json!({}),
+                    )
+                    .await?,
+                )?;
+                let mut rows = result[kind].as_array().ok_or("Missing app list")?.clone();
+                rows.retain(|v| pid == 0 || v["pid"] == pid);
+                // Stable ordering makes cursors useful while the app/window set is unchanged.
+                rows.sort_by_key(|v| {
+                    (
+                        v["pid"].as_u64().unwrap_or(0),
+                        v["window_id"].as_u64().unwrap_or(0),
+                        v["name"].as_str().unwrap_or("").to_owned(),
+                    )
+                });
                 check_epoch(epoch)?;
-                Ok(json!({"apps":apps["apps"],"windows":windows["windows"]}))
+                page(
+                    json!({"kind":kind,"current_space_id":result["current_space_id"]}),
+                    kind,
+                    rows,
+                    args,
+                    limit,
+                )
             }
             .await;
             if temporary {
@@ -403,6 +542,8 @@ mod macos {
             return result;
         }
         if op == "computer-app-state" {
+            let read_args = json!({"max_elements":integer(args,"max_elements",300,1,300)?,
+                "max_depth":integer(args,"max_depth",15,1,25)?,"cursor":integer(args,"cursor",0,0,100000)?,"query":query(args)?});
             let pid = args["pid"]
                 .as_i64()
                 .and_then(|n| i32::try_from(n).ok())
@@ -440,6 +581,7 @@ mod macos {
                 if let Some(s) = guard.as_mut() {
                     s.driver = driver.clone();
                     s.needs_worker = false;
+                    s.read_args = read_args.clone();
                 }
                 if guard.is_none() {
                     *guard = Some(Session {
@@ -452,6 +594,7 @@ mod macos {
                         paused: false,
                         needs_worker: false,
                         heartbeat: now(),
+                        read_args,
                     });
                 }
             }
@@ -529,6 +672,27 @@ mod macos {
                 "scroll"
             }
             Some("text") => {
+                // A reduced AX walk cannot establish that an unobserved pixel target is native.
+                if (observation.state["read_max_elements"] != 300
+                    || observation.state["read_max_depth"] != 15)
+                    && !observation.state["elements"]
+                        .as_array()
+                        .is_some_and(|elements| {
+                            elements.iter().any(|e| {
+                                e["element_token"].as_str() == element
+                                    && e["in_web_content"] != true
+                                    && matches!(
+                                        e["role"].as_str(),
+                                        Some("AXTextArea" | "AXTextField" | "AXSearchField")
+                                    )
+                            })
+                        })
+                {
+                    return Err(
+                        "Text with reduced AX limits requires an observed native text element"
+                            .into(),
+                    );
+                }
                 if observation.state["elements"]
                     .as_array()
                     .is_some_and(|elements| {
@@ -593,6 +757,9 @@ mod macos {
                 if let Some(object) = receipt.as_object_mut() {
                     object.remove("escalation");
                 }
+                if bound_text(&mut receipt) {
+                    receipt["text_truncated"] = json!(true);
+                }
                 let uncertain = !matches!(
                     receipt["effect"].as_str(),
                     Some("confirmed" | "unverifiable")
@@ -600,34 +767,60 @@ mod macos {
                 match observe(driver, epoch).await {
                     Ok(mut state) => {
                         state["action"] = receipt;
+                        state["verification"] = json!({"screenshot_changed":state["screenshot_hash"] != observation.image_hash,
+                            "requires_inspection":true,"note":"Inspect the returned screenshot/elements for the intended change. Image changes and delivery receipts alone do not prove success; never replay uncertain input."});
                         if uncertain {
                             pause("Delivery could not be confirmed. Inspect the app before resuming; do not replay input.");
                             state["paused"] = json!(true);
                             state["requires_local_resume"] = json!(true);
                         }
+                        let image = state.as_object_mut().unwrap().remove("image");
+                        while state.to_string().len() > 11000
+                            && state["elements"].as_array().is_some_and(|v| !v.is_empty())
+                        {
+                            state["elements"].as_array_mut().unwrap().pop();
+                            let count = state["elements"].as_array().unwrap().len();
+                            state["returned_element_count"] = json!(count);
+                            state["page"]["returned"] = json!(count);
+                            state["next"] =
+                                json!(state["page"]["cursor"].as_u64().unwrap_or(0) + count as u64);
+                        }
+                        if let Some(image) = image {
+                            state["image"] = image;
+                        }
                         Ok(state)
                     }
-                    Err(error) => Ok(
-                        json!({"action":receipt,"observation_error":error,"requires_fresh_observation":true}),
-                    ),
+                    Err(error) => {
+                        if uncertain {
+                            pause("Delivery could not be confirmed. Inspect the app before resuming; do not replay input.");
+                        }
+                        Ok(
+                            json!({"session":args["session"],"pid":target.pid,"window_id":target.window,
+                            "consumed_observation":observation.id,"action":receipt,"observation_error":error,
+                            "requires_fresh_observation":true,"requires_local_resume":uncertain}),
+                        )
+                    }
                 }
             }
             Err(error) => {
                 pause("Action failed or its result is uncertain. Inspect the app before resuming.");
-                Err(error)
+                Ok(
+                    json!({"session":args["session"],"pid":target.pid,"window_id":target.window,
+                    "consumed_observation":observation.id,"error":error.chars().take(1500).collect::<String>(),"requires_local_resume":true,
+                    "requires_fresh_observation":true,"replay_allowed":false}),
+                )
             }
         }
     }
     async fn observe(driver: Arc<CuaDriver>, epoch: u64) -> Result<Value, String> {
-        let target = SESSION
-            .lock()
-            .unwrap()
-            .as_ref()
-            .ok_or("Background session ended")?
-            .target
-            .clone();
+        let (target, read_args) = {
+            let guard = SESSION.lock().unwrap();
+            let session = guard.as_ref().ok_or("Background session ended")?;
+            (session.target.clone(), session.read_args.clone())
+        };
         let before = geometry(&target)?;
-        let result = call(&driver,"get_window_state",json!({"pid":target.pid,"window_id":target.window,"max_elements":300,"max_depth":15,"max_dimension":1280})).await?;
+        let result = call(&driver,"get_window_state",json!({"pid":target.pid,"window_id":target.window,
+            "max_elements":read_args["max_elements"],"max_depth":read_args["max_depth"],"max_dimension":1280})).await?;
         check_epoch(epoch)?;
         if geometry(&target)? != before {
             return Err("Window changed during capture; take a fresh observation".into());
@@ -686,22 +879,58 @@ mod macos {
         }
         let at = now();
         let id = token()?;
+        state["read_max_elements"] = read_args["max_elements"].clone();
+        state["read_max_depth"] = read_args["max_depth"].clone();
+        let image_hash = format!("{:x}", Sha256::digest(image.data_base64.as_bytes()));
         s.observation = Some(Observation {
             id: id.clone(),
             at,
             geometry: before,
             state: state.clone(),
+            image_hash: image_hash.clone(),
         });
         state["observation"] = json!(id);
         state["session"] = json!(s.id);
         state["observedAt"] = json!(at);
-        state["image"] = json!(image.data_base64);
-        state["imageMime"] = json!(image.mime_type);
+        state["screenshot_hash"] = json!(image_hash);
         s.heartbeat = at;
         s.preview = json!({"active":true,"paused":false,"session":s.id,"app":state["app_name"],"observedAt":at,
             "image":image.data_base64,"imageMime":image.mime_type,"width":state["screenshot_width"],"height":state["screenshot_height"],"cursor":s.preview["cursor"]});
         drop(guard);
         show_preview();
+        let rows = state["elements"].as_array().cloned().unwrap_or_default();
+        // Keep control identity, geometry, and failure metadata ahead of optional tree detail.
+        state.as_object_mut().unwrap().retain(|key, _| {
+            [
+                "pid",
+                "window_id",
+                "app_name",
+                "window_title",
+                "session",
+                "observation",
+                "observedAt",
+                "snapshot_id",
+                "screenshot_hash",
+                "screenshot_width",
+                "screenshot_height",
+                "window_bounds",
+                "screenshot_scale",
+                "screenshot_frame_valid",
+                "screenshot_error",
+                "degraded",
+                "degraded_reason",
+                "element_count",
+                "total_element_count",
+                "returned_element_count",
+                "elements_complete",
+            ]
+            .contains(&key.as_str())
+        });
+        state["read_limits"] =
+            json!({"max_elements":read_args["max_elements"],"max_depth":read_args["max_depth"]});
+        state = page(state, "elements", rows, &read_args, 300)?;
+        state["image"] = json!(image.data_base64);
+        state["imageMime"] = json!(image.mime_type);
         Ok(state)
     }
 }

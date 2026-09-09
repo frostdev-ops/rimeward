@@ -19,8 +19,24 @@ parent application's bundle identity. Worker telemetry is disabled. Production
 prebuild compiles the worker from that revision with its upstream lockfile;
 normal nested-code signing includes the worker and its notices.
 
-`computer_apps` lists apps/windows. `computer_app_state` selects an existing,
-background window and returns its accessibility elements and screenshot.
+`computer_apps` defaults to a page of windows; `kind: "apps"` lists running and
+installed apps. Both accept `query`, `pid`, `cursor`, and `limit` (default 20,
+maximum 50). Repeat the filters with `next` as the cursor. Ordering is stable
+while the app/window set is unchanged; restart pagination if that set changes.
+`computer_app_state` selects an existing background window and returns a bounded
+accessibility page and screenshot. It accepts `max_elements` (1–300, default 300),
+`max_depth` (1–25, default 15), `query`, and `cursor`. The limits bound the native
+AX walk; filtering and paging happen after exact-window isolation. Every read
+captures fresh state and replaces the observation, so an active UI can shift
+between pages. `elements_complete: false` remains explicit: missing rows prove
+nothing about the full UI. Lower walk limits require an observed native text
+element for text insertion; they cannot enable pixel text into an unseen web view.
+
+Text receipts reserve room for session, observation, window, errors, and action
+metadata below the agent's 12 KB limit. Long text fields are marked truncated;
+`page` reports returned/available rows and `next` points to remaining rows.
+Screenshot bytes travel separately as attachments. The agent's final omission
+fallback also retains control IDs and action outcomes for older desktops.
 `computer_app_input` accepts left click, targeted scroll, or text, addressed by
 an observed element token or screenshot pixels. `computer_app_release` releases
 that agent's session. Launching, dragging, key chords, and other actions are not
@@ -40,6 +56,20 @@ background authority. Bringing the target app forward pauses it. Only the local
 preview can Resume, after the app is background again, and input then requires
 a fresh observation. Sessions and image previews are in memory; screenshots
 requested by Rime follow existing conversation attachment persistence.
+
+Background operations share a FIFO queue per device, with a 25-second queue
+timeout before dispatch. Stop, Release, and heartbeats bypass the queue. Stop or
+permission changes invalidate queued work. Serialize dependent reads/actions:
+concurrent state reads each replace the preceding observation; duplicate inputs
+still consume their observation only once and are never replayed.
+
+An action returns its original `effect` and a fresh screenshot when available.
+`verification.screenshot_changed` compares before/after capture hashes;
+`requires_inspection: true` means Rime must inspect the screenshot/elements for
+the requested outcome. A changed image is not proof of success, and
+`effect: "unverifiable"` is never promoted to confirmed. Failed post-action
+captures retain the session/window, consumed observation, action receipt, and
+fresh-observation/local-resume requirements so the agent can inspect or release.
 
 The compact native preview has its own local-only Tauri capability, opens with
 `focused(false)`, uses the native draggable window frame, and labels its images
