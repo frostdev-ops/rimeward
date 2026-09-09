@@ -78,7 +78,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     if (body.action === 'transcribe') {
       const image = typeof body.image === 'string' ? body.image : '';
       if (!IMAGE_RE.test(image) || image.length > MAX_IMAGE) return Response.json({ error: 'bad image' }, { status: 400 });
-      const text = await askModel({ userId, provider: cfg.provider, model: cfg.model, instructions: TRANSCRIBE, text: 'Transcribe this handwriting.', image });
+      const text = await askModel({ userId, provider: cfg.provider, endpoint: cfg.endpoint, model: cfg.model, instructions: TRANSCRIBE, text: 'Transcribe this handwriting.', image });
       return Response.json({ text });
     }
     if (body.action === 'ai') {
@@ -91,6 +91,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       const text = await askModel({
         userId,
         provider: cfg.provider,
+        endpoint: cfg.endpoint,
         model: cfg.model,
         instructions: WRITE,
         text: `INSTRUCTION: ${instruction}\n\nPASSAGE:\n${passage}`,

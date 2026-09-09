@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAttachment, attachmentDataUrl } from './attachments.ts';
 import { appendTurn, historyDir } from './history.ts';
-import type { AgentProvider, AgentProviderId } from './provider.ts';
+import { dialectOf, providerDialect, type AgentProvider, type AgentProviderId, type Dialect } from './provider.ts';
 import { estimateTokens, type ContextUsage } from './context.ts';
 
 // The agent's memory, per (user, ward). Two views of one conversation:
@@ -22,9 +22,15 @@ export interface ConvRow {
   id: number;
   user_id: number;
   ward: string;
+  /** The wire dialect the stored items are written in — pinned for the thread's life. */
+  dialect: Dialect;
+  /** The provider (and, for compat, endpoint) the thread runs on — a change retires it. */
   provider: AgentProviderId;
+  endpoint: string | null;
   active: number;
   pending_confirm_id: string | null;
+  /** Set on a child run's thread (the agent_jobs id); null on a ward's own threads. */
+  task_id: string | null;
 }
 
 export interface AgentStep {
@@ -69,20 +75,48 @@ export function activeConversationRow(userId: number, ward: string): ConvRow | n
 
 /** The active thread for a ward — created (or retired-and-recreated on a
  *  provider change) as needed. */
-export function activeConversation(userId: number, ward: string, provider: AgentProviderId): ConvRow {
+export function activeConversation(userId: number, ward: string, provider: AgentProviderId, endpoint?: string | null): ConvRow {
   const db = getDb();
   const row = db
     .prepare('SELECT * FROM agent_conversations WHERE user_id = ? AND ward = ? AND active = 1')
     .get(userId, ward) as ConvRow | undefined;
-  if (row && row.provider === provider) return row;
+  const ep = provider === 'compat' ? endpoint ?? null : null;
+  if (row && row.provider === provider && (row.endpoint ?? null) === ep) return row;
   if (row) db.prepare('UPDATE agent_conversations SET active = 0 WHERE id = ?').run(row.id);
   const id = Number(
     db
-      .prepare('INSERT INTO agent_conversations (user_id, ward, provider) VALUES (?, ?, ?)')
-      .run(userId, ward, provider).lastInsertRowid
+      .prepare('INSERT INTO agent_conversations (user_id, ward, dialect, provider, endpoint) VALUES (?, ?, ?, ?, ?)')
+      .run(userId, ward, dialectOf(provider), provider, ep).lastInsertRowid
   );
   return getConversation(id)!;
 }
+
+/** A child run's own thread: under the parent ward, never active, linked to its job. */
+export function childConversation(userId: number, ward: string, provider: AgentProviderId, endpoint: string | null, taskId: string): ConvRow {
+  const id = Number(
+    getDb()
+      .prepare('INSERT INTO agent_conversations (user_id, ward, dialect, provider, endpoint, active, task_id) VALUES (?, ?, ?, ?, ?, 0, ?)')
+      .run(userId, ward, dialectOf(provider), provider, provider === 'compat' ? endpoint : null, taskId).lastInsertRowid
+  );
+  return getConversation(id)!;
+}
+
+/** Fork: the parent's replay, verbatim, as the start of a child's thread. The
+ *  copy boundary checks what the caller cannot be trusted with: both threads
+ *  belong to one user and one ward and speak one dialect, or nothing is copied. */
+export function copyItems(from: number, to: number): number {
+  const db = getDb();
+  const ok = db
+    .prepare('SELECT a.id FROM agent_conversations a JOIN agent_conversations b ON b.id = ? WHERE a.id = ? AND a.user_id = b.user_id AND a.ward = b.ward AND a.dialect = b.dialect')
+    .get(to, from);
+  if (!ok) throw new Error('fork refused: the source thread is not this ward’s own, or is written in another dialect');
+  return db.prepare('INSERT INTO agent_items (conversation_id, json, chars) SELECT ?, json, chars FROM agent_items WHERE conversation_id = ? ORDER BY id').run(to, from).changes;
+}
+
+/** A user message in the shape a thread's dialect stores — for filing a note
+ *  into a thread without loading its provider. */
+export const userItemFor = (dialect: Dialect, text: string): unknown =>
+  dialect === 'codex' ? { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } : { role: 'user', content: text };
 
 /** "Clear" retires the thread — nothing is destroyed. */
 export function retireConversation(userId: number, ward: string): void {
@@ -208,6 +242,9 @@ export function appendItems(conversationId: number, items: unknown[]): void {
  * runLoop; loading must never silently discard the user's instructions.
  */
 export function loadItems(conv: ConvRow, provider: AgentProvider, keepOpen: Set<string>): unknown[] {
+  // Raw Responses items and chat-completion messages are mutually unreadable:
+  // a thread is only ever replayed to a provider of its own dialect.
+  if (providerDialect(provider) !== conv.dialect) throw new Error(`thread ${conv.id} is written in the ${conv.dialect} dialect and cannot be replayed to ${provider.id}`);
   const rows = getDb()
     .prepare('SELECT json FROM agent_items WHERE conversation_id = ? ORDER BY id')
     .all(conv.id) as { json: string }[];
@@ -243,7 +280,9 @@ export async function compactIfNeeded(
   model: string,
   force = false,
   focus = '',
-  usage?: ContextUsage
+  usage?: ContextUsage,
+  /** A Stop while the summary is being written aborts that call too. */
+  signal?: AbortSignal
 ): Promise<boolean> {
   const db = getDb();
   const rows = db
@@ -306,6 +345,9 @@ export async function compactIfNeeded(
         : ''),
     items: [provider.userItem(plain)],
     tools: [],
+    signal,
+    // A child's compaction is a child's call: it shares the child slots, never the foreground's.
+    child: !!conv.task_id,
   });
 
   // A model that answered with nothing (or a refusal that is all whitespace)

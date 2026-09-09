@@ -11,8 +11,11 @@ import { isDesktop } from "../../../../lib/dev/runtime.ts";
 import {
   agentConfigured,
   getProvider,
+  isAgentProvider,
+  AGENT_PROVIDERS,
   type ProviderCall,
 } from "../../../../lib/agent/provider.ts";
+import { listEndpoints } from "../../../../lib/agent/accounts.ts";
 import { getDashboard } from "../../../../lib/dashboard.ts";
 import { INSTANCE_KEY, instanceDashboard } from '../../../../lib/dev/instance.ts';
 import {
@@ -24,6 +27,9 @@ import {
 } from "../../../../lib/agent/sync-store.ts";
 
 const active = new Map<number, number>();
+/** Child calls, counted apart: three of the four slots at most, so a foreground turn always fits. */
+const activeChildren = new Map<number, number>();
+const CHILD_SLOTS = 3, TOTAL_SLOTS = 4;
 async function bodyOf(request: Request) {
   const reader = request.body?.getReader();
   if (!reader) throw Error("Missing request.");
@@ -49,6 +55,11 @@ export const ALL: APIRoute = async ({
   url,
 }) => {
   let modelUser: number | undefined;
+  let modelChild = false;
+  const release = (user: number, child: boolean) => {
+    active.set(user, Math.max(0, (active.get(user) ?? 1) - 1));
+    if (child) activeChildren.set(user, Math.max(0, (activeChildren.get(user) ?? 1) - 1));
+  };
   try {
     if (isDesktop() || request.headers.has("origin"))
       return Response.json(
@@ -72,16 +83,15 @@ export const ALL: APIRoute = async ({
         if (!value)
           return Response.json({ error: "Record not found." }, { status: 404 });
       } else {
-        const providers = {
-          codex: agentConfigured(user, "codex"),
-          openrouter: agentConfigured(user, "openrouter"),
-        };
+        const endpoints = listEndpoints(user).map((e) => e.name);
+        const providers = Object.fromEntries(AGENT_PROVIDERS.map((p) => [p, p === 'compat' ? endpoints.length > 0 : agentConfigured(user, p)])) as Record<(typeof AGENT_PROVIDERS)[number], boolean>;
         const config = getDashboard(user).find((w) => w.type === "agent")
           ?.config ?? { provider: providers.codex ? "codex" : "openrouter" };
-        // Provider credentials and integration tokens never enter sync payloads.
-        const { model, effort, persona } = config;
+        // Provider credentials and integration tokens never enter sync payloads
+        // (an endpoint's NAME is not a credential; its url and key stay here).
+        const { model, effort, persona, endpoint } = config;
         const provider =
-          config.provider === "codex" || config.provider === "openrouter"
+          isAgentProvider(config.provider)
             ? config.provider
             : providers.codex
               ? "codex"
@@ -89,15 +99,28 @@ export const ALL: APIRoute = async ({
         value = {
           profile: profileId(user),
           providers,
-          config: { provider, model, effort, persona },
+          endpoints,
+          config: { provider, model, effort, persona, ...(provider === 'compat' && typeof endpoint === 'string' ? { endpoint } : {}) },
           manifest: syncManifest(user),
         };
       }
     } else if (request.method === "GET" && params.action === "models") {
-      const { listCodexModels } = await import(
-        "../../../../lib/agent/codex.ts"
-      );
-      value = await listCodexModels(user);
+      const which = url.searchParams.get("provider") ?? "codex";
+      if (which === "codex") {
+        const { listCodexModels } = await import(
+          "../../../../lib/agent/codex.ts"
+        );
+        value = await listCodexModels(user);
+      } else {
+        // The server's own catalog for a key or endpoint that lives only here —
+        // whole, with its provenance and metadata, so the desktop can validate
+        // an id against it exactly as the server would.
+        if (!isAgentProvider(which)) throw Error("Unknown provider.");
+        const { modelCatalog } = await import("../../../../lib/agent/models.ts");
+        const catalog = await modelCatalog(user, which, url.searchParams.get("endpoint"));
+        if (!catalog.models.length) throw Object.assign(Error(catalog.error ?? "No models."), { status: 502 });
+        value = catalog;
+      }
     } else if (request.method === "POST" && !params.action) {
       const body = await bodyOf(request);
       if (body.record?.key?.startsWith('appearance/brand/')) return Response.json({ error: 'Instance brand assets are managed on the server.' }, { status: 403 });
@@ -131,13 +154,19 @@ export const ALL: APIRoute = async ({
       value = await TOOLS[body.name].run(body.args, { userId: user, ward: body.ward, conv: 0 });
     } else if (request.method === "POST" && params.action === "model") {
       limitDeviceAuth(`rime-model:${user}`, 240);
-      if ((active.get(user) ?? 0) >= 4)
-        return Response.json({ error: "Rime is busy." }, { status: 429 });
-      active.set(user, (active.get(user) ?? 0) + 1);
-      modelUser = user;
       const body = await bodyOf(request);
+      // Four calls per user at once; a child run may take at most three of them,
+      // so the foreground turn on a paired desktop always has one slot.
+      const child = body.child === true;
+      if ((active.get(user) ?? 0) >= TOTAL_SLOTS || (child && (activeChildren.get(user) ?? 0) >= CHILD_SLOTS))
+        return Response.json({ error: child ? "Rime is busy — three child model calls are already in flight; this one was not made." : "Rime is busy." }, { status: 429 });
+      active.set(user, (active.get(user) ?? 0) + 1);
+      if (child) activeChildren.set(user, (activeChildren.get(user) ?? 0) + 1);
+      modelUser = user;
+      modelChild = child;
       if (
-        !["codex", "openrouter"].includes(body.provider) ||
+        !isAgentProvider(body.provider) ||
+        (body.endpoint !== undefined && (typeof body.endpoint !== "string" || body.endpoint.length > 40)) ||
         typeof body.model !== "string" ||
         body.model.length > 200 ||
         typeof body.instructions !== "string" ||
@@ -146,12 +175,13 @@ export const ALL: APIRoute = async ({
         body.tools.length > 512
       )
         throw Error("Invalid model request.");
-      if (!agentConfigured(user, body.provider))
+      const endpoint = body.provider === "compat" ? String(body.endpoint ?? "") : undefined;
+      if (!agentConfigured(user, body.provider, endpoint))
         return Response.json(
           { error: "Provider not configured on the server." },
           { status: 503 },
         );
-      const provider = await getProvider(body.provider);
+      const provider = await getProvider(body.provider, endpoint);
       // Exactly one model call. The desktop owns the loop and executes its tools.
       // Answered as a stream: Cloudflare returns 524 to the desktop when the
       // origin is silent for 100s, and a long reasoning round is silent for
@@ -163,6 +193,7 @@ export const ALL: APIRoute = async ({
         relayRequestId: typeof body.requestId === 'string' && /^[a-f0-9-]{36}$/.test(body.requestId) ? body.requestId : randomUUID(),
         model: body.model,
         effort: typeof body.effort === "string" ? body.effort : undefined,
+        child,
         instructions: body.instructions,
         items: body.items,
         tools: body.tools,
@@ -202,7 +233,7 @@ export const ALL: APIRoute = async ({
               );
             } finally {
               clearInterval(beat);
-              active.set(owner, Math.max(0, (active.get(owner) ?? 1) - 1));
+              release(owner, child);
               try {
                 ctrl.close();
               } catch {
@@ -237,7 +268,6 @@ export const ALL: APIRoute = async ({
       },
     );
   } finally {
-    if (modelUser !== undefined)
-      active.set(modelUser, Math.max(0, (active.get(modelUser) ?? 1) - 1));
+    if (modelUser !== undefined) release(modelUser, modelChild);
   }
 };

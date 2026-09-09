@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db.ts';
 import { broadcast } from '../logic-engine.ts';
+import { activeConversationRow, addMessage, appendItems, getConversation, userItemFor } from './conversations.ts';
+import type { Dialect } from './provider.ts';
 import type { ToolCtx, ToolDef } from './tools.ts';
 
 /** Runtime-local receipts survive reloads; executable promises never cross a runtime. */
@@ -14,12 +16,17 @@ export interface AgentTask {
   finishedAt: number | null;
   cancellable: boolean;
   error: string | null;
+  /** A child run's route, as started (and as switched by set_model). */
+  provider?: string;
+  model?: string;
+  endpoint?: string;
 }
 interface Row {
   id: string; user_id: number; ward: string; conversation_id: number;
   tool: string; reason: string; state: AgentTask['state']; background: number;
   started_at: number; finished_at: number | null; error: string | null;
   result: string; output: string; output_offset: number;
+  provider: string | null; model: string | null; endpoint: string | null;
 }
 interface Running {
   ac: AbortController;
@@ -30,6 +37,8 @@ interface Running {
 const live = new Map<string, Running>();
 const OUTPUT_KEEP = 64_000;
 const RESULT_KEEP = 128_000;
+/** Child runs per user at once — each is a model loop of its own. */
+export const MAX_CHILDREN = 4;
 let recovered = false;
 function db() {
   const db = getDb();
@@ -44,16 +53,37 @@ function row(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string): Row {
   if (!result) throw Error('Task not found in this chat.');
   return result;
 }
+/** Is this job still running in THIS process? (The row can say running after a restart; the map cannot.) */
+export const isLive = (id: string): boolean => live.has(id);
+/** A child run's job row, or null — the address check for messages and the framing lines.
+ *  conversation_id is the PARENT thread it was started from: where its traffic goes. */
+export function childJob(userId: number, id: string): { id: string; ward: string; reason: string; state: AgentTask['state']; conversation_id: number; provider: string | null; model: string | null } | null {
+  if (typeof id !== 'string' || id.length > 40) return null;
+  return (db().prepare("SELECT id, ward, reason, state, conversation_id, provider, model FROM agent_jobs WHERE id=? AND user_id=? AND tool='spawn_agent'").get(id, userId) as ReturnType<typeof childJob>) ?? null;
+}
+export function assertChildCapacity(userId: number): void {
+  if ((db().prepare("SELECT count(*) AS n FROM agent_jobs WHERE user_id=? AND tool='spawn_agent' AND state IN ('running','stopping')").get(userId) as { n: number }).n >= MAX_CHILDREN)
+    throw Error(`${MAX_CHILDREN} child runs are already running. Wait for one to finish or stop it.`);
+}
+export function assertTaskCapacity(userId: number): void {
+  if ((db().prepare("SELECT count(*) AS n FROM agent_jobs WHERE user_id=? AND state IN ('running','stopping')").get(userId) as { n: number }).n >= 8)
+    throw Error('Eight tasks are already running. Wait for one to finish or stop it.');
+}
+/** The route a child run was started on (and switches to), for the drawer. */
+export function stampJob(id: string, sel: { provider: string; model: string; endpoint?: string | null }): void {
+  db().prepare('UPDATE agent_jobs SET provider=?, model=?, endpoint=? WHERE id=?').run(sel.provider, sel.model, sel.endpoint ?? null, id);
+}
 function view(r: Row): AgentTask {
   return { id: r.id, tool: r.tool, reason: r.reason, state: r.state, background: !!r.background,
     startedAt: r.started_at, finishedAt: r.finished_at, error: r.error,
-    cancellable: !!live.get(r.id)?.cancellable && r.state === 'running' };
+    cancellable: !!live.get(r.id)?.cancellable && r.state === 'running',
+    ...(r.provider ? { provider: r.provider } : {}), ...(r.model ? { model: r.model } : {}), ...(r.endpoint ? { endpoint: r.endpoint } : {}) };
 }
 function publish(r: Row) {
   broadcast(r.user_id, 'agent-live', { ward: r.ward, event: { type: 'task', task: view(r) } });
 }
 export function listTasks(ctx: Pick<ToolCtx, 'userId' | 'ward'>): AgentTask[] {
-  return (db().prepare(`SELECT id,tool,reason,state,background,started_at,finished_at,error FROM agent_jobs WHERE user_id=? AND ward=?
+  return (db().prepare(`SELECT id,tool,reason,state,background,started_at,finished_at,error,provider,model,endpoint FROM agent_jobs WHERE user_id=? AND ward=?
     ORDER BY state IN ('running','stopping') DESC, started_at DESC LIMIT 100`).all(ctx.userId, ctx.ward) as Row[]).map(view);
 }
 /** Output offsets are absolute, so a rolling log can report an explicit gap. */
@@ -69,10 +99,13 @@ export function readTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string, curs
 }
 export function backgroundTasks(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id?: string): AgentTask[] {
   const tasks = id ? [view(row(ctx, id))] : listTasks(ctx);
+  // Unnamed = the ward's own turn's tasks: a child run's foreground tools stay with the child.
+  const own = id ? null : activeConversationRow(ctx.userId, ctx.ward)?.id ?? null;
   const changed: AgentTask[] = [];
   for (const task of tasks) {
     const run = live.get(task.id);
     if (!run || task.background || task.state !== 'running') continue;
+    if (own !== null && row(ctx, task.id).conversation_id !== own) continue;
     db().prepare('UPDATE agent_jobs SET background=1 WHERE id=?').run(task.id);
     run.release();
     const r = row(ctx, task.id);
@@ -99,11 +132,72 @@ export async function waitTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string
   } finally { clearTimeout(timer); }
   return readTask(ctx, id, cursor, true);
 }
-/** Called only at conversation boundaries; completing a job never spends a model call. */
-export function taskNotices(ctx: ToolCtx): string[] {
-  const rows = db().prepare(`UPDATE agent_jobs SET notified=1 WHERE user_id=? AND ward=? AND conversation_id=?
-    AND background=1 AND notified=0 AND state NOT IN ('running','stopping') RETURNING *`).all(ctx.userId, ctx.ward, ctx.conv) as Row[];
-  return rows.map(r => `Background task ${r.id} (${r.tool}): ${r.state}. ${r.error ?? ''} Use task_output to inspect its result before claiming success or repeating work.`);
+/**
+ * Called only at conversation boundaries; completing a job never spends a model
+ * call. The acknowledgement (notified=1) and the replay item that carries the
+ * notice are ONE transaction: a notice is either in the thread for good or still
+ * owed — never claimed and lost. The caller pushes the returned items into its
+ * in-memory replay (they are already on disk).
+ */
+export function taskNotices(ctx: ToolCtx, dialect: Dialect): { text: string; item: unknown }[] {
+  const store = db();
+  return store.transaction(() => {
+    const rows = store.prepare(`UPDATE agent_jobs SET notified=1 WHERE user_id=? AND ward=? AND conversation_id=?
+      AND background=1 AND notified=0 AND state NOT IN ('running','stopping') RETURNING *`).all(ctx.userId, ctx.ward, ctx.conv) as Row[];
+    const notices = rows.map((r) => { const text = noticeText(r); return { text, item: userItemFor(dialect, `[Task status — runtime observation, not a new user instruction]\n${text}`) }; });
+    if (notices.length) appendItems(ctx.conv, notices.map((n) => n.item));
+    return notices;
+  })();
+}
+const noticeText = (r: Row): string => `Background task ${r.id} (${r.tool}): ${r.state}. ${r.error ?? ''} Use task_output to inspect its result before claiming success or repeating work.${r.tool === 'spawn_agent' ? childBrief(r) : ''}`;
+
+/**
+ * A child whose originating thread is archived can never be drained: its notice
+ * is FILED into that thread instead — one user-role message and one replay item,
+ * claimed through the same `notified` flag, so the record is complete and nothing
+ * is ever delivered twice. The active chat is never told; nothing is reactivated.
+ * False when there was nothing left to file.
+ */
+export function fileChildNotice(userId: number, id: string): boolean {
+  const store = db();
+  // One transaction: the claim, the replay item and the transcript line stand or fall together.
+  return store.transaction(() => {
+    const r = store.prepare(`UPDATE agent_jobs SET notified=1 WHERE id=? AND user_id=? AND tool='spawn_agent' AND notified=0 AND state NOT IN ('running','stopping') RETURNING *`).get(id, userId) as Row | undefined;
+    if (!r) return false;
+    const conv = getConversation(r.conversation_id);
+    if (!conv || conv.user_id !== userId) throw Error('the originating thread is gone');
+    const text = `[Task status — runtime observation, filed after this thread was archived]\n${noticeText(r)}`;
+    appendItems(conv.id, [userItemFor(conv.dialect, text)]);
+    addMessage(conv, { role: 'user', text: `📋 Child run ${r.state}: ${r.reason}${childBrief(r) ? `\n${childBrief(r).trim()}` : ''}`, source: 'agent' });
+    return true;
+  })();
+}
+
+/** The child's final reply, for a notice — the parent should not need task_output to hear it. */
+function childBrief(r: Row): string {
+  try {
+    const reply = (JSON.parse(r.result) as { reply?: unknown }).reply;
+    return typeof reply === 'string' && reply.trim() ? `\nIts final reply:\n<<<\n${reply.slice(0, 4000)}\n>>>` : '';
+  } catch { return ''; }
+}
+/**
+ * A finished child's result reaches its parent through ONE durable path: the
+ * task notice (taskNotices — the job row's `notified` flag, claimed atomically
+ * by the parent thread's next drain and banked in the same round). This only
+ * WAKES the originating thread so that drain happens now rather than at the
+ * user's next message: a steer into its running turn, else one turn of its own.
+ * A wake that cannot run (a pending approval, a rate limit, a restart, an
+ * archived thread, a dead provider) changes nothing — the notice waits.
+ */
+async function wakeParent(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string): Promise<void> {
+  const r = row(ctx, id);
+  try {
+    const { sendMessage } = await import('./inbox.ts');
+    await sendMessage(r.user_id, { to: r.ward, from: r.id, mode: 'steer', conversation: r.conversation_id,
+      text: `[Child run ${r.state}] "${r.reason}" (task ${r.id}) has finished${r.error ? ` — ${r.error}` : ''}. Its report is attached to this turn as a task notice: read it there, then tell the user what it found. Do not repeat its work.` });
+  } catch (err) {
+    console.error('[tasks] child wake not sent (the task notice still delivers the result):', err instanceof Error ? err.message : err);
+  }
 }
 
 /** A command terminated by a signal has no ordinary exit code; null is never success. */
@@ -122,13 +216,23 @@ export function toolFailure(value: unknown): string | null {
 /** One dispatch path for ordinary and confirmed calls. Approval happens in core before this. */
 export async function runTask(name: string, args: Record<string, unknown>, ctx: ToolCtx, def: ToolDef): Promise<unknown> {
   const store = db();
-  if ((store.prepare("SELECT count(*) AS n FROM agent_jobs WHERE user_id=? AND state IN ('running','stopping')").get(ctx.userId) as { n: number }).n >= 8)
-    throw Error('Eight tasks are already running. Wait for one to finish or stop it.');
+  // A run that is already cancelled starts nothing — not even a job row.
+  if (ctx.signal?.aborted) throw Error('Cancelled before it started.');
+  assertTaskCapacity(ctx.userId);
+  if (def.spawn) {
+    // ponytail: one level of delegation; lift when a child needs children of its own.
+    if (ctx.task) throw Error('A child run cannot start another run. Do the work yourself or ask your parent.');
+    assertChildCapacity(ctx.userId);
+  }
   // ponytail: keep the latest 100 settled receipts per user; add export if long-term task archives are needed.
-  store.prepare(`DELETE FROM agent_jobs WHERE user_id=? AND state NOT IN ('running','stopping') AND id NOT IN
+  // A background job whose notice is still owed is never pruned — its report is undelivered.
+  store.prepare(`DELETE FROM agent_jobs WHERE user_id=? AND state NOT IN ('running','stopping') AND NOT (background=1 AND notified=0) AND id NOT IN
     (SELECT id FROM agent_jobs WHERE user_id=? ORDER BY started_at DESC LIMIT 100)`).run(ctx.userId, ctx.userId);
   const id = randomUUID(), ac = new AbortController();
-  const background = args.background === true;
+  const background = args.background === true || def.spawn === true;
+  // A child's cancel reaches the tools it started, backgrounded or not.
+  const onAbort = () => ac.abort();
+  ctx.signal?.addEventListener('abort', onAbort, { once: true });
   store.prepare('INSERT INTO agent_jobs(id,user_id,ward,conversation_id,tool,reason,background,started_at) VALUES(?,?,?,?,?,?,?,?)')
     .run(id, ctx.userId, ctx.ward, ctx.conv, name, String(args.reason ?? name).slice(0, 500), Number(background), Date.now());
   let release!: () => void;
@@ -149,7 +253,7 @@ export async function runTask(name: string, args: Record<string, unknown>, ctx: 
     if (output.length > OUTPUT_KEEP) { offset += output.length - OUTPUT_KEEP; output = output.slice(-OUTPUT_KEEP); }
     outputTimer ??= setTimeout(flushOutput, 100);
   };
-  run.done = Promise.resolve().then(() => def.run(args, { ...ctx, signal: ac.signal, progress })).then(value => {
+  run.done = Promise.resolve().then(() => def.run(args, { ...ctx, signal: ac.signal, progress, job: id, ...(def.spawn ? { detach: release } : {}) })).then(value => {
     const json = JSON.stringify(value ?? null);
     const error = toolFailure(value);
     const cancelled = ac.signal.aborted || !!(value && typeof value === 'object' && 'cancelled' in value && value.cancelled === true);
@@ -164,11 +268,15 @@ export async function runTask(name: string, args: Record<string, unknown>, ctx: 
       .run(ac.signal.aborted ? 'cancelled' : 'failed', Date.now(), JSON.stringify({ error: message.slice(0, 8000) }), message.slice(0, 500), id);
     return { error: message };
   }).finally(() => {
+    ctx.signal?.removeEventListener('abort', onAbort);
     flushOutput();
     live.delete(id);
     publish(row(ctx, id));
+    if (def.spawn) void wakeParent(ctx, id);
   });
-  if (background) release();
+  // A spawn detaches itself once its arguments have validated (ToolCtx.detach):
+  // a bad spawn is an error to the caller, not a task id that failed at once.
+  if (background && !def.spawn) release();
   return Promise.race([run.done.then(value => { if (failure) throw failure; return value; }), detached.then(() => ({ task_id: id, background: true, state: row(ctx, id).state,
     note: 'Task continues independently. Do other work; use task_output or task_wait for its result. Do not repeat the operation.' }))]);
 }

@@ -10,7 +10,7 @@ import { getDashboard, getPages, saveDashboard } from '../dashboard.ts';
 import { browserId } from '../browser/routing.ts';
 import { browserCall, browserRequest } from '../browser/request.ts';
 import { DOWNLOAD_BYTES, type BrowserDownload } from '../browser/downloads.ts';
-import { validateLayout, validatePages, wardTitle, CATALOG, MAX_H, MAX_PAGES, MAX_W, type PageDef, type WardInstance, type WardSize } from '../wards.ts';
+import { validateLayout, validatePages, wardTitle, AGENT_EFFORTS, AGENT_PROVIDERS, isAgentProvider, CATALOG, MAX_H, MAX_PAGES, MAX_W, type PageDef, type WardInstance, type WardSize } from '../wards.ts';
 import { validateGraph, CHANNEL_RE, type LogicGraph } from '../logic.ts';
 import {
   broadcast,
@@ -91,6 +91,17 @@ export interface ToolCtx {
   conv: number;
   /** Agent wards whose sync ask_agent is waiting on this turn — see core.askAgent. */
   via?: string[];
+  /** Set inside a child run: its agent_jobs id — its identity for messages, and the recursion stop. */
+  task?: string;
+  /** Set by runTask on the ctx a backgroundable tool runs with: this call's own job id. */
+  job?: string;
+  /** Trusted, never a tool argument: the child continues THIS conversation (Ctrl+B),
+   *  copying it once `forkReady` resolves (the interrupted turn has settled). */
+  fork?: boolean;
+  forkReady?: Promise<void>;
+  /** Set by runTask on a spawn: the child calls it once its arguments and route
+   *  have validated — only then does the caller get a task id instead of the error. */
+  detach?: () => void;
   signal?: AbortSignal;
   progress?: (text: string) => void;
 }
@@ -99,6 +110,8 @@ export interface ToolDef {
   kind: ToolKind;
   backgroundable?: boolean;
   cancellable?: boolean;
+  /** Starts an independent run (a child): always detached, capped, refused inside a child. */
+  spawn?: boolean;
   description: string;
   parameters: Record<string, unknown>;
   run: (args: Record<string, any>, ctx: ToolCtx) => unknown | Promise<unknown>;
@@ -1190,21 +1203,45 @@ export const TOOLS: Record<string, ToolDef> = {
       return { agents: peerAgents(ctx.userId, ctx.ward) };
     },
   },
+  spawn_agent: {
+    kind: 'write',
+    backgroundable: true,
+    cancellable: true,
+    spawn: true,
+    description:
+      'Start an independent child Rime run on a task and return its task_id at once. It inherits this ward’s tools, project and approval policy — never more — and runs unattended in its own thread (confirm-gated tools decline there; it cannot spawn). It sees only task and context. By default it runs on your provider and model; provider/model/endpoint/effort pick another for it (list_models shows exact ids — an id the catalog does not list is refused, never swapped). Message it with ask_agent({ward: task_id, …}); its final reply reaches this thread once as a task notice, and task_list/task_output/task_wait/task_cancel apply to it.',
+    parameters: obj(
+      {
+        task: str('what to do, complete and self-contained — it cannot see this thread (≤ 8000 chars)'),
+        context: str('optional material it needs: findings so far, ids, constraints, text to work on (≤ 20000 chars)'),
+        provider: { type: 'string', enum: [...AGENT_PROVIDERS], description: 'default: this ward’s' },
+        model: str('exact model id from list_models; default: this ward’s (when the provider is the same)'),
+        endpoint: str('provider "compat": which of the user’s endpoints (list_models names them)'),
+        effort: { type: 'string', enum: [...AGENT_EFFORTS], description: 'reasoning effort; default: this ward’s, or the model’s own default' },
+      },
+      ['task']
+    ),
+    run: async (a, ctx) => {
+      const { runChildRun } = await import('./core.ts');
+      return runChildRun(a, ctx);
+    },
+  },
   ask_agent: {
     kind: 'write',
     backgroundable: true,
     description:
-      'Send a message to another Rime agent ward. It runs a turn in its own thread with its own tool configuration, unattended (confirm-gated tools decline there). Memory, skills, notes and /work files are shared across this user’s agents. wait (default true) returns the reply; wait:false returns at once and the reply arrives later as a message to you. mode: "queue" (default) waits its turn behind whatever it is doing; "steer" slips the note into the turn it is running now (a queue if idle); "interrupt" stops that turn, then runs this. Every message has a receipt — check_message(id).',
+      'Send a message to another Rime agent ward, or to one of your child runs (ward = its task_id). A ward runs a turn in its own thread with its own tool configuration, unattended (confirm-gated tools decline there). Memory, skills, notes and /work files are shared across this user’s agents. wait (default true) returns the reply; wait:false returns at once and a peer ward’s reply arrives later as a message to you. mode: "queue" (default) waits its turn behind whatever it is doing; "steer" slips the note into the turn it is running now (a queue if idle); "interrupt" stops that turn, then runs this. Family traffic is always a steer: to a child run the note lands between its rounds and it answers with a message of its own; reply_to answers a child’s question #N (its waiting ask_agent returns your message), and a plain message to a child that is waiting on you answers its oldest question. A child’s wait:false note to its parent gets no automatic reply. Every message has a receipt — check_message({id}).',
     parameters: obj(
       {
-        ward: str('the agent ward id (list_agents)'),
+        ward: str('the agent ward id (list_agents), or a child run’s task_id (task_list)'),
         message: str('what to ask or tell it — include the context it needs; it cannot see your thread'),
-        wait: bool('default true; false = fire and forget, the answer comes back as a message'),
-        mode: { type: 'string', enum: [...INBOX_MODES], description: 'queue (default) | steer | interrupt' },
+        wait: bool('default true; false = fire and forget'),
+        mode: { type: 'string', enum: [...INBOX_MODES], description: 'queue (default) | steer | interrupt — peer wards only' },
+        reply_to: num('answering a child run’s question: the message id it arrived with'),
       },
       ['ward', 'message']
     ),
-    run: (a, ctx) => askAgent(ctx, String(a.ward), String(a.message), { wait: a.wait !== false, mode: a.mode as InboxMode }),
+    run: (a, ctx) => askAgent(ctx, String(a.ward), String(a.message), { wait: a.wait !== false, mode: a.mode as InboxMode, ...(a.reply_to !== undefined ? { replyTo: Number(a.reply_to) } : {}) }),
   },
   check_message: {
     kind: 'read',
@@ -1214,6 +1251,32 @@ export const TOOLS: Record<string, ToolDef> = {
       const m = getMessage(ctx.userId, Number(a.id));
       if (!m) throw new Error(`no message #${a.id}`);
       return receipt(m);
+    },
+  },
+  list_models: {
+    kind: 'read',
+    description:
+      'Browse the models available to this user: every configured provider (codex = ChatGPT backend, openrouter, openai = the OpenAI API, compat = the user’s OpenAI-compatible endpoints) with exact ids, context windows, reasoning efforts, tool/vision support and prices where the provider reports them, and where each list came from (live, cache with its fetch time, the hand-kept fallback). Search with query, page with cursor. Use an id exactly as listed in spawn_agent or set_model.',
+    parameters: obj({
+      provider: { type: 'string', enum: [...AGENT_PROVIDERS], description: 'one provider; default: every configured one' },
+      endpoint: str('provider "compat": one endpoint by name; default: all of them'),
+      query: str('substring of the id or name'),
+      cursor: num('page offset from next; default 0'),
+      limit: num('page size 1–100; default 25'),
+    }),
+    run: async (a, ctx) => {
+      const { browseModels } = await import('./models.ts');
+      return browseModels(ctx.userId, { provider: isAgentProvider(a.provider) ? a.provider : undefined, endpoint: typeof a.endpoint === 'string' ? a.endpoint : undefined, query: typeof a.query === 'string' ? a.query : undefined, cursor: Number(a.cursor) || 0, limit: Number(a.limit) || 25 });
+    },
+  },
+  set_model: {
+    kind: 'read',
+    description:
+      'Switch the model (and/or reasoning effort) THIS run uses from its next round on — within its provider and endpoint: a thread is pinned to those, so changing them means starting a child (spawn_agent) with the context it needs. The ward’s own setting is untouched. The id must be one the provider lists (list_models); nothing is substituted.',
+    parameters: obj({ model: str('exact model id'), effort: { type: 'string', enum: [...AGENT_EFFORTS] } }, ['model']),
+    run: async (a, ctx) => {
+      const { selectRunModel } = await import('./core.ts');
+      return selectRunModel(ctx, { model: a.model, effort: a.effort });
     },
   },
   task_list: {
@@ -1249,7 +1312,7 @@ export const TOOLS: Record<string, ToolDef> = {
     kind: 'read',
     description: 'Your recent agent-to-agent traffic, both directions, newest first, with receipts.',
     parameters: obj({ limit: num('default 20, max 100') }),
-    run: (a, ctx) => ({ messages: listInbox(ctx.userId, ctx.ward, Number(a.limit) || 20).map(receipt) }),
+    run: (a, ctx) => ({ messages: listInbox(ctx.userId, ctx.task ?? ctx.ward, Number(a.limit) || 20).map(receipt) }),
   },
 
   // ------------------------------------------------------------------- mail

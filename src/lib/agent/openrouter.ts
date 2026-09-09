@@ -2,7 +2,9 @@ import { OpenRouter } from '@openrouter/sdk';
 import { cached } from '../cache.ts';
 import { openrouterContext, type ModelContext } from './context.ts';
 import { getSetting, setSetting } from '../settings.ts';
-import { agentKey } from './accounts.ts';
+import { agentKey, endpointOf } from './accounts.ts';
+import { isDesktop } from '../dev/runtime.ts';
+import { pinnedRequest } from './shell.ts';
 import {
   isTransient,
   recordAgentStatus,
@@ -163,6 +165,7 @@ async function callOpenRouter(call: ProviderCall, retried = false): Promise<Prov
 
 export const openrouterProvider: AgentProvider = {
   id: 'openrouter',
+  dialect: 'openrouter',
   context: async(_user, model) => (await listOpenRouterModels()).find((m) => m.id === model)?.context,
   async run(call) {
     try {
@@ -184,6 +187,13 @@ export interface ModelChoice {
   id: string;
   name: string;
   context?: ModelContext;
+  /** From supported_parameters — a union across the model's endpoints, so
+   *  false is certain and true is "some endpoint does". */
+  tools?: boolean;
+  /** Accepts image input. */
+  vision?: boolean;
+  /** USD per token, as OpenRouter quotes them (strings — they are tiny). */
+  pricing?: { prompt: string; completion: string };
 }
 
 const MODELS_TTL_MS = 3600_000;
@@ -207,7 +217,18 @@ export function listOpenRouterModels(): Promise<ModelChoice[]> {
       const models: ModelChoice[] = [];
       for await (const page of pages) {
         for (const m of page.result?.data ?? []) {
-          if (typeof m.id === 'string') models.push({ id: m.id, name: String(m.name || m.id), context: openrouterContext(m) });
+          if (typeof m.id !== 'string') continue;
+          const params = (m as { supportedParameters?: unknown }).supportedParameters;
+          const inputs = (m as { architecture?: { inputModalities?: unknown } }).architecture?.inputModalities;
+          const pricing = (m as { pricing?: { prompt?: unknown; completion?: unknown } }).pricing;
+          models.push({
+            id: m.id,
+            name: String(m.name || m.id),
+            context: openrouterContext(m),
+            ...(Array.isArray(params) ? { tools: params.includes('tools') } : {}),
+            ...(Array.isArray(inputs) ? { vision: inputs.includes('image') } : {}),
+            ...(pricing && typeof pricing.prompt === 'string' && typeof pricing.completion === 'string' ? { pricing: { prompt: pricing.prompt, completion: pricing.completion } } : {}),
+          });
         }
       }
       if (!models.length) throw new Error('empty model list');
@@ -221,6 +242,127 @@ export function listOpenRouterModels(): Promise<ModelChoice[]> {
         return stale.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) }));
       }
       throw err;
+    }
+  });
+}
+
+// ---------------------------------------------------------------- OpenAI-compatible endpoints
+//
+// The same chat-completions dialect over a plain HTTP request to a base URL the
+// user configured (Ollama, LM Studio, vLLM, a hosted OpenAI-style API). Items
+// are STORED in the SDK's camelCase shape above, so one dialect's replay,
+// repair and compaction serve both; the wire is snake_case both ways. The
+// request is pinned (private ranges refused — loopback allowed on the desktop
+// only), never follows a redirect, and carries the cancel signal to the socket.
+
+const COMPAT_TIMEOUT_MS = 300_000;
+
+/** Stored (camelCase) → wire (snake_case). The cache marker and our file ids never go out. */
+export function toWire(item: unknown): unknown {
+  const m = item as ChatMsg & { reasoningDetails?: unknown };
+  if (!m || typeof m !== 'object') return item;
+  const out: Record<string, unknown> = { role: m.role };
+  if (m.content !== undefined && m.content !== null) {
+    out.content = Array.isArray(m.content)
+      ? m.content.map((c: any) => {
+          if (c?.type === 'image_url') return { type: 'image_url', image_url: { url: c.imageUrl?.url ?? c.image_url?.url } };
+          return { type: c?.type ?? 'text', text: c?.text ?? '' };
+        })
+      : m.content;
+  } else if (m.role === 'assistant') out.content = '';
+  if (m.toolCallId) out.tool_call_id = m.toolCallId;
+  if (Array.isArray(m.toolCalls)) out.tool_calls = m.toolCalls.map((tc) => ({ id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } }));
+  return out;
+}
+
+/** Wire (snake_case) → stored (camelCase). Only what the loop reads back. */
+export function fromWire(msg: { role?: string; content?: unknown; tool_calls?: { id?: unknown; function?: { name?: unknown; arguments?: unknown } }[] }): ChatMsg {
+  const toolCalls = Array.isArray(msg.tool_calls)
+    ? msg.tool_calls
+        .filter((tc) => typeof tc?.id === 'string' && typeof tc.function?.name === 'string')
+        .map((tc) => ({ id: String(tc.id), type: 'function', function: { name: String(tc.function!.name), arguments: typeof tc.function!.arguments === 'string' ? tc.function!.arguments : '{}' } }))
+    : [];
+  return { role: 'assistant', content: typeof msg.content === 'string' ? msg.content : '', ...(toolCalls.length ? { toolCalls } : {}) };
+}
+
+async function callCompat(endpoint: string, call: ProviderCall): Promise<ProviderResult> {
+  const target = endpointOf(call.userId, endpoint);
+  if (!target) throw new Error(`compat: no endpoint "${endpoint}" — add it under Account → Agent`);
+  if (!call.model) throw new Error(`compat: pick a model for "${endpoint}" (list_models shows what it serves)`);
+  const res = await pinnedRequest(`${target.url}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(target.key ? { Authorization: `Bearer ${target.key}` } : {}) },
+    body: JSON.stringify({
+      model: call.model,
+      messages: [{ role: 'system', content: call.instructions }, ...call.items.map(toWire)],
+      ...(call.tools.length
+        ? { tools: call.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })), tool_choice: 'auto' }
+        : {}),
+      stream: false,
+    }),
+    timeoutMs: COMPAT_TIMEOUT_MS,
+    signal: call.signal,
+    allowLoopback: isDesktop(),
+  }).catch((err) => {
+    if (call.signal?.aborted) throw new Error('compat: interrupted');
+    throw new Error(`compat (${endpoint}): ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  });
+  if (res.status < 200 || res.status >= 300) throw Object.assign(new Error(`compat (${endpoint}): ${res.status} ${res.text.slice(0, 300)}`), { status: res.status });
+  let data: { choices?: { message?: Parameters<typeof fromWire>[0] }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown } } };
+  try { data = JSON.parse(res.text); } catch { throw new Error(`compat (${endpoint}): response was not JSON`); }
+  const raw = data.choices?.[0]?.message;
+  if (!raw) throw new Error(`compat (${endpoint}): empty response`);
+  const msg = fromWire(raw);
+  const { text, calls } = readChatResponse(msg);
+  if (!text && !calls.length) throw new Error(`compat (${endpoint}): empty response`);
+  const input = Number(data.usage?.prompt_tokens) || 0;
+  const cachedTokens = Number(data.usage?.prompt_tokens_details?.cached_tokens) || 0;
+  return { text, calls, items: [msg], ...(input ? { usage: { input, cached: cachedTokens, output: Number(data.usage?.completion_tokens) || undefined } } : {}) };
+}
+
+/** One provider object per endpoint name; the URL and key are the user's rows, read per call. */
+export function compatProvider(endpoint: string): AgentProvider {
+  return {
+    id: 'compat',
+    dialect: 'openrouter',
+    endpoint,
+    async run(call) {
+      try {
+        const result = await callCompat(endpoint, call);
+        recordAgentStatus(call.userId, 'compat', true, usageLine(result.usage));
+        return result;
+      } catch (err) {
+        if (!call.signal?.aborted) recordAgentStatus(call.userId, 'compat', false, call.relayRequestId ? `Relayed model request failed. Reference ${call.relayRequestId}.` : err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+    },
+    userItem: openrouterProvider.userItem,
+    toolOutputItem: openrouterProvider.toolOutputItem,
+    repairItems: repairChatItems,
+  };
+}
+
+/** GET {base}/models — ids only; nothing about capabilities is known or invented.
+ *  Cached per endpoint REVISION (its url + key), so a renamed-in-place endpoint
+ *  never serves the previous service's list. */
+export function listCompatModels(userId: number, endpoint: string): Promise<{ models: ModelChoice[]; source: 'live' | 'cache'; at: number }> {
+  const target = endpointOf(userId, endpoint);
+  if (!target) return Promise.reject(new Error(`no endpoint "${endpoint}"`));
+  const stored = `agent_models:compat:${userId}:${endpoint}:${target.revision}`;
+  return cached(`compat:models:${userId}:${endpoint}:${target.revision}`, MODELS_TTL_MS, async () => {
+    try {
+      const res = await pinnedRequest(`${target.url}/models`, { headers: target.key ? { Authorization: `Bearer ${target.key}` } : {}, timeoutMs: 10_000, allowLoopback: isDesktop() });
+      if (res.status < 200 || res.status >= 300) throw new Error(`models ${res.status}`);
+      const data = JSON.parse(res.text) as { data?: { id?: unknown }[] };
+      const models = (data.data ?? []).filter((m) => typeof m?.id === 'string').map((m) => ({ id: String(m.id), name: String(m.id) })).sort((a, b) => a.id.localeCompare(b.id));
+      if (!models.length) throw new Error('empty model list');
+      const at = Date.now();
+      setSetting(stored, JSON.stringify({ at, models }));
+      return { models, source: 'live' as const, at };
+    } catch (err) {
+      const last = JSON.parse(getSetting(stored) ?? 'null') as { at?: number; models?: ModelChoice[] } | null;
+      if (!last?.models?.length) throw err;
+      return { models: last.models, source: 'cache' as const, at: last.at ?? 0 };
     }
   });
 }

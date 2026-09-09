@@ -27,7 +27,9 @@ import type {
 interface SharedRime {
   server: string;
   profile: string;
-  providers: { codex: boolean; openrouter: boolean };
+  providers: Record<AgentProviderId, boolean>;
+  /** The server's OpenAI-compatible endpoints, by name. */
+  endpoints?: string[];
   config: Record<string, unknown>;
 }
 interface SyncStatus {
@@ -135,6 +137,7 @@ export function syncRime(user: number, force = false): Promise<void> {
       const remote = (await response.json()) as {
         profile: string;
         providers: SharedRime["providers"];
+        endpoints?: unknown;
         config: Record<string, unknown>;
         manifest: { key: string; hash: string }[];
       };
@@ -158,6 +161,7 @@ export function syncRime(user: number, force = false): Promise<void> {
           server: connection.server,
           profile: remote.profile,
           providers: remote.providers,
+          endpoints: Array.isArray(remote.endpoints) ? remote.endpoints.filter((e): e is string => typeof e === 'string') : [],
           config: remote.config,
         }),
       );
@@ -303,7 +307,9 @@ export async function sharedModel(
 ): Promise<ProviderResult | null> {
   const connection = await rimeConnection(user),
     shared = sharedRime(user);
-  if (!connection || !shared?.online || !shared.providers[provider])
+  const endpoint = call.endpoint;
+  const offered = provider === 'compat' ? !!endpoint && (shared?.endpoints ?? []).includes(endpoint) : !!shared?.providers[provider];
+  if (!connection || !shared?.online || !offered)
     return null;
   const requestId = randomUUID();
   let accepted = false;
@@ -317,6 +323,8 @@ export async function sharedModel(
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           provider,
+          endpoint,
+          child: call.child === true,
           requestId,
           model: call.model,
           effort: call.effort,
@@ -382,6 +390,38 @@ export async function sharedCodexModels(
     const stored = JSON.parse(getSetting(key) ?? '[]') as CodexModel[];
     return stored.length ? stored.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) })) : null;
   }
+}
+
+/** The server's catalog for a provider it offers and the desktop cannot ask itself
+ *  (an API key or endpoint that lives only there), with the provenance the server
+ *  reported; served from the last stored copy — marked so — when it cannot be
+ *  asked. Null when not paired/offered. */
+export async function sharedCatalog(user: number, provider: AgentProviderId, endpoint?: string | null): Promise<SharedCatalogView | null> {
+  if (!isDesktop()) return null;
+  await syncRime(user);
+  const connection = await rimeConnection(user);
+  const shared = sharedRime(user);
+  const offered = provider === 'compat' ? !!endpoint && (shared?.endpoints ?? []).includes(endpoint) : !!shared?.providers[provider];
+  if (!connection || !shared?.online || !offered) return null;
+  const key = `agent_models:shared:${user}:${connection.server}:${provider}:${endpoint ?? ''}`;
+  try {
+    return await cached(key, 3600_000, async () => {
+      const response = await request(connection.server, connection.token, `/models?provider=${provider}${endpoint ? `&endpoint=${encodeURIComponent(endpoint)}` : ''}`);
+      const body = (await response.json()) as SharedCatalogView | { id: string; name: string }[];
+      // An older server answers a bare list: provenance unknown, so never "live".
+      const view: SharedCatalogView = Array.isArray(body) ? { source: 'cache', models: body } : { source: body.source, ...(body.fetchedAt ? { fetchedAt: body.fetchedAt } : {}), models: body.models ?? [] };
+      setSetting(key, JSON.stringify(view));
+      return view;
+    });
+  } catch {
+    const stored = JSON.parse(getSetting(key) ?? 'null') as SharedCatalogView | null;
+    return stored?.models?.length ? { ...stored, source: 'cache' } : null;
+  }
+}
+export interface SharedCatalogView {
+  source: 'live' | 'cache' | 'fallback' | 'none';
+  fetchedAt?: string;
+  models: { id: string; name: string; efforts?: string[]; tools?: boolean; vision?: boolean; pricing?: { prompt: string; completion: string }; context?: import('./context.ts').ModelContext }[];
 }
 
 /** Integration authority remains with the connected account; tool approvals remain in core. */

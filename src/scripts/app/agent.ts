@@ -761,7 +761,7 @@ function paint(st: State): void {
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-clear]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-history]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
     ui.stop.classList.toggle('hidden', !st.busy && !st.remote); // server-side stop — any client, any turn
-    ui.background.classList.toggle('hidden', !st.tasks.some(t => t.state === 'running' && !t.background));
+    ui.background.classList.toggle('hidden', !st.busy && !st.remote && !st.tasks.some(t => t.state === 'running' && !t.background));
     const running = st.tasks.filter(t => t.state === 'running' || t.state === 'stopping').length;
     ui.tasksButton.setAttribute('aria-label', `Tasks${running ? ` (${running} running)` : ''}`);
     ui.tasksButton.title = `Tasks${running ? ` · ${running} running` : ''}`;
@@ -1097,7 +1097,7 @@ async function background(st: State): Promise<void> {
   const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'background' });
   if (status !== 200) { toast(data?.error ?? 'Could not background the task.'); return; }
   for (const task of data.tasks ?? []) updateTask(st, task);
-  toast(data.tasks?.length ? 'Task continues in the background. You can keep chatting.' : 'No foreground tool task is running.');
+  toast(data.forked ? 'The run continues in the background as a child run. You can keep chatting.' : data.tasks?.length ? 'Task continues in the background. You can keep chatting.' : 'Nothing is running.');
 }
 
 function updateTask(st: State, task: AgentTask): void {
@@ -1146,7 +1146,7 @@ function openTasks(st: State): void {
       if (next !== signature) {
         signature = next;
         list.replaceChildren();
-        if (!st.tasks.length) list.append(el('p', undefined, 'No tasks yet. Press Ctrl+B during a tool task to keep it running in the background.'));
+        if (!st.tasks.length) list.append(el('p', undefined, 'No tasks yet. Press Ctrl+B while Rime works to keep the run going in the background, or ask Rime to delegate to a child run.'));
         for (const task of st.tasks) {
           const row = el('article', 'ag-task-row');
           const detail = el('div', 'ag-task-description');
@@ -1196,7 +1196,8 @@ function openTasks(st: State): void {
       for (const status of list.querySelectorAll<HTMLElement>('.ag-task-status')) {
         const task = st.tasks.find(t => t.id === status.dataset.task)!;
         const age = Math.max(0, Math.round(((task.finishedAt ?? Date.now()) - task.startedAt) / 1000));
-        status.textContent = `${task.state}${task.background ? ' · background' : ''} · ${age}s · ${humanise(task.tool)}`;
+        const route = task.tool === 'spawn_agent' && task.model ? ` · ${task.provider ?? ''}${task.endpoint ? `:${task.endpoint}` : ''} ${task.model}` : '';
+        status.textContent = `${task.state}${task.background ? ' · background' : ''} · ${age}s · ${task.tool === 'spawn_agent' ? 'Child run' : humanise(task.tool)}${route}`;
       }
       if (selected && (!result || cursor === 0)) await loadOutput();
     } catch { if (!list.childElementCount) list.append(el('p', undefined, 'Connection lost. Reopen Tasks to retry.')); }

@@ -4,7 +4,7 @@ import { openToken } from '../crypto.ts';
 import { cached } from '../cache.ts';
 import { codexContext, type ModelContext } from './context.ts';
 import { getDb } from '../db.ts';
-import { getAgentAccount, storeAgentAccount, deleteAgentAccount, accountMeta } from './accounts.ts';
+import { getAgentAccount, storeAgentAccount, deleteAgentAccount, accountMeta, agentKey } from './accounts.ts';
 import {
   isTransient,
   recordAgentStatus,
@@ -304,24 +304,68 @@ export function repairResponsesItems(items: unknown[], keepOpen: Set<string>): u
 }
 
 // ---------------------------------------------------------------- the call
+//
+// One Responses-dialect call, two transports: the ChatGPT backend (codex — OAuth
+// tokens, the CLI's headers) and the OpenAI API (an API key). Tokens never cross:
+// a transport builds its own headers, and only the codex one refreshes on 401.
+
+interface Transport {
+  name: 'codex' | 'openai';
+  url: string;
+  headers(userId: number): Promise<Record<string, string>>;
+  /** 401 recovery — codex re-refreshes once; an API key is just wrong. */
+  on401?(userId: number): void;
+}
+
+const codexTransport: Transport = {
+  name: 'codex',
+  url: 'https://chatgpt.com/backend-api/codex/responses',
+  async headers(userId) {
+    const tokens = await ensureFreshTokens(userId);
+    return { Authorization: `Bearer ${tokens.access_token}`, 'chatgpt-account-id': tokens.account_id, 'OpenAI-Beta': 'responses=experimental', originator: 'codex_cli_rs' };
+  },
+  on401: poisonAccessToken,
+};
+
+const OPENAI_API = 'https://api.openai.com/v1';
+const openaiTransport: Transport = {
+  name: 'openai',
+  url: `${OPENAI_API}/responses`,
+  async headers(userId) {
+    const key = agentKey(userId, 'openai');
+    if (!key) throw new CodexError('openai: no API key — add one under Account → Agent');
+    return { Authorization: `Bearer ${key}` };
+  },
+};
+
+/** OpenAI's structured refusal of the `reasoning` parameter itself — and only that. */
+export function unsupportedReasoning(body: string): boolean {
+  try {
+    const e = (JSON.parse(body) as { error?: { code?: unknown; param?: unknown } }).error;
+    return e?.code === 'unsupported_parameter' && typeof e.param === 'string' && /^reasoning(?:\.|$)/.test(e.param);
+  } catch {
+    return false;
+  }
+}
 
 async function callCodex(call: ProviderCall, retriedAuth = false, retriedTransient = false): Promise<ProviderResult> {
-  const tokens = await ensureFreshTokens(call.userId);
+  return callResponses(call, codexTransport, retriedAuth, retriedTransient);
+}
+
+async function callResponses(call: ProviderCall, transport: Transport, retriedAuth = false, retriedTransient = false, noReasoning = false): Promise<ProviderResult> {
+  const auth = await transport.headers(call.userId);
+  const tag = transport.name;
 
   let res: Response;
   try {
-    res = await fetch('https://chatgpt.com/backend-api/codex/responses', {
+    res = await fetch(transport.url, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${tokens.access_token}`,
-        'chatgpt-account-id': tokens.account_id,
-        'OpenAI-Beta': 'responses=experimental',
-        'Content-Type': 'application/json',
-        originator: 'codex_cli_rs',
-      },
+      headers: { ...auth, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: call.model,
-        reasoning: { effort: call.effort ?? 'medium' },
+        // The API rejects `reasoning` on a model without it (400) — that one
+        // retry drops the parameter, never the model.
+        ...(noReasoning ? {} : { reasoning: { effort: call.effort ?? 'medium' } }),
         // MANDATORY with store:false. Reasoning models emit `reasoning` items
         // carrying only an `rs_…` id; replaying that id on the next round is a
         // 400 ("Item with id 'rs_…' not found. Items are not persisted when
@@ -344,25 +388,35 @@ async function callCodex(call: ProviderCall, retriedAuth = false, retriedTransie
       signal: call.signal ? AbortSignal.any([call.signal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (err) {
-    if (call.signal?.aborted) throw new CodexError('codex: interrupted');
-    const e = new CodexError(`codex: network (${err instanceof Error ? err.message : err})`, { cause: err });
+    if (call.signal?.aborted) throw new CodexError(`${tag}: interrupted`);
+    const e = new CodexError(`${tag}: network (${err instanceof Error ? err.message : err})`, { cause: err });
     if (!call.relayRequestId && !retriedTransient && isTransient(e)) {
       await new Promise((r) => setTimeout(r, 1200));
-      return callCodex(call, retriedAuth, true);
+      return callResponses(call, transport, retriedAuth, true, noReasoning);
     }
     throw e;
   }
 
-  if (res.status === 401 && !retriedAuth) {
-    poisonAccessToken(call.userId);
-    return callCodex(call, true, retriedTransient);
+  if (res.status === 401 && !retriedAuth && transport.on401) {
+    transport.on401(call.userId);
+    return callResponses(call, transport, true, retriedTransient, noReasoning);
   }
   if (!res.ok) {
-    const body = (await res.text().catch(() => '')).slice(0, 300);
-    const err = Object.assign(new CodexError(`codex: ${res.status} ${body}`), { status: res.status });
+    const text = await res.text().catch(() => '');
+    const body = text.slice(0, 300);
+    // The OpenAI API answers a model without reasoning with a structured
+    // {error: {code: "unsupported_parameter", param: "reasoning"}} — that one
+    // retry drops the parameter and nothing else. Read the code and param, not
+    // the prose: the body's type is "invalid_request_error" either way, and an
+    // invalid effort (code "invalid_value", param "reasoning.effort") or anything
+    // from the codex backend must stay the error it is.
+    if (transport.name === 'openai' && res.status === 400 && !noReasoning && unsupportedReasoning(text)) {
+      return callResponses(call, transport, retriedAuth, retriedTransient, true);
+    }
+    const err = Object.assign(new CodexError(`${tag}: ${res.status} ${body}`), { status: res.status });
     if (!call.relayRequestId && !retriedTransient && isTransient(err)) {
       await new Promise((r) => setTimeout(r, 1200));
-      return callCodex(call, retriedAuth, true);
+      return callResponses(call, transport, retriedAuth, true, noReasoning);
     }
     throw err;
   }
@@ -375,10 +429,10 @@ async function callCodex(call: ProviderCall, retriedAuth = false, retriedTransie
   try {
     raw = await res.text();
   } catch (err) {
-    const e = new CodexError(`codex: stream (${err instanceof Error ? err.message : err})`, { cause: err });
+    const e = new CodexError(`${tag}: stream (${err instanceof Error ? err.message : err})`, { cause: err });
     if (!call.relayRequestId && !retriedTransient && isTransient(e)) {
       await new Promise((r) => setTimeout(r, 1200));
-      return callCodex(call, retriedAuth, true);
+      return callResponses(call, transport, retriedAuth, true, noReasoning);
     }
     throw e;
   }
@@ -403,16 +457,16 @@ async function callCodex(call: ProviderCall, retriedAuth = false, retriedTransie
   if (failure !== null) {
     // A rate limit or upstream 5xx delivered as an SSE event is the same
     // hiccup as one delivered as a status code.
-    const err = new CodexError(`codex: response failed ${failure}`);
+    const err = new CodexError(`${tag}: response failed ${failure}`);
     if (!call.relayRequestId && !retriedTransient && isTransient(err)) {
       await new Promise((r) => setTimeout(r, 1200));
-      return callCodex(call, retriedAuth, true);
+      return callResponses(call, transport, retriedAuth, true, noReasoning);
     }
     throw err;
   }
   const items = completed?.output?.length ? completed.output : streamed;
   const { text, calls } = readItems(items);
-  if (!text && !calls.length) throw new CodexError('codex: empty response');
+  if (!text && !calls.length) throw new CodexError(`${tag}: empty response`);
   const u = completed?.usage;
   return { text, calls, items, ...(u?.input_tokens ? { usage: { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens ?? 0, output: u.output_tokens } } : {}) };
 }
@@ -477,8 +531,71 @@ export function listCodexModels(userId: number): Promise<CodexModel[]> {
   });
 }
 
+/** The OpenAI API's own list: ids and owners only — it says nothing about tools,
+ *  vision or context, and nothing is invented for it. Cached an hour per user,
+ *  the last good list kept across restarts. */
+export interface ApiModel {
+  id: string;
+  name: string;
+  /** Unix seconds, as the API reports it. */
+  created?: number;
+}
+
+/** A list with its provenance: when it was fetched, and whether this is the
+ *  last good answer rather than a fresh one. */
+export interface ModelList<M> {
+  models: M[];
+  source: 'live' | 'cache';
+  /** Unix ms of the fetch that produced these models. */
+  at: number;
+}
+
+export function listOpenAIModels(userId: number): Promise<ModelList<ApiModel>> {
+  const stored = `agent_models:openai:${userId}`;
+  return cached(`openai:models:${userId}`, 60 * 60_000, async () => {
+    try {
+      const key = agentKey(userId, 'openai');
+      if (!key) throw new Error('openai: no API key');
+      const res = await fetch(`${OPENAI_API}/models`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) throw new Error(`openai models ${res.status}`);
+      const data = (await res.json()) as { data?: { id?: unknown; created?: unknown }[] };
+      const list = (data.data ?? [])
+        .filter((m) => typeof m.id === 'string' && m.id)
+        .map((m) => ({ id: String(m.id), name: String(m.id), ...(typeof m.created === 'number' ? { created: m.created } : {}) }))
+        .sort((a, b) => (b.created ?? 0) - (a.created ?? 0) || a.id.localeCompare(b.id));
+      if (!list.length) throw new Error('openai models: empty list');
+      const at = Date.now();
+      setSetting(stored, JSON.stringify({ at, models: list }));
+      return { models: list, source: 'live' as const, at };
+    } catch (err) {
+      const last = JSON.parse(getSetting(stored) ?? 'null') as { at?: number; models?: ApiModel[] } | null;
+      if (!last?.models?.length) throw err;
+      return { models: last.models, source: 'cache' as const, at: last.at ?? 0 };
+    }
+  });
+}
+
+export const openaiProvider: AgentProvider = {
+  id: 'openai',
+  dialect: 'codex',
+  async run(call) {
+    try {
+      const result = await callResponses(call, openaiTransport);
+      recordAgentStatus(call.userId, 'openai', true, usageLine(result.usage));
+      return result;
+    } catch (err) {
+      if (!call.signal?.aborted) recordAgentStatus(call.userId, 'openai', false, call.relayRequestId ? `Relayed model request failed. Reference ${call.relayRequestId}.` : err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+  },
+  userItem: (text) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }),
+  toolOutputItem: (callId, json) => ({ type: 'function_call_output', call_id: callId, output: json }),
+  repairItems: repairResponsesItems,
+};
+
 export const codexProvider: AgentProvider = {
   id: 'codex',
+  dialect: 'codex',
   context: async(user, model) => (await listCodexModels(user)).find((m) => m.id === model)?.context,
   async run(call) {
     try {

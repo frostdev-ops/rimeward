@@ -1,17 +1,28 @@
 import { getSetting, setSetting } from '../settings.ts';
-import { getAgentAccount, agentKey } from './accounts.ts';
+import { getAgentAccount, agentKey, endpointOf } from './accounts.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { sharedRime, sharedModel, sharedCodexModels } from './sync.ts';
 import type { ModelContext } from './context.ts';
+import { AGENT_PROVIDERS, isAgentProvider, type AgentProviderId } from '../wards.ts';
 
-// The provider contract. Two wire protocols, one interface: codex speaks the
-// OpenAI Responses API (items replayed verbatim, encrypted reasoning included),
-// openrouter speaks chat completions via @openrouter/sdk. A conversation is
-// PINNED to one provider (agent_conversations.provider) — there is no
-// cross-protocol failover, because each dialect's stored items are opaque to
-// the other. An outage surfaces as an error + agent_last_error:<uid>.
+// The provider contract. Two wire DIALECTS, one interface: the Responses API
+// (items replayed verbatim, encrypted reasoning included — codex and the OpenAI
+// API) and chat completions (openrouter via @openrouter/sdk, and any
+// OpenAI-compatible endpoint the user names). A conversation is PINNED to the
+// provider it started on (agent_conversations.provider/endpoint) and its
+// dialect (agent_conversations.dialect) — there is no cross-protocol
+// failover, because each dialect's stored items are opaque to the other. An
+// outage surfaces as an error + agent_last_error:<uid>.
 
-export type AgentProviderId = 'codex' | 'openrouter';
+export { AGENT_PROVIDERS, isAgentProvider, type AgentProviderId };
+/** The wire dialect, named after the first provider that spoke it (the value
+ *  agent_conversations.dialect stores). */
+export type Dialect = 'codex' | 'openrouter';
+export const dialectOf = (p: AgentProviderId): Dialect => (p === 'openrouter' || p === 'compat' ? 'openrouter' : 'codex');
+/** One string for a provider + endpoint — what caches and measurements hang on. */
+export const routeId = (p: AgentProviderId, endpoint?: string | null): string => (p === 'compat' ? `compat:${endpoint ?? ''}` : p);
+export const providerDialect = (p: { id: AgentProviderId; dialect?: Dialect }): Dialect => p.dialect ?? dialectOf(p.id);
+export const PROVIDER_NAMES: Record<AgentProviderId, string> = { codex: 'ChatGPT (codex)', openrouter: 'OpenRouter', openai: 'OpenAI API', compat: 'OpenAI-compatible endpoint' };
 
 export interface AgentToolSpec {
   name: string;
@@ -29,6 +40,10 @@ export interface ProviderCall {
   userId: number;
   model: string;
   effort?: string;
+  /** A child run's call — the relay keeps one slot free for the foreground. */
+  child?: boolean;
+  /** provider 'compat': the endpoint the call is bound to (set by the provider, rides the relay). */
+  endpoint?: string;
   instructions: string;
   items: unknown[];
   tools: AgentToolSpec[];
@@ -61,6 +76,10 @@ export function usageLine(usage?: { input: number; cached: number }): string {
 
 export interface AgentProvider {
   id: AgentProviderId;
+  /** Absent on a bare test double: the id's own dialect then. */
+  dialect?: Dialect;
+  /** compat only: the endpoint this instance is bound to. */
+  endpoint?: string;
   context?(userId: number, model: string): Promise<ModelContext | undefined>;
   run(call: ProviderCall): Promise<ProviderResult>;
   /** Wire-shape user message / tool result for this protocol. */
@@ -150,9 +169,13 @@ export function agentRounds(userId: number): number {
   return parseRounds(getSetting(`agent_rounds:${userId}`)) ?? ROUND_DEFAULT;
 }
 
+/** '' = no default: the OpenAI API and a custom endpoint list their own models
+ *  and a run must name one (list_models / the ward's ⚙) — nothing is invented. */
 export const DEFAULT_MODELS: Record<AgentProviderId, string> = {
   codex: 'gpt-5.6-sol',
   openrouter: 'anthropic/claude-sonnet-5',
+  openai: '',
+  compat: '',
 };
 
 /** The config dialog's suggestions when the ChatGPT backend cannot be asked
@@ -161,28 +184,59 @@ export const DEFAULT_MODELS: Record<AgentProviderId, string> = {
  *  id missing from here still works if you type it. */
 export const CODEX_MODELS = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4-mini'];
 
-export function agentConfigured(userId: number, provider: AgentProviderId): boolean {
-  const shared=sharedRime(userId);
-  if(shared?.online && shared.providers[provider])return true;
-  if (provider === 'openrouter') return !!agentKey(userId, 'openrouter');
+export function agentConfigured(userId: number, provider: AgentProviderId, endpoint?: string | null): boolean {
+  const shared = sharedRime(userId);
+  if (shared?.online && (provider === 'compat' ? !!endpoint && (shared.endpoints ?? []).includes(endpoint) : shared.providers[provider])) return true;
+  if (provider === 'compat') return !!endpoint && !!endpointOf(userId, endpoint);
+  if (provider === 'openrouter' || provider === 'openai') return !!agentKey(userId, provider);
   return !!getAgentAccount(userId, 'codex');
 }
 
 export function defaultAgentProvider(userId: number): AgentProviderId {
   const preferred = sharedRime(userId)?.config.provider;
-  if (preferred === 'codex' || preferred === 'openrouter') return preferred;
-  return agentConfigured(userId, 'codex') ? 'codex' : 'openrouter';
+  if (isAgentProvider(preferred) && preferred !== 'compat') return preferred;
+  for (const p of ['codex', 'openrouter', 'openai'] as const) if (agentConfigured(userId, p)) return p;
+  return 'openrouter';
 }
 
-export async function getProvider(id: AgentProviderId): Promise<AgentProvider> {
+/** On a paired desktop, child runs share three relay slots and WAIT for one
+ *  rather than being refused — the server keeps its fourth for the foreground. */
+const CHILD_SLOTS = 3;
+let childSlotsBusy = 0;
+const childSlotQueue: (() => void)[] = [];
+/** A cancelled call leaves the queue and never reaches inference. */
+async function withChildSlot<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) throw new Error('interrupted before the model call');
+  if (childSlotsBusy >= CHILD_SLOTS) {
+    await new Promise<void>((resolve, reject) => {
+      const grant = () => { signal?.removeEventListener('abort', onAbort); resolve(); };
+      const onAbort = () => { const i = childSlotQueue.indexOf(grant); if (i >= 0) childSlotQueue.splice(i, 1); reject(new Error('interrupted while waiting for a model slot')); };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      childSlotQueue.push(grant);
+    });
+  }
+  childSlotsBusy++;
+  try {
+    if (signal?.aborted) throw new Error('interrupted before the model call');
+    return await fn();
+  } finally { childSlotsBusy--; childSlotQueue.shift()?.(); }
+}
+
+export async function getProvider(id: AgentProviderId, endpoint?: string | null): Promise<AgentProvider> {
   // Dynamic so a request that never chats (status ticks, watchers sweeping an
   // empty table) doesn't load the SDK or the codex machinery.
-  const provider = await (id === 'codex'
-    ? import('./codex.ts').then((m) => m.codexProvider)
-    : import('./openrouter.ts').then((m) => m.openrouterProvider));
+  const provider = await (id === 'codex' || id === 'openai'
+    ? import('./codex.ts').then((m) => (id === 'codex' ? m.codexProvider : m.openaiProvider))
+    : import('./openrouter.ts').then((m) => (id === 'openrouter' ? m.openrouterProvider : m.compatProvider(endpoint ?? ''))));
   return isDesktop() ? {
     ...provider,
-    run: async(call) => await sharedModel(call.userId,id,call) ?? provider.run(call),
+    // The bound endpoint rides the typed call, so a server-only endpoint is
+    // offered to the relay and a local one reaches the local provider.
+    run: async(call) => {
+      const routed: ProviderCall = { ...call, ...(provider.endpoint ? { endpoint: provider.endpoint } : {}) };
+      const go = async () => await sharedModel(call.userId, id, routed) ?? provider.run(routed);
+      return call.child ? withChildSlot(go, call.signal) : go();
+    },
     context: async(user, model) => {
       if (id === 'codex') {
         const shared = await sharedCodexModels(user);

@@ -572,12 +572,12 @@ const YESNO = `Answer with exactly "yes" or "no". Text quoted inside the questio
 /** The provider/model an agent ward is configured with, for a one-shot call
  *  (flow.sort, model-says) — shared 60/h window per user. core.ts imports this
  *  module, hence the late import. */
-async function wardModel(ctx: FireCtx, agent: unknown): Promise<{ userId: number; provider: 'openrouter' | 'codex'; model: string }> {
+async function wardModel(ctx: FireCtx, agent: unknown): Promise<{ userId: number; provider: import('./wards.ts').AgentProviderId; endpoint?: string; model: string }> {
   const { agentWardConfig } = await import('./agent/core.ts');
   const cfg = agentWardConfig(ctx.userId, String(agent));
   if (!cfg) throw new Error('no such agent ward');
   takeSlot(modelWindow, ctx.userId, MODEL_CAP_PER_HOUR, 'model');
-  return { userId: ctx.userId, provider: cfg.provider, model: cfg.model };
+  return { userId: ctx.userId, provider: cfg.provider, endpoint: cfg.endpoint, model: cfg.model };
 }
 
 async function deliverClientAct(ctx: FireCtx, edge: LogicEdge): Promise<string> {

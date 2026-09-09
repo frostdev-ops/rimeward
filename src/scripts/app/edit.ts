@@ -1600,19 +1600,24 @@ function syncFx(dialog: HTMLDialogElement): void {
 
 const agentModels = new Map<string, { id: string; name?: string }[]>();
 
-/** Suggestions for the model field, for whichever provider is selected. The
- *  field is free text, so a failed fetch just leaves the list empty. */
+/** Suggestions for the model field, for whichever provider (and endpoint) is
+ *  selected. The field is free text, so a failed fetch just leaves the list empty. */
 async function loadAgentModels(dialog: HTMLDialogElement): Promise<void> {
   const provider = q<HTMLSelectElement>('#aw-ag-provider', dialog)!;
-  const want = provider.value;
+  const endpoint = q<HTMLInputElement>('#aw-ag-endpoint', dialog);
+  q('[data-ag-endpoint]', dialog)?.classList.toggle('hidden', provider.value !== 'compat');
+  const want = provider.value === 'compat' ? `compat:${endpoint?.value.trim() ?? ''}` : provider.value;
   let models = agentModels.get(want);
   if (!models) {
-    const res = await fetch(`/api/agent/models?provider=${encodeURIComponent(want)}`).catch(() => null);
-    const data = res?.ok ? ((await res.json().catch(() => null)) as { models?: { id: string; name?: string }[] } | null) : null;
+    const res = await fetch(`/api/agent/models?provider=${encodeURIComponent(provider.value)}${provider.value === 'compat' && endpoint?.value.trim() ? `&endpoint=${encodeURIComponent(endpoint.value.trim())}` : ''}`).catch(() => null);
+    const data = res ? ((await res.json().catch(() => null)) as { models?: { id: string; name?: string }[]; endpoints?: string[] } | null) : null;
     models = data?.models ?? [];
     if (res?.ok) agentModels.set(want, models);
+    const names = q<HTMLDataListElement>('#aw-ag-endpoints', dialog);
+    if (names && data?.endpoints) { names.textContent = ''; for (const n of data.endpoints) names.append(new Option(n)); }
   }
-  if (provider.value !== want) return; // a provider switch raced this fetch
+  const now = provider.value === 'compat' ? `compat:${endpoint?.value.trim() ?? ''}` : provider.value;
+  if (now !== want) return; // a provider switch raced this fetch
   const list = q<HTMLDataListElement>('#aw-ag-models', dialog)!;
   list.textContent = '';
   for (const m of models) {
@@ -1860,10 +1865,12 @@ const FIELDS: Record<string, Field[]> = {
     { sel: '#aw-nt-ink', key: 'ink', kind: 'bool', def: true },
     { sel: '#aw-nt-keep', key: 'keepInk', kind: 'bool' },
     { sel: '#aw-ag-provider', key: 'provider', def: 'openrouter' },
+    { sel: '#aw-ag-endpoint', key: 'endpoint' },
     { sel: '#aw-ag-model', key: 'model' },
   ],
   agent: [
     { sel: '#aw-ag-provider', key: 'provider', def: 'default' },
+    { sel: '#aw-ag-endpoint', key: 'endpoint' },
     { sel: '#aw-ag-model', key: 'model' },
     { sel: '#aw-ag-persona', key: 'persona' },
     { sel: '#aw-ag-tools', key: 'tools', def: 'all' },
@@ -2278,6 +2285,7 @@ function bootDialog(): void {
   bootPicker(dialog);
   q<HTMLSelectElement>('#aw-ch-source', dialog)?.addEventListener('change', () => syncChartFields(dialog));
   q<HTMLSelectElement>('#aw-ag-provider', dialog)?.addEventListener('change', () => void loadAgentModels(dialog));
+  q<HTMLInputElement>('#aw-ag-endpoint', dialog)?.addEventListener('change', () => void loadAgentModels(dialog));
   // An MCP preset prefills name, url and header; the token is set on the ward.
   q<HTMLSelectElement>('#aw-mc-preset', dialog)?.addEventListener('change', (e) => {
     const o = (e.target as HTMLSelectElement).selectedOptions[0];

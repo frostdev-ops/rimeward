@@ -11,6 +11,13 @@ import { ICON_NAME_RE, ICONS, type IconId } from './icon-names.ts';
  *  that lacks one answers with its own error, which the ward shows. */
 export const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type AgentEffort = (typeof AGENT_EFFORTS)[number];
+/** Where a model call goes: the ChatGPT-backend Responses endpoint, OpenRouter, the OpenAI API
+ *  with a key, or one of the user's own OpenAI-compatible endpoints (named in `endpoint`). */
+export const AGENT_PROVIDERS = ['codex', 'openrouter', 'openai', 'compat'] as const;
+export type AgentProviderId = (typeof AGENT_PROVIDERS)[number];
+export const isAgentProvider = (v: unknown): v is AgentProviderId => (AGENT_PROVIDERS as readonly unknown[]).includes(v);
+/** An endpoint's name: short, lowercase, what the user typed in Account → Agent. */
+export const ENDPOINT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 /** One page of a Notion database read (notion.ts) — the ceiling on a task
  *  ward's limit, and on the count params logic.ts re-exports this for. */
@@ -341,7 +348,8 @@ export interface NoteConfig {
   /** Leave the strokes in place once their text has landed. */
   keepInk: boolean;
   /** Which of the agent's providers reads the ink / runs ✨ commands — the model must accept images. */
-  provider: 'openrouter' | 'codex';
+  provider: AgentProviderId;
+  endpoint?: string;
   model?: string;
   /** Legacy: the text a note held before the document store; seeds the first draft. */
   text?: string;
@@ -355,8 +363,9 @@ export function noteConfig(w: WardInstance): NoteConfig {
     ink: raw.ink !== false,
     transcribe: raw.transcribe === 'off' || raw.transcribe === 'live' ? raw.transcribe : 'manual',
     keepInk: raw.keepInk === true,
-    provider: raw.provider === 'codex' ? 'codex' : 'openrouter',
+    provider: isAgentProvider(raw.provider) ? raw.provider : 'openrouter',
   };
+  if (cfg.provider === 'compat' && typeof raw.endpoint === 'string' && ENDPOINT_NAME_RE.test(raw.endpoint)) cfg.endpoint = raw.endpoint;
   if (typeof raw.model === 'string' && raw.model.trim() && raw.model.length <= 100) cfg.model = raw.model.trim();
   if (typeof raw.text === 'string' && raw.text) cfg.text = raw.text.slice(0, 2000);
   return cfg;
@@ -880,10 +889,11 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
     case 'agent': {
       // Never null — bad values fall back to defaults (the ward always works).
       const out: Record<string, unknown> = {
-        provider: raw.provider === 'codex' || raw.provider === 'openrouter' ? raw.provider : 'default',
+        provider: isAgentProvider(raw.provider) ? raw.provider : 'default',
         tools: raw.tools === 'read-only' ? 'read-only' : 'all',
         approvals: raw.approvals === 'all' || raw.approvals === 'off' ? raw.approvals : 'outbound',
       };
+      if (out.provider === 'compat' && typeof raw.endpoint === 'string' && ENDPOINT_NAME_RE.test(raw.endpoint)) out.endpoint = raw.endpoint;
       if (typeof raw.model === 'string') {
         const model = raw.model.trim();
         if (model && model.length <= 100) out.model = model;

@@ -10,7 +10,7 @@ import type { ResolvedCommandContext, SecureFetch } from 'just-bash';
 import { extractPdfText } from './docs.ts';
 import { docsDir, historyDir, workDir } from './history.ts';
 import { getSetting } from '../settings.ts';
-import { isPrivateAddress } from '../net-guard.ts';
+import { isLoopbackAddress, isPrivateAddress } from '../net-guard.ts';
 
 // A real shell for the agent — just-bash: a bash interpreter with a virtual
 // filesystem, not a subprocess. Nothing it runs can touch the host beyond the
@@ -87,7 +87,7 @@ interface VettedAddress {
   family: number;
 }
 
-async function vetHost(target: URL): Promise<VettedAddress> {
+async function vetHost(target: URL, allowLoopback = false): Promise<VettedAddress> {
   if (target.protocol !== 'https:' && target.protocol !== 'http:') {
     throw new Error(`refused: ${target.protocol} is not allowed`);
   }
@@ -97,7 +97,7 @@ async function vetHost(target: URL): Promise<VettedAddress> {
     : await dns.lookup(host, { all: true });
   if (!addresses.length) throw new Error(`refused: ${host} did not resolve`);
   for (const a of addresses) {
-    if (isPrivateAddress(a.address)) {
+    if (isPrivateAddress(a.address) && !(allowLoopback && isLoopbackAddress(a.address))) {
       throw new Error(`refused: ${host} resolves to the private address ${a.address}`);
     }
   }
@@ -114,7 +114,7 @@ async function vetHost(target: URL): Promise<VettedAddress> {
  *  from the URL). */
 function request(
   target: URL,
-  options: { method: string; headers?: Record<string, string>; body?: string; timeoutMs: number; pinned: VettedAddress }
+  options: { method: string; headers?: Record<string, string>; body?: string; timeoutMs: number; pinned: VettedAddress; signal?: AbortSignal; deadlineMs?: number }
 ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: Uint8Array; location?: string }> {
   const mod = target.protocol === 'https:' ? https : http;
   const { address, family } = options.pinned;
@@ -131,12 +131,20 @@ function request(
     else done(null, address, family);
   };
   return new Promise((resolve, reject) => {
+    // `timeout` is socket inactivity; the deadline bounds a trickling response too.
+    const onAbort = () => req.destroy(new Error('aborted'));
+    const deadline = options.deadlineMs ? setTimeout(() => req.destroy(new Error('deadline exceeded')), options.deadlineMs) : undefined;
+    const settle = () => {
+      clearTimeout(deadline);
+      options.signal?.removeEventListener('abort', onAbort);
+    };
     const req = mod.request(
       target,
       { method: options.method, headers: options.headers, timeout: options.timeoutMs, lookup: lookup as never },
       (res) => {
         const chunks: Buffer[] = [];
         let size = 0;
+        let ended = false;
         res.on('data', (c: Buffer) => {
           size += c.length;
           if (size > MAX_RESPONSE_BYTES) {
@@ -145,7 +153,15 @@ function request(
           }
           chunks.push(c);
         });
-        res.on('end', () =>
+        // A response that errors, is aborted, or closes before its end (a
+        // provider dropping the socket mid-body) settles here — a promise that
+        // waited for 'end' would hang for good.
+        res.on('error', (err) => { settle(); reject(err); });
+        res.on('aborted', () => { settle(); reject(new Error('response aborted before it was complete')); });
+        res.on('close', () => { if (!ended) { settle(); reject(new Error(`response closed after ${size} bytes, before its end`)); } });
+        res.on('end', () => {
+          ended = true;
+          settle();
           resolve({
             status: res.statusCode ?? 0,
             statusText: res.statusMessage ?? '',
@@ -154,15 +170,43 @@ function request(
             ),
             body: new Uint8Array(Buffer.concat(chunks)),
             location: typeof res.headers.location === 'string' ? res.headers.location : undefined,
-          })
-        );
+          });
+        });
       }
     );
     req.on('timeout', () => req.destroy(new Error('timed out')));
-    req.on('error', reject);
+    req.on('error', (err) => { settle(); reject(err); });
+    // A cancel tears the socket down; the promise rejects through 'error'.
+    if (options.signal?.aborted) req.destroy(new Error('aborted'));
+    else options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.body) req.write(options.body);
     req.end();
   });
+}
+
+/**
+ * The request an API credential rides on (the OpenAI-compatible provider): the
+ * same private-range check and pinned connect as vettedFetch, but NO redirect is
+ * ever followed — a 3xx is an error, so a bearer key is never replayed to a host
+ * the user did not name — the cancel signal reaches the socket, and the timeout
+ * is the caller's (a model call thinks for minutes). `allowLoopback` is for the
+ * desktop, where a local model server on 127.0.0.1 is the point; the server
+ * refuses every private address.
+ */
+export async function pinnedRequest(
+  url: string,
+  options: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; signal?: AbortSignal; allowLoopback?: boolean }
+): Promise<{ status: number; headers: Record<string, string>; text: string }> {
+  const target = new URL(url);
+  const pinned = await vetHost(target, options.allowLoopback === true);
+  // A credential travels in the clear only to this machine.
+  if (target.protocol === 'http:' && options.headers?.Authorization && !isLoopbackAddress(pinned.address)) throw new Error(`refused: ${target.host} is http — a key goes only over https, or to 127.0.0.1`);
+  // One bound, the caller's: a non-streaming inference legitimately sends no
+  // byte for minutes, so socket inactivity is not cut shorter than the deadline.
+  const deadlineMs = options.timeoutMs ?? 20_000;
+  const res = await request(target, { method: options.method ?? 'GET', headers: options.headers, body: options.body, timeoutMs: deadlineMs, deadlineMs, pinned, signal: options.signal });
+  if (res.status >= 300 && res.status < 400) throw new Error(`refused: ${target.host} redirected (${res.status}); credentials are never forwarded to another address`);
+  return { status: res.status, headers: res.headers, text: Buffer.from(res.body).toString('utf8') };
 }
 
 /**

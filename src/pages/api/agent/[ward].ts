@@ -33,7 +33,7 @@ export const GET: APIRoute = async ({ params, locals, url }) => {
 };
 
 export const POST: APIRoute = async ({ params, request, locals }) => {
-  const { agentWardConfig, clearThread, interruptTurn, resolveConfirmTurn, steerTurn, runChatTurn, runCommand, wardBusy } = await import('../../../lib/agent/core.ts');
+  const { agentWardConfig, backgroundTurn, clearThread, interruptTurn, resolveConfirmTurn, steerTurn, runChatTurn, runCommand, wardBusy } = await import('../../../lib/agent/core.ts');
   const userId = locals.user!.userId;
   const ward = String(params.ward);
 
@@ -56,7 +56,11 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
   if (body.action === 'background' || body.action === 'cancel-task') {
     try {
       const ctx = { userId, ward };
-      return Response.json(body.action === 'background' ? { tasks: backgroundTasks(ctx, body.task) } : { task: cancelTask(ctx, String(body.task ?? '')) });
+      if (body.action === 'cancel-task') return Response.json({ task: cancelTask(ctx, String(body.task ?? '')) });
+      // Ctrl+B: the foreground tool task if there is one — else the whole turn forks into a child run.
+      const tasks = backgroundTasks(ctx, body.task);
+      const forked = !tasks.length && !body.task ? await backgroundTurn(userId, ward) : null;
+      return Response.json({ tasks: forked ? [forked] : tasks, forked: !!forked });
     } catch (err) { return Response.json({ error: err instanceof Error ? err.message : 'Task action failed' }, { status: 400 }); }
   }
 
@@ -87,7 +91,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
   }
   catch (e) { return Response.json({ error: e instanceof Error ? e.message : 'Invalid ward mentions' }, { status: 400 }); }
 
-  if (!agentConfigured(userId, cfg.provider)) return Response.json({ error: 'not-configured' }, { status: 503 });
+  if (!agentConfigured(userId, cfg.provider, cfg.endpoint)) return Response.json({ error: 'not-configured' }, { status: 503 });
   if (body.mode === 'steer') {
     // Typed while the agent works: the next round reads it as a user message.
     // steered:false = the turn ended first — the client sends it as a turn.

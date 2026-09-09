@@ -13,7 +13,7 @@ import GfxKnobs from '../components/GfxKnobs.astro';
 import { listBackgrounds, MAX_PER_USER } from '../lib/backgrounds.ts';
 import { getSetting } from '../lib/settings.ts';
 import { ALERT_MODES } from './api/account/prefs.ts';
-import { getAgentAccount } from '../lib/agent/accounts.ts';
+import { getAgentAccount, listEndpoints } from '../lib/agent/accounts.ts';
 import { browserbaseKey } from '../lib/browser/browserbase.ts';
 import { codexOauthPending } from '../lib/agent/codex.ts';
 import { agentLastError, agentRounds } from '../lib/agent/provider.ts';
@@ -92,10 +92,12 @@ const codexAccount = getAgentAccount(me.userId, 'codex');
 const codexPending = codexAccount ? null : codexOauthPending(me.userId);
 const AGENT_KEYS = [
   { id: 'openrouter', name: 'OpenRouter API key', hint: 'powers the openrouter provider — openrouter.ai/keys' },
+  { id: 'openai', name: 'OpenAI API key', hint: 'powers the openai provider (the OpenAI API, billed to your key) — platform.openai.com/api-keys' },
   { id: 'brave', name: 'Brave Search key', hint: 'web_search (keyword) — api.search.brave.com' },
   { id: 'exa', name: 'Exa key', hint: 'web_search (semantic) — exa.ai' },
 ] as const;
 const agentKeys = AGENT_KEYS.map((k) => ({ ...k, label: getAgentAccount(me.userId, k.id)?.label ?? '' }));
+const agentEndpoints = listEndpoints(me.userId);
 const bbKey = browserbaseKey(me.userId);
 const bbLabel = bbKey ? `${bbKey.slice(0, 4)}••••${bbKey.slice(-4)}` : '';
 const agentRoundCap = agentRounds(me.userId);
@@ -1027,6 +1029,26 @@ const TABS = [
             )}
           </form>
         ))}
+
+        <div class="border-b border-line py-3">
+          <p class="text-sm font-medium">OpenAI-compatible endpoints</p>
+          <p class="text-xs text-ink-muted">The compat provider: a name Rime picks by, a base URL such as <code>https://api.groq.com/openai/v1</code> or a local server on <code>http://127.0.0.1:11434/v1</code>, and its key if it needs one. Remote endpoints must be https; the desktop app may use plain http to this machine only.</p>
+          {agentEndpoints.map((e) => (
+            <form method="post" action="/api/account/agent" class="mt-2 flex items-center gap-2 text-xs">
+              <input type="hidden" name="action" value="endpoint-remove" />
+              <input type="hidden" name="name" value={e.name} />
+              <span class="min-w-0 flex-1 truncate"><strong>{e.name}</strong> · {e.url}{e.label ? ` · key ${e.label}` : ' · no key'}</span>
+              <button type="submit" class="btn min-h-0 px-2 py-1 text-xs">Remove</button>
+            </form>
+          ))}
+          <form method="post" action="/api/account/agent" class="mt-2 flex flex-wrap items-center gap-2">
+            <input type="hidden" name="action" value="endpoint-add" />
+            <input name="name" type="text" class="input min-h-0 w-28 px-2 py-1 text-xs" placeholder="name" aria-label="Endpoint name" pattern="[a-z0-9][a-z0-9-]{0,39}" required />
+            <input name="url" type="url" class="input min-h-0 flex-1 px-2 py-1 text-xs" placeholder="https://host/v1" aria-label="Endpoint base URL" required />
+            <input name="key" type="password" class="input min-h-0 w-40 px-2 py-1 text-xs" placeholder="key (optional)" aria-label="Endpoint API key (optional)" autocomplete="off" />
+            <button type="submit" class="btn min-h-0 px-2 py-1 text-xs">Add</button>
+          </form>
+        </div>
 
         <form method="post" action="/api/account/agent" class="flex items-center gap-2 border-b border-line py-3">
           <input type="hidden" name="action" value="browserbase-key" />

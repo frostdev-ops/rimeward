@@ -37,8 +37,8 @@ export const POST: APIRoute = async ({ request, locals }) => {
   const { agentWardConfig } = await import('../../../lib/agent/core.ts');
   const cfg = agentWardConfig(userId, String(form.get('ward') ?? ''));
   if (!cfg) return Response.json({ error: 'not an agent ward' }, { status: 400 });
-  if (!agentConfigured(userId, cfg.provider)) return Response.json({ error: 'not-configured' }, { status: 503 });
-  const conv = activeConversation(userId, String(form.get('ward')), cfg.provider);
+  if (!agentConfigured(userId, cfg.provider, cfg.endpoint)) return Response.json({ error: 'not-configured' }, { status: 503 });
+  const conv = activeConversation(userId, String(form.get('ward')), cfg.provider, cfg.endpoint);
 
   const out: { name: string; ok: boolean; id?: number; pages?: number | null; kind?: 'image' | 'document'; error?: string }[] = [];
   const entries = form.getAll('files').filter((e): e is File => e instanceof File);

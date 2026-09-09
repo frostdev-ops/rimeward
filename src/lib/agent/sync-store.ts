@@ -28,6 +28,7 @@ export interface SyncRecord {
 }
 export interface SharedChat {
   provider: AgentProviderId;
+  endpoint?: string | null;
   ward: string;
   title: string;
   device: string;
@@ -329,12 +330,13 @@ export function captureRime(user: number) {
   const wards = getDashboard(user);
   for (const conv of db
     .prepare(
-      "SELECT id,ward,provider,updated_at FROM agent_conversations WHERE user_id=?",
+      "SELECT id,ward,provider,endpoint,updated_at FROM agent_conversations WHERE user_id=? AND task_id IS NULL",
     )
     .all(user) as {
     id: number;
     ward: string;
     provider: AgentProviderId;
+    endpoint: string | null;
     updated_at: string;
   }[]) {
     const messages = (
@@ -371,6 +373,7 @@ export function captureRime(user: number) {
     );
     store(user, `chat/${origin}/${conv.id}`, {
       provider: conv.provider,
+      ...(conv.endpoint ? { endpoint: conv.endpoint } : {}),
       ward: conv.ward,
       title:
         messages.find((m) => m.role === "user")?.text.slice(0, 120) ||
@@ -561,7 +564,7 @@ export async function continueSharedChat(
     return value;
   };
   retireConversation(user, ward);
-  const conv = activeConversation(user, ward, chat.provider);
+  const conv = activeConversation(user, ward, chat.provider, chat.endpoint ?? null);
   for (const id of remapped.values())
     getDb()
       .prepare(

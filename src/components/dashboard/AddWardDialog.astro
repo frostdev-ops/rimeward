@@ -399,7 +399,14 @@ const groups = (Object.keys(CATEGORIES) as Category[])
           <select id="aw-ag-provider" name="ag-provider" class="input">
             <option value="openrouter" selected>OpenRouter</option>
             <option value="codex">Codex</option>
+            <option value="openai">OpenAI API</option>
+            <option value="compat">OpenAI-compatible endpoint</option>
           </select>
+        </div>
+        <div class="flex-1 hidden" data-ag-endpoint>
+          <label class="label" for="aw-ag-endpoint">Endpoint</label>
+          <input id="aw-ag-endpoint" name="ag-endpoint" type="text" class="input" maxlength="40" list="aw-ag-endpoints" placeholder="name from Account → Agent" />
+          <datalist id="aw-ag-endpoints"></datalist>
         </div>
         <div class="flex-1">
           <label class="label" for="aw-ag-model">Model</label>
