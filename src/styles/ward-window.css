@@ -1,5 +1,3 @@
-.wd-popout-button { flex-shrink: 0; padding: 3px; border-radius: 4px; color: var(--color-ink-faint); cursor: pointer; }
-.wd-popout-button:hover, .wd-popout-button:focus-visible { color: var(--color-accent); background: var(--color-surface-2); }
 .wd-window-away > [data-body] { display: none; }
 .wd-window-placeholder { display: flex; flex: 1; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; }
 body:has(main[data-popout-ward]) > .app-header { display: none; }
@@ -15,5 +13,5 @@ main[data-popout-ward] .wd-popout-root > header { display: flex; }
 main[data-popout-ward] .wd-popout-root > [data-body] { min-height: 0; overflow: auto; }
 main[data-popout-ward] .wd-popout-root > [data-body] > [data-nest] { display: grid; position: static; width: auto; margin: 0; box-shadow: none; }
 main[data-popout-ward] .wd-popout-root > [data-body] > [data-peek],
-main[data-popout-ward] :is(.wd-edit, .wd-grip, .wd-port, .wd-popout-button),
+main[data-popout-ward] :is(.wd-edit, .wd-grip, .wd-port),
 main[data-popout-ward] .wd-popout-root > header > .wd-chevron { display: none; }

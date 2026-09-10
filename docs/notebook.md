@@ -65,6 +65,15 @@ heading scrolling. Inputs keep readable mobile sizing and keyboard focus rings.
 
 ## Page types and document editing
 
+The labeled **New page** button keeps its icon and text readable against the
+accent background. The notebook header collapses navigation into an icon rail
+on desktop, remembers that preference, and switches navigation panes on phones.
+**Full screen** fills the app window with the current document and hides the
+notebook navigation/list; the same editor stays mounted. It is available in both
+Notebook and Notepad editors. Escape first leaves full screen, then the usual
+save-before-close behavior applies.
+
+
 New page offers Document, Markdown, Spreadsheet, Slides and Drawing. Each engine
 uses the same document id, revisions, conflict handling, backups and sync. Its
 validated JSON state and searchable text are stored together in one sanitized
@@ -185,3 +194,61 @@ are reserved for the user's manual testing of the local app.
 The build owner waits for the terminal-permission and pop-out-window tasks before
 snapshotting the shared checkout. Production deployment and installer publication
 are separate from this local build.
+
+
+## Context menus
+
+Right-click notebook navigation, properties, note rows/cards/table rows, or blank
+list space for the actions that belong to that target. Notes support open, rename,
+duplicate, copying an internal page link, pinning, section moves, templates,
+archive, trash, restore and permanent deletion through the existing save and
+confirmation paths. Section/view/property menus retain their existing editors;
+blank space also offers new page types, sections, saved views and properties.
+Notebook rows and navigation retain their touch-and-hold menus.
+
+Documents offer selection clipboard actions, formatting, links, comments, review,
+and contextual table row/column/merge/split actions. Markdown offers clipboard,
+formatting syntax, undo/redo, grammar and export actions. Agent grammar suggestions
+take precedence when right-clicking a highlighted issue. **Shift + right-click**
+opens the native spelling/editing menu; ordinary inputs and textareas keep their
+native menus. Custom document clipboard actions are explicitly plain text; use
+the native menu/keyboard clipboard for rich formatting.
+
+Spreadsheets offer selection copy/cut/paste, clear/format, row/column insertion
+and deletion, and selection actions. Slide thumbnails and canvas objects offer
+copy/cut/paste, duplicate, reorder/layers, editing and presentation actions.
+Drawings offer shape/connector copy/cut/paste, duplicate/delete, labels, layers,
+alignment, connector options and creation on empty canvas. Drawing clipboard
+selections include connector endpoints so a pasted connector remains attached.
+Slide/drawing object clipboard data is Rimeward JSON; it is portable between the
+corresponding notebook editors, not a PowerPoint/draw.io clipboard translation.
+
+Menus support ContextMenu / Shift+F10, arrow keys, Home/End, Escape, focus return,
+and scrolling within viewport bounds, including in the full-screen editor.
+Clipboard denial is reported. Cut removes content only after copying succeeds;
+late clipboard results are discarded when their document/selection has changed.
+Notebook note selection remains single-page; spreadsheet ranges and drawing
+multi-selections use their existing selection models. This change was checked by
+TypeScript/static review only; no tests, builds or UI probes were run.
+
+## Open and import local files
+
+**Open file** in the notebook header, **New page** menu, empty state, or notebook
+context menu creates a new page from a file selected on the user's device.
+Command/Ctrl+O opens the picker inside an open notebook or Notepad editor.
+Notepad's header and the document toolbar also expose file import; replacing an
+existing document requires confirmation and preserves existing ink. Files on disk
+are never overwritten or linked for automatic writeback.
+
+Supported formats are DOCX, Markdown, TXT, HTML, CSV/TSV, notebook drawing/slides/
+sheet JSON, generic JSON (opened as Markdown code), and PNG/JPEG/WebP/GIF images.
+DOCX uses the existing format-preserving importer. HTML is sanitized to supported
+editor markup; import warnings remain visible. CSV/TSV uses the sheet engine's
+row/column limits. Unsupported formats such as PDF, XLSX and PPTX are rejected,
+not silently treated as text or claimed to have been imported.
+
+A notebook import is created through the existing authenticated notebook API,
+which accepts bounded HTML content and reuses the shared sanitization/document
+store. A failed parse creates no page, and pending/conflicting edits prevent
+switching away from the open document. Importing into an existing editor guards
+against document changes while file reading or confirmation is pending.

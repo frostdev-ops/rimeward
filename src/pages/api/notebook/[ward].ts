@@ -17,7 +17,7 @@ export const prerender = false;
 // notebook wards: the layout is the registry. Replicated documents are served
 // from this runtime, including when a paired runtime is offline.
 
-const MAX_BODY = 64 * 1024;
+const MAX_BODY = 24 * 1024 * 1024; // imported documents plus JSON framing; note.ts enforces content limits
 
 function query(p: URLSearchParams, notebook: string): ListQuery {
   const q: ListQuery = { notebook };
@@ -104,7 +104,8 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
         const section = typeof body.section === 'string' && body.section ? body.section : undefined;
         const from = typeof body.from === 'string' && body.from ? mine(body.from) : undefined;
         if (body.kind !== undefined && !isNotebookPageType(body.kind)) return Response.json({ error: 'unknown page type' }, { status: 400 });
-        const html = !from && isNotebookPageType(body.kind) ? pageDocument(body.kind, null) : undefined;
+        if (body.html !== undefined && typeof body.html !== 'string') return Response.json({ error: 'invalid document content' }, { status: 400 });
+        const html = typeof body.html === 'string' ? body.html : !from && isNotebookPageType(body.kind) ? pageDocument(body.kind, null) : undefined;
         const meta = createNote(userId, { notebook: id, section, html, title: body.title ?? (isNotebookPageType(body.kind) ? `Untitled ${body.kind}` : undefined), tags: body.tags, props: body.props, from, template: body.template === true });
         changed();
         return Response.json({ note: meta });

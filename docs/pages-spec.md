@@ -23,9 +23,11 @@ bots, timers, watchers never look at what a browser shows).
 
 ## Ward windows
 
-Every ward has a **Pop out ward** header button and context-menu action. It opens
+Every ward has a **Pop out ward** context-menu action with its own window icon. It opens
 a movable, resizable native window in Rimeward, or a browser pop-up on the web.
-Repeating the action focuses the existing window. The dashboard keeps the ward's
+Wards with an expanded view open it automatically in the pop-out. Collapsing that
+view keeps it collapsed until the window reloads. Repeating the pop-out action
+focuses the existing window. The dashboard keeps the ward's
 position with **Show window** and **Bring back** controls while its renderer is
 paused. **Back to dashboard**, or closing the window, restores the dashboard view.
 Browser pop-up blocking is reported without removing the ward.

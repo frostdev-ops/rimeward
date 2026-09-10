@@ -20,11 +20,12 @@ import type { NoteMeta } from '../../lib/note.ts';
 import type { Layout, Notebook, PropDef, PropType, SavedView, Section, Sort, Status } from '../../lib/notebook.ts';
 import { RENDERERS, body, note as noteMsg } from './wards.ts';
 import { el, getJson, holdToFire, postJson, reducedMotion, toast } from './dom.ts';
-import { icon } from './icon.ts';
+import { icon, relabel } from './icon.ts';
 import type { NotebookPageType } from '../../lib/notebook-pages.ts';
+import { importNotebookFile, pickNotebookFiles, type ImportedNotebookFile } from './notebook-import.ts';
 import { askText, confirmAction } from './workspace-dialogs.ts';
-import { menuItem, openMenu } from './menu.ts';
-import { createNoteEditor, openLinkedNote, refitNoteEditors, type NoteEditor } from './note.ts';
+import { bindContextMenu, menuItem, openMenu } from './menu.ts';
+import { createNoteEditor, openLinkedNote, refitNoteEditors, setDocumentFullscreen, type NoteEditor } from './note.ts';
 
 interface Meta {
   notebook: Notebook;
@@ -123,9 +124,15 @@ async function renderCompact(w: WardInstance): Promise<void> {
   const add = btn('plus', 'New page', () => {
     const r = add.getBoundingClientRect();
     openMenu(r.left, r.bottom, menu => {
+      menu.append(menuItem('folder', 'Open file…', () => pickNotebookFiles(async files => {
+        await openNotebook(w); if (cur?.w.i !== w.i || !files[0]) return;
+        await importNotebookFiles(cur, files);
+      }, false)));
       for (const [kind, label, glyph] of [['document', 'Document', 'note'], ['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen']] as const) menu.append(menuItem(glyph, label, () => void openNotebook(w, { create: kind === 'document' ? true : kind })));
     });
   });
+  add.className = 'btn-primary nb-add';
+  add.append(el('span', undefined, 'New page'));
   bar.append(search, add, btn('resize', 'Open the notebook', () => void openNotebook(w)));
   root.append(bar);
   const rows = el('div', 'nb-c-rows');
@@ -165,6 +172,7 @@ RENDERERS.notebook = {
 
 interface Dlg {
   w: WardInstance;
+  importing?: boolean;
   nbId: string;
   meta: Meta;
   nav: Nav;
@@ -194,11 +202,43 @@ let dlg: HTMLDialogElement | null = null;
 let cur: Dlg | null = null;
 let refreshTimer = 0;
 
+const narrowNotebook = matchMedia('(max-width: 639px)');
+let sidebarCollapsed = false;
+try { sidebarCollapsed = localStorage.getItem('fd-notebook-sidebar-collapsed') === '1'; } catch { /* private storage */ }
+function syncNotebookChrome(c: Dlg): void {
+  if (!dlg) return;
+  c.els.root.toggleAttribute('data-nav-collapsed', sidebarCollapsed);
+  const fullscreen = dlg.querySelector<HTMLButtonElement>('[data-document-fullscreen-toggle]')!;
+  fullscreen.disabled = !c.selected;
+  const openFile = dlg.querySelector<HTMLButtonElement>('[data-nb-open]'); if (openFile) openFile.disabled = !!c.importing;
+  if (!c.selected && dlg.hasAttribute('data-document-fullscreen')) setDocumentFullscreen(dlg, false);
+  const expanded = !dlg.hasAttribute('data-document-fullscreen') && (narrowNotebook.matches ? c.els.root.dataset.pane === 'nav' : !sidebarCollapsed);
+  const button = dlg.querySelector<HTMLElement>('[data-nb-sidebar]')!;
+  relabel(button, expanded ? 'left' : narrowNotebook.matches ? 'list' : 'right', expanded ? 'Collapse sidebar' : 'Expand sidebar');
+  button.setAttribute('aria-expanded', String(expanded));
+}
+function setPane(c: Dlg, pane: 'nav' | 'list' | 'edit'): void {
+  if (pane !== 'edit' && dlg?.hasAttribute('data-document-fullscreen')) setDocumentFullscreen(dlg, false);
+  c.els.root.dataset.pane = pane;
+  syncNotebookChrome(c);
+}
+narrowNotebook.addEventListener('change', () => { if (cur) syncNotebookChrome(cur); });
+
 function dialog(): HTMLDialogElement | null {
   if (dlg) return dlg;
   const d = document.getElementById('notebook-dialog') as HTMLDialogElement | null;
   if (!d) return null;
   dlg = d;
+  bindContextMenu(d, event => {
+    const c = cur, target = event.target instanceof Element ? event.target : null;
+    if (!c || !target || target.closest('input,textarea,select,[contenteditable],.ctx-menu,[data-nb-host]')) return;
+    if (!target.closest('[data-nb-nav],[data-nb-list],[data-nb-title],[data-nb-empty],[data-nb-edit-head]')) return;
+    event.preventDefault(); event.stopPropagation();
+    openMenu(event.clientX, event.clientY, menu => {
+      if (target.closest('[data-nb-edit-head]') && c.selected) noteMenu(c, c.selected, menu);
+      else notebookMenu(c, menu);
+    });
+  });
   const tryClose = async () => {
     if (!cur) return d.close();
     const c = cur;
@@ -209,11 +249,32 @@ function dialog(): HTMLDialogElement | null {
     else toast('The open note has unsaved changes — fix the save before closing.', undefined, true);
   };
   d.querySelector('[data-nb-close]')?.addEventListener('click', () => void tryClose());
+  d.querySelector('[data-nb-open]')?.addEventListener('click', () => { if (cur) openNotebookFile(cur); });
+  d.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); if (cur) openNotebookFile(cur); } });
+  d.querySelector('[data-nb-sidebar]')?.addEventListener('click', () => {
+    if (!cur) return;
+    const wasFullscreen = d.hasAttribute('data-document-fullscreen');
+    setDocumentFullscreen(d, false);
+    if (narrowNotebook.matches) setPane(cur, wasFullscreen || cur.els.root.dataset.pane !== 'nav' ? 'nav' : cur.selected ? 'edit' : 'list');
+    else {
+      sidebarCollapsed = wasFullscreen ? false : !sidebarCollapsed;
+      try { localStorage.setItem('fd-notebook-sidebar-collapsed', sidebarCollapsed ? '1' : '0'); } catch { /* private storage */ }
+      syncNotebookChrome(cur);
+    }
+  });
+  d.querySelector('[data-document-fullscreen-toggle]')?.addEventListener('click', () => {
+    if (!cur?.selected) return;
+    setPane(cur, 'edit');
+    setDocumentFullscreen(d, !d.hasAttribute('data-document-fullscreen'));
+    syncNotebookChrome(cur);
+  });
   d.addEventListener('cancel', (e) => {
-    e.preventDefault(); // Esc: save first, then close
-    void tryClose();
+    e.preventDefault();
+    if (d.hasAttribute('data-document-fullscreen')) { setDocumentFullscreen(d, false); if (cur) syncNotebookChrome(cur); }
+    else void tryClose();
   });
   d.addEventListener('close', () => {
+    setDocumentFullscreen(d, false);
     const c = cur;
     cur = null;
     expandedDesktopWard();
@@ -260,7 +321,7 @@ async function openNotebook(w: WardInstance, opts: { note?: string; q?: string; 
     };
     cur = c;
     editor.onInput(() => outline(c));
-    els.root.dataset.pane = 'list';
+    setPane(c, 'list');
     expandedDesktopWard(w.i);
     d.showModal();
     await refreshMeta(c);
@@ -384,7 +445,7 @@ function setNav(c: Dlg, nav: Nav, keepSearch = false): void {
   }
   c.query = q;
   renderNav(c);
-  c.els.root.dataset.pane = 'list';
+  setPane(c, 'list');
   if (nav.kind === 'index') void renderIndex(c);
   else if (nav.kind === 'ask') renderAsk(c);
   else void refreshList(c);
@@ -393,18 +454,30 @@ function setNav(c: Dlg, nav: Nav, keepSearch = false): void {
 function navItem(c: Dlg, iconId: string, label: string, nav: Nav, n?: number, menu?: (m: HTMLElement) => void): HTMLButtonElement {
   const b = el('button', 'nb-item');
   b.type = 'button';
+  b.title = label;
+  b.setAttribute('aria-label', label);
   b.append(icon(iconId), el('span', 'truncate', label));
   if (n !== undefined) b.append(el('span', 'nb-n', String(n)));
   b.setAttribute('aria-current', String(JSON.stringify(c.nav) === JSON.stringify(nav)));
   b.addEventListener('click', () => setNav(c, nav));
-  if (menu) {
-    b.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      openMenu(e.clientX, e.clientY, menu);
-    });
-    holdToFire(b, 400, (e) => openMenu(e.clientX, e.clientY, menu));
-  }
+  const buildMenu = (m: HTMLElement) => {
+    m.append(menuItem(iconId, `Open ${label}`, () => setNav(c, nav)));
+    if (nav.kind === 'status' && nav.status === 'trash') m.append(menuItem('trash', 'Empty trash…', () => void emptyTrash(c), true));
+    else if (nav.kind === 'all' || nav.kind === 'section' || nav.kind === 'templates') m.append(menuItem('plus', 'New page here', () => { setNav(c, nav); void createNote(c); }));
+    menu?.(m);
+  };
+  bindContextMenu(b, e => { e.preventDefault(); e.stopPropagation(); b.focus({ preventScroll: true }); openMenu(e.clientX, e.clientY, buildMenu); });
+  holdToFire(b, 400, e => openMenu(e.clientX, e.clientY, buildMenu));
   return b;
+}
+
+function notebookMenu(c: Dlg, m: HTMLElement): void {
+  m.append(menuItem('folder', 'Open file…', () => openNotebookFile(c)));
+  m.append(menuItem('pen', 'Rename notebook…', () => void renameNotebook(c)));
+  for (const [kind, label, glyph] of [['document', 'Document', 'note'], ['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen']] as const) m.append(menuItem(glyph, `New ${label.toLowerCase()}`, () => void createNote(c, undefined, kind === 'document' ? undefined : kind)));
+  m.append(menuItem('folder', 'New section…', () => void addSection(c)));
+  m.append(menuItem('eye', 'Save current view…', () => void saveView(c)));
+  for (const type of Object.keys(PROP_TYPE_LABELS) as PropType[]) m.append(menuItem(propIcon(type), `Add ${PROP_TYPE_LABELS[type].toLowerCase()} property…`, () => void addProperty(c, type)));
 }
 
 function renderNav(c: Dlg): void {
@@ -449,6 +522,7 @@ function renderNav(c: Dlg): void {
     const b = el('button', 'nb-item');
     b.type = 'button';
     b.dataset.prop = p.id;
+    b.title = p.name; b.setAttribute('aria-label', p.name);
     b.append(icon(propIcon(p.type)), el('span', 'truncate', p.name), el('span', 'nb-n', PROP_TYPE_LABELS[p.type]));
     const menu = (m: HTMLElement) => {
       m.append(el('div', 'ctx-label', `${p.name} · ${PROP_TYPE_LABELS[p.type]}`));
@@ -461,10 +535,7 @@ function renderNav(c: Dlg): void {
       const r = b.getBoundingClientRect();
       openMenu(r.left + 8, r.bottom, menu);
     });
-    b.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      openMenu(e.clientX, e.clientY, menu);
-    });
+    bindContextMenu(b, e => { e.preventDefault(); e.stopPropagation(); b.focus({ preventScroll: true }); openMenu(e.clientX, e.clientY, menu); });
     nav.append(b);
   }
   head('Elsewhere');
@@ -476,7 +547,9 @@ function renderNav(c: Dlg): void {
     for (const l of c.meta.linkable.slice(0, 20)) {
       const b = el('button', 'nb-item');
       b.type = 'button';
+      b.title = `Add ${l.title} to this notebook`; b.setAttribute('aria-label', b.title);
       b.append(icon('note'), el('span', 'truncate', l.title), icon('plus', 'nb-n', 'Add to this notebook'));
+      bindContextMenu(b, event => { event.preventDefault(); event.stopPropagation(); b.focus(); openMenu(event.clientX, event.clientY, menu => { menu.append(menuItem('plus', 'Add to this notebook', () => b.click())); menu.append(menuItem('note', 'Open notepad', () => void openNote(l.id, c))); }); });
       b.addEventListener('click', async () => {
         const r = await op(c, { op: 'link', id: l.id });
         if (r) {
@@ -602,7 +675,7 @@ async function filterByProperty(c: Dlg, p: PropDef): Promise<void> {
   else v = await askText(`Show notes whose ${p.name} equals`, '');
   if (!v?.trim()) return;
   c.query.props = { ...c.query.props, [p.id]: v.trim() };
-  c.els.root.dataset.pane = 'list';
+  setPane(c, 'list');
   void refreshList(c);
 }
 
@@ -614,7 +687,7 @@ function renderList(c: Dlg): void {
   // SearchSelect moves focus into its popup; keep its original field alive until the choice lands.
   if (!listHead.contains(document.activeElement) && !listHead.querySelector('[aria-expanded="true"]')) {
     listHead.textContent = '';
-    const back = btn('left', 'Back to sections', () => { c.els.root.dataset.pane = 'nav'; }, 'btn nb-back min-h-0 px-2 py-1 text-xs');
+    const back = btn('left', 'Back to sections', () => { setPane(c, 'nav'); }, 'btn nb-back min-h-0 px-2 py-1 text-xs');
     const search = el('input', 'input nb-q');
     search.type = 'search';
     search.placeholder = c.query.template ? 'Search templates…' : 'Search this notebook…';
@@ -669,7 +742,9 @@ function renderList(c: Dlg): void {
       c.query.layout = layout.value as Layout;
       renderList(c);
     });
-    const add = btn('plus', c.query.template ? 'New template' : 'New note', () => void newNoteMenu(c, add), 'btn-primary min-h-0 px-2 py-1 text-xs');
+    const addLabel = c.query.template ? 'New template' : 'New page';
+    const add = btn('plus', addLabel, () => void newNoteMenu(c, add), 'btn-primary nb-add');
+    add.append(el('span', undefined, addLabel));
     listHead.append(back, search, sort, group, layout, add);
     if (c.query.status === 'trash' && c.notes.length) listHead.append(btn('trash', 'Empty the trash (delete every trashed note for good)', () => void emptyTrash(c)));
     const filters = Object.entries(c.query.props ?? {}).filter(([, v]) => v);
@@ -721,7 +796,8 @@ function renderList(c: Dlg): void {
       const b = el('button', 'btn min-h-0 ml-2 px-2 py-0.5 text-xs', c.query.template ? 'New template' : 'New note');
       b.type = 'button';
       b.addEventListener('click', () => void createNote(c));
-      p.append(b);
+      const open = el('button', 'btn min-h-0 ml-2 px-2 py-0.5 text-xs', 'Open file…'); open.type = 'button'; open.onclick = () => openNotebookFile(c);
+      p.append(b, open);
     }
     rows.append(p);
     return;
@@ -865,10 +941,7 @@ function wireRow(c: Dlg, r: HTMLElement, n: NoteMeta, first: boolean): void {
   r.tabIndex = selected || (first && !c.selected) ? 0 : -1;
   r.addEventListener('click', () => void select(c, n.id));
   const menu = (m: HTMLElement) => noteMenu(c, n, m);
-  r.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    openMenu(e.clientX, e.clientY, menu);
-  });
+  bindContextMenu(r, e => { e.preventDefault(); e.stopPropagation(); r.focus({ preventScroll: true }); openMenu(e.clientX, e.clientY, menu); });
   holdToFire(r, 400, (e) => openMenu(e.clientX, e.clientY, menu));
 }
 
@@ -892,7 +965,14 @@ function row(c: Dlg, n: NoteMeta, first: boolean): HTMLElement {
 
 function noteMenu(c: Dlg, n: NoteMeta, m: HTMLElement): void {
   m.append(el('div', 'ctx-label', titleOf(n)));
+  m.append(menuItem('note', 'Open', () => void select(c, n.id)));
+  m.append(menuItem('copy', 'Copy page link', () => { void (async () => {
+    const link = el('a', undefined, titleOf(n)); link.dataset.note = n.id;
+    await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([link.outerHTML], { type: 'text/html' }), 'text/plain': new Blob([titleOf(n)], { type: 'text/plain' }) })]);
+  })().catch(() => toast('Clipboard unavailable. Type [[ in a document to insert a page link.', undefined, true)); }));
   if (!n.trashed) {
+    m.append(menuItem('pen', 'Rename…', () => { void askText('Page title', n.title).then(title => { if (title?.trim()) void patchNote(c, n, { title: title.trim() }); }); }));
+    m.append(menuItem('copy', 'Duplicate page', () => { void (async () => { if (c.selected?.id === n.id && !(await c.editor.flush())) return; await createNote(c, n.id); })(); }));
     m.append(menuItem('pin', n.pinned ? 'Unpin' : 'Pin', () => void patchNote(c, n, { pinned: !n.pinned })));
     for (const s of c.meta.notebook.sections) if (s.id !== n.section) m.append(menuItem('folder', `Move to ${s.title}`, () => void patchNote(c, n, { section: s.id })));
     if (n.section) m.append(menuItem('folder-out', 'Unfile (no section)', () => void patchNote(c, n, { section: '' })));
@@ -1018,6 +1098,7 @@ async function newNoteMenu(c: Dlg, anchor: HTMLElement): Promise<void> {
   if (cur !== c) return;
   const r = anchor.getBoundingClientRect();
   openMenu(r.left, r.bottom, (m) => {
+    m.append(menuItem('folder', 'Open file…', () => openNotebookFile(c)));
     m.append(menuItem('note', 'Document', () => void createNote(c)));
     for (const [type, label, glyph] of [['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen']] as const) m.append(menuItem(glyph, label, () => void createNote(c, undefined, type)));
     if (templates.length) m.append(el('div', 'ctx-label', 'From a template'));
@@ -1025,15 +1106,32 @@ async function newNoteMenu(c: Dlg, anchor: HTMLElement): Promise<void> {
   });
 }
 
-async function createNote(c: Dlg, from?: string, kind?: NotebookPageType): Promise<void> {
-  if (!(await c.editor.flush())) {
+function openNotebookFile(c: Dlg): void {
+  if (c.importing) return;
+  pickNotebookFiles(files => importNotebookFiles(c, files), false);
+}
+async function importNotebookFiles(c: Dlg, files: File[]): Promise<void> {
+  if (c.importing || cur !== c || !files[0]) return;
+  c.importing = true;
+  const button = dlg?.querySelector<HTMLButtonElement>('[data-nb-open]'); if (button) button.disabled = true;
+  try {
+    const imported = await importNotebookFile(files[0]);
+    if (cur === c) await createNote(c, undefined, undefined, imported);
+  } finally { c.importing = false; if (button && cur === c) button.disabled = false; }
+}
+
+async function createNote(c: Dlg, from?: string, kind?: NotebookPageType, imported?: ImportedNotebookFile): Promise<void> {
+  if (!(await c.metaSaves) || c.failedFields.size || !(await c.editor.flush()) || c.editor.dirty()) {
     toast('Save the open note first — it has changes that did not save.', undefined, true);
     return;
   }
   const section = c.query.section && c.query.section !== 'none' ? c.query.section : undefined;
-  const r = await op(c, { op: 'create', section, from, kind, template: c.query.template === true || undefined });
+  if (cur !== c) return;
+  const r = await op(c, { op: 'create', section, from, kind, html: imported?.html, title: imported?.title, template: c.query.template === true || undefined });
   if (!r) return;
+  if (cur !== c) return;
   const meta = r.note as NoteMeta;
+  if (imported) toast(imported.warnings.length ? `Opened ${imported.title}. ${imported.warnings.join(' ')}` : `Opened ${imported.title}.`);
   if (c.query.status !== 'active' || c.query.q || c.query.pinned || c.query.tag || c.query.props) setNav(c, section ? { kind: 'section', id: section } : meta.template ? { kind: 'templates' } : { kind: 'all' });
   else void refreshList(c);
   await select(c, meta.id, meta);
@@ -1043,7 +1141,7 @@ async function createNote(c: Dlg, from?: string, kind?: NotebookPageType): Promi
 async function renderIndex(c: Dlg): Promise<void> {
   const { rows, listHead, hint } = c.els;
   listHead.textContent = '';
-  listHead.append(btn('left', 'Back to sections', () => { c.els.root.dataset.pane = 'nav'; }, 'btn nb-back min-h-0 px-2 py-1 text-xs'), el('span', 'text-xs text-ink-muted', 'Index — every note by section'));
+  listHead.append(btn('left', 'Back to sections', () => { setPane(c, 'nav'); }, 'btn nb-back min-h-0 px-2 py-1 text-xs'), el('span', 'text-xs text-ink-muted', 'Index — every note by section'));
   hint.textContent = '';
   rows.textContent = '';
   rows.append(el('p', 'wd-note text-xs text-ink-faint', 'Loading…'));
@@ -1077,7 +1175,7 @@ async function renderIndex(c: Dlg): Promise<void> {
 function renderAsk(c: Dlg): void {
   const { rows, listHead, hint } = c.els;
   listHead.textContent = '';
-  listHead.append(btn('left', 'Back to sections', () => { c.els.root.dataset.pane = 'nav'; }, 'btn nb-back min-h-0 px-2 py-1 text-xs'), el('span', 'text-xs text-ink-muted', 'Ask this notebook'));
+  listHead.append(btn('left', 'Back to sections', () => { setPane(c, 'nav'); }, 'btn nb-back min-h-0 px-2 py-1 text-xs'), el('span', 'text-xs text-ink-muted', 'Ask this notebook'));
   hint.textContent = '';
   rows.textContent = '';
   rows.removeAttribute('role');
@@ -1173,7 +1271,7 @@ async function selectNow(c: Dlg, id: string, known?: NoteMeta): Promise<void> {
   }
   if (c.editor.id() !== id) return; // a later selection already took the editor
   c.selected = meta;
-  c.els.root.dataset.pane = 'edit';
+  setPane(c, 'edit');
   markRows(c, id);
   renderEditHead(c);
   refitNoteEditors();
@@ -1200,6 +1298,7 @@ async function fetchMeta(c: Dlg, id: string, quiet = false): Promise<NoteMeta | 
 }
 
 function renderEditHead(c: Dlg): void {
+  syncNotebookChrome(c);
   const { editHead, empty, editHost, outline: outlineEl } = c.els;
   const n = c.selected;
   // A title, tags or property field being typed into keeps its draft: rebuilding the head would throw it away.
@@ -1209,7 +1308,7 @@ function renderEditHead(c: Dlg): void {
   empty.hidden = !!n;
   editHost.hidden = !n;
   outlineEl.hidden = !n;
-  editHead.append(btn('left', 'Back to the list', () => { c.els.root.dataset.pane = 'list'; }, 'btn nb-back min-h-0 px-2 py-1 text-xs'));
+  editHead.append(btn('left', 'Back to the list', () => { setPane(c, 'list'); }, 'btn nb-back min-h-0 px-2 py-1 text-xs'));
   if (!n) return;
   const title = el('input', 'nb-title');
   title.type = 'text';

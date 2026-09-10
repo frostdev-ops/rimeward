@@ -4,12 +4,12 @@ import { basicSetup } from 'codemirror';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { autocompletion, snippetCompletion, type CompletionContext } from '@codemirror/autocomplete';
-import { indentWithTab } from '@codemirror/commands';
+import { indentWithTab, undo, redo } from '@codemirror/commands';
 import { marked } from 'marked';
 import { sanitizeHtml, plainText } from '../../lib/note-text.ts';
 import { el, postJson, toast } from './dom.ts';
 import { setDiagnostics, type Diagnostic } from '@codemirror/lint';
-import { menuItem, openMenu } from './menu.ts';
+import { bindContextMenu, menuItem, openMenu } from './menu.ts';
 import type { NotebookPageEngine, NotebookPageOptions } from './notebook-page-engine.ts';
 import '../../styles/notebook-markdown.css';
 
@@ -64,11 +64,44 @@ export function createMarkdownPage(options: NotebookPageOptions): NotebookPageEn
       if (!found.length) toast('No grammar issues found.');
     } finally { review.disabled = false; }
   };
-  source.addEventListener('contextmenu', event => {
-    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-    const issue = suggestions.find(issue => pos !== null && pos >= issue.start && pos <= issue.end); if (!issue) return;
-    event.preventDefault(); event.stopPropagation(); openMenu(event.clientX, event.clientY, menu => { menu.append(el('div', 'ctx-label', issue.message));
-      for (const replacement of issue.replacements) menu.append(menuItem('check', replacement || 'Delete', () => view.dispatch({ changes: { from: issue.start, to: issue.end, insert: replacement } })));
+  bindContextMenu(source, event => {
+    if (event.shiftKey) return;
+    const pos = event.detail === -1 ? view.state.selection.main.head : view.posAtCoords({ x: event.clientX, y: event.clientY });
+    const issue = suggestions.find(issue => pos !== null && pos >= issue.start && pos <= issue.end);
+    event.preventDefault(); event.stopPropagation();
+    const selection = view.state.selection.main, before = view.state.doc;
+    openMenu(event.clientX, event.clientY, menu => {
+      if (issue) {
+        menu.append(el('div', 'ctx-label', issue.message));
+        for (const replacement of issue.replacements) menu.append(menuItem('check', replacement || 'Delete', () => { if (view.state.doc === before) view.dispatch({ changes: { from: issue.start, to: issue.end, insert: replacement } }); }));
+        return;
+      }
+      menu.append(el('div', 'ctx-label', 'Native spelling menu: Shift + right-click'));
+      async function clipboard(action: 'copy' | 'cut' | 'paste') {
+        try {
+          if (action === 'paste') {
+            const text = await navigator.clipboard.readText();
+            if (disposed || view.state.doc !== before) return toast('Paste canceled because the page changed.');
+            view.dispatch({ changes: { from: selection.from, to: selection.to, insert: text } });
+          } else {
+            await navigator.clipboard.writeText(before.sliceString(selection.from, selection.to));
+            if (action === 'cut') {
+              if (disposed || view.state.doc !== before) return toast('Text copied; cut canceled because the page changed.');
+              view.dispatch({ changes: { from: selection.from, to: selection.to, insert: '' } });
+            }
+          }
+          view.focus();
+        } catch { toast('Clipboard unavailable. Use a keyboard shortcut or Shift + right-click. No text changed.', undefined, true); }
+      }
+      for (const action of ['copy', 'cut', 'paste'] as const) { const item = menuItem('copy', action[0].toUpperCase() + action.slice(1), () => void clipboard(action)) as HTMLButtonElement; item.disabled = action !== 'paste' && selection.empty; menu.append(item); }
+      menu.append(menuItem('undo', 'Undo', () => { undo(view); view.focus(); }), menuItem('redo', 'Redo', () => { redo(view); view.focus(); }));
+      for (const [label, left, right] of [['Bold', '**', '**'], ['Italic', '*', '*'], ['Strikethrough', '~~', '~~'], ['Inline code', '`', '`'], ['Link', '[', '](https://)'], ['Heading', '## ', ''], ['Bullet list', '- ', ''], ['Task', '- [ ] ', '']]) menu.append(menuItem('pen', label, () => {
+        if (disposed || view.state.doc !== before) return;
+        view.dispatch({ changes: { from: selection.from, to: selection.to, insert: left + before.sliceString(selection.from, selection.to) + right }, selection: { anchor: selection.from + left.length, head: selection.to + left.length } }); view.focus();
+      }));
+      menu.append(menuItem('list', 'Select all', () => { view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } }); view.focus(); }));
+      const grammar = menuItem('check', 'Review grammar', () => review.click()) as HTMLButtonElement; grammar.disabled = review.disabled; menu.append(grammar);
+      menu.append(menuItem('download', 'Export Markdown', () => download.click()));
     });
   });
   download.onclick = () => {

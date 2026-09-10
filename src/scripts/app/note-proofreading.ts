@@ -76,15 +76,17 @@ export function attachProofreading(o: ProofreadingOptions): { refresh(): void; d
   function changed() { revision++; clearTimeout(timer); clear(); if (automatic.checked && o.api()) timer = window.setTimeout(() => void check(), 5000); }
   const nativeCorrection = () => { o.doc.spellcheck = true; o.doc.setAttribute('autocorrect', autocorrect.checked ? 'on' : 'off'); o.doc.setAttribute('autocapitalize', autocorrect.checked ? 'sentences' : 'off'); };
   const context = (event: MouseEvent) => {
-    const match = issues.find(({ range }) => [...range.getClientRects()].some(r => event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom));
+    if (event.shiftKey) return;
+    const caret = getSelection()?.anchorNode;
+    const match = issues.find(({ range }) => event.detail === -1 && caret ? range.isPointInRange(caret, getSelection()?.anchorOffset ?? 0) : [...range.getClientRects()].some(r => event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom));
     if (!match) return;
-    event.preventDefault(); event.stopPropagation(); openMenu(event.clientX, event.clientY, menu => {
+    event.preventDefault(); event.stopImmediatePropagation(); openMenu(event.clientX, event.clientY, menu => {
       menu.append(el('div', 'ctx-label', match.issue.message));
       for (const replacement of match.issue.replacements) menu.append(menuItem('check', replacement || 'Delete', () => apply(match.issue, match.range, replacement)));
       menu.append(menuItem('close', 'Ignore suggestion', () => { CSS.highlights?.get(errorName)?.delete(match.range); CSS.highlights?.get(warningName)?.delete(match.range); issues = issues.filter(x => x !== match); }));
     });
   };
   review.onclick = () => void check(); automatic.onchange = changed; autocorrect.onchange = nativeCorrection; nativeCorrection();
-  o.doc.addEventListener('input', changed); o.doc.addEventListener('contextmenu', context);
-  return { refresh: changed, destroy() { disposed = true; revision++; clearTimeout(timer); clear(); style.remove(); group.remove(); panel.remove(); o.doc.removeEventListener('input', changed); o.doc.removeEventListener('contextmenu', context); } };
+  o.doc.addEventListener('input', changed); o.doc.addEventListener('contextmenu', context, true);
+  return { refresh: changed, destroy() { disposed = true; revision++; clearTimeout(timer); clear(); style.remove(); group.remove(); panel.remove(); o.doc.removeEventListener('input', changed); o.doc.removeEventListener('contextmenu', context, true); } };
 }

@@ -10,13 +10,18 @@ import Icon from '../Icon.astro';
   <form method="dialog" class="flex h-full flex-col gap-2 p-3">
     <div class="flex items-center justify-between gap-2">
       <div class="flex min-w-0 items-center gap-1">
+        <button type="button" class="btn nb-chrome-button" data-nb-sidebar aria-controls="notebook-navigation" aria-expanded="true" title="Collapse sidebar" aria-label="Collapse sidebar"><Icon id="left" /></button>
         <h2 class="section-title truncate" data-nb-title>Notebook</h2>
         <button type="button" class="btn min-h-0 px-1.5 py-1 text-xs" data-nb-rename title="Rename the notebook" aria-label="Rename the notebook"><Icon id="pen" /></button>
       </div>
-      <button type="button" class="btn min-h-0 px-2 py-1 text-xs" data-nb-close aria-label="Close"><Icon id="close" /></button>
+      <div class="flex items-center gap-2">
+        <button type="button" class="btn nb-chrome-button" data-nb-open aria-label="Open file" title="Open a file from your device"><Icon id="folder" /><span class="tb-label">Open file</span></button>
+        <button type="button" class="btn nb-chrome-button" data-document-fullscreen-toggle aria-pressed="false" aria-label="Full screen" title="Full screen" disabled><Icon id="fullscreen" /><span class="tb-label">Full screen</span></button>
+        <button type="button" class="btn nb-chrome-button" data-nb-close aria-label="Close"><Icon id="close" /></button>
+      </div>
     </div>
     <div class="nb" data-nb-root data-pane="list">
-      <nav class="nb-nav" data-nb-nav aria-label="Notebook navigation"></nav>
+      <nav id="notebook-navigation" class="nb-nav" data-nb-nav aria-label="Notebook navigation"></nav>
       <section class="nb-list" data-nb-list aria-label="Notes">
         <div class="nb-list-head" data-nb-list-head></div>
         <div class="nb-rows" data-nb-rows></div>

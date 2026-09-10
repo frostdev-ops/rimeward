@@ -24,7 +24,7 @@ import { expandedDesktopWard, restoreExpandedWard, readDesktopCheckpoint, saveDe
 import { noteConfig, wardTitle, type NoteConfig, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body } from './wards.ts';
 import { el, postJson, toast } from './dom.ts';
-import { icon } from './icon.ts';
+import { icon, relabel } from './icon.ts';
 import { askText, confirmAction } from './workspace-dialogs.ts';
 import { pageDocument, readPageDocument, type NotebookPageType } from '../../lib/notebook-pages.ts';
 import { sanitizeHtml } from '../../lib/note-text.ts';
@@ -32,7 +32,8 @@ import { createNotebookPage } from './notebook-page-editors.ts';
 import type { NotebookPageEngine } from './notebook-page-engine.ts';
 import { attachWordEditor } from './note-word.ts';
 import { attachProofreading } from './note-proofreading.ts';
-import { importDocx, exportDocx } from './note-docx.ts';
+import { exportDocx } from './note-docx.ts';
+import { importNotebookFile, pickNotebookFiles } from './notebook-import.ts';
 import TurndownService from 'turndown';
 import { marked } from 'marked';
 
@@ -262,29 +263,30 @@ function build(owner: string, expandable: boolean): State {
   canvas.addEventListener('pointercancel', (e) => up(st, e));
   st.ro.observe(doc);
   st.ro.observe(page);
-  st.word = attachWordEditor({ doc, tools, changed: () => markDoc(st), title: () => st.target?.title ?? 'Document' });
+  st.word = attachWordEditor({ doc, tools, changed: () => markDoc(st), title: () => st.target?.title ?? 'Document', identity: () => `${st.gen}:${st.loadGen}` });
   st.proof = attachProofreading({ doc, tools, api: () => st.loaded && !st.pageEngine ? st.target?.api ?? null : null, onChange: () => markDoc(st), replace: (range, text) => st.word!.replace(range, text) });
-  const file = el('input'); file.type = 'file'; file.accept = '.docx,.md,.markdown'; file.hidden = true; tools.append(file);
-  const importButton = button(tools, 'upload', 'Import DOCX or Markdown', () => file.click(), true);
-  file.onchange = async () => {
-    const selected = file.files?.[0]; if (!selected || !st.target || !st.loaded) return;
-    const gen = st.gen;
-    if (serializeDocument(st).trim() && !await confirmAction('Replace this document with the imported file?')) { file.value = ''; return; }
-    importButton.disabled = true;
-    try {
-      if (/\.docx$/i.test(selected.name)) {
-        const imported = await importDocx(selected);
-        if (st.gen !== gen) return;
-        st.replacePage = true; showDocument(st, sanitizeHtml(imported.html)); markDoc(st);
-        if (imported.warnings.length) toast(imported.warnings.join(' '));
-      } else {
-        if (selected.size > 500_000) throw Error('Markdown files must be under 500 KB.');
-        const source = await selected.text(); if (st.gen !== gen) return;
-        st.replacePage = true; showDocument(st, pageDocument('markdown', { source })); markDoc(st);
-      }
-    } catch (error) { toast((error as Error).message, undefined, true); }
-    finally { importButton.disabled = false; file.value = ''; }
-  };
+  const importButton = button(tools, 'folder', 'Import file', () => {
+    if (!st.target || !st.loaded) { toast('Wait for the document to finish loading before importing.', undefined, true); return; }
+    pickNotebookFiles(async files => {
+      const selected = files[0]; if (!selected || !st.target || !st.loaded || importButton.disabled) return;
+      const gen = st.gen, loadGen = st.loadGen, docSeq = st.docSeq, inkSeq = st.inkSeq;
+      const unchanged = () => st.gen === gen && st.loadGen === loadGen && st.docSeq === docSeq && st.inkSeq === inkSeq;
+      importButton.disabled = true;
+      try {
+        const imported = await importNotebookFile(selected);
+        if (!unchanged()) { toast('The document changed while opening the file. Import again to continue.', undefined, true); return; }
+        const hasContent = st.pageEngine || st.doc.textContent?.trim() || st.doc.querySelector('img,table') || st.strokes.length;
+        if (hasContent && !await confirmAction('Replace this document’s content with the imported file? Existing ink is kept.')) return;
+        if (!unchanged()) { toast('The document changed. Import again to continue.', undefined, true); return; }
+        showDocument(st, imported.html); st.replacePage = true; markDoc(st);
+        if (!(await flushDoc(st))) return;
+        toast(imported.warnings.length ? `Imported ${imported.title}. ${imported.warnings.join(' ')}` : `Imported ${imported.title}.`);
+      } finally { importButton.disabled = !st.target || !st.loaded; }
+    }, false);
+  }, true);
+  importButton.dataset.noteOpenFile = '';
+  importButton.dataset.pageControl = '';
+  importButton.append(el('span', undefined, 'Import file'));
   button(tools, 'download', 'Export DOCX', () => {
     const html = st.pageType === 'markdown' ? sanitizeHtml(marked.parse((st.pageEngine!.serialize() as { source: string }).source, { async: false, gfm: true })) : st.doc.innerHTML;
     void exportDocx(html, st.target?.title ?? 'Document').then(blob => {
@@ -1168,6 +1170,17 @@ function print(st: State): void {
 let dlg: HTMLDialogElement | null = null;
 let shown: State | null = null;
 
+/** Resize the existing editor in place, keeping selection, drafts and history. */
+export function setDocumentFullscreen(d: HTMLDialogElement, on: boolean): void {
+  d.toggleAttribute('data-document-fullscreen', on);
+  const button = d.querySelector<HTMLElement>('[data-document-fullscreen-toggle]');
+  if (button) {
+    relabel(button, on ? 'fullscreen-exit' : 'fullscreen', on ? 'Exit full screen' : 'Full screen');
+    button.setAttribute('aria-pressed', String(on));
+  }
+  requestAnimationFrame(refitNoteEditors);
+}
+
 function dialog(): HTMLDialogElement | null {
   if (dlg) return dlg;
   const d = document.getElementById('note-dialog') as HTMLDialogElement | null;
@@ -1178,8 +1191,17 @@ function dialog(): HTMLDialogElement | null {
     else toast('The note has unsaved changes — fix the save before closing.', undefined, true);
   };
   d.querySelector('[data-nd-close]')?.addEventListener('click', () => void tryClose());
-  d.addEventListener('cancel', (e) => { e.preventDefault(); void tryClose(); });
+  const openFile = () => shown?.root.querySelector<HTMLButtonElement>('[data-note-open-file]')?.click();
+  d.querySelector('[data-nd-open]')?.addEventListener('click', openFile);
+  d.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); openFile(); } });
+  d.querySelector('[data-document-fullscreen-toggle]')?.addEventListener('click', () => setDocumentFullscreen(d, !d.hasAttribute('data-document-fullscreen')));
+  d.addEventListener('cancel', (e) => {
+    e.preventDefault();
+    if (d.hasAttribute('data-document-fullscreen')) setDocumentFullscreen(d, false);
+    else void tryClose();
+  });
   d.addEventListener('close', () => {
+    setDocumentFullscreen(d, false);
     const st = shown;
     shown = null;
     expandedDesktopWard();

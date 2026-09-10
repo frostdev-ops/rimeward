@@ -135,14 +135,6 @@ async function returnToDashboard(): Promise<void> {
   } finally { closing = false; }
 }
 
-document.addEventListener('click', event => {
-  const button = (event.target as Element).closest('[data-ward-popout]');
-  if (button) {
-    event.stopPropagation();
-    const id = button.closest<HTMLElement>('[data-wd]')?.dataset.wd;
-    if (id) void popOutWard(id);
-  }
-});
 document.getElementById('ward-window-return')?.addEventListener('click', () => void returnToDashboard());
 if (popoutWard && tauri) void tauri.window.getCurrentWindow().onCloseRequested(event => {
   event.preventDefault();

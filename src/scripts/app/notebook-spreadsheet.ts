@@ -1,3 +1,4 @@
+import { bindContextMenu, menuItem, openMenu } from './menu.ts';
 import type { NotebookPageEngine, NotebookPageOptions } from './notebook-page-engine.ts';
 import { cellName, cellPosition, columnName, displayCell, normalizeSheet, parseDelimited, reshapeSheet, SHEET_COLS, SHEET_ROWS, sheetEvaluator, writeDelimited, type SheetCell } from '../../lib/notebook-spreadsheet.ts';
 import '../../styles/notebook-spreadsheet.css';
@@ -61,12 +62,53 @@ export function createSpreadsheetPage(options: NotebookPageOptions): NotebookPag
   function setValue(value: string) { const name = cellName(...active); if ((state.cells[name]?.value ?? '') === value) return; change(() => { state.cells[name] = { ...state.cells[name], value: value.slice(0, 10000) }; }); }
   function finishEdit(cancel = false) { if (!editing) return; const input = editing; editing = null; if (!cancel) setValue(input.value); render(); }
   function startEdit(value?: string) { if (editing) return; const cell = td(...active); if (!cell) return; const input = document.createElement('input'); input.className = 'nb-sheet-cell-input'; input.setAttribute('aria-label', `Edit ${cellName(...active)}`); input.maxLength = 10000; input.value = value ?? state.cells[cellName(...active)]?.value ?? ''; input.spellcheck = false; cell.replaceChildren(input); editing = input; input.addEventListener('input', () => { formula.value = input.value; }, { signal }); input.addEventListener('blur', () => finishEdit(), { signal }); input.focus(); if (value === undefined) input.select(); }
-  grid.addEventListener('pointerdown', event => { const target = (event.target as HTMLElement).closest<HTMLElement>('td,th'); if (!target || target.contains(editing)) return;
+  grid.addEventListener('pointerdown', event => { if (event.button !== 0) return; const target = (event.target as HTMLElement).closest<HTMLElement>('td,th'); if (!target || target.contains(editing)) return;
     if (target.dataset.column !== undefined) { finishEdit(); anchor = [0, +target.dataset.column]; active = [state.rows - 1, +target.dataset.column]; refreshSelection(); focusCell(); event.preventDefault(); }
     else if (target.dataset.rowHeader !== undefined) { finishEdit(); anchor = [+target.dataset.rowHeader, 0]; active = [+target.dataset.rowHeader, state.cols - 1]; refreshSelection(); focusCell(); event.preventDefault(); }
     else if (target.dataset.all) { anchor = [0, 0]; active = [state.rows - 1, state.cols - 1]; refreshSelection(); focusCell(); event.preventDefault(); }
     else if (target.dataset.row !== undefined) { move(+target.dataset.row, +target.dataset.col!, event.shiftKey); dragging = true; event.preventDefault(); }
   }, { signal });
+  bindContextMenu(grid, event => {
+    const target = (event.target as Element).closest<HTMLElement>('td,th');
+    if (!target || (event.target as Element).closest('input,textarea')) return;
+    event.preventDefault(); event.stopPropagation(); finishEdit();
+    if (target.dataset.column !== undefined) { anchor = [0, +target.dataset.column]; active = [state.rows - 1, +target.dataset.column]; }
+    else if (target.dataset.rowHeader !== undefined) { anchor = [+target.dataset.rowHeader, 0]; active = [+target.dataset.rowHeader, state.cols - 1]; }
+    else if (target.dataset.all) { anchor = [0, 0]; active = [state.rows - 1, state.cols - 1]; }
+    else if (target.dataset.row !== undefined) {
+      const r = Number(target.dataset.row), c = Number(target.dataset.col), b = bounds();
+      if (r < b.r0 || r > b.r1 || c < b.c0 || c > b.c1) anchor = active = [r, c];
+    }
+    refreshSelection(); focusCell();
+    openMenu(event.clientX, event.clientY, menu => {
+      const clear = () => change(() => eachSelected(name => { if (state.cells[name]) state.cells[name].value = ''; }));
+      async function clipboard(action: 'copy' | 'cut' | 'paste') {
+        const before = JSON.stringify(state), selection = JSON.stringify([anchor, active]), b = bounds();
+        try {
+          if (action === 'paste') {
+            const text = await navigator.clipboard.readText();
+            if (destroyed || before !== JSON.stringify(state) || selection !== JSON.stringify([anchor, active])) return report('Paste canceled because the sheet or selection changed.');
+            paste(parseDelimited(text, '\t'));
+          } else {
+            const rows = Array.from({ length: b.r1 - b.r0 + 1 }, (_, r) => Array.from({ length: b.c1 - b.c0 + 1 }, (_, c) => state.cells[cellName(b.r0 + r, b.c0 + c)]?.value ?? ''));
+            await navigator.clipboard.writeText(writeDelimited(rows, '\t'));
+            if (action === 'cut') {
+              if (destroyed || before !== JSON.stringify(state) || selection !== JSON.stringify([anchor, active])) return report('Cells copied; cut canceled because the sheet or selection changed.');
+              clear();
+            }
+            report(action === 'cut' ? 'Cells cut.' : 'Cells copied.');
+          }
+        } catch { report('Clipboard unavailable. Use the keyboard Copy, Cut, or Paste shortcut. No cells changed.'); }
+      }
+      for (const action of ['copy', 'cut', 'paste'] as const) menu.append(menuItem('copy', action[0].toUpperCase() + action.slice(1), () => void clipboard(action)));
+      menu.append(menuItem('pen', 'Edit cell', () => startEdit()));
+      menu.append(menuItem('close', 'Clear selected cells', clear, true));
+      for (const control of [undoButton, redoButton, bold, italic]) { const item = menuItem('pen', control.textContent ?? control.title, () => control.click()) as HTMLButtonElement; item.disabled = control.disabled; menu.append(item); }
+      menu.append(menuItem('reset', 'Clear formatting', () => change(() => eachSelected(name => { if (state.cells[name]) state.cells[name] = { value: state.cells[name].value }; }))));
+      for (const option of [...structure.options].filter(o => o.value)) menu.append(menuItem(option.value.endsWith('delete') ? 'trash' : 'plus', option.text, () => { structure.value = option.value; structure.dispatchEvent(new Event('change')); }, option.value.endsWith('delete')));
+      menu.append(menuItem('list', 'Select all cells', () => { anchor = [0, 0]; active = [state.rows - 1, state.cols - 1]; refreshSelection(); focusCell(); }));
+    });
+  }, signal);
   grid.addEventListener('pointerover', event => { if (!dragging) return; const target = (event.target as HTMLElement).closest<HTMLElement>('td[data-row]'); if (!target) return; active = [+target.dataset.row!, +target.dataset.col!]; refreshSelection(); }, { signal });
   document.addEventListener('pointerup', () => { if (dragging) { dragging = false; focusCell(); } }, { signal });
   grid.addEventListener('dblclick', event => { if ((event.target as HTMLElement).closest('td')) startEdit(); }, { signal });

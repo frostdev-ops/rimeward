@@ -3399,7 +3399,8 @@ body:has(#splash-canvas.live) .splash-ground::after {
 
 .nb {
   display: grid;
-  grid-template-columns: 13rem minmax(15rem, 22rem) minmax(0, 1fr);
+  grid-template-columns: var(--nb-nav-width, 13rem) minmax(15rem, 22rem) minmax(0, 1fr);
+  transition: grid-template-columns 180ms var(--fd-ease);
   gap: 0.75rem;
   flex: 1;
   min-height: 0;
@@ -3431,8 +3432,10 @@ body:has(#splash-canvas.live) .splash-ground::after {
 .nb-nav-act {
   border: 0;
   background: none;
-  padding: 0.1rem;
-  color: var(--color-ink-faint);
+  padding: 0.35rem;
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  color: var(--color-ink);
   cursor: pointer;
   border-radius: var(--radius-md);
 }
@@ -3821,13 +3824,13 @@ body:has(#splash-canvas.live) .splash-ground::after {
 }
 @media (min-width: 1051px) {
   .nb:is([data-layout='table'], [data-layout='cards']) {
-    grid-template-columns: 13rem minmax(22rem, 1fr) minmax(22rem, 1fr);
+    grid-template-columns: var(--nb-nav-width, 13rem) minmax(22rem, 1fr) minmax(22rem, 1fr);
   }
 }
 /* Tablets retain navigation; the list and editor share the remaining width. */
 @media (min-width: 640px) and (max-width: 1050px) {
   .nb {
-    grid-template-columns: 11rem minmax(0, 1fr);
+    grid-template-columns: var(--nb-nav-width, 11rem) minmax(0, 1fr);
   }
   .nb[data-pane='edit'] > .nb-list,
   .nb:not([data-pane='edit']) > .nb-edit {
@@ -3863,4 +3866,54 @@ body:has(#splash-canvas.live) .splash-ground::after {
   .nb-back {
     display: inline-flex;
   }
+}
+
+/* Notebook chrome: a readable primary action, compact navigation, and an editor-only view. */
+.nb-add {
+  min-height: 2.25rem;
+  padding: 0.45rem 0.75rem;
+  gap: 0.45rem;
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  --fd-icon-color: currentColor;
+  --fd-icon-opacity: 1;
+}
+.nb-add [data-icon] {
+  color: inherit;
+  opacity: 1;
+  text-shadow: none;
+}
+.nb-chrome-button {
+  min-width: 2.25rem;
+  min-height: 2.25rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+}
+[data-nb-sidebar] .tb-label { display: none; }
+@media (min-width: 640px) {
+  .nb[data-nav-collapsed] { --nb-nav-width: 3.25rem; }
+  .nb[data-nav-collapsed] .nb-item { justify-content: center; min-height: 2.25rem; }
+  .nb[data-nav-collapsed] .nb-item > .truncate,
+  .nb[data-nav-collapsed] .nb-item > .nb-n,
+  .nb[data-nav-collapsed] .nb-nav-h > span { display: none; }
+  .nb[data-nav-collapsed] .nb-nav-h { justify-content: center; padding: 0; }
+  .nb[data-nav-collapsed] .nb-nav-h:not(:has(button)) { border-top: 1px solid var(--color-line); }
+}
+:is(#notebook-dialog, #note-dialog)[data-document-fullscreen] {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+#notebook-dialog[data-document-fullscreen] .nb { grid-template-columns: minmax(0, 1fr); }
+#notebook-dialog[data-document-fullscreen] .nb > :is(.nb-nav, .nb-list) { display: none; }
+#notebook-dialog[data-document-fullscreen] .nb-edit .nb-back { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .nb { transition: none; }
 }

@@ -1,10 +1,11 @@
+import { bindContextMenu, menuItem, openMenu } from './menu.ts';
 import { askText, dialog } from './workspace-dialogs.ts';
 import { sanitizeHtml } from '../../lib/note-text.ts';
 import '../../styles/note-word.css';
 
-interface WordOptions { doc: HTMLElement; tools: HTMLElement; changed(): void; title(): string }
+interface WordOptions { doc: HTMLElement; tools: HTMLElement; changed(): void; title(): string; identity(): string }
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-export function attachWordEditor({ doc, tools, changed, title }: WordOptions) {
+export function attachWordEditor({ doc, tools, changed, title, identity }: WordOptions) {
   const control = new AbortController(), signal = control.signal;
   let saved: Range | null = null, tracking = false, internal = false, composing = false, author = 'You', disposed = false;
   let compositionDeleted = '', compositionStart = 0;
@@ -89,6 +90,68 @@ export function attachWordEditor({ doc, tools, changed, title }: WordOptions) {
     function find() { const source = doc.textContent ?? '', needle = query.value; if (!needle) return; const haystack = matchCase.checked ? source : source.toLocaleLowerCase(), term = matchCase.checked ? needle : needle.toLocaleLowerCase(); let index = haystack.indexOf(term, searchAt); if (index < 0 && searchAt) index = haystack.indexOf(term); if (index < 0) { found = null; error.textContent = 'No matches.'; error.hidden = false; return; } found = textRange(index, index + needle.length); searchAt = index + needle.length; saved = found; const sel = getSelection(); sel?.removeAllRanges(); sel?.addRange(found); found.startContainer.parentElement?.scrollIntoView({ block: 'nearest' }); error.hidden = true; }
     form.addEventListener('submit', event => { event.preventDefault(); find(); }, { signal }); button(actions, 'Replace', () => { if (!found) { find(); return; } const target = found; editBehindDialog(() => replacement(target, replacementInput.value)); found = null; find(); }); button(actions, 'Replace all', () => { const needle = query.value; if (!needle) return; const source = doc.textContent ?? '', haystack = matchCase.checked ? source : source.toLocaleLowerCase(), term = matchCase.checked ? needle : needle.toLocaleLowerCase(); const positions: number[] = []; for (let index = haystack.indexOf(term); index >= 0; index = haystack.indexOf(term, index + needle.length)) { positions.push(index); if (positions.length > 1000) { error.textContent = 'Replace at most 1,000 matches at a time.'; error.hidden = false; return; } } editBehindDialog(() => { for (const index of positions.reverse()) replacement(textRange(index, index + needle.length), replacementInput.value); }); error.textContent = `Replaced ${positions.length} matches.`; error.hidden = false; found = null; searchAt = 0; }); d.addEventListener('close', () => { if (!d.open) d.remove(); }); query.focus(); }
   function commentsDialog() { const { d, form, actions, submit } = dialog('Comments'); submit.textContent = 'Done'; const list = document.createElement('div'); list.className = 'np-word-comments'; const comments = [...doc.querySelectorAll<HTMLElement>('[data-comment]')]; if (!comments.length) list.textContent = 'No comments in this document.'; for (const mark of comments) { const liveMark = () => [...doc.querySelectorAll<HTMLElement>('[data-comment]')].find(el => el.dataset.comment === mark.dataset.comment && el.dataset.author === mark.dataset.author && el.textContent === mark.textContent); const item = document.createElement('article'), who = document.createElement('strong'), quote = document.createElement('blockquote'), comment = document.createElement('p'); who.textContent = mark.dataset.author ?? 'Comment'; quote.textContent = mark.textContent; comment.textContent = mark.dataset.comment ?? ''; item.append(who, quote, comment); button(item, 'Go to passage', () => { const live = liveMark(); if (!live) return; const range = document.createRange(); range.selectNodeContents(live); saved = range; d.close(); restore(); live.scrollIntoView({ block: 'center' }); }); button(item, 'Resolve', () => { d.close(); mutate(() => { const live = liveMark(); if (live) live.replaceWith(...live.childNodes); }); item.remove(); if (!disposed) d.showModal(); }); list.append(item); } actions.before(list); form.addEventListener('submit', event => { event.preventDefault(); d.close(); }, { signal }); d.addEventListener('close', () => { if (!d.open) d.remove(); }); }
+  bindContextMenu(doc, event => {
+    // Shift-right-click keeps the browser's spelling, services and rich clipboard menu.
+    if (event.shiftKey || !doc.isContentEditable) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('input,textarea')) return;
+    let range = currentRange();
+    if (event.detail !== -1) {
+      const pointed = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+      if (pointed && doc.contains(pointed.startContainer) && (!range || range.collapsed || !range.isPointInRange(pointed.startContainer, pointed.startOffset))) range = pointed;
+    }
+    if (!range) { range = document.createRange(); range.selectNodeContents(doc); range.collapse(false); }
+    saved = range.cloneRange(); const selection = saved.cloneRange(), generation = identity();
+    event.preventDefault(); event.stopPropagation();
+    const run = (work: () => void) => { if (disposed || generation !== identity() || !doc.contains(selection.commonAncestorContainer)) return; saved = selection.cloneRange(); restore(); work(); };
+    openMenu(event.clientX, event.clientY, menu => {
+      const hint = document.createElement('div'); hint.className = 'ctx-label'; hint.textContent = 'Native spelling menu: Shift + right-click'; menu.append(hint);
+      async function clipboard(action: 'copy' | 'cut' | 'paste') {
+        const before = doc.innerHTML;
+        try {
+          if (action === 'paste') {
+            const text = await navigator.clipboard.readText();
+            if (disposed || generation !== identity() || doc.innerHTML !== before || !doc.contains(selection.commonAncestorContainer)) return message('Paste canceled because the document changed.');
+            replacement(selection, text);
+          } else {
+            await navigator.clipboard.writeText(selection.toString());
+            if (action === 'cut') {
+              if (disposed || generation !== identity() || doc.innerHTML !== before || !doc.contains(selection.commonAncestorContainer)) return message('Text copied; cut canceled because the document changed.');
+              replacement(selection, '');
+            }
+          }
+        } catch { message('Clipboard unavailable. Use the keyboard shortcut or Shift + right-click for the native menu. No text changed.'); }
+      }
+      for (const action of ['copy', 'cut', 'paste'] as const) {
+        const item = menuItem('copy', `${action[0].toUpperCase() + action.slice(1)}${action === 'paste' ? ' plain text' : ' text'}`, () => void clipboard(action)) as HTMLButtonElement;
+        item.disabled = action !== 'paste' && selection.collapsed; menu.append(item);
+      }
+      menu.append(menuItem('list', 'Select all', () => { const all = document.createRange(); all.selectNodeContents(doc); saved = all; restore(); }));
+      for (const [command, label] of [['undo', 'Undo'], ['redo', 'Redo'], ['bold', 'Bold'], ['italic', 'Italic'], ['underline', 'Underline'], ['strikeThrough', 'Strikethrough'], ['removeFormat', 'Clear formatting'], ['insertUnorderedList', 'Bullet list'], ['insertOrderedList', 'Numbered list']]) menu.append(menuItem('pen', label, () => run(() => native(command))));
+      const node = selection.startContainer instanceof Element ? selection.startContainer : selection.startContainer.parentElement;
+      const anchor = node?.closest<HTMLAnchorElement>('a');
+      if (!anchor?.dataset.note) menu.append(menuItem('link', anchor ? 'Edit link…' : 'Add link…', () => { void (async () => {
+        const value = await askText('Link URL (https://, mailto:, or a page link)', anchor?.getAttribute('href') ?? 'https://');
+        if (!value || disposed) return;
+        if (!/^(https?:\/\/|mailto:|#)/i.test(value)) return message('Use an HTTP, HTTPS, mailto, or page link.');
+        run(() => { if (anchor && doc.contains(anchor)) { saved = document.createRange(); saved.selectNodeContents(anchor); } native('createLink', value); });
+      })(); }));
+      if (anchor) {
+        menu.append(menuItem('link', 'Open link', () => { if (anchor.dataset.note) anchor.click(); else if (/^(https?:|mailto:)/i.test(anchor.href)) window.open(anchor.href, '_blank', 'noopener,noreferrer'); }));
+        if (anchor.hasAttribute('href')) menu.append(menuItem('copy', 'Copy link address', () => { void (async () => { await navigator.clipboard.writeText(anchor.href); })().catch(() => message('Clipboard unavailable. Use Shift + right-click to copy the link.')); }));
+        menu.append(menuItem('close', 'Remove link', () => run(() => native('unlink'))));
+      }
+      for (const label of ['Add comment', 'Comments', 'Accept change', 'Reject change', 'Find / Replace']) {
+        const b = [...review.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === label);
+        if (b) menu.append(menuItem('pen', label, () => run(() => b.click())));
+      }
+      const grammar = tools.querySelector<HTMLButtonElement>('.np-proof-tools button');
+      if (grammar) { const item = menuItem('check', 'Review grammar', () => grammar.click()) as HTMLButtonElement; item.disabled = grammar.disabled; menu.append(item); }
+      if (node?.closest('td,th')) for (const option of [...tableMenu.options].filter(o => o.value)) menu.append(menuItem(option.value.startsWith('delete') ? 'trash' : 'database', option.text, () => run(() => tableAction(option.value)), option.value.startsWith('delete')));
+      const image = target?.closest('img');
+      if (image) menu.append(menuItem('trash', 'Remove image', () => run(() => mutate(() => image.remove())), true));
+    });
+  }, signal);
   doc.addEventListener('beforeinput', event => { const input = event as InputEvent; if (!tracking || internal || composing || input.isComposing || !input.cancelable) return; let range = currentRange(); if (!range) return;
     if (['insertText', 'insertReplacementText', 'insertParagraph', 'insertLineBreak'].includes(input.inputType)) { input.preventDefault(); replacement(range, input.inputType === 'insertParagraph' || input.inputType === 'insertLineBreak' ? '\n' : input.data ?? ''); }
     else if (input.inputType.startsWith('delete')) { if (range.collapsed) { const selection = window.getSelection() as Selection & { modify?: (alter: string, direction: string, granularity: string) => void }; const backward = /Backward$/.test(input.inputType); if (selection.modify) { selection.modify('extend', backward ? 'backward' : 'forward', input.inputType.includes('Word') ? 'word' : input.inputType.includes('Line') ? 'lineboundary' : 'character'); range = currentRange() ?? range; } else { const index = offset(range), source = doc.textContent ?? '', step = backward ? [...source.slice(0, index)].at(-1)?.length ?? 0 : [...source.slice(index)][0]?.length ?? 0; range = textRange(backward ? Math.max(0, index - step) : index, backward ? index : index + step); } } if (!range.collapsed) { input.preventDefault(); replacement(range, ''); } }

@@ -25,8 +25,12 @@ export function expandedDesktopWard(ward?: string) {
 window.addEventListener('fd:before-workspace-navigation', event => {
   (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(Promise.resolve().then(() => saveDesktopState('expanded', expanded)));
 });
+// Each pop-out opens its full editor once; collapsing it must not reopen on a refresh.
+let pendingPopoutExpansion = wardWindow;
 export function restoreExpandedWard(ward: string, open: () => void) {
-  if (readDesktopCheckpoint('expanded') === ward) requestAnimationFrame(() => {
+  if (pendingPopoutExpansion !== ward && readDesktopCheckpoint('expanded') !== ward) return;
+  if (pendingPopoutExpansion === ward) pendingPopoutExpansion = undefined;
+  requestAnimationFrame(() => {
     open();
     window.dispatchEvent(new Event('fd:desktop-expanded-restored'));
   });

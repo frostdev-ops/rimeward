@@ -1,3 +1,5 @@
+import { bindContextMenu, menuItem, openMenu } from './menu.ts';
+import { askText } from './workspace-dialogs.ts';
 import type { NotebookPageEngine, NotebookPageOptions } from './notebook-page-engine.ts';
 import { el } from './dom.ts';
 import { newSlide, normalizeSlides, slideId, slideObject, slideObjectSvg, slideSvg, slidesHtml, type NotebookSlide, type SlideObject, type SlidesDocument } from '../../lib/notebook-slides.ts';
@@ -118,6 +120,7 @@ export function createSlidesPage(options: NotebookPageOptions): NotebookPageEngi
       const select = button(`${index + 1}. ${s.title}`, () => { finishText(); current = index; selected = ''; render(); }, row);
       const preview = el('div', 'nb-slides-preview'); preview.innerHTML = slideSvg(s); preview.setAttribute('aria-hidden', 'true'); select.prepend(preview);
       select.setAttribute('aria-current', index === current ? 'true' : 'false');
+      bindContextMenu(select, event => { event.preventDefault(); event.stopPropagation(); finishText(); current = index; selected = ''; render(); canvas.focus(); openMenu(event.clientX, event.clientY, pageMenu); });
       row.addEventListener('dragstart', (e) => { e.dataTransfer?.setData('application/x-notebook-slide', s.id); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; });
       row.addEventListener('dragover', (e) => { if (e.dataTransfer?.types.includes('application/x-notebook-slide')) e.preventDefault(); });
       row.addEventListener('drop', (e) => {
@@ -230,6 +233,56 @@ export function createSlidesPage(options: NotebookPageOptions): NotebookPageEngi
       e.preventDefault(); e.stopPropagation(); const step = e.shiftKey ? 10 : 1;
       edit(() => { o.x = Math.max(0, Math.min(960 - o.width, o.x + (e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0))); o.y = Math.max(0, Math.min(540 - o.height, o.y + (e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0))); }); canvas.focus();
     }
+  });
+  async function clipboard(action: 'copy' | 'cut' | 'paste') {
+    finishText(); const before = snapshot(), slideIdBefore = slide().id, objectId = selected, chosen = object();
+    try {
+      if (action === 'paste') {
+        const raw = await navigator.clipboard.readText();
+        if (destroyed || snapshot() !== before || slide().id !== slideIdBefore || selected !== objectId) return say('Paste canceled because the presentation or selection changed.');
+        if (raw.length > 4_500_000) throw new Error('Clipboard presentation exceeds the size limit.');
+        const data = JSON.parse(raw);
+        if (!['rimeward-slide', 'rimeward-slide-object'].includes(data?.kind) || !Array.isArray(data.document?.slides) || data.document.slides.length !== 1) throw new Error('Copy a slide or object from a notebook presentation first.');
+        const imported = normalizeSlides(data.document).slides[0];
+        imported.id = slideId(); imported.objects.forEach(o => { o.id = slideId(); });
+        const next = structuredClone(state);
+        if (data.kind === 'rimeward-slide') next.slides.splice(current + 1, 0, imported);
+        else next.slides[current].objects.push(...imported.objects);
+        normalizeSlides(next);
+        if (JSON.stringify(next).length > 4_500_000) throw new Error('Pasting would exceed the presentation size limit.');
+        edit(() => { state = next; if (data.kind === 'rimeward-slide') { current++; selected = ''; } else selected = imported.objects.at(-1)?.id ?? ''; });
+      } else {
+        const copied = chosen ? { ...slide(), objects: [chosen] } : slide();
+        await navigator.clipboard.writeText(JSON.stringify({ kind: chosen ? 'rimeward-slide-object' : 'rimeward-slide', document: { version: 1, slides: [copied] } }));
+        if (action === 'cut') {
+          if (destroyed || snapshot() !== before || slide().id !== slideIdBefore || selected !== objectId) return say('Copied; cut canceled because the presentation or selection changed.');
+          const b = [...inspector.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === (chosen ? 'Delete object' : 'Delete slide')); b?.click();
+        }
+        say(action === 'cut' ? 'Selection cut.' : 'Selection copied.');
+      }
+    } catch (error) { say(error instanceof SyntaxError ? 'Copy a notebook slide or object first.' : error instanceof Error ? error.message : 'Clipboard unavailable; no objects changed.'); }
+  }
+  function pageMenu(menu: HTMLElement) {
+    for (const action of ['copy', 'cut', 'paste'] as const) menu.append(menuItem('copy', `${action[0].toUpperCase() + action.slice(1)}${action === 'paste' ? ' slide or object' : object() ? ' object' : ' slide'}`, () => void clipboard(action)));
+
+    for (const b of inspector.querySelectorAll<HTMLButtonElement>('button')) {
+      const label = b.textContent || b.title;
+      const item = menuItem(label.startsWith('Delete') ? 'trash' : 'page', label, () => b.click(), label.startsWith('Delete')) as HTMLButtonElement;
+      item.disabled = b.disabled; menu.append(item);
+    }
+    if (!object()) menu.append(menuItem('pen', 'Rename slide…', () => { const id = slide().id; void askText('Slide title', slide().title).then(title => { if (title?.trim() && !destroyed && slide().id === id) edit(() => { slide().title = title.trim().slice(0, 200); }); }); }));
+    else if (object()?.kind === 'text') menu.append(menuItem('pen', 'Edit text', () => { inspector.querySelector('textarea')?.focus(); }));
+    for (const label of ['Add slide', 'Text', 'Add shape', 'Image', 'Present', 'Undo', 'Redo']) {
+      const b = [...toolbar.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === label);
+      if (b) { const item = menuItem('page', label, () => b.click()) as HTMLButtonElement; item.disabled = b.disabled; menu.append(item); }
+    }
+  }
+  bindContextMenu(canvas, event => {
+    event.preventDefault(); event.stopPropagation(); finishText();
+    const target = event.target instanceof Element ? event.target.closest('[data-object]') : null;
+    if (target) selected = target.getAttribute('data-object') || '';
+    else if (event.detail !== -1) selected = '';
+    paint(); renderInspector(); canvas.focus(); openMenu(event.clientX, event.clientY, pageMenu);
   });
   let presentation: HTMLDialogElement | undefined;
   function present() {

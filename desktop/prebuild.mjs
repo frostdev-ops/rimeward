@@ -132,7 +132,7 @@ try {
     ],
     { cwd: app, env: { ...env, PLAYWRIGHT_BROWSERS_PATH: browsers } },
   );
-  run(
+  if (process.env.RIMEWARD_SKIP_TESTS !== "1") run(
     node,
     [
       "--input-type=module",

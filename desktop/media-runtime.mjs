@@ -153,7 +153,7 @@ if (platform === 'linux' && !fs.existsSync(path.join(sdkLib, 'gstreamer-1.0/libg
 const manifest = path.join(here, 'media-helper/Cargo.toml');
 run('cargo', ['fmt', '--manifest-path', manifest, '--check'], { env });
 run('cargo', ['clippy', '--all-targets', '--locked', '--manifest-path', manifest, '--', '-D', 'warnings'], { env });
-run('cargo', ['test', '--locked', '--manifest-path', manifest], { env });
+if (process.env.RIMEWARD_SKIP_TESTS !== '1') run('cargo', ['test', '--locked', '--manifest-path', manifest], { env });
 run('cargo', ['build', '--release', '--locked', '--manifest-path', manifest], { env });
 const target = path.resolve(env.CARGO_TARGET_DIR ?? path.join(here, 'media-helper/target'));
 fs.mkdirSync(output, { recursive: true });

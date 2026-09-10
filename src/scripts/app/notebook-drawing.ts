@@ -1,3 +1,4 @@
+import { bindContextMenu, menuItem, openMenu } from './menu.ts';
 import { el } from './dom.ts';
 import type { NotebookPageEngine, NotebookPageOptions } from './notebook-page-engine.ts';
 import { blankDrawing, validateDrawing, drawingBounds, drawingContentsSvg, exportDrawingSvg, drawingConnectorPath, DEFAULT_DRAWING_STYLE, DRAWING_LIMITS, type DrawingDocument, type DrawingNode, type DrawingShape, type DrawingConnector } from '../../lib/notebook-drawing.ts';
@@ -229,6 +230,56 @@ export function createDrawingPage(options: NotebookPageOptions): NotebookPageEng
   });
   element.addEventListener('keyup', event => { if (event.code === 'Space') { space = false; svg.style.cursor = tool === 'pan' ? 'grab' : 'default'; } });
   element.addEventListener('focusout', event => { if (!(event.relatedTarget instanceof Node) || !element.contains(event.relatedTarget)) space = false; });
+  async function clipboard(action: 'copy' | 'cut' | 'paste') {
+    const before = snapshot(), selection = [...selected].join(',');
+    try {
+      if (action === 'paste') {
+        const raw = await navigator.clipboard.readText();
+        if (destroyed || snapshot() !== before || [...selected].join(',') !== selection) return message('Paste canceled because the drawing or selection changed.');
+        if (raw.length > DRAWING_LIMITS.bytes) throw new Error('Clipboard drawing exceeds the size limit.');
+        const data = JSON.parse(raw);
+        if (data?.kind !== 'rimeward-drawing-selection') throw new Error('Copy shapes from a notebook drawing first.');
+        const imported = validateDrawing(data.document), ids = new Map(imported.nodes.map(n => [n.id, crypto.randomUUID()]));
+        const nodes = imported.nodes.map(n => ({ ...n, id: ids.get(n.id) ?? n.id, x: Math.min(100000, n.x + 20), y: Math.min(100000, n.y + 20) }));
+        const edges = imported.connectors.map(c => ({ ...c, id: crypto.randomUUID(), from: ids.get(c.from) ?? c.from, to: ids.get(c.to) ?? c.to }));
+        const next = validateDrawing({ ...doc, nodes: [...doc.nodes, ...nodes], connectors: [...doc.connectors, ...edges] });
+        change(() => { doc = next; selected = new Set([...nodes, ...edges].map(n => n.id)); });
+      } else {
+        const edges = doc.connectors.filter(c => selected.has(c.id) || selected.has(c.from) && selected.has(c.to));
+        const ids = new Set([...selected, ...edges.flatMap(c => [c.from, c.to])]);
+        const copied = { ...blankDrawing(), nodes: doc.nodes.filter(n => ids.has(n.id)), connectors: edges };
+        await navigator.clipboard.writeText(JSON.stringify({ kind: 'rimeward-drawing-selection', document: copied }));
+        if (action === 'cut') {
+          if (destroyed || snapshot() !== before || [...selected].join(',') !== selection) return message('Copied; cut canceled because the drawing or selection changed.');
+          remove();
+        }
+        message(`Selection copied with connector endpoints.${action === 'cut' ? ' Selected originals removed.' : ''}`);
+      }
+    } catch (error) { message(error instanceof SyntaxError ? 'Copy notebook drawing shapes first.' : error instanceof Error ? error.message : 'Clipboard unavailable; no shapes changed.'); }
+  }
+  bindContextMenu(svg, event => {
+    event.preventDefault(); event.stopPropagation(); finishDrag();
+    const target = event.target instanceof Element ? event.target.closest('[data-node],[data-connector]') : null;
+    const hit = target?.getAttribute('data-node') || target?.getAttribute('data-connector');
+    if (hit && !selected.has(hit)) selected = new Set([hit]);
+    else if (!hit && event.detail !== -1) selected.clear();
+    render(); properties(); svg.focus();
+    openMenu(event.clientX, event.clientY, menu => {
+      for (const action of ['copy', 'cut', 'paste'] as const) { const item = menuItem('copy', `${action[0].toUpperCase() + action.slice(1)} shapes`, () => void clipboard(action)) as HTMLButtonElement; item.disabled = action !== 'paste' && !selected.size; menu.append(item); }
+      if (selected.size) {
+        menu.append(menuItem('pen', 'Edit label', editLabel), menuItem('copy', 'Duplicate', duplicate), menuItem('trash', 'Delete selection', remove, true));
+        if (selected.size === 1 && doc.nodes.some(n => selected.has(n.id))) menu.append(menuItem('link', 'Connect from this shape', () => { tool = 'connect'; sourceId = [...selected][0]; render(); message('Choose the destination shape.'); }));
+        for (const b of inspector.querySelectorAll<HTMLButtonElement>('.nb-drawing-inspector-actions button')) menu.append(menuItem('page', b.textContent ?? b.title, () => b.click()));
+        for (const select of inspector.querySelectorAll<HTMLSelectElement>('select')) {
+          const label = select.closest('label')?.querySelector('span')?.textContent || '';
+          for (const option of [...select.options].filter(o => o.value)) menu.append(menuItem('pen', `${label}: ${option.text}`, () => { select.value = option.value; select.dispatchEvent(new Event('change')); }));
+        }
+      } else for (const [type, , label] of PALETTE) menu.append(menuItem('plus', `Add ${label.toLowerCase()}`, () => add(type, point(event))));
+      menu.append(menuItem('list', 'Select all', () => { selected = new Set([...doc.nodes, ...doc.connectors].map(n => n.id)); render(); properties(); }));
+      for (const [b, label] of [[undoButton, 'Undo'], [redoButton, 'Redo']] as const) { const item = menuItem('undo', label, () => b.click()) as HTMLButtonElement; item.disabled = b.disabled; menu.append(item); }
+      menu.append(menuItem('resize', 'Fit drawing', fit));
+    });
+  });
   const observer = new ResizeObserver(() => { const rect = workspace.getBoundingClientRect(); if (rect.width && rect.height) { width = rect.width; height = rect.height; render(); } }); observer.observe(workspace);
   render(); properties(); message('Add a shape, or drag one onto the canvas.');
   return {

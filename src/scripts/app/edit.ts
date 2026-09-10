@@ -1454,7 +1454,7 @@ function sizeMatrix(node: HTMLElement, w: WardInstance): HTMLElement {
 function wardMenu(x: number, y: number, node: HTMLElement, w: WardInstance): void {
   openMenu(x, y, (m) => {
     m.append(el('div', 'ctx-label', wardTitle(w)));
-    if (!isEditing()) m.append(menuItem('resize', 'Pop out ward', () => void popOutWard(w.i)));
+    if (!isEditing()) m.append(menuItem('popout', 'Pop out ward', () => void popOutWard(w.i)));
 
     m.append(sizeMatrix(node, w));
 
