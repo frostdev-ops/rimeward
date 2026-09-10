@@ -26,7 +26,7 @@ const snippets = [
 function completions(context: CompletionContext) {
   const word = context.matchBefore(/\/?[a-z]*$/i);
   if (!word || (!context.explicit && !word.text.startsWith('/'))) return null;
-  return { from: word.from, options: snippets.map(([label, template, detail]) => snippetCompletion(template!, { label: label!, detail, type: 'text' })) };
+  return { from: word.from, options: snippets.map(([label, template, detail]) => snippetCompletion(template!, { label: `${word.text.startsWith('/') ? '/' : ''}${label}`, detail, type: 'text' })) };
 }
 export function createMarkdownPage(options: NotebookPageOptions): NotebookPageEngine {
   const element = el('div', 'nb-markdown');

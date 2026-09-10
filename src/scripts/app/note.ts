@@ -320,7 +320,7 @@ function showDocument(st: State, html: string): void {
   st.format.replaceChildren(new Option('Document', 'document'), new Option('Markdown', 'markdown'));
   if (data && engine) {
     st.root.dataset.pageType = data.type;
-    if (data.type !== 'markdown') st.format.append(new Option(data.type[0]!.toUpperCase() + data.type.slice(1), data.type));
+    if (data.type !== 'markdown') st.format.append(new Option(data.type === 'notion' ? 'Linked Notion database' : data.type[0]!.toUpperCase() + data.type.slice(1), data.type));
     st.format.value = data.type;
     st.engineHost.append(engine.element); st.doc.textContent = engine.text();
   } else { delete st.root.dataset.pageType; st.doc.innerHTML = html; st.format.value = 'document'; st.word?.refresh(); }
@@ -600,14 +600,16 @@ function flushInk(st: State, unload = false, force = false): Promise<boolean> {
  *  a save fails (the flags stay set, so nothing is lost silently). */
 async function flushAll(st: State): Promise<boolean> {
   const gen = st.gen;
+  if (st.pageEngine?.flush && !(await st.pageEngine.flush())) return false;
+  if (st.gen !== gen) return false;
   for (let round = 0; round < 4; round++) {
     const [doc, ink] = await Promise.all([flushDoc(st), flushInk(st)]);
     if (!doc || !ink) return false;
     await st.chain; // saves queued earlier by a timer finish too
     if (st.gen !== gen) return true;
-    if (!st.docDirty && !st.inkDirty) return true;
+    if (!st.docDirty && !st.inkDirty && !st.pageEngine?.dirty?.()) return true;
   }
-  return !st.docDirty && !st.inkDirty;
+  return !st.docDirty && !st.inkDirty && !st.pageEngine?.dirty?.();
 }
 
 /** Fetch the open document. False when it could not be loaded (the editor shows why) or the editor moved on meanwhile. */
@@ -620,7 +622,7 @@ async function load(st: State, discard = false): Promise<boolean> {
   setStatus(st, 'Loading…');
   const res = await fetch(t.api, { headers: { accept: 'application/json' } }).catch(() => null);
   const d = res?.ok ? ((await res.json().catch(() => null)) as { html: string; ink: string; updated: string | null; rev?: number; etag?: string } | null) : null;
-  if (st.gen !== gen || st.loadGen !== requestGen || st.docSeq !== docSeq || st.inkSeq !== inkSeq || (!discard && (st.docDirty || st.inkDirty))) return false;
+  if (st.gen !== gen || st.loadGen !== requestGen || st.docSeq !== docSeq || st.inkSeq !== inkSeq || (!discard && (st.docDirty || st.inkDirty || st.pageEngine?.dirty?.()))) return false;
   if (!d) {
     fail(st, res?.status === 404 ? 'This note is gone.' : 'Could not load the note.');
     st.status.textContent = '';
@@ -1170,7 +1172,7 @@ function exportMenu(st: State): void {
   if (!st.target || !st.loaded) { st.exportStatus.textContent = 'Load a document before exporting.'; return; }
   const rect = st.btn.download!.getBoundingClientRect();
   openMenu(rect.left, rect.bottom, menu => {
-    const choices = st.pageType && st.pageType !== 'markdown' ? [['json', 'Page JSON'], ['txt', 'Plain text (.txt)']] : [['docx', 'Word (.docx)'], ['pdf', 'PDF / Print…'], ['md', 'Markdown (.md)'], ['html', 'Web page (.html)'], ['txt', 'Plain text (.txt)']];
+    const choices = st.pageType && st.pageType !== 'markdown' ? (st.pageType === 'notion' ? [['json', 'Notion link (.json)']] : [['json', 'Page JSON'], ['txt', 'Plain text (.txt)']]) : [['docx', 'Word (.docx)'], ['pdf', 'PDF / Print…'], ['md', 'Markdown (.md)'], ['html', 'Web page (.html)'], ['txt', 'Plain text (.txt)']];
     for (const [format, label] of choices) menu.append(menuItem('download', label!, () => void exportDocument(st, format!)));
   });
 }
@@ -1186,7 +1188,7 @@ async function exportDocument(st: State, format: string): Promise<void> {
     if (format === 'docx') blob = await exportDocx(html, title);
     else if (format === 'html') blob = new Blob([exportHtml(st)], { type: 'text/html;charset=utf-8' });
     else if (format === 'md') blob = new Blob([st.pageType === 'markdown' ? (st.pageEngine!.serialize() as { source: string }).source : documentMarkdown(html)], { type: 'text/markdown;charset=utf-8' });
-    else if (format === 'json') blob = new Blob([JSON.stringify(st.pageEngine?.serialize(), null, 2)], { type: 'application/json' });
+    else if (format === 'json') blob = new Blob([JSON.stringify(st.pageType === 'notion' ? { ...(st.pageEngine?.serialize() as object), kind: 'notion' } : st.pageEngine?.serialize(), null, 2)], { type: 'application/json' });
     else blob = new Blob([st.pageEngine?.text() ?? plainText(html)], { type: 'text/plain;charset=utf-8' });
     if (st.gen === gen) st.exportStatus.textContent = 'Choose where to save the file…';
     const result = await saveDocumentBlob(blob, name);
@@ -1328,7 +1330,7 @@ export function createNoteEditor(owner: string): NoteEditor {
     id: () => st.target?.id ?? null,
     open: (t) => open(st, t),
     flush: () => flushAll(st),
-    dirty: () => st.docDirty || st.inkDirty || st.conflict,
+    dirty: () => st.docDirty || st.inkDirty || st.conflict || !!st.pageEngine?.dirty?.(),
     onInput: (fn) => { st.onInput = fn; },
     full: (on) => { st.root.toggleAttribute('data-full', on); fit(st); },
     destroy: () => {
@@ -1372,13 +1374,13 @@ window.addEventListener('fd:note', (e) => {
     if (d.gone) {
       clearTimeout(st.docTimer);
       clearTimeout(st.inkTimer);
-      st.conflict = st.docDirty || st.inkDirty || st.saving > 0;
+      st.conflict = st.docDirty || st.inkDirty || st.saving > 0 || !!st.pageEngine?.dirty?.();
       st.loaded = false;
       apply(st);
       fail(st, 'This note was deleted. Copy any unsaved text before closing.');
       continue;
     }
-    if (st.saving || st.docDirty || st.inkDirty || st.conflict) continue;
+    if (st.saving || st.docDirty || st.inkDirty || st.conflict || st.pageEngine?.dirty?.()) continue;
     if (d.rev !== undefined && st.rev >= d.rev) continue;
     void load(st);
   }
@@ -1404,6 +1406,9 @@ window.addEventListener('fd:before-workspace-navigation', event => {
       saveDesktopState(`note:${st.owner}`, { tool: st.tool, color: st.color.value, width: st.width.value, top: st.page.scrollTop, left: st.page.scrollLeft });
     }
   })());
+});
+window.addEventListener('beforeunload', event => {
+  if ([...states.values()].some(st => st.pageEngine?.dirty?.())) event.preventDefault();
 });
 window.addEventListener('pagehide', () => {
   for (const st of states.values()) {

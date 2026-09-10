@@ -31,7 +31,7 @@ export function plainText(html: string): string {
 export function textToHtml(text: string): string {
   return text
     .split(/\n{2,}/)
-    .map((para) => `<p>${escText(para).replace(/\n/g, '<br>')}</p>`)
+    .map((para) => `<p>${escText(para.replace(/&/g, '&amp;')).replace(/\n/g, '<br>')}</p>`)
     .join('');
 }
 
@@ -100,7 +100,8 @@ export function sanitizeHtml(input: string): string {
       const note = attr(m[2] ?? '', 'data-note');
       if (NOTE_LINK_RE.test(note)) attrs = ` data-note="${note}"`;
       else {
-        const href = httpUrl(attr(m[2] ?? '', 'href'));
+        const rawHref = attr(m[2] ?? '', 'href');
+        const href = httpUrl(rawHref) || (/^mailto:[^\s<>]{1,2040}$/i.test(rawHref) ? rawHref : null);
         if (href) attrs = ` href="${href.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" target="_blank" rel="noreferrer"`;
       }
     }

@@ -185,7 +185,7 @@ export async function importDocx(file: File): Promise<{ html: string; warnings: 
     if (name === 'ins' || name === 'del') content = `<${name} data-change="${esc(attr(node, 'id') || crypto.randomUUID())}" data-author="${esc(attr(node, 'author'))}">${content}</${name}>`;
     if (name === 'hyperlink') {
       const id = node.getAttributeNS(R, 'id') || node.getAttribute('r:id'); const rel = relationships(ctx.source).find((r) => r.id === id);
-      if (rel?.external && /^https?:\/\//i.test(rel.target)) content = `<a href="${esc(rel.target)}">${content}</a>`;
+      if (rel?.external && /^(https?:\/\/|mailto:)/i.test(rel.target)) content = `<a href="${esc(rel.target)}">${content}</a>`;
     }
     return content;
   }
@@ -340,7 +340,7 @@ export async function exportDocx(html: string, title: string): Promise<Blob> {
     let content = Array.from(node.childNodes).map((n) => inline(n, f, source, deleted || tag === 'del', depth + 1)).join('');
     if (tag === 'ins' || tag === 'del') content = `<w:${tag} w:id="${revisionIndex++}" w:author="${esc(node.dataset.author || 'Author')}" w:date="${new Date().toISOString()}">${content}</w:${tag}>`;
     if (tag === 'a') {
-      const href = node.getAttribute('href') || ''; if (/^https?:\/\//i.test(href)) content = `<w:hyperlink r:id="${addRel(source, `${R}/hyperlink`, href, true)}">${content}</w:hyperlink>`;
+      const href = node.getAttribute('href') || ''; if (/^(https?:\/\/|mailto:)/i.test(href)) content = `<w:hyperlink r:id="${addRel(source, `${R}/hyperlink`, href, true)}">${content}</w:hyperlink>`;
     }
     if (node.dataset.comment) {
       const id = comments.length;

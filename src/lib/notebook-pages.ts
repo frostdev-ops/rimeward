@@ -1,8 +1,8 @@
 // Structured page state rides inside the existing sanitized, revisioned note document.
 // Its visible text remains searchable and readable by legacy note clients and model tools.
-export const NOTEBOOK_PAGE_TYPES = ['markdown', 'spreadsheet', 'slides', 'drawing'] as const;
+export const NOTEBOOK_PAGE_TYPES = ['markdown', 'spreadsheet', 'slides', 'drawing', 'notion'] as const;
 export type NotebookPageType = typeof NOTEBOOK_PAGE_TYPES[number];
-export const NOTE_FORMAT = 2;
+export const NOTE_FORMAT = 3;
 export const NOTE_FORMAT_HEADER = 'x-rime-note-format';
 /** Old runtimes strip these tags/attributes; do not let them round-trip enhanced documents. */
 export function noteRecordNeedsFormat(record?: { key?: unknown; payload?: unknown } | null): boolean {

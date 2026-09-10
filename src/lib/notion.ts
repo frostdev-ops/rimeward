@@ -17,6 +17,7 @@ import { plainText, readProps, toRichText, writeProps, type PropValue, type Rich
 import { readBlock, updateBlockBody, writeBlock, type BlockDraft, type NBlock } from './notion-blocks.ts';
 import { buildFilter } from './notion-filter.ts';
 import type { CalEvent } from './google.ts';
+import { isDeepStrictEqual } from 'node:util';
 
 export { CHECKLIST_PAGE_SIZE, TASK_WARDS };
 export type { PropValue, NBlock, BlockDraft };
@@ -25,7 +26,7 @@ const NOTION = 'https://api.notion.com/v1';
 const VERSION = '2026-03-11';
 
 /** Notion's own error body is far more useful than the status alone. */
-async function api<T>(token: string, path: string, init?: RequestInit): Promise<T> {
+async function api<T>(token: string, path: string, init?: RequestInit, retry = 0): Promise<T> {
   const res = await fetch(`${NOTION}${path}`, {
     ...init,
     headers: {
@@ -36,6 +37,16 @@ async function api<T>(token: string, path: string, init?: RequestInit): Promise<
     },
     signal: AbortSignal.timeout(15_000),
   });
+  // A 429 explicitly refused the request. Never replay uncertain writes on a
+  // timeout or 5xx (a create may already have succeeded).
+  if (res.status === 429 && retry < 2) {
+    const delay = Number(res.headers.get('retry-after') ?? 1);
+    if (Number.isFinite(delay) && delay >= 0 && delay <= 15) {
+      await res.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1, delay) * 1000));
+      return api(token, path, init, retry + 1);
+    }
+  }
   if (!res.ok) {
     const body = await res.text();
     let msg = body.slice(0, 300);
@@ -1053,4 +1064,268 @@ export function parseNotionId(input: string): string | null {
   if (!m) return null;
   const hex = m[0].replace(/-/g, '');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// Linked notebook sheets retain Notion's wire values; the older ward codecs
+// deliberately flatten them and must not be used for this round trip.
+export interface LinkedNotionProperty extends Record<string, unknown> { id: string; type: string }
+export interface LinkedNotionPage extends Record<string, unknown> {
+  id: string;
+  properties: Record<string, LinkedNotionProperty>;
+  parent?: { data_source_id?: string; database_id?: string };
+}
+export interface LinkedNotionSource extends Record<string, unknown> {
+  id: string;
+  properties: Record<string, LinkedNotionProperty>;
+  parent?: { database_id?: string };
+}
+export interface LinkedNotionView extends Record<string, unknown> { id: string; data_source_id: string; name: string; type: string }
+export interface LinkedNotionRows {
+  rows: LinkedNotionPage[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  queryId?: string;
+  totalCount?: number;
+  incomplete: boolean;
+  incompleteReason?: string;
+}
+const linkedError = (message: string, status = 400) => Object.assign(new Error(message), { status });
+const sameNotionId = (a: unknown, b: unknown) => typeof a === 'string' && typeof b === 'string' && a.replaceAll('-', '').toLowerCase() === b.replaceAll('-', '').toLowerCase();
+const propId = (id: string) => { try { return decodeURIComponent(id); } catch { return id; } };
+const linkedProp = (properties: Record<string, LinkedNotionProperty>, id: string) => Object.values(properties).find((p) => propId(p.id) === propId(id));
+function linkedCursor(data: Paged<unknown>): string | null {
+  if (data.has_more && !data.next_cursor) throw linkedError('Notion returned an incomplete page without a continuation cursor. Refresh to continue.', 502);
+  return data.has_more ? data.next_cursor! : null;
+}
+
+export function notionLinkedConnection(userId: number, expectedWorkspaceId?: string): { workspaceId: string; label: string } {
+  const link = getLink(userId, 'notion');
+  if (!link) throw linkedError('Connect Notion to open this database.', 404);
+  const workspaceId = getMeta(link).workspace_id;
+  if (typeof workspaceId !== 'string' || !workspaceId) throw linkedError('Reconnect Notion to identify its workspace.', 409);
+  if (expectedWorkspaceId !== undefined && !sameNotionId(workspaceId, expectedWorkspaceId)) {
+    throw linkedError('This notebook belongs to another Notion workspace. Reconnect its original workspace to continue.', 409);
+  }
+  return { workspaceId, label: link.account_label };
+}
+
+async function linkedToken(userId: number, workspaceId: string) {
+  notionLinkedConnection(userId, workspaceId);
+  return liveToken(userId, 'notion');
+}
+
+export async function notionLinkedSearch(userId: number, query = '', cursor?: string) {
+  const connection = notionLinkedConnection(userId);
+  const token = await liveToken(userId, 'notion');
+  const result = await api<Paged<LinkedNotionSource>>(token, '/search', { method: 'POST', ...json({ query, page_size: 50, filter: { value: 'data_source', property: 'object' }, ...(cursor ? { start_cursor: cursor } : {}) }) });
+  return { ...connection, results: result.results, nextCursor: linkedCursor(result), hasMore: !!result.has_more };
+}
+
+export async function notionLinkedUsers(userId: number, workspaceId: string, cursor?: string) {
+  const token = await linkedToken(userId, workspaceId);
+  const result = await api<Paged<Record<string, unknown>>>(token, `/users?page_size=100${cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ''}`);
+  return { users: result.results, nextCursor: linkedCursor(result), hasMore: !!result.has_more };
+}
+
+export async function notionLinkedSource(userId: number, workspaceId: string, sourceId: string) {
+  const token = await linkedToken(userId, workspaceId);
+  const source = await api<LinkedNotionSource>(token, `/data_sources/${sourceId}`);
+  const views: LinkedNotionView[] = [];
+  let viewsError: string | undefined;
+  let cursor: string | null = null;
+  try {
+    // Bound the picker, explicitly expose continuation instead of silently
+    // inventing a complete list. Row queries themselves remain cursor based.
+    do {
+      const refs: Paged<{ id: string }> = await api(token, `/views?data_source_id=${sourceId}&page_size=100${cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ''}`);
+      for (const ref of refs.results) views.push(await api<LinkedNotionView>(token, `/views/${encodeURIComponent(ref.id)}`));
+      cursor = linkedCursor(refs);
+    } while (cursor && views.length < 100);
+    if (cursor) viewsError = 'Only the first 100 saved views are listed. Additional views remain available in Notion.';
+  } catch (error) { viewsError = (error as Error).message; }
+  return { source, views, ...(viewsError ? { viewsError } : {}) };
+}
+
+async function linkedView(token: string, sourceId: string, viewId: string) {
+  const view = await api<LinkedNotionView>(token, `/views/${viewId}`);
+  if (!sameNotionId(view.data_source_id, sourceId)) throw linkedError('This view belongs to a different data source.', 409);
+  return view;
+}
+
+export async function notionLinkedRows(userId: number, workspaceId: string, sourceId: string, opts: { viewId?: string; cursor?: string; queryId?: string; pageSize?: number } = {}): Promise<LinkedNotionRows> {
+  const token = await linkedToken(userId, workspaceId);
+  const pageSize = Math.min(Math.max(Math.trunc(opts.pageSize ?? 50), 1), 100);
+  let data: Paged<LinkedNotionPage> & { id?: string; total_count?: number; request_status?: { type?: string; incomplete_reason?: string } };
+  if (opts.viewId) {
+    await linkedView(token, sourceId, opts.viewId);
+    data = opts.queryId
+      ? await api(token, `/views/${opts.viewId}/queries/${encodeURIComponent(opts.queryId)}?page_size=${pageSize}${opts.cursor ? `&start_cursor=${encodeURIComponent(opts.cursor)}` : ''}`)
+      : await api(token, `/views/${opts.viewId}/queries`, { method: 'POST', ...json({ page_size: pageSize }) });
+  } else {
+    data = await api(token, `/data_sources/${sourceId}/query`, { method: 'POST', ...json({ page_size: pageSize, ...(opts.cursor ? { start_cursor: opts.cursor } : {}) }) });
+  }
+  // Some view responses return page references. Resolve those without
+  // flattening metadata, property values, icons or covers.
+  const rows: LinkedNotionPage[] = [];
+  for (const row of data.results) rows.push(row.properties ? row : await api(token, `/pages/${encodeURIComponent(row.id)}`));
+  return { rows, nextCursor: linkedCursor(data), hasMore: !!data.has_more, incomplete: data.request_status?.type === 'incomplete', ...(data.request_status?.incomplete_reason ? { incompleteReason: data.request_status.incomplete_reason } : {}), ...(opts.viewId ? { queryId: opts.queryId ?? data.id } : {}), ...(typeof data.total_count === 'number' ? { totalCount: data.total_count } : {}) };
+}
+
+export async function notionLinkedDeleteQuery(userId: number, workspaceId: string, sourceId: string, viewId: string, queryId: string) {
+  const token = await linkedToken(userId, workspaceId);
+  await linkedView(token, sourceId, viewId);
+  await api(token, `/views/${viewId}/queries/${encodeURIComponent(queryId)}`, { method: 'DELETE' });
+}
+
+async function linkedPage(token: string, sourceId: string, pageId: string) {
+  const page = await api<LinkedNotionPage>(token, `/pages/${pageId}`);
+  if (!sameNotionId(page.parent?.data_source_id, sourceId)) throw linkedError('This row no longer belongs to the linked data source.', 409);
+  return page;
+}
+
+async function completeProperty(token: string, pageId: string, property: LinkedNotionProperty): Promise<{ property: LinkedNotionProperty; complete: boolean; nextCursor?: string | null }> {
+  if (!['title', 'rich_text', 'people', 'relation', 'rollup'].includes(property.type)) return { property, complete: true };
+  const items: unknown[] = [];
+  let cursor: string | null = null;
+  let final = property;
+  for (let page = 0; page < 100; page++) {
+    const data: Paged<LinkedNotionProperty> & { object?: string; property_item?: LinkedNotionProperty } = await api(token, `/pages/${pageId}/properties/${encodeURIComponent(propId(property.id))}?page_size=100${cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ''}`);
+    if (data.object !== 'list') {
+      const value: LinkedNotionProperty = { ...property, ...data };
+      const rollup = value.rollup as { type?: string } | undefined;
+      return { property: value, complete: property.type !== 'rollup' || (!!rollup && !['incomplete', 'unsupported'].includes(rollup.type ?? '')) };
+    }
+    for (const item of data.results) {
+      const value = item[item.type];
+      items.push(property.type === 'rollup' ? { type: item.type, [item.type]: ['title', 'rich_text', 'people', 'relation'].includes(item.type) && !Array.isArray(value) ? [value] : value } : value);
+    }
+    if (data.property_item) final = { ...property, ...data.property_item };
+    cursor = linkedCursor(data);
+    if (!data.has_more) {
+      if (property.type === 'rollup') {
+        const rollup = final.rollup as Record<string, unknown> | undefined;
+        return { property: { ...final, ...(rollup?.type === 'array' ? { rollup: { ...rollup, array: items } } : {}), items }, complete: !!rollup && !['incomplete', 'unsupported'].includes(String(rollup.type)) };
+      }
+      return { property: { ...property, [property.type]: items, has_more: false }, complete: true };
+    }
+  }
+  if (property.type === 'rollup') {
+    const rollup = final.rollup as Record<string, unknown> | undefined;
+    return { property: { ...final, ...(rollup?.type === 'array' ? { rollup: { ...rollup, array: items } } : {}), items, has_more: true }, complete: false, nextCursor: cursor };
+  }
+  return { property: { ...final, [property.type]: items, has_more: true }, complete: false, nextCursor: cursor };
+}
+
+export async function notionLinkedProperty(userId: number, workspaceId: string, sourceId: string, pageId: string, propertyId: string) {
+  const token = await linkedToken(userId, workspaceId);
+  const page = await linkedPage(token, sourceId, pageId);
+  const property = linkedProp(page.properties, propertyId);
+  if (!property) throw linkedError('This property was removed. Refresh the database.', 409);
+  return completeProperty(token, pageId, property);
+}
+
+const linkedWritable = new Set(['title', 'rich_text', 'number', 'checkbox', 'url', 'email', 'phone_number', 'date', 'select', 'multi_select', 'status', 'people', 'relation', 'files']);
+
+/** Strip only response metadata; rich-text runs, links, mentions, annotations,
+ * timezone and untouched file variants keep their original wire meaning. */
+function linkedWriteValue(type: string, value: unknown): unknown {
+  if (!linkedWritable.has(type)) throw linkedError(`The ${type} property is read-only.`);
+  if (['title', 'rich_text', 'people', 'relation', 'multi_select', 'files'].includes(type)) {
+    if (!Array.isArray(value)) throw linkedError(`${type} requires an array.`);
+    if (value.length > 100) throw linkedError('Notion limits a property write to 100 items. This value remains protected to prevent truncation.');
+    return value.map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw linkedError(`Invalid ${type} item.`);
+      const p = item as Record<string, unknown>;
+      if (['people', 'relation', 'multi_select'].includes(type)) {
+        if (typeof p.id !== 'string' || !p.id) throw linkedError(`${type} entries require stable IDs.`);
+        return { id: p.id };
+      }
+      if (type === 'files') {
+        const fileType = p.type as string;
+        if (!['file', 'external', 'file_upload'].includes(fileType)) throw linkedError('Unsupported file type; retain this file in Notion.');
+        const file = p[fileType] as Record<string, unknown> | undefined;
+        if (!file || typeof file !== 'object') throw linkedError('Invalid file value.');
+        return { name: p.name, type: fileType, [fileType]: fileType === 'file_upload' ? { id: file.id } : { url: file.url } };
+      }
+      const runType = p.type as string;
+      if (!['text', 'mention', 'equation'].includes(runType)) throw linkedError('Unsupported rich-text run; edit this value in Notion.');
+      return { type: runType, [runType]: p[runType], ...(p.annotations ? { annotations: p.annotations } : {}) };
+    });
+  }
+  if (type === 'select' || type === 'status') {
+    if (value === null) return null;
+    const option = value as { id?: unknown };
+    if (!option || typeof option.id !== 'string') throw linkedError('An existing option ID is required.');
+    return { id: option.id };
+  }
+  if (type === 'number' && value !== null && (typeof value !== 'number' || !Number.isFinite(value))) throw linkedError('Enter a finite number or clear the cell.');
+  if (type === 'checkbox' && typeof value !== 'boolean') throw linkedError('A checkbox must be true or false.');
+  if (['url', 'email', 'phone_number'].includes(type) && value !== null && typeof value !== 'string') throw linkedError(`${type} must be text or null.`);
+  if (type === 'date' && value !== null && (typeof value !== 'object' || Array.isArray(value) || typeof (value as { start?: unknown }).start !== 'string')) throw linkedError('A date requires a start value.');
+  return value;
+}
+
+function comparableProperty(property: LinkedNotionProperty) {
+  const value = linkedWriteValue(property.type, property[property.type]);
+  if (property.type !== 'files') return value;
+  // Signed download URLs rotate without changing the stored file.
+  return (value as Record<string, unknown>[]).map((file) => {
+    if (file.type !== 'file') return file;
+    const url = new URL((file.file as { url: string }).url);
+    return { ...file, file: { url: `${url.origin}${url.pathname}` } };
+  });
+}
+
+export async function notionLinkedUpdateProperty(userId: number, workspaceId: string, sourceId: string, pageId: string, propertyId: string, value: unknown, original: LinkedNotionProperty) {
+  const token = await linkedToken(userId, workspaceId);
+  const source = await api<LinkedNotionSource>(token, `/data_sources/${sourceId}`);
+  const schema = linkedProp(source.properties, propertyId);
+  if (!schema || !linkedWritable.has(schema.type)) throw linkedError('This property was removed, changed type, or is read-only.', 409);
+  const page = await linkedPage(token, sourceId, pageId);
+  const current = linkedProp(page.properties, propertyId);
+  if (!current || original?.type !== schema.type || propId(original?.id ?? '') !== propId(current.id)) throw linkedError('The property changed. Refresh before editing.', 409);
+  const full = await completeProperty(token, pageId, current);
+  if (!full.complete) throw linkedError('This property could not be loaded completely. Editing is blocked to prevent data loss.', 409);
+  if (!isDeepStrictEqual(comparableProperty(full.property), comparableProperty(original))) throw linkedError('This cell changed in Notion. Your draft was kept; refresh and review the newer value before saving.', 409);
+  let payload = linkedWriteValue(schema.type, value);
+  if (schema.type === 'files') {
+    const freshFiles = linkedWriteValue('files', full.property.files) as Record<string, unknown>[];
+    const identity = (file: Record<string, unknown>) => comparableProperty({ id: current.id, type: 'files', files: [file] });
+    payload = (payload as Record<string, unknown>[]).map((file) => file.type === 'file' ? freshFiles.find((fresh) => isDeepStrictEqual(identity(fresh), identity(file))) ?? file : file);
+  }
+  await api(token, `/pages/${pageId}`, { method: 'PATCH', ...json({ properties: { [current.id]: { [schema.type]: payload } } }) });
+  invalidatePage(userId, pageId);
+  const row = await linkedPage(token, sourceId, pageId);
+  const saved = linkedProp(row.properties, propertyId);
+  return { row, ...(saved ? await completeProperty(token, pageId, saved) : {}) };
+}
+
+export async function notionLinkedCreate(userId: number, workspaceId: string, sourceId: string, values: Record<string, unknown>) {
+  const token = await linkedToken(userId, workspaceId);
+  const source = await api<LinkedNotionSource>(token, `/data_sources/${sourceId}`);
+  const properties: Record<string, unknown> = {};
+  for (const [id, raw] of Object.entries(values)) {
+    const schema = linkedProp(source.properties, id);
+    if (!schema || !raw || typeof raw !== 'object') throw linkedError('A property no longer exists. Refresh before adding a row.', 409);
+    properties[schema.id] = { [schema.type]: linkedWriteValue(schema.type, (raw as Record<string, unknown>)[schema.type]) };
+  }
+  const row = await api<LinkedNotionPage>(token, '/pages', { method: 'POST', ...json({ parent: { type: 'data_source_id', data_source_id: sourceId }, properties }) });
+  invalidatePage(userId, row.id);
+  return { row };
+}
+
+export async function notionLinkedUpdateDefinition(userId: number, workspaceId: string, sourceId: string, action: 'view' | 'schema', patch: Record<string, unknown>, original: Record<string, unknown>, viewId?: string) {
+  const token = await linkedToken(userId, workspaceId);
+  const current = action === 'view' ? await linkedView(token, sourceId, viewId!) : await api<LinkedNotionSource>(token, `/data_sources/${sourceId}`);
+  const allowed = action === 'view' ? ['name', 'filter', 'sorts', 'quick_filters', 'configuration'] : ['title', 'properties'];
+  if (!Object.keys(patch).length || Object.keys(patch).some((key) => !allowed.includes(key))) throw linkedError('Unsupported database or view change.');
+  for (const key of Object.keys(patch)) {
+    if (!isDeepStrictEqual(current[key], original[key])) throw linkedError(`The shared ${key} changed in Notion. Refresh before saving.`, 409);
+  }
+  const result = await api(token, action === 'view' ? `/views/${viewId}` : `/data_sources/${sourceId}`, { method: 'PATCH', ...json(patch) });
+  invalidate(`notion:schema:${userId}:${sourceId}`);
+  invalidate(`notion:dbs:${userId}`);
+  invalidate(`notion:rows:${userId}:${sourceId}`);
+  invalidate(`notion:cal:${userId}:${sourceId}`);
+  return action === 'view' ? { view: result } : { source: result };
 }

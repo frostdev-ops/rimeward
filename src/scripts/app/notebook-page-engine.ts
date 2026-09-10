@@ -4,6 +4,9 @@ export interface NotebookPageEngine {
   load(value: unknown): void;
   serialize(): unknown;
   text(): string;
+  /** Remote editors keep unsaved cells outside the notebook document. */
+  dirty?(): boolean;
+  flush?(): Promise<boolean>;
   destroy(): void;
   focus(): void;
 }

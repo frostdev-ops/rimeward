@@ -128,7 +128,7 @@ async function renderCompact(w: WardInstance): Promise<void> {
         await openNotebook(w); if (cur?.w.i !== w.i || !files[0]) return;
         await importNotebookFiles(cur, files);
       }, false)));
-      for (const [kind, label, glyph] of [['document', 'Document', 'note'], ['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen']] as const) menu.append(menuItem(glyph, label, () => void openNotebook(w, { create: kind === 'document' ? true : kind })));
+      for (const [kind, label, glyph] of [['document', 'Document', 'note'], ['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen'], ['notion', 'Linked Notion database', 'database']] as const) menu.append(menuItem(glyph, label, () => void openNotebook(w, { create: kind === 'document' ? true : kind })));
     });
   });
   add.className = 'btn-primary nb-add';
@@ -480,7 +480,7 @@ function navItem(c: Dlg, iconId: string, label: string, nav: Nav, n?: number, me
 function notebookMenu(c: Dlg, m: HTMLElement): void {
   m.append(menuItem('folder', 'Open file…', () => openNotebookFile(c)));
   m.append(menuItem('pen', 'Rename notebook…', () => void renameNotebook(c)));
-  for (const [kind, label, glyph] of [['document', 'Document', 'note'], ['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen']] as const) m.append(menuItem(glyph, `New ${label.toLowerCase()}`, () => void createNote(c, undefined, kind === 'document' ? undefined : kind)));
+  for (const [kind, label, glyph] of [['document', 'Document', 'note'], ['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen'], ['notion', 'Linked Notion database', 'database']] as const) m.append(menuItem(glyph, `New ${label.toLowerCase()}`, () => void createNote(c, undefined, kind === 'document' ? undefined : kind)));
   m.append(menuItem('folder', 'New section…', () => void addSection(c)));
   m.append(menuItem('eye', 'Save current view…', () => void saveView(c)));
   for (const type of Object.keys(PROP_TYPE_LABELS) as PropType[]) m.append(menuItem(propIcon(type), `Add ${PROP_TYPE_LABELS[type].toLowerCase()} property…`, () => void addProperty(c, type)));
@@ -1106,7 +1106,7 @@ async function newNoteMenu(c: Dlg, anchor: HTMLElement): Promise<void> {
   openMenu(r.left, r.bottom, (m) => {
     m.append(menuItem('folder', 'Open file…', () => openNotebookFile(c)));
     m.append(menuItem('note', 'Document', () => void createNote(c)));
-    for (const [type, label, glyph] of [['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen']] as const) m.append(menuItem(glyph, label, () => void createNote(c, undefined, type)));
+    for (const [type, label, glyph] of [['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen'], ['notion', 'Linked Notion database', 'database']] as const) m.append(menuItem(glyph, label, () => void createNote(c, undefined, type)));
     if (templates.length) m.append(el('div', 'ctx-label', 'From a template'));
     for (const t of templates) m.append(menuItem('copy', titleOf(t), () => void createNote(c, t.id)));
   });

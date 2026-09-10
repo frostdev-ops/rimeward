@@ -8,6 +8,43 @@ import { iconRef, type IconCfg } from '../../lib/icon-names.ts';
 
 const OWN = new Set(['fd-ic', 'fd-ic-e', 'fd-ic-img']);
 
+// Resolve CSS colors (including light-dark/oklch) through the browser, then
+// keep the chosen tint only when it has at least 3:1 contrast on the button.
+let colorCanvas: CanvasRenderingContext2D | null;
+const watchedButtons = new WeakSet<HTMLElement>();
+export function fitButtonIconTint(button: HTMLElement): void {
+  if (!button.isConnected) return;
+  if (!watchedButtons.has(button)) {
+    watchedButtons.add(button);
+    for (const event of ['pointerenter', 'pointerleave', 'transitionend']) {
+      button.addEventListener(event, () => fitButtonIconTint(button));
+    }
+  }
+  button.style.removeProperty('--fd-icon-color');
+  const style = getComputedStyle(button);
+  const tint = style.getPropertyValue('--fd-icon-color').trim();
+  if (!tint || tint === 'currentColor') return;
+  colorCanvas ??= document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  if (!colorCanvas) return;
+  const rgb = (color: string) => {
+    colorCanvas!.clearRect(0, 0, 1, 1);
+    colorCanvas!.fillStyle = color;
+    colorCanvas!.fillRect(0, 0, 1, 1);
+    return Array.from(colorCanvas!.getImageData(0, 0, 1, 1).data).slice(0, 3);
+  };
+  const luminance = (channels: number[]) => channels.reduce((sum, channel, i) => {
+    const s = channel / 255;
+    return sum + (s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][i]!;
+  }, 0);
+  const background = rgb(style.backgroundColor);
+  const opacity = Number(style.getPropertyValue('--fd-icon-opacity').trim() || 1);
+  const foreground = rgb(tint).map((c, i) => c * opacity + background[i]! * (1 - opacity));
+  const a = luminance(foreground), b = luminance(background);
+  if ((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) < 3) {
+    button.style.setProperty('--fd-icon-color', style.color);
+  }
+}
+
 function cfg(): IconCfg | null {
   const s = document.documentElement.dataset.icons;
   try {
@@ -37,6 +74,10 @@ export function icon(id: string, cls = '', title?: string): HTMLElement {
   }
   if (cls) n.className += ` ${cls}`;
   n.dataset.icon = id;
+  requestAnimationFrame(() => {
+    const button = n.closest<HTMLElement>('.btn-primary');
+    if (button) fitButtonIconTint(button);
+  });
   if (title) n.title = title;
   return n;
 }

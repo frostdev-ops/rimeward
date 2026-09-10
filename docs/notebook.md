@@ -276,3 +276,24 @@ flattened while preserving their contents. Document undo/redo retains bounded
 snapshots across text and structural changes. Shared selects, context menus and
 note-link suggestions use a top-layer overlay and visible-viewport positioning
 so dialog/card clipping cannot hide them.
+
+## Linked Notion database sheets
+
+**New page → Linked Notion database** opens a database shared with the connected
+Notion workspace, using its saved table view. Cells keep Notion property and page
+identities and write only the edited field after a fresh-value comparison. Rich
+text edits preserve individual spans and annotations. Formulas, rollups and
+unsupported properties remain protected. The sheet supports paged rows, typed
+editors, shared table-view controls and schema changes, with errors and unsaved
+drafts visible. Only links and local layout preferences are synced as note state;
+note format 3 prevents older clients from stripping the new page kind.
+
+Ask reads every active notebook document directly rather than using the list
+offset ceiling. Linked Notion pages retrieve live database properties, reporting
+partial reads explicitly. See [the Notion integration design](notion-notebook-design.md)
+for how to open a database, supported controls and current rendering/API limits.
+
+Follow-up repairs include slash-completion matching, literal ampersand imports,
+mailto links through saving and DOCX round trips, and document identity guards
+for asynchronous Word insert dialogs. The user retained manual UI/integration
+testing; no automated tests or model calls were made for this release.

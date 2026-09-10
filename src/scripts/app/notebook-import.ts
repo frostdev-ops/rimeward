@@ -36,7 +36,7 @@ export async function importNotebookFile(file: File): Promise<ImportedNotebookFi
   } else {
     const source = await file.text();
     if (extension === 'md' || extension === 'markdown') html = markdown(source);
-    else if (extension === 'txt') html = textToHtml(source.replace(/&/g, '&amp;'));
+    else if (extension === 'txt') html = textToHtml(source);
     else if (extension === 'html' || extension === 'htm') {
       const parsed = new DOMParser().parseFromString(source, 'text/html');
       for (const element of parsed.querySelectorAll('script,style,link,meta,base,iframe,object,embed')) element.remove();
@@ -50,7 +50,11 @@ export async function importNotebookFile(file: File): Promise<ImportedNotebookFi
       html = pageDocument('spreadsheet', sheet, rows.map(row => row.join('\t')).join('\n'));
     } else if (extension === 'json') {
       const raw = JSON.parse(source) as Record<string, unknown> | null;
-      if (raw?.version === 1 && Array.isArray(raw.slides)) {
+      if (raw?.version === 1 && raw.kind === 'notion') {
+        const linked = raw.source as Record<string, unknown> | null;
+        if (linked && (!['workspaceId', 'dataSourceId'].every(key => typeof linked[key] === 'string' && /^[a-f0-9-]{32,36}$/i.test(linked[key] as string)))) throw Error('This Notion link contains invalid workspace or database identifiers.');
+        html = pageDocument('notion', raw, 'Linked Notion database — reconnect to read current rows.');
+      } else if (raw?.version === 1 && Array.isArray(raw.slides)) {
         const slides = normalizeSlides(raw); html = pageDocument('slides', slides, slides.slides.map(slide => [slide.title, ...slide.objects.map(object => object.text), slide.notes].join('\n')).join('\n\n'));
       } else if (raw?.version === 1 && Array.isArray(raw.nodes) && Array.isArray(raw.connectors)) {
         const drawing = validateDrawing(raw); html = pageDocument('drawing', drawing, [...drawing.nodes.map(node => [node.label, ...node.data.map(point => `${point.label}: ${point.value}`)].join('\n')), ...drawing.connectors.map(edge => edge.label)].join('\n'));

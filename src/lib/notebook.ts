@@ -1,13 +1,17 @@
 import crypto from 'node:crypto';
 import { getDb } from './db.ts';
 import { getDashboard } from './dashboard.ts';
-import { notebookConfig, type WardInstance } from './wards.ts';
+import { notebookConfig, notionIdFrom, type WardInstance } from './wards.ts';
 import {
   META_COLS, NOTE_ID_RE, backlinks, ftsQuery, indexNote, newNoteId, noteExists, normalizeTags, normalizeTitle, purgeNote as purgeRow, readNote, resolveNote, rowMeta, writeNote,
   writeNoteRaw, type NoteMeta,
 } from './note.ts';
 import { plainText } from './note-text.ts';
 import { emitNoteEvent } from './note-events.ts';
+import { readPageDocument } from './notebook-pages.ts';
+import { readProp } from './notion-props.ts';
+import { isDesktop } from './dev/runtime.ts';
+import type { LinkedNotionProperty, LinkedNotionRows } from './notion.ts';
 
 // A notebook organizes note documents (lib/note.ts): which notes are in it,
 // their section, tags, pin and manual position, plus its own sections, saved
@@ -681,9 +685,63 @@ export function askContext(userId: number, notebook: string, question: string): 
   return out;
 }
 
-/** One model call (the ward's provider/model, the shared 60/h window) over the
- *  notes `askContext` picked. The answer plus the notes it saw. */
-export async function askNotebook(userId: number, w: WardInstance, question: string, scope: 'auto' | 'all' | 'matches' = 'auto'): Promise<{ answer: string; sources: { id: string; title: string }[]; coverage: { scope: string; total: number; used: number; condensed: boolean } }> {
+/** Read linked database rows from their owning integration, not a saved grid preview. */
+async function linkedAskText(userId: number, workspaceId: string, sourceId: string): Promise<{ text: string; incomplete: string[] }> {
+  const { notionLinkedRows, notionLinkedProperty } = await import('./notion.ts');
+  const { instanceRequest, rimeConnection } = await import('./dev/remote.ts');
+  const remote = isDesktop() && !!await rimeConnection(userId);
+  const request = async <T>(action: string, params: Record<string, string>): Promise<T> => {
+    const path = `/api/notion/linked?${new URLSearchParams({ action, workspaceId, sourceId, ...params })}`;
+    const response = await instanceRequest(userId, path, new Request(`https://rimeward.invalid${path}`, { signal: AbortSignal.timeout(120_000) }));
+    const data = await response.json();
+    if (!response.ok) throw bad(typeof data?.error === 'string' ? data.error : 'Linked Notion database is unavailable.', response.status);
+    return data as T;
+  };
+  const lines: string[] = [], incomplete = new Set<string>(), seen = new Set<string>(), cursors = new Set<string>();
+  let cursor: string | undefined, count = 0, size = 0, propertyReads = 0, truncated = false;
+  // ponytail: bounded retrieval protects interactive Ask; explicit coverage notices identify every ceiling.
+  while (true) {
+    const page = remote ? await request<LinkedNotionRows>('rows', { pageSize: '100', ...(cursor ? { cursor } : {}) }) : await notionLinkedRows(userId, workspaceId, sourceId, { cursor, pageSize: 100 });
+    if (page.incomplete) incomplete.add(`Notion query is incomplete: ${page.incompleteReason ?? 'upstream result limit'}.`);
+    for (const row of page.rows) {
+      if (seen.has(row.id)) continue;
+      if (count >= 10_000 || size >= 2_000_000) { incomplete.add('Database row/text limit reached (10,000 rows or 2,000,000 characters).'); truncated = true; break; }
+      seen.add(row.id); const fields: string[] = [];
+      for (const [name, raw] of Object.entries(row.properties)) {
+        let prop = raw;
+        const value = raw[raw.type];
+        const needsMore = raw.has_more === true || (['title', 'rich_text', 'people', 'relation'].includes(raw.type) && Array.isArray(value) && value.length >= 25) || (raw.type === 'rollup' && value && typeof value === 'object' && (['incomplete', 'unsupported'].includes(String((value as { type?: unknown }).type)) || (Array.isArray((value as { array?: unknown }).array) && ((value as { array: unknown[] }).array.length >= 25))));
+        if (needsMore) {
+          if (propertyReads >= 100) incomplete.add('Some long properties were only partly read (100 property expansions per database).');
+          else {
+            propertyReads++;
+            try {
+              const full = remote ? await request<{ property: LinkedNotionProperty; complete: boolean }>('property', { pageId: row.id, propertyId: raw.id }) : await notionLinkedProperty(userId, workspaceId, sourceId, row.id, raw.id);
+              prop = full.property;
+              if (!full.complete) incomplete.add('Notion returned an incomplete long property.');
+            } catch { incomplete.add('Some long properties could not be retrieved from Notion.'); }
+          }
+        }
+        const rawValue = prop[prop.type];
+        if (['formula', 'rollup'].includes(prop.type) && rawValue && typeof rawValue === 'object' && ['incomplete', 'unsupported'].includes(String((rawValue as { type?: unknown }).type))) incomplete.add('Notion returned an incomplete or unsupported computed value.');
+        const display = readProp(prop).text;
+        const structured = ['relation', 'people', 'files', 'date'].includes(prop.type);
+        fields.push(`${name}: ${display}${structured || !display ? ` ${rawValue == null ? '(empty)' : JSON.stringify(rawValue)}` : ''}`);
+      }
+      const line = `Row ${row.id}\n${fields.join('\n')}`;
+      if (size + line.length > 2_000_000) { incomplete.add('Database text limit reached (2,000,000 characters).'); truncated = true; break; }
+      lines.push(line); size += line.length; count++;
+    }
+    if (truncated) break;
+    if (!page.hasMore) break;
+    if (!page.nextCursor || cursors.has(page.nextCursor)) { incomplete.add('Notion did not provide a usable continuation cursor.'); break; }
+    cursors.add(page.nextCursor); cursor = page.nextCursor;
+  }
+  return { text: `Live Notion database: ${count} rows. Database properties only; row page bodies are not included. Saved-view filters are not applied.\n${[...incomplete].map(item => `INCOMPLETE: ${item}`).join('\n')}\n\n${lines.join('\n\n')}`, incomplete: [...incomplete] };
+}
+
+/** Answer from matching notes or the complete active notebook, condensing large selections in batches. */
+export async function askNotebook(userId: number, w: WardInstance, question: string, scope: 'auto' | 'all' | 'matches' = 'auto'): Promise<{ answer: string; sources: { id: string; title: string }[]; coverage: { scope: string; total: number; used: number; condensed: boolean; complete: boolean; incomplete: string[] } }> {
   const q = question.replace(/\s+/g, ' ').trim().slice(0, 500);
   if (!q) throw bad('ask something');
   const notebook = notebookIdOf(w);
@@ -691,15 +749,31 @@ export async function askNotebook(userId: number, w: WardInstance, question: str
   const total = listNotes(userId, { notebook, limit: 1 }).total;
   let sources = all ? [] as { id: string; title: string; text: string }[] : askContext(userId, notebook, q);
   if (all) {
-    let offset = 0;
-    while (offset < total) {
-      const page = listNotes(userId, { notebook, sort: 'title', dir: 'asc', offset, limit: LIST_MAX });
-      if (!page.notes.length) break;
-      for (const n of page.notes) sources.push({ id: n.id, title: titleOf(n), text: plainText(readNote(userId, n.id).html) });
-      offset += page.notes.length;
+    // The UI list caps its offset at 5,000. Snapshot every active id here so later notes cannot repeat or disappear.
+    const notes = getDb().prepare(`SELECT ${META_COLS} FROM notes WHERE user_id = ? AND notebook = ? AND trashed_at IS NULL AND archived_at IS NULL AND template = 0 ORDER BY lower(title), ward`).all(userId, notebook) as Parameters<typeof rowMeta>[0][];
+    sources = notes.map(row => { const n = rowMeta(row); return { id: n.id, title: titleOf(n), text: plainText(readNote(userId, n.id).html) }; });
+  }
+  const incomplete: string[] = [];
+  const linked = new Map<string, Promise<{ text: string; incomplete: string[] }>>();
+  for (const source of sources) {
+    const page = readPageDocument(readNote(userId, source.id).html);
+    if (page?.type !== 'notion') continue;
+    const link = (page.state as { source?: { workspaceId?: unknown; dataSourceId?: unknown } } | null)?.source;
+    const workspaceId = notionIdFrom(link?.workspaceId), sourceId = notionIdFrom(link?.dataSourceId);
+    if (!workspaceId || !sourceId) {
+      source.text = '[Linked Notion database has an invalid connection.]'; incomplete.push(`${source.title}: invalid Notion connection.`); continue;
+    }
+    const key = `${workspaceId}/${sourceId}`;
+    if (!linked.has(key)) linked.set(key, linkedAskText(userId, workspaceId, sourceId));
+    try {
+      const result = await linked.get(key)!; source.text = result.text;
+      incomplete.push(...result.incomplete.map(message => `${source.title}: ${message}`));
+    } catch (error) {
+      source.text = '[Live Notion database unavailable; no row contents were read.]';
+      incomplete.push(`${source.title}: ${error instanceof Error ? error.message : 'Notion unavailable.'}`);
     }
   }
-  const coverage = { scope: all ? 'all' : 'matches', total, used: sources.length, condensed: false };
+  const coverage = { scope: all ? 'all' : 'matches', total, used: sources.length, condensed: false, complete: !incomplete.length, incomplete };
   if (!sources.length) return { answer: 'This notebook has no notes to answer from yet.', sources: [], coverage };
   const [{ takeModelSlot, availableModelSlots }, { askModel }] = await Promise.all([import('./logic-engine.ts'), import('./agent/oneshot.ts')]);
   const cfg = notebookConfig(w);
@@ -734,6 +808,6 @@ export async function askNotebook(userId: number, w: WardInstance, question: str
     if (summaries.join('\n\n').length >= material.join('\n\n').length) throw bad('The model did not condense the notebook. Try a more specific question.', 502);
     material = summaries;
   }
-  const answer = await call(`COVERAGE: ${coverage.used} of ${coverage.total} active notes; ${coverage.condensed ? 'batch summaries covering the full selected text' : 'note text'}.\n\nNOTES:\n${material.join('\n\n')}\n\nQUESTION: ${q}`);
-  return { answer, sources: sources.map(({ id, title }) => ({ id, title })), coverage };
+  const answer = await call(`COVERAGE: ${coverage.complete ? 'Complete selected source retrieval' : `INCOMPLETE: ${incomplete.join('; ')}`}\n${coverage.used} of ${coverage.total} active notes; ${coverage.condensed ? 'batch summaries covering the full selected text' : 'note text'}.\n\nNOTES:\n${material.join('\n\n')}\n\nQUESTION: ${q}`);
+  return { answer: incomplete.length ? `Incomplete coverage: ${incomplete.join(' ')}\n\n${answer}` : answer, sources: sources.map(({ id, title }) => ({ id, title })), coverage };
 }

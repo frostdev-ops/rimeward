@@ -10,7 +10,7 @@
 import { bgKind, headerSceneConfig, sceneConfig, themeHtmlAttrs, type ThemeConfig } from '../../lib/theme.ts';
 import { applyBackground, applyHeaderScene } from './background.ts';
 import { ensureFonts } from './fonts.ts';
-import { repaintIcons } from './icon.ts';
+import { fitButtonIconTint, repaintIcons } from './icon.ts';
 
 export function applyThemeLive(cfg: ThemeConfig): void {
   const html = document.documentElement;
@@ -52,4 +52,5 @@ export function applyThemeLive(cfg: ThemeConfig): void {
   // 'system' follows the OS; the class is what frost.css actually reads.
   const light = cfg.mode === 'light' || (cfg.mode === 'system' && matchMedia('(prefers-color-scheme: light)').matches);
   html.classList.toggle('dark', !light);
+  document.querySelectorAll<HTMLElement>('.btn-primary').forEach(fitButtonIconTint);
 }

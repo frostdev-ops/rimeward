@@ -1,8 +1,50 @@
 # Linked Notion databases in notebook sheets
 
-Status: feasibility investigation, September 10, 2026. Not implemented. Research
-used source inspection and official documentation; no account data, Notion writes,
-model calls, tests or browser probes were used.
+Status: implemented for the notebook sheet in desktop 0.5.18 / web 0.23.18.
+Validation used source review, TypeScript, desktop lint and production builds.
+The user reserved live Notion interaction and UI testing for their manual local
+build; no account probes, model calls or tests were run during implementation.
+
+## Open a database
+
+In a notebook, choose **New page → Linked Notion database**, select a shared
+Notion data source, then choose its saved view. The first available table view is
+selected initially. Connect Notion in Account if the picker reports no connection;
+a database must be shared with that connection to appear. **All rows** ignores the
+saved view's filter. Double-click a cell (or use Enter/F2 or its context menu) to
+edit, then choose **Save to Notion**. **New row** creates an original Notion row.
+
+**Columns & view** provides local layout preferences and explicit shared saves
+for table layout, supported nested filters, sort order and grouping. Unchanged
+advanced rules remain intact. **Database properties** renames properties, changes
+number formats/formula expressions and adds supported property types. Existing
+option colors/status configuration retain the API restrictions below.
+
+Only the versioned link and local layout preferences enter note storage/sync.
+Remote rows remain in Notion. Workspace identity is checked on each operation;
+replacing the account connection cannot silently retarget an existing link.
+Pending writes and unsaved drafts block notebook navigation, close and automatic
+reload. A stale cell save returns a visible conflict; there is no blind overwrite.
+Notion link JSON can be exported and opened through **Open file**.
+
+## Current boundaries
+
+- Formula/rollup/system and unknown values are protected from cell editing.
+  Rich text edits retain individual runs, annotations, mentions and equations.
+- Table widths, wrapping, frozen columns, grid lines, number/date/time formats,
+  status display, and supported grouping are rendered. Other saved layouts are
+  shown as tables; subtask hierarchy is retained upstream rather than reproduced
+  as a nested tree. Relation cells show stable IDs; their picker shows page titles.
+- Rows page without the local spreadsheet's 200-row cap. The API's query ceiling
+  is reported explicitly. The picker lists up to 100 saved views and reports more.
+  Complete-property reads support up to 10,000 items; writes above Notion's
+  100-item array limit are refused rather than truncated.
+- Ask reads live source-wide database properties, independently of loaded rows or
+  saved-view filters. Row page bodies are not included. Its per-database ceilings
+  (10,000 rows, 2,000,000 characters, 100 long-property expansions) and upstream
+  retrieval failures appear in the answer's coverage notice.
+
+The original implementation design and API references follow.
 
 ## Recommendation
 
