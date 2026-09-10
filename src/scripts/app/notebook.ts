@@ -271,6 +271,7 @@ function dialog(): HTMLDialogElement | null {
     syncNotebookChrome(cur);
   });
   d.addEventListener('cancel', (e) => {
+    if (e.target !== d) return;
     e.preventDefault();
     if (d.hasAttribute('data-document-fullscreen')) { setDocumentFullscreen(d, false); if (cur) syncNotebookChrome(cur); }
     else void tryClose();

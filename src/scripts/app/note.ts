@@ -1223,6 +1223,7 @@ function dialog(): HTMLDialogElement | null {
   d.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); openFile(); } });
   d.querySelector('[data-document-fullscreen-toggle]')?.addEventListener('click', () => setDocumentFullscreen(d, !d.hasAttribute('data-document-fullscreen')));
   d.addEventListener('cancel', (e) => {
+    if (e.target !== d) return;
     e.preventDefault();
     if (d.hasAttribute('data-document-fullscreen')) setDocumentFullscreen(d, false);
     else void tryClose();
