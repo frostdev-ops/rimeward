@@ -146,7 +146,9 @@ export function ensureStream(): void {
     flushPendingLayout();
   });
   // The agent wrote into a notepad; its ward reloads the document (note.ts).
-  on('note', (d: { ward?: string }) => window.dispatchEvent(new CustomEvent('fd:note', { detail: d })));
+  on('note', (d: { ward?: string; note?: string; meta?: boolean }) => window.dispatchEvent(new CustomEvent('fd:note', { detail: d })));
+  // A notebook changed (a note created, filed, archived…): its wards refresh their lists (notebook.ts).
+  on('notebook', (d: { notebook?: string }) => window.dispatchEvent(new CustomEvent('fd:notebook', { detail: d })));
   // Theme knobs apply straight to <html> — no reload has anything to add. The
   // derivation is imported on demand: changing the theme from the agent is rare
   // and every dashboard would otherwise carry theme.ts for it.

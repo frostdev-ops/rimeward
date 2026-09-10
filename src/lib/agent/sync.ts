@@ -18,6 +18,7 @@ import {
   preserveConflict,
   type SyncRecord,
 } from "./sync-store.ts";
+import { NOTE_KEY, resolveNoteConflict, validateNoteRecord } from '../note-sync.ts';
 import type {
   AgentProviderId,
   ProviderCall,
@@ -209,16 +210,25 @@ export function syncRime(user: number, force = false): Promise<void> {
           current &&
           current.hash !== record.hash &&
           current.hash !== bases.get(record.key)
-        )
-          preserveConflict(user, current);
+        ) {
+          if (NOTE_KEY.test(record.key)) {
+            // Both runtimes edited this note: the newer save wins, the other is
+            // kept as a conflict copy beside it (note-sync.ts). When ours is
+            // newer the server's hash becomes the base so the next pass pushes ours.
+            const parse = (r: SyncRecord) => { const v: unknown = JSON.parse(r.payload); return v === null ? null : validateNoteRecord(v); };
+            if (resolveNoteConflict(user, parse(current), parse(record))) {
+              acknowledge(record.key, record.hash);
+              return;
+            }
+          } else preserveConflict(user, current);
+        }
         installRecord(user, record);
         acknowledge(record.key, record.hash);
       };
-      // Attachment records come before conversations so history can open immediately.
+      // Attachments first (history opens immediately), then notebooks before their notes.
+      const rank = (k: string) => (k.startsWith("file/") ? 0 : k.startsWith("notebook/") ? 1 : 2);
       const keys = [...new Set([...local.keys(), ...other.keys()])].sort(
-        (a, b) =>
-          Number(b.startsWith("file/")) - Number(a.startsWith("file/")) ||
-          a.localeCompare(b),
+        (a, b) => rank(a) - rank(b) || a.localeCompare(b),
       );
       for (const key of keys) {
         const ours = local.get(key),

@@ -9,6 +9,7 @@
 import type Database from 'better-sqlite3';
 import { DEFAULT_LAYOUT, HOST_SERVICE_IDS, validateLayout } from './wards.ts';
 import { validateGraph } from './logic.ts';
+import { excerpt, plainText } from './note-text.ts';
 
 type Raw = Record<string, unknown>;
 
@@ -201,4 +202,21 @@ export function migrateWardKeys(handle: Database.Database): void {
       console.warn(`[migrate] packet ${p.id}: history_json unreadable, left untouched`);
     }
   }
+}
+
+/** Index every note that has no full-text row — the documents from before
+ *  025_notebooks.sql. db.ts runs it once over the migrating handle; cheap to
+ *  re-run, it only touches the missing. Tags are stored as a JSON list. */
+export function backfillNotesIndex(db: Database.Database): number {
+  const rows = db.prepare('SELECT user_id, ward, html, title, tags FROM notes WHERE NOT EXISTS (SELECT 1 FROM notes_fts f WHERE f.user_id = notes.user_id AND f.id = notes.ward)').all() as { user_id: number; ward: string; html: string; title: string; tags: string }[];
+  const upd = db.prepare('UPDATE notes SET excerpt = ? WHERE user_id = ? AND ward = ?');
+  const ins = db.prepare('INSERT INTO notes_fts (user_id, id, title, body, tags) VALUES (?, ?, ?, ?, ?)');
+  for (const r of rows) {
+    const text = plainText(r.html);
+    let tags: unknown;
+    try { tags = JSON.parse(r.tags); } catch { tags = []; }
+    upd.run(excerpt(text), r.user_id, r.ward);
+    ins.run(r.user_id, r.ward, r.title, text, Array.isArray(tags) ? tags.filter((t) => typeof t === 'string').join(' ') : '');
+  }
+  return rows.length;
 }

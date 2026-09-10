@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { migrateLegacyWards, migrateWardKeys } from './migrate-wards.ts';
+import { backfillNotesIndex, migrateLegacyWards, migrateWardKeys } from './migrate-wards.ts';
 import { loadMonitors } from './monitors.ts';
 
 export const DATA_DIR = process.env.HOMEPAGE_DATA_DIR ?? path.join(process.cwd(), 'data');
@@ -82,6 +82,16 @@ function migrate(handle: Database.Database): void {
     handle.transaction(() => {
       migrateWardKeys(handle);
       record.run(WARD_KEYS);
+    })();
+  }
+
+  // The notes full-text index (025_notebooks.sql) starts empty: the documents
+  // from before it are indexed once, in JS (their text comes out of the HTML).
+  const NOTES_FTS = '025_notes_fts';
+  if (!applied.has(NOTES_FTS)) {
+    handle.transaction(() => {
+      backfillNotesIndex(handle);
+      record.run(NOTES_FTS);
     })();
   }
 }

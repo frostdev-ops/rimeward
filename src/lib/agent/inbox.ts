@@ -43,6 +43,7 @@ export interface InboxRow {
 
 const TEXT_MAX = 8000;
 const RESULT_MAX = 4000;
+export const CHILD_ANSWER_MAX = RESULT_MAX - '[Direct answer from the user]\n'.length;
 const MAX_OPEN = 50; // per user — a runaway pair of agents stops here
 const CHILD_MESSAGES = 12; // per child run — every note to an idle parent is a turn of the user's hourly budget
 export const WAIT_DEADLINE_MS = 10 * 60_000;
@@ -56,6 +57,17 @@ const pumping = new Set<string>();
 
 export function getMessage(userId: number, id: number): InboxRow | null {
   return (getDb().prepare('SELECT * FROM agent_inbox WHERE id = ? AND user_id = ?').get(id, userId) as InboxRow | undefined) ?? null;
+}
+
+/** Recheck at consumption, including after a queued turn or steer has waited. */
+export function messagePending(userId: number, id: number): boolean {
+  const message = getMessage(userId, id);
+  if (message?.status !== 'delivered') return false;
+  if (message.conversation_id === null) return true;
+  const target = childJob(userId, message.ward);
+  if (target) return target.state === 'running' && isLive(target.id);
+  const child = childJob(userId, message.sender);
+  return !!child && (child.state === 'running' || (child.state !== 'cancelled' && child.state !== 'interrupted' && !child.notified));
 }
 
 /** The recent traffic of one ward, both directions. */
@@ -78,7 +90,7 @@ function finish(id: number, status: 'done' | 'failed', result: string): void {
   // asker. Never for a reply itself, or two agents ping-pong until the cap —
   // and never within a family (parent ↔ child), where every reply is explicit.
   const row = getDb().prepare('SELECT * FROM agent_inbox WHERE id = ?').get(id) as InboxRow;
-  if (status === 'done' && !row.wait && row.reply_to === null && result.trim() && !childJob(row.user_id, row.ward) && !childJob(row.user_id, row.sender)) {
+  if (status === 'done' && !row.wait && row.reply_to === null && row.conversation_id === null && result.trim() && !childJob(row.user_id, row.ward) && !childJob(row.user_id, row.sender)) {
     void sendMessage(row.user_id, { to: row.sender, from: row.ward, text: result, replyTo: row.id }).catch((err) =>
       console.error('[inbox] reply-back failed:', err)
     );
@@ -139,7 +151,7 @@ export interface Outgoing {
 
 /** Queue a message and start delivering it. Validation is the trust boundary
  *  for the tool AND the reply-back hop. */
-export async function sendMessage(userId: number, m: Outgoing): Promise<InboxRow> {
+export async function sendMessage(userId: number, m: Outgoing, fromUser = false): Promise<InboxRow> {
   const text = m.text.trim();
   if (!text) throw new Error('say something');
   if (text.length > TEXT_MAX) throw new Error(`message too long (${text.length} > ${TEXT_MAX} chars)`);
@@ -148,6 +160,7 @@ export async function sendMessage(userId: number, m: Outgoing): Promise<InboxRow
   const { agentWardConfig, takeHeadlessSlot } = await import('./core.ts');
   const { agentConfigured } = await import('./provider.ts');
   const child = childJob(userId, m.to);
+  if (fromUser && !child) throw new Error('Direct user messages require a child run.');
   const fromChild = childJob(userId, m.from);
   let conversation: number | null = null;
   if (child) {
@@ -180,9 +193,35 @@ export async function sendMessage(userId: number, m: Outgoing): Promise<InboxRow
   if (!family) takeHeadlessSlot(userId, m.to);
   const id = db
     .prepare('INSERT INTO agent_inbox (user_id, ward, sender, mode, text, reply_to, wait, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(userId, m.to, m.from, mode, text, m.replyTo ?? null, m.wait ? 1 : 0, conversation).lastInsertRowid as number;
+    .run(userId, m.to, fromUser ? 'user' : m.from, mode, text, m.replyTo ?? null, m.wait ? 1 : 0, conversation).lastInsertRowid as number;
   void pump(userId, m.to, m.via).catch((err) => console.error('[inbox] pump failed:', err));
   return getMessage(userId, id)!;
+}
+
+/** Human control of an owned child, including children of an archived parent thread. */
+export async function messageChild(userId: number, ward: string, task: string, message: unknown, questionId?: unknown) {
+  const child = childJob(userId, task);
+  if (!child || child.ward !== ward) throw new Error('Child agent not found in this ward.');
+  if (child.state !== 'running' || !isLive(task)) throw new Error(`Child agent is ${child.state}; its conversation is available to read.`);
+  const text = typeof message === 'string' ? message.trim() : '';
+  if (!text || text.length > TEXT_MAX) throw new Error(`Message must contain 1–${TEXT_MAX} characters.`);
+  const pending = openQuestion(userId, task, ward);
+  if (questionId != null && (!Number.isSafeInteger(questionId) || pending?.id !== questionId))
+    throw new Error('That question has already closed. Review the latest activity before sending again.');
+  if (pending) {
+    if (questionId !== pending.id) throw new Error('The child has a question waiting. Review it before sending your answer.');
+    const answer = `[Direct answer from the user]\n${text}`;
+    if (text.length > CHILD_ANSWER_MAX) throw new Error(`Answers to a waiting child must be at most ${CHILD_ANSWER_MAX} characters.`);
+    getDb().transaction(() => {
+      getDb().prepare(`INSERT INTO agent_inbox (user_id,ward,sender,mode,text,reply_to,wait,conversation_id,status,result,delivered_at,finished_at)
+        VALUES (?,?,'user','steer',?,?,0,?,'done','Answered the child agent question',datetime('now'),datetime('now'))`)
+        .run(userId, task, text, pending.id, child.conversation_id);
+      answerQuestion(userId, ward, task, pending.id, answer);
+    })();
+    return { answered: true, note: 'Your answer was delivered to the child agent.' };
+  }
+  const sent = await sendMessage(userId, { to: task, from: ward, text, conversation: child.conversation_id }, true);
+  return { message: sent, note: sent.status === 'failed' ? sent.result : 'Sent to the child agent; it will read this at its next step.' };
 }
 
 // ---------------------------------------------------------------- deliver
@@ -216,11 +255,16 @@ function claim(userId: number, ward: string): InboxRow | null {
 
 async function deliver(row: InboxRow, via?: string[]): Promise<void> {
   const core = await import('./core.ts');
+  if (!messagePending(row.user_id, row.id)) {
+    finish(row.id, 'failed', 'the message closed or its child ended with no new report — nothing was delivered');
+    return;
+  }
   const reply = row.reply_to !== null;
   if (childJob(row.user_id, row.ward)) {
     // Into the child's loop at its next round; done the moment it is read,
     // failed if the run ends first.
     const taken = core.steerTask(row.ward, { id: row.id, text: row.text, from: row.sender, reply,
+      valid: () => messagePending(row.user_id, row.id),
       read: () => finish(row.id, 'done', 'read by the child run'), fail: (why) => finish(row.id, 'failed', why) });
     if (taken) getDb().prepare(`UPDATE agent_inbox SET delivered_at = datetime('now') WHERE id = ?`).run(row.id);
     else finish(row.id, 'failed', 'the child run is not running any more');
@@ -247,7 +291,9 @@ async function deliver(row: InboxRow, via?: string[]): Promise<void> {
     // Into the running turn (the active thread's — the only one that runs);
     // that turn finishes the row when it ends.
     getDb().prepare(`UPDATE agent_inbox SET delivered_at = datetime('now') WHERE id = ?`).run(row.id);
-    core.steerTurn(row.user_id, row.ward, { id: row.id, text: row.text, from: row.sender, reply, wait: !!row.wait, done: (r) => finish(row.id, 'done', r) });
+    core.steerTurn(row.user_id, row.ward, { id: row.id, text: row.text, from: row.sender, reply, wait: !!row.wait,
+      valid: () => messagePending(row.user_id, row.id),
+      done: (r) => finish(row.id, 'done', r), fail: (why) => finish(row.id, 'failed', why) });
     return;
   }
   if (row.mode === 'interrupt') core.interruptTurn(row.user_id, row.ward, `agent "${core.peerTitle(row.user_id, row.sender)}"`);
@@ -280,13 +326,14 @@ export async function sweepInbox(boot = false): Promise<number> {
   const db = getDb();
   // Family rows are never re-armed: a child's steer has no run to land in, and
   // a wake re-run would be a fresh parent turn for a result the task notice
-  // already holds — one retry is one replay too many there.
+  // already holds — one retry is one replay too many there. The conversation
+  // binding survives receipt cleanup; family identity must not depend on jobs.
   db.prepare(
     `UPDATE agent_inbox SET
             status = CASE WHEN attempts >= 2 OR family THEN 'failed' ELSE 'queued' END,
             result = CASE WHEN family THEN 'interrupted — not retried; a child result stays in its task notice' WHEN attempts >= 2 THEN 'interrupted twice — not retried; ask again' ELSE result END,
             finished_at = CASE WHEN attempts >= 2 OR family THEN datetime('now') ELSE finished_at END
-      FROM (SELECT id AS row_id, (sender IN (SELECT id FROM agent_jobs WHERE tool = 'spawn_agent') OR ward IN (SELECT id FROM agent_jobs WHERE tool = 'spawn_agent')) AS family FROM agent_inbox) AS f
+      FROM (SELECT id AS row_id, (conversation_id IS NOT NULL OR sender IN (SELECT id FROM agent_jobs WHERE tool = 'spawn_agent') OR ward IN (SELECT id FROM agent_jobs WHERE tool = 'spawn_agent')) AS family FROM agent_inbox) AS f
       WHERE agent_inbox.id = f.row_id AND status = 'delivered' AND (? OR COALESCE(delivered_at, created_at) < datetime('now', '-60 minutes'))`
   ).run(boot ? 1 : 0);
   const wards = db.prepare(`SELECT DISTINCT user_id, ward FROM agent_inbox WHERE status = 'queued'`).all() as { user_id: number; ward: string }[];
@@ -313,7 +360,7 @@ export function closeChildQuestions(userId: number, child: string, state: string
 }
 
 /** A child's question the parent has not answered yet, oldest first. */
-function openQuestion(userId: number, child: string, parentWard: string): InboxRow | null {
+export function openQuestion(userId: number, child: string, parentWard: string): InboxRow | null {
   return (getDb()
     .prepare(`SELECT * FROM agent_inbox WHERE user_id = ? AND sender = ? AND ward = ? AND wait = 1 AND status IN ('queued', 'delivered') ORDER BY id LIMIT 1`)
     .get(userId, child, parentWard) as InboxRow | undefined) ?? null;

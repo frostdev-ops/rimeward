@@ -51,9 +51,10 @@ try {
   await projectDialog.getByRole('button',{name:'Open project',exact:true}).click();
   await ward.getByRole('button',{name:'Open terminal',exact:true}).waitFor();
   await page.screenshot({path:path.join(screenshotDir,'rimeward-terminal-empty.png'),animations:'disabled'});
-  // The common path starts a real shell and claims input without a second step.
+  // New sessions let the user and Rime share the keyboard.
   await ward.getByRole('button',{name:'Open terminal',exact:true}).click();
-  await ward.getByText('You’re in control',{exact:true}).waitFor();
+  await ward.getByText('Shared with Rime',{exact:true}).waitFor();
+
   assert.equal(await ward.getByRole('button',{name:'Take control',exact:true}).isVisible(),false);
   assert.equal(await ward.locator('.term-keys').isVisible(),false);
   assert.equal(await ward.locator('.term-toolbar button:visible').count(),5,'session tab, close button and three toolbar controls');
@@ -99,14 +100,13 @@ try {
   const expanded=page.locator('.dev-expanded');
   await expanded.locator('.xterm-helper-textarea').focus();await page.keyboard.press('Escape');
   assert.equal(await expanded.isVisible(),true,'Escape reaches terminal applications without closing the view');
-  await expanded.getByRole('button',{name:'Terminal actions'}).click();
   const menu=page.getByRole('menu',{name:'Terminal actions'});
-  await menu.getByRole('menuitem',{name:'Session settings…'}).click();
-  const settings=page.getByRole('dialog',{name:'Session settings',exact:true});
-  await settings.getByRole('checkbox',{name:'Allow Rime to type'}).check();
-  await settings.getByRole('button',{name:'Save settings'}).click();
+  await expanded.getByRole('checkbox',{name:'Let Rime control'}).check();
+  await expanded.getByText('Shared with Rime',{exact:true}).waitFor();
   let sessions=await page.evaluate(()=>fetch('/api/dev/sessions').then(r=>r.json()));
   assert.equal(sessions[0].mode,'human');assert.equal(sessions[0].agentInput,true);assert.equal(sessions[0].id,first.id);
+  await expanded.getByRole('checkbox',{name:'Let Rime control'}).uncheck();
+  await expanded.getByText('You’re in control',{exact:true}).waitFor();
   await expanded.getByRole('button',{name:'Terminal actions'}).click();
   assert.ok(await menu.evaluate(el=>el.matches(':popover-open')),'menu works above expanded dialog');
   await page.keyboard.press('ArrowDown');
@@ -136,6 +136,8 @@ try {
   assert.match(await launch.innerText(),/isn’t installed/);
   await launch.locator('select[aria-label="Program"]').selectOption('shell',{force:true});
   await launch.getByRole('button',{name:'Open terminal',exact:true}).click();
+  await ward.getByText('Shared with Rime',{exact:true}).waitFor();
+  await ward.getByRole('checkbox',{name:'Let Rime control'}).uncheck();
   await ward.getByText('You’re in control',{exact:true}).waitFor();
   sessions=await page.evaluate(()=>fetch('/api/dev/sessions').then(r=>r.json()));
   assert.equal(sessions.length,2);const second=sessions[0];assert.notEqual(first.id,second.id);
@@ -192,13 +194,13 @@ try {
   await ward.getByRole('button',{name:'Terminal actions'}).click();
   await menu.getByRole('menuitem',{name:'End session…'}).click();
   await page.locator('.dev-project-dialog').getByRole('button',{name:'Continue',exact:true}).click();
-  await ward.getByRole('button',{name:'Start again',exact:true}).waitFor();
+  await ward.getByRole('button',{name:'Resume session',exact:true}).waitFor();
   sessions=await page.evaluate(()=>fetch('/api/dev/sessions').then(r=>r.json()));
   assert.equal(sessions.find(s=>s.id===first.id).state,'exited');
-  await ward.getByRole('button',{name:'Start again',exact:true}).click();
+  await ward.getByRole('button',{name:'Resume session',exact:true}).click();
   await ward.getByText('You’re in control',{exact:true}).waitFor();
   sessions=await page.evaluate(()=>fetch('/api/dev/sessions').then(r=>r.json()));
-  assert.equal(sessions[0].mode,'human');assert.equal(sessions[0].agentInput,true);assert.equal(sessions.length,3);
+  assert.equal(sessions.find(s=>s.id===first.id).mode,'human');assert.equal(sessions.find(s=>s.id===first.id).agentInput,false);assert.equal(sessions.length,2);
   assert.deepEqual(errors,[]);
   console.log('Terminal UI passed: project entry, one-click shell + typing, session toolbar, search, expanded menus, launch guidance, switching, uncertain input, phone takeover, permissions, explicit end/restart. No agent CLI or model calls.');
 } finally {

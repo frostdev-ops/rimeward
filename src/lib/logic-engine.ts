@@ -61,6 +61,9 @@ import {
 import { invalidate } from './cache.ts';
 import { CHECKLIST_PAGE_SIZE, parseChannels } from './logic.ts';
 import { askJson, askModel } from './agent/oneshot.ts';
+import { onNoteEvent, type NoteEvent } from './note-events.ts';
+import { createNote, ensureNotebook, findNote, getNotebook, listNotes, notebookIdOf, notebookWardsOf, updateNoteMeta, type Notebook } from './notebook.ts';
+import { getNoteMeta, readNote, textToHtml, writeNote, plainText, type NoteMeta } from './note.ts';
 import { asAccount, mailUnreadCount, sendNow, linkedMailAccounts, mailInboxMerged } from './mail.ts';
 import { BOOT_ID, buildInfo, getHistory, getSnapshot, hostPct, type ServiceStatus } from './status.ts';
 import { getSetting, setSetting } from './settings.ts';
@@ -554,6 +557,13 @@ const MODEL_CAP_PER_HOUR = 60;
 const chatWindow = new Map<number, number[]>();
 const CHAT_CAP_PER_HOUR = 60;
 
+/** A one-shot model call outside the engine (a notebook question) takes one of the same 60/h. */
+export function takeModelSlot(userId: number): void {
+  takeSlot(modelWindow, userId, MODEL_CAP_PER_HOUR, 'model');
+}
+const noteFireWindow = new Map<number, number[]>();
+const NOTE_FIRE_CAP_PER_HOUR = 120;
+
 /** Every outbound chat message (logic, agent tool, agent.ask delivery) takes one. */
 export function takeChatSlot(userId: number): void {
   takeSlot(chatWindow, userId, CHAT_CAP_PER_HOUR, 'chat');
@@ -711,6 +721,68 @@ export const ACTION_EXECS: Record<string, (ctx: FireCtx, edge: LogicEdge) => Pro
     await notionArchive(ctx.userId, String(e.action.params.pageId), true);
     return 'archived (recoverable from Notion trash)';
   },
+  'note.create': async (ctx, e) => {
+    const { id: notebook, book } = bookOf(ctx.userId, e.action.ward);
+    const p = e.action.params;
+    const text = p.text ? renderTemplate(String(p.text), ctx.vars).trim() : '';
+    const from = p.from ? findNote(ctx.userId, notebook, String(p.from), true) : null;
+    if (p.from && !from) throw new Error(`no template "${String(p.from)}" in that notebook`);
+    const html = from ? (text ? readNote(ctx.userId, from.id).html + textToHtml(text) : undefined) : textToHtml(text);
+    const meta = createNote(ctx.userId, {
+      notebook, section: sectionOf(book, p.section) ?? undefined, title: renderTemplate(String(p.title), ctx.vars),
+      html, tags: p.tags ? splitTags(String(p.tags)) : undefined, from: from?.id,
+    });
+    broadcast(ctx.userId, 'notebook', { notebook });
+    return `created ${meta.title || meta.id}`;
+  },
+  'note.append': async (ctx, e) => {
+    const { id: notebook } = bookOf(ctx.userId, e.action.ward);
+    const n = mustFind(ctx.userId, notebook, renderTemplate(String(e.action.params.note), ctx.vars));
+    const text = renderTemplate(String(e.action.params.text), ctx.vars).trim();
+    if (!text) throw new Error('nothing to append');
+    const { rev } = writeNote(ctx.userId, n.id, { html: readNote(ctx.userId, n.id).html + textToHtml(text) });
+    broadcast(ctx.userId, 'note', { note: n.id, rev });
+    return `appended to ${n.title || n.id}`;
+  },
+  'note.set': async (ctx, e) => {
+    const { id: notebook, book } = bookOf(ctx.userId, e.action.ward);
+    const p = e.action.params;
+    const n = mustFind(ctx.userId, notebook, renderTemplate(String(p.note), ctx.vars));
+    const patch: Record<string, unknown> = {};
+    if (p.title) patch.title = renderTemplate(String(p.title), ctx.vars);
+    if (p.section !== undefined && p.section !== '') patch.section = sectionOf(book, p.section) ?? '';
+    if (p.tags) patch.tags = splitTags(renderTemplate(String(p.tags), ctx.vars));
+    if (p.pinned) patch.pinned = p.pinned === 'yes';
+    if (p.archived) patch.archived = p.archived === 'yes';
+    if (!Object.keys(patch).length) return 'nothing to change';
+    updateNoteMeta(ctx.userId, n.id, patch);
+    broadcast(ctx.userId, 'notebook', { notebook });
+    broadcast(ctx.userId, 'note', { note: n.id, meta: true });
+    return `changed ${Object.keys(patch).join(', ')} on ${n.title || n.id}`;
+  },
+  'note.trash': async (ctx, e) => {
+    const { id: notebook } = bookOf(ctx.userId, e.action.ward);
+    const n = mustFind(ctx.userId, notebook, renderTemplate(String(e.action.params.note), ctx.vars));
+    updateNoteMeta(ctx.userId, n.id, { trashed: true });
+    broadcast(ctx.userId, 'notebook', { notebook });
+    return `trashed ${n.title || n.id} (recoverable)`;
+  },
+  'note.attach': async (ctx, e) => {
+    if (!ctx.packet) throw new Error('no packet in context (wire this from a packet trigger)');
+    const { id: notebook } = bookOf(ctx.userId, e.action.ward);
+    const q = renderTemplate(String(e.action.params.q), ctx.vars).trim();
+    if (!q) throw new Error('nothing to search for');
+    const limit = Math.min(Math.max(Number(e.action.params.limit) || 3, 1), 5);
+    const hits = listNotes(ctx.userId, { notebook, q, any: true, sort: 'rank', limit }).notes;
+    if (!hits.length) return `no notes match "${q}"`;
+    const body = hits
+      .map((n) => (e.action.params.what === 'text' ? `## ${noteTitle(n)}\n${plainText(readNote(ctx.userId, n.id).html).slice(0, 1500)}` : `- ${noteTitle(n)}`))
+      .join('\n');
+    const p = annotatePacket(ctx.userId, ctx.packet.id, `Notes for "${q}":\n${body}`.slice(0, 8000));
+    if (!p) throw new Error('packet gone');
+    broadcast(ctx.userId, 'packets', { wards: [p.ward] });
+    return `attached ${hits.length} note${hits.length === 1 ? '' : 's'}`;
+  },
   'flow.complete': async (ctx) => {
     if (!ctx.packet) throw new Error('no packet in context (wire this from a packet trigger)');
     const done = completePacket(ctx.userId, ctx.packet.id);
@@ -806,6 +878,94 @@ export const ACTION_EXECS: Record<string, (ctx: FireCtx, edge: LogicEdge) => Pro
   'audio.play': deliverClientAct,
   'youtube.play': deliverClientAct,
 };
+
+// ---------------------------------------------------------- notebook helpers
+
+const noteTitle = (n: NoteMeta) => n.title || n.excerpt.slice(0, 60) || 'Untitled';
+const splitTags = (s: string) => s.split(',').map((t) => t.trim()).filter(Boolean);
+/** The notebook an action's ward shows (created on first use, like the route does). */
+function bookOf(userId: number, ward: unknown): { id: string; book: Notebook } {
+  const w = getDashboard(userId).find((x) => x.i === ward && x.type === 'notebook');
+  if (!w) throw new Error('no such notebook ward');
+  const id = notebookIdOf(w);
+  return { id, book: getNotebook(userId, id) ?? ensureNotebook(userId, id, wardTitle(w)) };
+}
+/** A section id from its title; '' / 'none' / 'unfiled' = no section (null); unknown → throws. */
+function sectionOf(book: Notebook, title: unknown): string | null {
+  const t = String(title ?? '').trim();
+  if (!t || /^(none|unfiled|-)$/i.test(t)) return null;
+  const s = book.sections.find((x) => x.title.toLowerCase() === t.toLowerCase()) ?? book.sections.find((x) => x.title.toLowerCase().startsWith(t.toLowerCase()));
+  if (!s) throw new Error(`no section "${t}" in that notebook`);
+  return s.id;
+}
+function mustFind(userId: number, notebook: string, ref: unknown): NoteMeta {
+  const n = findNote(userId, notebook, String(ref ?? ''));
+  if (!n) throw new Error(`no note "${String(ref ?? '')}" in that notebook (name it by exact title, a unique prefix, or its id)`);
+  return n;
+}
+
+// Note events → notebook leyline firings. `saved` is debounced per note (the
+// editor autosaves every 800 ms) and read at fire time so note.text is the
+// text that ended up saved. A per-user hourly cap is the loop brake: a
+// note.create wired to note-created on the same notebook is legal but bounded.
+const NOTE_TEXT_MAX = 4000;
+export const NOTE_SAVED_DEBOUNCE_MS = 60_000;
+const savedTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingSaves = new Map<string, NoteEvent>();
+function fireNoteEvent(e: NoteEvent): void {
+  const meta = getNoteMeta(e.userId, e.id);
+  if (!meta || meta.template || meta.trashed) return;
+  if (e.type === 'saved') e = { ...e, notebook: meta.notebook, title: noteTitle(meta), tags: meta.tags, section: meta.section };
+  if (!e.notebook) return;
+  const wards = notebookWardsOf(e.userId, e.notebook);
+  if (!wards.length) return;
+  try {
+    takeSlot(noteFireWindow, e.userId, NOTE_FIRE_CAP_PER_HOUR, 'note event');
+  } catch (err) {
+    console.warn('[logic] note events rate-limited for user', e.userId, (err as Error).message);
+    return;
+  }
+  const book = getNotebook(e.userId, e.notebook);
+  const section = e.section ? book?.sections.find((s) => s.id === e.section)?.title ?? 'Unfiled' : 'Unfiled';
+  let text = '';
+  try {
+    text = plainText(readNote(e.userId, e.id).html).slice(0, NOTE_TEXT_MAX);
+  } catch {
+    /* the note went away in the debounce window — fire with what is known */
+  }
+  const extra: Record<string, string> = {
+    'note.id': e.id, 'note.title': e.title, 'note.text': text, 'note.section': section, 'note.tags': meta.tags.join(', '),
+    'note.notebook': book?.title || e.notebook,
+  };
+  const type = e.type === 'created' ? 'note-created' : e.type === 'saved' ? 'note-saved' : e.type === 'tagged' ? 'note-tagged' : 'note-moved';
+  for (const w of wards) {
+    // The tag filter is matched in lower case (tags are deduped case-insensitively; the edge's param is lower-cased at save time in logic.ts).
+    if (e.type === 'tagged') for (const tag of e.tags ?? []) enqueueFire(e.userId, { type, ward: w.i, match: { tag: tag.toLowerCase() }, extra: { ...extra, 'note.tag': tag } });
+    else if (e.type === 'moved') enqueueFire(e.userId, { type, ward: w.i, match: { section }, extra });
+    else enqueueFire(e.userId, { type, ward: w.i, extra });
+  }
+}
+onNoteEvent((e) => {
+  if (!e.notebook) return;
+  if (e.type !== 'saved') return fireNoteEvent(e);
+  const key = `${e.userId}:${e.id}`;
+  clearTimeout(savedTimers.get(key));
+  pendingSaves.set(key, e);
+  const t = setTimeout(() => flushNoteSave(key), NOTE_SAVED_DEBOUNCE_MS);
+  t.unref?.();
+  savedTimers.set(key, t);
+});
+function flushNoteSave(key: string): void {
+  const e = pendingSaves.get(key);
+  clearTimeout(savedTimers.get(key));
+  savedTimers.delete(key);
+  pendingSaves.delete(key);
+  if (e) fireNoteEvent(e);
+}
+/** Test seam: fire every debounced "Note saved" now instead of after the minute. */
+export function flushNoteSaves(): void {
+  for (const key of [...pendingSaves.keys()]) flushNoteSave(key);
+}
 
 // --------------------------------------------------------------- fire pipeline
 

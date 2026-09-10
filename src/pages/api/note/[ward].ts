@@ -1,14 +1,20 @@
 import type { APIRoute } from 'astro';
-import { getNote, noteWard, saveNote } from '../../../lib/note.ts';
+import { noteWard, readNote, resolveNote, writeNote, type NotePatch } from '../../../lib/note.ts';
+import { notebookWard } from '../../../lib/notebook.ts';
 import { noteConfig } from '../../../lib/wards.ts';
+import { broadcast } from '../../../lib/logic-engine.ts';
 import { askModel } from '../../../lib/agent/oneshot.ts';
 
 export const prerender = false;
 
-// The notepad ward's document. GET = the document; PUT = a patch (html and/or
-// ink, each half saved as it changes); POST = the model: transcribe an image of
-// ink, or run a writing command over a passage. The ward id must be one of
-// this user's note wards — the layout is the only registry of them.
+// A note document. GET = the document; PUT = a patch (html and/or ink, each
+// half saved as it changes, `rev` = the revision it started from — a save over
+// a newer one is refused with 409 and the current document, `force` overrides);
+// POST = the model: transcribe an image of ink, or run a writing command over
+// a passage. `<ward>` is one of this user's note wards (→ its document) or one
+// of this user's note ids (a notebook note); anything else is 404. A notebook
+// request carries `?ward=<host ward>` to address the document exactly and
+// use the host's model knobs. Documents are served by the local runtime.
 
 const MAX_BODY = 3 * 1024 * 1024; // ink JSON is the big one (NOTE_INK_MAX + the html)
 const MAX_IMAGE = 4 * 1024 * 1024;
@@ -28,21 +34,25 @@ const PRESETS: Record<string, string> = {
   outline: 'Turn this into a clean outline: short headings and bullet points, one idea per line.',
 };
 
-export const GET: APIRoute = ({ params, locals }) => {
+const notFound = () => Response.json({ error: 'no such note' }, { status: 404 });
+
+// A request that names a host ward (`?ward=`) means the exact document id;
+// without it the id is read the way the notepad always did (a note ward first).
+export const GET: APIRoute = ({ params, url, locals }) => {
   const userId = locals.user!.userId;
-  const w = noteWard(userId, params.ward);
-  if (!w) return Response.json({ error: 'not a note ward' }, { status: 400 });
-  return Response.json(getNote(userId, w), { headers: { 'cache-control': 'no-store' } });
+  const n = resolveNote(userId, params.ward, url.searchParams.has('ward'));
+  if (!n) return notFound();
+  return Response.json(readNote(userId, n.ward ?? n.id), { headers: { 'cache-control': 'no-store' } });
 };
 
-export const PUT: APIRoute = async ({ params, request, locals }) => {
+export const PUT: APIRoute = async ({ params, request, url, locals }) => {
   const userId = locals.user!.userId;
-  const w = noteWard(userId, params.ward);
-  if (!w) return Response.json({ error: 'not a note ward' }, { status: 400 });
+  const n = resolveNote(userId, params.ward, url.searchParams.has('ward'));
+  if (!n) return notFound();
   if (Number(request.headers.get('content-length') ?? 0) > MAX_BODY) return Response.json({ error: 'too large' }, { status: 413 });
-  const body = (await request.json().catch(() => null)) as { html?: unknown; ink?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as { html?: unknown; ink?: unknown; title?: unknown; rev?: unknown; etag?: unknown; force?: unknown } | null;
   if (!body) return Response.json({ error: 'bad body' }, { status: 400 });
-  const patch: { html?: string; ink?: string } = {};
+  const patch: NotePatch = {};
   if (body.html !== undefined) {
     if (typeof body.html !== 'string') return Response.json({ error: 'bad html' }, { status: 400 });
     patch.html = body.html;
@@ -51,19 +61,39 @@ export const PUT: APIRoute = async ({ params, request, locals }) => {
     if (typeof body.ink !== 'string') return Response.json({ error: 'bad ink' }, { status: 400 });
     patch.ink = body.ink;
   }
+  if (body.title !== undefined) {
+    if (typeof body.title !== 'string') return Response.json({ error: 'bad title' }, { status: 400 });
+    patch.title = body.title;
+  }
+  if (body.rev !== undefined) {
+    if (typeof body.rev !== 'number' || !Number.isInteger(body.rev) || body.rev < 0) return Response.json({ error: 'bad rev' }, { status: 400 });
+    patch.rev = body.rev;
+  }
+  if (body.force === true) patch.force = true;
+  if (body.etag !== undefined) {
+    if (typeof body.etag !== 'string' || !/^[a-f0-9]{64}$/.test(body.etag)) return Response.json({ error: 'bad etag' }, { status: 400 });
+    patch.etag = body.etag;
+  }
   try {
-    return Response.json({ updated: saveNote(userId, w, patch) });
+    const out = writeNote(userId, n.ward ?? n.id, patch);
+    // Every other surface showing this document (a notepad ward, a notebook) reloads it; the saver skips its own echo.
+    broadcast(userId, 'note', { ward: n.ward?.i, note: n.id, rev: out.rev });
+    return Response.json(out);
   } catch (err) {
     const status = (err as { status?: number }).status ?? 500;
     if (status === 500) console.error('[note]', err);
-    return Response.json({ error: err instanceof Error ? err.message : 'save failed' }, { status });
+    const out: Record<string, unknown> = { error: err instanceof Error ? err.message : 'save failed' };
+    if (status === 409) out.doc = (err as { doc?: unknown }).doc; // the current document, for the client's reload
+    return Response.json(out, { status });
   }
 };
 
-export const POST: APIRoute = async ({ params, request, locals }) => {
+export const POST: APIRoute = async ({ params, request, url, locals }) => {
   const userId = locals.user!.userId;
-  const w = noteWard(userId, params.ward);
-  if (!w) return Response.json({ error: 'not a note ward' }, { status: 400 });
+  const n = resolveNote(userId, params.ward, url.searchParams.has('ward'));
+  if (!n) return notFound();
+  // The model knobs: the notepad's own, or the notebook's the note is open in.
+  const w = noteWard(userId, url.searchParams.get('ward')) ?? notebookWard(userId, url.searchParams.get('ward')) ?? n.ward ?? { i: '', type: 'note', size: '2x2' as const };
   if (Number(request.headers.get('content-length') ?? 0) > MAX_IMAGE + 64 * 1024) return Response.json({ error: 'too large' }, { status: 413 });
   const body = (await request.json().catch(() => null)) as {
     action?: string;

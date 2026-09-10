@@ -178,6 +178,15 @@ export const TRIGGERS: Record<string, TriggerSpec> = {
     params: { what: { kind: 'select', filter: true, options: ['created', 'edited'] } },
   },
   'notion-capture-appended': { label: 'Capture page appended', icon: 'pen', wardType: 'notion-page', params: {} },
+  // The notebook's endogenous events (lib/note-events.ts → logic-engine): a
+  // note created in it, a document saved (one firing per note per minute),
+  // tags added (one firing per tag — `tag` filters on it), a section change
+  // (`section` filters on the section's TITLE). Every firing carries note.*
+  // vars including the note's text, so a leyline can carry a note's content on.
+  'note-created': { label: 'Note created', icon: 'notebook', wardType: 'notebook', params: {} },
+  'note-saved': { label: 'Note saved', icon: 'pen', wardType: 'notebook', params: {} },
+  'note-tagged': { label: 'Note tagged', icon: 'tag', wardType: 'notebook', params: { tag: { kind: 'text', max: 32, filter: true } }, verify: (p) => { if (typeof p.tag === 'string') p.tag = p.tag.trim().toLowerCase(); return true; } },
+  'note-moved': { label: 'Note moved to a section', icon: 'folder', wardType: 'notebook', params: { section: { kind: 'text', max: 60, filter: true } } },
   'notion-count-crossed': {
     label: 'Item count crosses N',
     icon: 'list-ol',
@@ -273,6 +282,7 @@ export const TRIGGERS: Record<string, TriggerSpec> = {
 };
 
 const PACKETY = ['packet-arrived', 'packet-passed', 'packet-idle', 'packet-completed'];
+const NOTEY = ['note-created', 'note-saved', 'note-tagged', 'note-moved'];
 const MAILY = ['mail-arrived'];
 const WEATHERY = ['weather-turned', 'weather-daily', 'temp-crossed'];
 const EVENTY = ['event-starting-soon', 'event-added'];
@@ -343,6 +353,13 @@ export const TEMPLATE_VARS: { key: string; label: string; triggers?: string[] }[
   { key: 'page.url', label: 'Page link', triggers: PAGEY },
   { key: 'page.id', label: 'Page id', triggers: PAGEY },
   { key: 'capture.text', label: 'Captured text', triggers: ['notion-capture-appended'] },
+  { key: 'note.id', label: 'Note id', triggers: NOTEY },
+  { key: 'note.title', label: 'Note title', triggers: NOTEY },
+  { key: 'note.text', label: 'Note text', triggers: NOTEY },
+  { key: 'note.section', label: 'Note section', triggers: NOTEY },
+  { key: 'note.tags', label: 'Note tags', triggers: NOTEY },
+  { key: 'note.tag', label: 'Tag added', triggers: ['note-tagged'] },
+  { key: 'note.notebook', label: 'Notebook title', triggers: NOTEY },
   { key: 'prop.name', label: 'Property name', triggers: ['notion-page-changed'] },
   { key: 'prop.value', label: 'Property value', triggers: ['notion-page-changed'] },
   { key: 'prop.was', label: 'Previous value', triggers: ['notion-page-changed'] },
@@ -623,6 +640,61 @@ export const ACTIONS: Record<string, ActionSpec> = {
     icon: 'database',
     side: 'server',
     params: { pageId: { kind: 'notion-id', required: true } },
+  },
+  // The notebook as a sink: notes are named by title (this notebook's, case-
+  // insensitive, exact first then prefix) or by id; sections by title.
+  'note.create': {
+    label: 'Create a note',
+    icon: 'notebook',
+    side: 'server',
+    wardType: 'notebook',
+    params: {
+      title: { kind: 'template', required: true, max: 120 },
+      text: { kind: 'template', max: 4000 },
+      section: { kind: 'text', max: 60 },
+      tags: { kind: 'text', max: 200 },
+      // A template note's title: its text/tags/properties seed the new note (the text above is appended).
+      from: { kind: 'text', max: 120 },
+    },
+  },
+  'note.append': {
+    label: 'Append to a note',
+    icon: 'pen',
+    side: 'server',
+    wardType: 'notebook',
+    params: { note: { kind: 'template', required: true, max: 120 }, text: { kind: 'template', required: true, max: 4000 } },
+  },
+  'note.set': {
+    label: 'Change a note',
+    icon: 'tag',
+    side: 'server',
+    wardType: 'notebook',
+    // Blank = leave alone. tags replaces the whole list; section '' unfiles.
+    params: {
+      note: { kind: 'template', required: true, max: 120 },
+      title: { kind: 'template', max: 120 },
+      section: { kind: 'text', max: 60 },
+      tags: { kind: 'template', max: 200 },
+      pinned: { kind: 'select', options: ['yes', 'no'] },
+      archived: { kind: 'select', options: ['yes', 'no'] },
+    },
+  },
+  'note.trash': {
+    label: 'Move a note to the trash',
+    icon: 'trash',
+    side: 'server',
+    wardType: 'notebook',
+    params: { note: { kind: 'template', required: true, max: 120 } },
+  },
+  'note.attach': {
+    // Search the notebook and hand the hits to the packet in context: titles,
+    // or titles + text (bounded) — what a later agent.ask / chat.send reads.
+    label: 'Search notes and attach to the packet',
+    icon: 'search',
+    side: 'server',
+    wardType: 'notebook',
+    params: { q: { kind: 'template', required: true, max: 200 }, limit: { kind: 'count' }, what: { kind: 'select', options: ['titles', 'text'] } },
+    verify: (p) => p.limit === undefined || p.limit === '' || (Number(p.limit) >= 1 && Number(p.limit) <= 5),
   },
   // Act on ctx.packet (no wardType — the packet knows its own ward): dock actions.
   'flow.complete': { label: 'Complete this packet', icon: 'check', side: 'server', params: {} },

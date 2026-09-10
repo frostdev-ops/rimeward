@@ -30,20 +30,15 @@ Use Changes for Git review. This editor does not currently provide full language
 
 ## Use real terminals
 
-**Open terminal** starts your shell. **+** adds a Shell, Codex, or Claude Code session; additional shell and permission settings live under **More options**. CLI agents must already be installed and signed in on this computer.
+**Open terminal** starts your shell. **+** adds a Shell, Codex, or Claude Code session; choose another shell under **Shell options**. CLI agents must already be installed and signed in on this computer.
 
-Session tabs run across the top. Closing a tab hides that view and **does not stop its process**. Reopen it from **… → Reopen**. Use **End session** to end a process, or the interrupt action when appropriate. Removing a ward also detaches its view rather than treating it as a request to kill the process.
+Session tabs run across the top. Closing a tab hides that view and **does not stop its process**. Use **… → Task manager…** to open hidden sessions, end running processes, or delete saved terminal history. The task manager shows Shell, Codex, Claude, and Rime command sessions in a searchable table, with status, live CPU, memory, and per-session Open, End, and Delete buttons. Filter running or saved sessions and sort by name, CPU, or memory. Ended sessions also have **Delete session…** in their menu. Removing a ward also detaches its view rather than treating it as a request to kill the process.
 
-Terminal controls deliberately distinguish two permissions:
+**Let Rime control** is the single terminal toggle, on by default for Shell, Codex, and Claude Code. You can type while it is on, and Rime can use the same session alongside you. Turn it off to block Rime input while keeping your keyboard active. The choice is saved per session. If another device has the keyboard, **Take control** moves it to this one.
 
-| Control | Effect |
-| --- | --- |
-| **Allow Rime to type** | Lets Rime send input to that session, including answers to CLI prompts. New sessions start with this off. |
-| **Standard / Unrestricted** | Changes a Codex/Claude CLI's own permission mode on its next start. Unrestricted bypasses that CLI's protections. |
+A shell runs with your desktop user's OS permissions. Codex and Claude keep their standard CLI protections. Search with **Cmd+F** or **Ctrl+Shift+F**; ordinary Ctrl+F remains available to the shell.
 
-A shell runs with your desktop user's OS permissions. **Take control** gives you input ownership and pauses agent input; **Let Rime type** releases human ownership. Search with **Cmd+F** or **Ctrl+Shift+F**; ordinary Ctrl+F remains available to the shell.
-
-Quitting Rimeward stops its native processes. Saved screens can return after launch, but a saved screen does not resume the old process. **Start again** explicitly starts a new one.
+Reloading or reconnecting attaches to the same live session. After quitting Rimeward, opening a saved tab restores its screen and starts a shell or the Codex/Claude conversation chooser in that same tab. Select the saved CLI conversation to continue. Previous commands and initial tasks are never replayed. Sessions you explicitly end stay stopped until you choose **Resume session**. Deleting saved terminal history keeps project files and native CLI conversations.
 
 ## Browse, read, and capture
 

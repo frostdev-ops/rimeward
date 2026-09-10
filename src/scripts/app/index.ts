@@ -9,6 +9,7 @@ import './agent.ts';
 import './browser.ts';
 import './remote-desktop.ts';
 import './note.ts';
+import './notebook.ts';
 import './store.ts';
 import './mcp.ts';
 import './chat.ts';

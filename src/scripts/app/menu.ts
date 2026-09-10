@@ -1,5 +1,6 @@
 // The context menu — one floating `.ctx-menu` at a time, viewport-clamped.
-// Shared by the ward/grid menus (edit.ts) and the page tabs (pages.ts).
+// Shared by the ward/grid menus (edit.ts), the page tabs (pages.ts) and the
+// notebook dialog (notebook.ts).
 
 import { icon } from './icon.ts';
 import { el } from './dom.ts';
@@ -29,10 +30,17 @@ export function openMenu(x: number, y: number, build: (m: HTMLElement) => void):
   const m = el('div', 'ctx-menu');
   m.setAttribute('role', 'menu');
   build(m);
-  document.body.append(m);
-  const r = m.getBoundingClientRect();
-  m.style.left = `${Math.max(8, Math.min(x, innerWidth - r.width - 8))}px`;
-  m.style.top = `${Math.max(8, Math.min(y, innerHeight - r.height - 8))}px`;
+  // Inside a modal dialog the menu must live in the dialog: the top layer sits
+  // over anything appended to body. A transform/backdrop-filter on .fd-dialog
+  // makes it the containing block for fixed children, so (0,0) is probed and
+  // the viewport coordinates are corrected by where it landed.
+  const host = document.activeElement?.closest('dialog[open]:modal') ?? document.querySelector('dialog[open]:modal') ?? document.body;
+  host.append(m);
+  m.style.left = '0px';
+  m.style.top = '0px';
+  const o = m.getBoundingClientRect();
+  m.style.left = `${Math.max(8, Math.min(x, innerWidth - o.width - 8)) - o.left}px`;
+  m.style.top = `${Math.max(8, Math.min(y, innerHeight - o.height - 8)) - o.top}px`;
   menuEl = m;
   m.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
 }
@@ -40,7 +48,7 @@ export function openMenu(x: number, y: number, build: (m: HTMLElement) => void):
 // Close paths: outside click, Escape, any scroll, a resize.
 document.addEventListener('click', (e) => {
   if (menuEl && !menuEl.contains(e.target as Node)) closeMenu();
-});
+}, true);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeMenu();
 });

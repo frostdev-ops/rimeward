@@ -8,6 +8,7 @@ import { instanceRequest, rimeConnection } from '../dev/remote.ts';
 import { relayRequest } from '../dev/devices.ts';
 import { browserCall } from '../browser/request.ts';
 import { getNote, plainText } from '../note.ts';
+import { getNotebook, listNotes, notebookIdOf } from '../notebook.ts';
 import { TOOLS, type ToolCtx } from './tools.ts';
 import { storeAttachment } from './attachments.ts';
 import { MAX_WARD_MENTIONS } from './mentions.ts';
@@ -78,6 +79,18 @@ export async function readWardContext(user: number, id: string, agent: string): 
         try { image = await noteDrawing(doc.ink); }
         catch { warnings.push('The saved drawing could not be rendered.'); }
         imageName = `${wardTitle(w)} — drawing.png`;
+        break;
+      }
+      case 'notebook': {
+        const id = notebookIdOf(w);
+        const book = getNotebook(user, id);
+        const page = listNotes(user, { notebook: id, sort: 'updated', limit: 30 });
+        data = {
+          notebook: book ? { id: book.id, title: book.title, sections: book.sections } : { id, title: wardTitle(w), sections: [] },
+          notes: page.notes.map(n => ({ id: n.id, title: n.title || n.excerpt.slice(0, 60) || 'Untitled', section: n.section, tags: n.tags, pinned: n.pinned, updated: n.updated })),
+          total: page.total,
+          note: 'Titles only, the 30 most recently updated. read_note(id) for a body, search_notes for the rest.',
+        };
         break;
       }
       case 'editor': case 'project-files': case 'changes': case 'terminal': {

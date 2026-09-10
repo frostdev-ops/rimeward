@@ -13,6 +13,7 @@ import { ACTIONS } from '../../lib/logic.ts';
 import { createAgentVoice, type VoiceState } from './agent-voice.ts';
 import { completeCommand, parseCommand, type CommandSpec } from '../../lib/agent/commands.ts';
 import type { AgentTask } from '../../lib/agent/tasks.ts';
+import type { TranscriptMsg } from '../../lib/agent/conversations.ts';
 import { CATALOG, pageOf, wardTitle, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body, note, readLayout } from './wards.ts';
 import { el, getJson, postJson, tapToast, toast } from './dom.ts';
@@ -360,6 +361,7 @@ interface State {
   attachments: { id: string; name: string }[];
   uploading: number;
   draft: string;
+  childDrafts?: Map<string, { text: string; questionId?: number }>;
   mentions: WardMention[];
   clearing: boolean;
   tasks: AgentTask[];
@@ -573,6 +575,20 @@ function emptyState(st: State, ui: Ui): HTMLElement {
 
 const SRC_LABEL: Record<TurnSource, string> = { chat: '', automation: 'automation', wake: 'scheduled', agent: 'another agent' };
 
+function reconcileLog(log: HTMLElement, previous: Ui['rendered'], entries: { signature: string; create: () => HTMLElement }[]): Ui['rendered'] {
+  const rendered = entries.map((entry, i) => {
+    const old = previous[i];
+    if (old?.signature === entry.signature) return old;
+    const node = entry.create();
+    if (old?.node instanceof HTMLDetailsElement && node instanceof HTMLDetailsElement) node.open ||= old.node.open;
+    if (old) old.node.replaceWith(node);
+    else log.append(node);
+    return { signature: entry.signature, node };
+  });
+  for (const old of previous.slice(entries.length)) old.node.remove();
+  return rendered;
+}
+
 function buildLog(st: State, ui: Ui): void {
   const log = ui.log;
   const entries: { signature: string; create: () => HTMLElement }[] = [];
@@ -634,18 +650,7 @@ function buildLog(st: State, ui: Ui): void {
   // Keep unchanged message nodes in place: selecting text, reading older
   // replies and expanding tool details must survive live activity.
   const top = log.scrollTop;
-  const rendered = entries.map((entry, i) => {
-    const old = ui.rendered[i];
-    if (old?.signature === entry.signature) return old;
-    const node = entry.create();
-    if (old?.node instanceof HTMLDetailsElement && node instanceof HTMLDetailsElement)
-      node.open ||= old.node.open;
-    if (old) old.node.replaceWith(node);
-    else log.append(node);
-    return { signature: entry.signature, node };
-  });
-  for (const old of ui.rendered.slice(entries.length)) old.node.remove();
-  ui.rendered = rendered;
+  ui.rendered = reconcileLog(log, ui.rendered, entries);
   log.scrollTop = ui.follow ? log.scrollHeight : top;
   if (!ui.restored && entries.length) {
     ui.restored = true;
@@ -983,7 +988,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
         paint(st);
         return;
       }
-      if (!res.ok) {
+      if (!res.ok || data?.error) {
         const msg =
           data?.error === 'busy'
             ? 'The agent is mid-turn — try again in a moment.'
@@ -1155,6 +1160,12 @@ function openTasks(st: State): void {
           detail.append(el('strong', undefined, task.reason), status);
           if (task.error) detail.append(el('span', 'text-err', task.error));
           const rowActions = el('div', 'ag-task-actions');
+          if (task.tool === 'spawn_agent') {
+            const open = el('button', 'btn', 'Open conversation'); open.type = 'button';
+            open.dataset.agChild = task.id;
+            open.onclick = () => openChildSession(st, task, d);
+            rowActions.append(open);
+          }
           for (const final of [false, true]) {
             const button = el('button', 'btn', final ? 'Result' : 'Output'); button.type = 'button';
             button.onclick = () => {
@@ -1205,6 +1216,185 @@ function openTasks(st: State): void {
   };
   const timer = setInterval(() => { void refresh(); }, 2000);
   d.addEventListener('close', () => { clearInterval(timer); d.remove(); }, { once: true });
+  void refresh();
+}
+
+function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogElement): void {
+  const { d, form, actions, submit, error } = dialog('Child agent');
+  d.classList.remove('dev-project-dialog');
+  d.classList.add('ag-dialog', 'ag-child-dialog');
+  form.className = 'ag-child-form';
+  const heading = form.querySelector('h2')!;
+  heading.textContent = task.reason; heading.title = task.reason;
+  const back = actions.querySelector('button')!;
+  back.className = 'ag-icon-button'; back.replaceChildren(icon('close'));
+  back.title = 'Back to tasks'; back.setAttribute('aria-label', 'Back to tasks');
+  const header = el('header', 'ag-dialog-header');
+  const identity = el('div', 'ag-dialog-identity');
+  const avatar = el('span', 'ag-avatar'); avatar.append(icon('bot'));
+  const labels = el('div');
+  const statusLine = el('p', 'ag-status', 'Connecting…'); statusLine.setAttribute('role', 'status');
+  labels.append(heading, statusLine); identity.append(avatar, labels); header.append(identity, back);
+  const stage = el('div', 'ag-stage');
+  const log = el('div', 'ag-log'); log.setAttribute('aria-label', 'Child agent conversation'); log.tabIndex = 0;
+  const assignment = el('p', 'ag-child-assignment', task.reason);
+  const transcriptBox = el('div', 'ag-child-transcript');
+  const progress = el('details', 'ag-activity');
+  const progressTitle = el('summary', undefined, 'Live activity');
+  const output = el('pre', 'ag-task-output'); progress.append(progressTitle, output);
+  const questionBox = el('div', 'ag-approval'); questionBox.hidden = true; questionBox.setAttribute('role', 'status');
+  const questionText = el('p', 'ag-approval-text');
+  questionBox.append(el('strong', undefined, 'Waiting for an answer'), questionText);
+  const delivery = el('details', 'ag-activity'); delivery.hidden = true;
+  const deliveryTitle = el('summary', undefined, 'Message delivery');
+  const receipts = el('div', 'ag-child-receipts'); receipts.setAttribute('aria-label', 'Message delivery');
+  delivery.append(deliveryTitle, receipts);
+  log.append(assignment, transcriptBox, progress, questionBox, delivery);
+  const jump = el('button', 'ag-jump', 'Jump to latest'); jump.type = 'button'; jump.hidden = true;
+  stage.append(log, jump);
+  const footer = el('div', 'ag-footer');
+  const composer = el('div', 'ag-composer');
+  const input = el('textarea', 'ag-input'); input.rows = 1; input.maxLength = 8000; input.required = true;
+  input.placeholder = 'Message this child agent…'; input.setAttribute('aria-label', 'Message child agent');
+  const drafts = st.childDrafts ??= new Map();
+  const draftKey = `${st.w.device ?? ''}:${task.id}`;
+  const checkpoint = `agent-child:${st.w.i}:${draftKey}`;
+  const savedDraft = drafts.get(draftKey) ?? readDesktopState<{ text: string; questionId?: number }>(checkpoint);
+  input.value = savedDraft?.text ?? '';
+  let draftQuestionId = savedDraft?.questionId;
+  if (input.value) drafts.set(draftKey, { text: input.value, questionId: draftQuestionId });
+  const saveDraft = (value = input.value) => {
+    const draft = value ? { text: value, questionId: draftQuestionId } : undefined;
+    if (draft) drafts.set(draftKey, draft); else drafts.delete(draftKey);
+    try { saveDesktopState(checkpoint, draft); }
+    catch { failure('Your draft is kept here, but could not be saved for an app restart.'); }
+  };
+  const controls = el('div', 'ag-compose-controls');
+  const hint = el('span', 'ag-hint', 'Direct to this child');
+  const stop = el('button', 'ag-icon-button ag-stop'); stop.type = 'button'; stop.hidden = true; stop.append(icon('stop'));
+  stop.title = 'Stop child · partial changes remain'; stop.setAttribute('aria-label', 'Stop child');
+  submit.className = 'ag-send'; submit.replaceChildren(icon('send'));
+  submit.title = 'Send message'; submit.setAttribute('aria-label', 'Send message');
+  controls.append(hint, stop, submit); composer.append(input, controls);
+  const help = el('p', 'ag-composer-help', 'Messages are read at the next step.');
+  help.id = `${heading.id}-help`; input.setAttribute('aria-describedby', help.id);
+  const connection = el('p', 'ag-child-connection'); connection.hidden = true; connection.setAttribute('role', 'status');
+  error.setAttribute('role', 'alert'); error.classList.add('ag-child-error');
+  footer.append(connection, error, composer, help); form.replaceChildren(header, stage, footer);
+  const endpoint = `/api/agent/${encodeURIComponent(st.w.i)}`;
+  let fetching = false, sending = false, stopping = false, connected = false, canMessage = false, follow = true;
+  let rendered: Ui['rendered'] = [], receiptNodes: Ui['rendered'] = [];
+  let question: { id: number; text: string; maxLength: number } | null = null;
+  const failure = (e: unknown) => { error.hidden = false; error.textContent = e instanceof Error ? e.message : String(e); };
+  const controlsState = () => {
+    submit.disabled = sending || !connected || !canMessage || !input.value.trim() || input.value.length > input.maxLength || draftQuestionId !== question?.id;
+    stop.disabled = stopping || !connected;
+  };
+  const scroll = () => { if (follow) log.scrollTop = log.scrollHeight; jump.hidden = follow || log.scrollHeight - log.clientHeight < 48; };
+  log.addEventListener('scroll', () => { follow = log.scrollHeight - log.scrollTop - log.clientHeight < 64; scroll(); });
+  jump.onclick = () => { follow = true; scroll(); };
+  const refresh = async () => {
+    if (!d.open || fetching || document.hidden) return;
+    fetching = true;
+    try {
+      const response = await fetch(`${endpoint}?tasks=1&task=${encodeURIComponent(task.id)}&session=1`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
+      const status = response.status, data = await response.json();
+      if (!d.open) return;
+      if (status !== 200 || !data) throw Error(data?.error ?? 'Could not reconnect. Your draft is safe; retrying…');
+      connected = true; connection.hidden = true;
+      canMessage = data.canMessage; question = data.question ?? null;
+      const running = ['running', 'stopping'].includes(data.task.state);
+      statusLine.textContent = `${question ? 'Waiting for an answer' : humanise(data.task.state)} · ${data.task.model ?? 'Child agent'}`;
+      statusLine.title = [data.task.provider, data.task.endpoint, data.task.model].filter(Boolean).join(' · ');
+      stop.hidden = !data.task.cancellable;
+      input.readOnly = !running;
+      input.maxLength = question?.maxLength ?? 8000;
+      input.placeholder = running ? question ? 'Answer this child agent…' : 'Message this child agent…' : 'This child run has ended';
+      help.textContent = running ? question ? `Your message answers the question above · ${input.maxLength.toLocaleString()} characters max` :
+        matchMedia('(pointer: coarse)').matches ? 'Tap send · messages are read at the next step' : 'Enter to send · Shift + Enter for a new line' :
+        'This run has ended. Its conversation and your draft remain available to copy.';
+      if (running && input.value && draftQuestionId !== question?.id) help.textContent = 'The waiting question changed. Review the latest activity and edit your draft before sending.';
+      const entries = (data.transcript as TranscriptMsg[]).map(message => ({ signature: JSON.stringify(message), create: () => {
+        const group = el('div');
+        if (message.steps?.length) {
+          const activity = el('details', 'ag-activity');
+          activity.append(el('summary', undefined, `${message.steps.length} agent ${message.steps.length === 1 ? 'action' : 'actions'}`), ...message.steps.map(step => stepCard({ ...step, kind: step.kind === 'write' || step.kind === 'confirm' ? step.kind : 'read' }, false, st.w.i)));
+          group.append(activity);
+        }
+        if (message.text) {
+          const messageNode = bubble(message.role === 'user' ? 'user' : 'assistant', message.text);
+          messageNode.setAttribute('aria-label', message.role === 'assistant' ? 'Child agent' : message.source === 'agent' ? 'Parent agent' : 'You');
+          if (message.role === 'user' && message.source === 'agent') group.append(el('p', 'ag-source-label', 'Parent agent'));
+          group.append(messageNode);
+        }
+        return group;
+      }}));
+      if (!entries.length) entries.push({ signature: `empty:${data.task.state}`, create: () => el('p', 'ag-child-empty', running ? 'The child agent is starting…' : 'No conversation was recorded for this run.') });
+      rendered = reconcileLog(transcriptBox, rendered, entries);
+      progressTitle.textContent = running ? 'Live activity' : 'Run activity';
+      const activity = `${data.truncated ? '[Earlier activity is no longer retained]\n' : ''}${data.output || 'No activity recorded yet.'}`;
+      if (output.textContent !== activity) output.textContent = activity;
+      questionBox.hidden = !question; questionText.textContent = question?.text ?? '';
+      const messages = data.messages as { id: number; text: string; status: string; result: string }[];
+      receiptNodes = reconcileLog(receipts, receiptNodes, messages.map(m => ({ signature: JSON.stringify(m), create: () => {
+        const row = el('div', 'ag-child-receipt');
+        const failed = m.status === 'failed' || m.status === 'cancelled';
+        row.append(el('p', undefined, m.text), el('small', failed ? 'text-err' : 'muted',
+          m.status === 'done' ? 'Read by child' : failed ? `Not delivered · ${m.result || m.status}` : 'Waiting for the next step'));
+        return row;
+      }})));
+      const unread = messages.filter(m => m.status !== 'done').length;
+      delivery.hidden = !messages.length;
+      deliveryTitle.textContent = `Message delivery${unread ? ` · ${unread} unread` : ''}`;
+      if (messages.some(m => m.status === 'failed' || m.status === 'cancelled')) delivery.open = true;
+      if (data.task.error) { connection.hidden = false; connection.textContent = data.task.error; }
+      scroll();
+    } catch (e) {
+      if (d.open) { connected = false; connection.hidden = false; connection.textContent = e instanceof Error ? e.message : 'Connection lost. Retrying…'; }
+    } finally { fetching = false; controlsState(); }
+  };
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (submit.disabled) return;
+    const message = input.value;
+    const questionId = draftQuestionId;
+    sending = true; error.hidden = true; controlsState();
+    try {
+      const { status, data } = await postJson(endpoint, { action: 'message-child', task: task.id, message, questionId });
+      if (status !== 200 || !data) throw Error(status === 0 ? 'Delivery could not be confirmed. Check Message delivery before sending again; your draft is safe.' : data?.error ?? 'Could not send message.');
+      if (data.message?.status === 'failed') throw Error(data.message.result);
+      if (input.value === message) {
+        if (drafts.get(draftKey)?.text === message && drafts.get(draftKey)?.questionId === questionId) saveDraft('');
+        input.value = ''; autoGrow(input);
+      }
+      delivery.open = true; follow = true;
+      await refresh();
+    } catch (e) { failure(e); void refresh(); }
+    finally { sending = false; controlsState(); }
+  };
+  stop.onclick = async () => {
+    stopping = true; error.hidden = true; controlsState();
+    try {
+      const { status, data } = await postJson(endpoint, { action: 'cancel-task', task: task.id });
+      if (status !== 200 || !data?.task) throw Error(data?.error ?? 'Could not stop child agent.');
+      updateTask(st, data.task); await refresh();
+    } catch (e) { failure(e); }
+    finally { stopping = false; controlsState(); }
+  };
+  input.addEventListener('input', () => { draftQuestionId = question?.id; saveDraft(); autoGrow(input); controlsState(); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229 && !matchMedia('(pointer: coarse)').matches) {
+      e.preventDefault(); form.requestSubmit();
+    }
+  });
+  controlsState(); autoGrow(input);
+  progress.open = task.state === 'running';
+  const timer = setInterval(() => { void refresh(); }, 2000);
+  d.addEventListener('close', () => {
+    saveDraft(); clearInterval(timer); d.remove();
+    [...tasksDialog.querySelectorAll<HTMLButtonElement>('[data-ag-child]')].find(button => button.dataset.agChild === task.id)?.focus();
+  }, { once: true });
+  back.focus();
   void refresh();
 }
 

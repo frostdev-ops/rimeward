@@ -54,6 +54,7 @@ import {
   releaseControl,
   terminalCapabilities,
   listSessions,
+  sessionResources,
   startSession,
   readSession,
   controlSession,
@@ -61,6 +62,7 @@ import {
   resizeSession,
   interruptSession,
   closeSession,
+  deleteSession,
   configureSession,
 } from "../../../lib/dev/terminals.ts";
 
@@ -159,6 +161,7 @@ export const ALL: APIRoute = async ({ params, request, locals, url }) => {
         );
       if (action === "pairings") return json(await remotePairs(user));
       if (action === "capabilities") return json(terminalCapabilities());
+      if (action === "session-resources") return json(await sessionResources(user, project || undefined));
       if (action === "projects") return json(listProjects(user));
       if (action === "files") return json(tree(user, project, file));
       if (action === "search")
@@ -304,6 +307,10 @@ export const ALL: APIRoute = async ({ params, request, locals, url }) => {
     }
     if (request.method === "DELETE" && action === "sessions") {
       closeSession(user, id);
+      return json({ ok: true });
+    }
+    if (request.method === "DELETE" && action === "session-history") {
+      deleteSession(user, id);
       return json({ ok: true });
     }
     return json({ error: "Unknown workspace operation." }, 404);

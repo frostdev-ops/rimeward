@@ -11,6 +11,7 @@ import AgentDialog from '../../components/dashboard/AgentDialog.astro';
 import BrowserDialog from '../../components/dashboard/BrowserDialog.astro';
 import RemoteDesktopDialog from '../../components/dashboard/RemoteDesktopDialog.astro';
 import NoteDialog from '../../components/dashboard/NoteDialog.astro';
+import NotebookDialog from '../../components/dashboard/NotebookDialog.astro';
 import WardThemeDialog from '../../components/dashboard/WardThemeDialog.astro';
 import { getDashboard, getPages } from '../../lib/dashboard.ts';
 import { pageOf } from '../../lib/wards.ts';
@@ -83,6 +84,7 @@ const logicJson = JSON.stringify({
   <BrowserDialog />
   <RemoteDesktopDialog />
   <NoteDialog />
+  <NotebookDialog />
   <WardThemeDialog />
 
   <script type="application/json" id="layout-data" set:html={layoutJson} />

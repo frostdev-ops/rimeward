@@ -923,6 +923,7 @@ body:has(.wd-grid.wiring) .fd-toast {
   [data-glass] .ward,
   [data-glass] .fd-dialog,
   [data-glass] .ctx-menu,
+  [data-glass] .np-pick,
   [data-glass] .fd-toast,
   [data-glass] .wire-pop,
   [data-glass] #logic-dock {
@@ -2378,6 +2379,7 @@ body:has(#splash-canvas.live) .splash-ground::after {
 [data-glass] .ward,
 [data-glass] .fd-dialog,
 [data-glass] .ctx-menu,
+[data-glass] .np-pick,
 [data-glass] .fd-cmd,
 [data-glass] .fd-ss-panel,
 [data-glass] .fd-toast,
@@ -2392,6 +2394,7 @@ body:has(#splash-canvas.live) .splash-ground::after {
 [data-glass-blur] .card,
 [data-glass-blur] .fd-dialog,
 [data-glass-blur] .ctx-menu,
+[data-glass-blur] .np-pick,
 [data-glass-blur] .fd-cmd,
 [data-glass-blur] .fd-ss-panel,
 [data-glass-blur] .fd-toast,
@@ -3132,6 +3135,7 @@ body:has(#splash-canvas.live) .splash-ground::after {
   cursor: pointer;
 }
 .np-tools input[type='range'] {
+  accent-color: var(--color-accent);
   width: 4rem;
 }
 .np:not([data-full]) .np-adv,
@@ -3293,4 +3297,554 @@ body:has(#splash-canvas.live) .splash-ground::after {
 /* Its pen hint while in edit mode: cards are draggable there, the editor is not. */
 .wd-grid.editing .np-doc {
   pointer-events: none;
+}
+/* A save met a newer revision: the footer offers Reload / Keep mine. */
+.np-foot .np-fix {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--color-accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.np[data-empty] .np-page {
+  opacity: 0.4;
+}
+
+/* ---- notebook ward: the card (search, New, pinned + recent) and the expanded
+   dialog — nav | list | editor, one pane at a time on phones ---- */
+.nb-c {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.nb-c-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.nb-c-bar .btn {
+  flex: 0 0 auto;
+}
+.nb-c-q,
+.nb-q {
+  flex: 1 1 6rem;
+  min-width: 0;
+  min-height: 0;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.75rem;
+}
+.nb-c-rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.nb-c-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  text-align: left;
+  padding: 0.3rem 0.4rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 0.15s var(--fd-ease), color 0.15s var(--fd-ease);
+}
+.nb-c-row:hover,
+.nb-c-row:focus-visible {
+  background: var(--color-surface-2);
+}
+.nb-c-row-t {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  min-width: 0;
+}
+.nb-pin {
+  flex: 0 0 auto;
+  font-size: 0.7em;
+  color: var(--color-accent);
+}
+.wd-grid.editing .nb-c {
+  pointer-events: none;
+}
+
+.nb {
+  display: grid;
+  grid-template-columns: 13rem minmax(15rem, 22rem) minmax(0, 1fr);
+  gap: 0.75rem;
+  flex: 1;
+  min-height: 0;
+}
+.nb-nav,
+.nb-list,
+.nb-edit {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.nb-nav {
+  overflow-y: auto;
+  padding-right: 0.25rem;
+  border-right: 1px solid var(--color-line);
+}
+.nb-nav-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0.7rem 0 0.2rem;
+  padding: 0 0.5rem;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+.nb-nav-act {
+  border: 0;
+  background: none;
+  padding: 0.1rem;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+}
+.nb-nav-act:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-2);
+}
+.nb-nav-act,
+.nb-item,
+.nb-row,
+.nb-index-b,
+.nb-outline-b,
+.np-pick-b {
+  transition: background-color 0.15s var(--fd-ease), color 0.15s var(--fd-ease), border-color 0.15s var(--fd-ease), box-shadow 0.15s var(--fd-ease);
+}
+.nb :is(button, .nb-row):focus-visible,
+.nb-c-row:focus-visible,
+.np-pick-b:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.nb-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.3rem 0.5rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-ink-muted);
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+}
+.nb-item:hover,
+.nb-item:focus-visible {
+  background: var(--color-surface-2);
+  color: var(--color-ink);
+}
+.nb-item[aria-current='true'] {
+  background: var(--color-surface-2);
+  color: var(--color-accent);
+}
+.nb-item .nb-n {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--color-ink-faint);
+}
+.nb-list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  padding-bottom: 0.4rem;
+}
+/* The search box takes its own row in the list head; sort, group and New share the next. */
+.nb-list-head .nb-q {
+  flex: 1 1 100%;
+}
+.nb-sort {
+  min-height: 0;
+  width: auto;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.75rem;
+}
+.nb-rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  transition: opacity 0.15s var(--fd-ease);
+}
+.nb-rows > *,
+.nb-c-row,
+.nb-backlinks {
+  animation: fd-wd-in 0.18s var(--fd-ease);
+}
+.nb-rows[aria-busy='true'] {
+  opacity: 0.6;
+}
+.nb-group {
+  margin: 0.5rem 0.5rem 0.15rem;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+.nb-row {
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.nb-row:hover,
+.nb-row:focus-visible {
+  background: var(--color-surface-2);
+  outline: none;
+}
+.nb-row[aria-selected='true'] {
+  background: var(--color-surface-2);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+.nb-card[aria-selected='true'] {
+  border-color: var(--color-accent);
+}
+.nb-row-t {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  min-width: 0;
+}
+.nb-row-x {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--color-ink-faint);
+}
+.nb-row-x mark {
+  background: color-mix(in oklab, var(--color-accent) 28%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+.nb-hint {
+  min-height: 1em;
+  padding-top: 0.3rem;
+  font-size: 10px;
+  color: var(--color-ink-faint);
+}
+.nb-index {
+  padding: 0 0.5rem 0.4rem 1.6rem;
+  list-style: decimal;
+  font-size: 0.8rem;
+  color: var(--color-ink-muted);
+}
+.nb-index-b {
+  border: 0;
+  background: none;
+  padding: 0.15rem 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.nb-index-b:hover {
+  color: var(--color-ink);
+  text-decoration: underline;
+}
+.nb-edit-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding-bottom: 0.3rem;
+}
+.nb-title {
+  flex: 1 1 12rem;
+  min-width: 0;
+  padding: 0.2rem 0;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: none;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  transition: border-color 0.15s var(--fd-ease);
+}
+.nb-title:focus {
+  outline: none;
+  border-bottom-color: var(--color-accent);
+}
+.nb-tags {
+  flex: 1 1 8rem;
+  min-width: 0;
+  min-height: 0;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.75rem;
+}
+.nb-outline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.7rem;
+  padding: 0 0 0.35rem;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+.nb-outline-b {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.nb-outline-b:hover {
+  color: var(--color-ink);
+}
+.nb-outline-b[data-l='2'] {
+  padding-left: 0.6rem;
+}
+.nb-outline-b[data-l='3'] {
+  padding-left: 1.2rem;
+}
+.nb-empty {
+  margin: auto;
+}
+/* Property controls under the title, the "Linked from" row, the Ask pane. */
+.nb-props {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.6rem;
+  padding-bottom: 0.3rem;
+  font-size: 11px;
+  width: 100%;
+}
+.nb-prop {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--color-ink-faint);
+}
+.nb-prop .input {
+  min-height: 0;
+  padding: 0.15rem 0.4rem;
+  font-size: 11px;
+  max-width: 11rem;
+}
+.nb-backlinks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.4rem;
+  padding-bottom: 0.3rem;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+.nb-backlinks .chip {
+  cursor: pointer;
+}
+.nb-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.25rem 0.1rem;
+}
+.nb-ask-a {
+  white-space: pre-wrap;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  padding: 0.65rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  transition: opacity 0.15s var(--fd-ease);
+}
+.nb-ask-a:empty {
+  display: none;
+}
+.nb-ask-a[aria-busy='true'] {
+  color: var(--color-ink-muted);
+  opacity: 0.7;
+}
+.nb-ask-src {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+/* Table layout: one row per note, a column per built-in field and property. */
+.nb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+.nb-table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface);
+  text-align: left;
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-ink-faint);
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--color-line);
+}
+.nb-table td {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--color-line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 16rem;
+}
+.nb-table tr.nb-row {
+  padding: 0;
+  border-radius: 0;
+}
+.nb-table tr.nb-row[aria-selected='true'] td:first-child {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+.nb-table-wrap {
+  overflow: auto;
+}
+/* Card layout: a grid of short cards. */
+.nb-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 0.5rem;
+  padding: 0.2rem;
+}
+.nb-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-height: 6rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.nb-card .nb-card-x {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  white-space: normal;
+}
+.nb-card .nb-row-x {
+  margin-top: auto;
+}
+/* A note link in any document: followed on click, never a URL. */
+.np-doc a[data-note] {
+  color: var(--color-accent);
+  text-decoration: none;
+  border-bottom: 1px dotted currentColor;
+  cursor: pointer;
+}
+/* The [[ note picker over the caret (hosted like .ctx-menu). */
+.np-pick {
+  position: fixed;
+  z-index: 60;
+  min-width: 12rem;
+  max-width: 20rem;
+  max-height: 14rem;
+  overflow-y: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgb(0 0 0 / 0.2));
+  font-size: 0.8rem;
+  animation: fd-menu-in 0.13s var(--fd-ease);
+  transform-origin: top left;
+}
+.np-pick-hint {
+  padding: 0.3rem 0.5rem;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+.np-pick-b {
+  display: flex;
+  width: 100%;
+  padding: 0.3rem 0.5rem;
+  border: 0;
+  border-radius: var(--radius-sm, 4px);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.np-pick-b:hover,
+.np-pick-b[aria-selected='true'] {
+  background: var(--color-surface-2);
+}
+.nb-back {
+  display: none;
+}
+@media (min-width: 1051px) {
+  .nb:is([data-layout='table'], [data-layout='cards']) {
+    grid-template-columns: 13rem minmax(22rem, 1fr) minmax(22rem, 1fr);
+  }
+}
+/* Tablets retain navigation; the list and editor share the remaining width. */
+@media (min-width: 640px) and (max-width: 1050px) {
+  .nb {
+    grid-template-columns: 11rem minmax(0, 1fr);
+  }
+  .nb[data-pane='edit'] > .nb-list,
+  .nb:not([data-pane='edit']) > .nb-edit {
+    display: none;
+  }
+  .nb-edit .nb-back {
+    display: inline-flex;
+  }
+}
+@media (max-width: 1050px) {
+  .nb > :is(.nb-list, .nb-edit) {
+    animation: fd-wd-in 0.18s var(--fd-ease);
+  }
+}
+@media (max-width: 639px) {
+  .nb {
+    grid-template-columns: 1fr;
+  }
+  .nb .input,
+  .nb-title,
+  .nb-c-q {
+    font-size: 1rem;
+  }
+  .nb[data-pane='nav'] > :not(.nb-nav),
+  .nb[data-pane='list'] > :not(.nb-list),
+  .nb[data-pane='edit'] > :not(.nb-edit) {
+    display: none;
+  }
+  .nb-nav {
+    border-right: 0;
+    padding-right: 0;
+  }
+  .nb-back {
+    display: inline-flex;
+  }
 }

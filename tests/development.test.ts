@@ -131,7 +131,7 @@ test("real terminal attachment, no replay, human control and explicit terminatio
     const result = readSession(1, s.id);
     assert.match(result.screen, /RIMEWARD_PTY_TEST/);
     assert.equal(readSession(1, s.id, result.session.sequence).data, "");
-    assert.throws(() => writeSession(1, s.id, "agent:rime", "echo denied\r"));
+    assert.doesNotThrow(() => writeSession(1, s.id, "agent:rime", "echo shared\r"));
     releaseControl(1, s.id, "client:one");
     writeSession(1, s.id, "agent:rime", "echo resumed\r");
     assert.throws(() => readSession(2, s.id));
@@ -142,9 +142,9 @@ test("real terminal attachment, no replay, human control and explicit terminatio
 
 test("terminal permissions change live, denied input cannot claim ownership, and human control survives idle time", async t => {
   const p = addProject(1, root);
-  const s = await startSession(1, { project: p.id, kind: "shell", shell: process.platform === "win32" ? undefined : "/bin/sh" });
+  const s = await startSession(1, { project: p.id, kind: "shell", shell: process.platform === "win32" ? undefined : "/bin/sh", agentInput: false });
   try {
-    assert.throws(() => writeSession(1, s.id, "agent:rime", "denied\r"), /Rime input is off/);
+    assert.throws(() => writeSession(1, s.id, "agent:rime", "denied\r"), /Rime control is off/);
     assert.equal(readSession(1, s.id).session.owner, null);
     configureSession(1, s.id, { agentInput: true });
     assert.equal(readSession(1, s.id).session.mode, "human", "native CLI launch permissions are independent");
@@ -153,16 +153,16 @@ test("terminal permissions change live, denied input cannot claim ownership, and
     t.mock.timers.enable({ apis: ["Date"] });
     t.mock.timers.tick(60_000);
     assert.equal(readSession(1, s.id).session.owner, "client:one");
-    assert.throws(() => writeSession(1, s.id, "agent:rime", "denied\r"));
-    assert.throws(() => controlSession(1, s.id, "agent:rime", true));
+    assert.doesNotThrow(() => writeSession(1, s.id, "agent:rime", ""));
+    assert.equal(controlSession(1, s.id, "agent:rime", true).owner, "client:one");
     assert.throws(() => resizeSession(1, s.id, "client:two", 90, 25));
     resizeSession(1, s.id, "client:one", 91, 26);
     assert.equal(readSession(1, s.id).session.cols, 91);
     t.mock.timers.reset();
-    releaseControl(1, s.id, "client:one");
+    configureSession(1, s.id, { agentInput: true });
     writeSession(1, s.id, "agent:rime", "");
     configureSession(1, s.id, { agentInput: false });
-    assert.equal(readSession(1, s.id).session.owner, null);
+    assert.equal(readSession(1, s.id).session.owner, "client:one");
     assert.throws(() => writeSession(1, s.id, "agent:rime", "denied\r"));
     assert.throws(() => configureSession(1, s.id, { agentInput: true, mode: "invalid" as never }));
     assert.equal(readSession(1, s.id).session.agentInput, false);

@@ -93,6 +93,7 @@ export const ICONS = {
   chart: ['📈', 'chart-line', 'chart-line', 'chart-line', 'chart', 'show-chart'],
   timer: ['⏱️', 'timer', 'timer', 'stopwatch', 'stopwatch', 'timer'],
   note: ['📝', 'sticky-note', 'note', 'note', 'notes', 'sticky-note-2'],
+  notebook: ['📓', 'notebook', 'notebook', 'notebook', 'notebook', 'book'],
   check: ['☑️', 'square-check', 'check-square', 'square-check', 'check-square', 'check-box'],
   flow: ['📦', 'package', 'package', 'package', 'box', 'package-2'],
   bot: ['🤖', 'bot', 'robot', 'robot', 'chat-round-dots', 'smart-toy'],
@@ -116,6 +117,8 @@ export const ICONS = {
   // --- chrome: edit-mode controls, context menu, dialogs ---
   left: ['◀', 'chevron-left', 'caret-left', 'chevron-left', 'alt-arrow-left', 'chevron-left'],
   right: ['▶', 'chevron-right', 'caret-right', 'chevron-right', 'alt-arrow-right', 'chevron-right'],
+  up: ['▲', 'chevron-up', 'caret-up', 'chevron-up', 'alt-arrow-up', 'keyboard-arrow-up'],
+  down: ['▼', 'chevron-down', 'caret-down', 'chevron-down', 'alt-arrow-down', 'keyboard-arrow-down'],
   resize: ['⤢', 'maximize-2', 'arrows-out', 'arrows-diagonal', 'maximize', 'open-in-full'],
   eye: ['👁', 'eye', 'eye', 'eye', 'eye', 'visibility'],
   palette: ['🎨', 'palette', 'palette', 'palette', 'palette', 'palette'],

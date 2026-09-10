@@ -366,6 +366,16 @@ const groups = (Object.keys(CATEGORIES) as Category[])
     </div>
 
     <div data-cfg="note" class="hidden flex-col gap-3">
+      <div>
+        <label class="label" for="aw-nt-note">Document</label>
+        <select id="aw-nt-note" name="nt-note" class="input" data-identity="note">
+          <option value="" selected>This notepad's own</option>
+        </select>
+        <p class="mt-1 text-[10px] text-ink-faint">Show a note from one of your notebooks instead — the same document, edited from both places. Leave it on its own to keep this notepad's document.</p>
+      </div>
+    </div>
+
+    <div data-cfg="note notebook" class="hidden flex-col gap-3">
       <input type="hidden" id="aw-nt-text" name="nt-text" />
       <div class="flex gap-3">
         <div class="flex-1">
@@ -392,7 +402,7 @@ const groups = (Object.keys(CATEGORIES) as Category[])
       </div>
     </div>
 
-    <div data-cfg="agent note" class="hidden flex-col gap-3">
+    <div data-cfg="agent note notebook" class="hidden flex-col gap-3">
       <div class="flex gap-3">
         <div class="flex-1">
           <label class="label" for="aw-ag-provider">Provider</label>

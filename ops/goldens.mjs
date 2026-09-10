@@ -45,9 +45,18 @@ try {
     { i: 'b1', type: 'button', size: '1x1', title: 'Ask Rime' },
     { i: 'f1', type: 'flow', size: '2x2' },
     { i: 'n1', type: 'note', size: '2x2' },
+    { i: 'nb1', type: 'notebook', size: '2x2', title: 'Field notes' },
     ...DEFAULT_LAYOUT,
   ]);
   saveDashboard(userId, layout);
+  // The notebook: two sections and a few notes, one pinned.
+  const { createNote, ensureNotebook, updateNoteMeta, updateNotebook } = await import('../src/lib/notebook.ts');
+  ensureNotebook(userId, 'nb1', 'Field notes');
+  const { sections: [ideas, meetings] } = updateNotebook(userId, 'nb1', { sections: [{ title: 'Ideas' }, { title: 'Meetings' }] });
+  const pinned = createNote(userId, { notebook: 'nb1', section: ideas.id, title: 'Contour terraces for the splash', html: '<h2>Why terraces</h2><p>Quantized fbm reads as paper-cut art.</p>', tags: ['graphics'] });
+  updateNoteMeta(userId, pinned.id, { pinned: true });
+  createNote(userId, { notebook: 'nb1', section: meetings.id, title: 'Standup', html: '<p>Notebook ward review on Thursday.</p>', tags: ['work'] });
+  createNote(userId, { notebook: 'nb1', section: ideas.id, title: 'Reading list', html: '<p>Pratchett, Le Guin, Banks.</p>', tags: ['books'] });
   // A placeholder provider account, so the Rime ward shows its composer rather than a setup prompt.
   const { storeAgentAccount } = await import('../src/lib/agent/accounts.ts');
   storeAgentAccount({ userId, provider: 'codex', token: 'demo', label: 'demo@example.com' });

@@ -1,13 +1,21 @@
 import { expandedDesktopWard, restoreExpandedWard, readDesktopCheckpoint, saveDesktopState } from "./desktop-state.ts";
-// The notepad ward (type `note`): a rich-text document — contenteditable and
-// execCommand, the browser's own editor, no library — with an ink layer over it
-// (pointer strokes on a canvas that scrolls with the page) and a footer. Both
-// halves autosave per ward to /api/note/<ward>. In the ward it is a notepad;
-// Expand moves the SAME element into #note-dialog (one document, one canvas,
-// no second state) where the full toolbar and the wide page show. Reading
-// handwriting and the ✨ commands are one-shot model calls the server makes
-// with the ward's provider/model (lib/agent/oneshot.ts) — the ward only ever
-// ships a PNG of the strokes, or a passage of text.
+// The note editor: a rich-text document — contenteditable and execCommand,
+// the browser's own editor, no library — with an ink layer over it (pointer
+// strokes on a canvas that scrolls with the page) and a footer. Both halves
+// autosave to /api/note/<id>. The editor is bound to a TARGET (a document id,
+// its API address, the knobs it draws with), not to a ward: the notepad ward
+// (type `note`) gives it one target for life and Expand moves the SAME element
+// into #note-dialog (one document, one canvas, no second state) where the full
+// toolbar shows; the notebook (notebook.ts) owns one editor and points it at
+// whichever note is selected — `open()` flushes what is pending first and
+// refuses to switch while a save fails, and every late answer (a load, a
+// transcription, a ✨ result) checks it still belongs to the target it was
+// asked for. Every save carries the rev it started from; a 409 (another
+// surface saved in between) stops autosave on that document until the user
+// picks Reload or Keep mine — nothing is overwritten silently.
+// Reading handwriting and the ✨ commands are one-shot model calls the server
+// makes with the target's provider/model (lib/agent/oneshot.ts) — the editor
+// only ever ships a PNG of the strokes, or a passage of text.
 //
 // ponytail: ink is stored in absolute page px — reflowing the text at another
 // width leaves the strokes where they were. Store them relative to the line
@@ -15,7 +23,7 @@ import { expandedDesktopWard, restoreExpandedWard, readDesktopCheckpoint, saveDe
 
 import { noteConfig, wardTitle, type NoteConfig, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body } from './wards.ts';
-import { el, postJson } from './dom.ts';
+import { el, postJson, toast } from './dom.ts';
 import { icon } from './icon.ts';
 
 /** [x, y] in page CSS px (the scroll content's box), pressure 0..1. */
@@ -27,9 +35,41 @@ interface Stroke {
 }
 type Tool = 'text' | 'pen' | 'eraser';
 
-interface State {
-  w: WardInstance;
+/** What an editor edits: one document, addressed and drawn one way. */
+export interface EditorTarget {
+  /** The document id. */
+  id: string;
+  /** `/api/note/<id>` plus whatever query routes it (a notebook note carries `?ward=<notebook ward>`). */
+  api: string;
+  title: string;
   cfg: NoteConfig;
+}
+
+interface State {
+  /** The ward this editor answers for in the flush handlers (mention, relaunch). */
+  owner: string;
+  target: EditorTarget | null;
+  /** The stored revision of the open document; every save hands it back. */
+  rev: number;
+  etag?: string;
+  loaded: boolean;
+  loadGen: number;
+  /** Bumped on every open(): a late answer for an older generation is dropped. */
+  gen: number;
+  /** Saves run one after another so each carries the rev the last one returned. */
+  chain: Promise<unknown>;
+  /** open() calls run one after another: two rapid selections never interleave their flushes. */
+  opening: Promise<unknown>;
+  /** Bumped per edit; a flush clears the dirty flag only when nothing was typed/drawn since it was queued. */
+  docSeq: number;
+  inkSeq: number;
+  /** The save in flight for that seq, if any — a second flush for the same content joins it instead of saving twice. */
+  docFlight: { seq: number; p: Promise<boolean> } | null;
+  inkFlight: { seq: number; p: Promise<boolean> } | null;
+  /** A 409 is waiting on the user: autosave holds until Reload or Keep mine. */
+  conflict: boolean;
+  /** A save is in flight — its own broadcast echo must not reload the document under the caret. */
+  saving: number;
   root: HTMLElement;
   page: HTMLElement;
   doc: HTMLElement;
@@ -56,6 +96,8 @@ interface State {
   inkDirty: boolean;
   busy: boolean;
   ro: ResizeObserver;
+  /** Whoever hosts the editor hears about edits (the notebook's outline). */
+  onInput: (() => void) | null;
 }
 
 const states = new Map<string, State>();
@@ -65,6 +107,12 @@ const ERASE_R = 10;
 const KEEPALIVE_MAX = 60_000; // fetch keepalive bodies cap at 64 KB
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/** Bind requests to the document, including while Configure has not saved the layout yet. */
+const wardTarget = (w: WardInstance): EditorTarget => {
+  const id = typeof w.config?.note === 'string' && w.config.note ? w.config.note : w.i;
+  return { id, api: `/api/note/${id}?ward=${w.i}`, title: wardTitle(w), cfg: noteConfig(w) };
+};
 
 // ---------------------------------------------------------------- build
 
@@ -80,7 +128,7 @@ function button(tools: HTMLElement, id: string, title: string, fn: () => void, a
   return b;
 }
 
-function build(w: WardInstance): State {
+function build(owner: string, expandable: boolean): State {
   const root = el('div', 'np');
   const tools = el('div', 'np-tools');
   const page = el('div', 'np-page');
@@ -89,13 +137,16 @@ function build(w: WardInstance): State {
   doc.spellcheck = true;
   doc.setAttribute('role', 'textbox');
   doc.setAttribute('aria-multiline', 'true');
+  doc.setAttribute('aria-label', 'Note text');
   doc.dataset.placeholder = 'Write, or pick up the pen…';
   const canvas = el('canvas', 'np-ink');
   canvas.setAttribute('aria-hidden', 'true');
   page.append(doc, canvas);
   const foot = el('div', 'np-foot');
   const status = el('span', 'np-status');
+  status.setAttribute('role', 'status');
   const err = el('span', 'np-err');
+  err.setAttribute('role', 'alert');
   const count = el('span', 'np-count');
   foot.append(status, err, count);
   root.append(tools, page, foot);
@@ -103,6 +154,7 @@ function build(w: WardInstance): State {
   const color = el('input', 'np-adv');
   color.type = 'color';
   color.title = 'Ink colour';
+  color.setAttribute('aria-label', 'Ink colour');
   const width = el('input', 'np-adv');
   width.type = 'range';
   width.min = '1';
@@ -110,12 +162,15 @@ function build(w: WardInstance): State {
   width.step = '0.5';
   width.value = '2.5';
   width.title = 'Pen width';
+  width.setAttribute('aria-label', 'Pen width');
 
   const st: State = {
-    w, cfg: noteConfig(w), root, page, doc, canvas, status, err, count, btn: {}, color, width, ai: null, sel: null,
+    owner, target: null, rev: 0, loaded: false, loadGen: 0, gen: 0, chain: Promise.resolve(), opening: Promise.resolve(), docSeq: 0, inkSeq: 0, docFlight: null, inkFlight: null, conflict: false, saving: 0,
+    root, page, doc, canvas, status, err, count, btn: {}, color, width, ai: null, sel: null,
     strokes: [], cur: null, fresh: new Set(), tool: 'text', penSeen: false,
     docTimer: 0, inkTimer: 0, liveTimer: 0, docDirty: false, inkDirty: false, busy: false,
     ro: new ResizeObserver(() => fit(st)),
+    onInput: null,
   };
   const b = st.btn;
   const sep = (adv = false) => tools.append(el('span', adv ? 'np-sep np-adv' : 'np-sep'));
@@ -151,9 +206,20 @@ function build(w: WardInstance): State {
   b.download = button(tools, 'download', 'Download as HTML', () => download(st), true);
   b.print = button(tools, 'print', 'Print', () => print(st), true);
   b.expand = button(tools, 'resize', 'Expand into the editor', () => openDialog(st));
+  b.expand.hidden = !expandable;
 
-  doc.addEventListener('input', () => markDoc(st));
+  doc.addEventListener('input', () => {
+    markDoc(st);
+    linkPicker(st);
+  });
   doc.addEventListener('blur', () => void flushDoc(st));
+  // A note link opens that note (the notebook answers fd:open-note); the browser never follows an <a> inside contenteditable anyway.
+  doc.addEventListener('click', (e) => {
+    const a = (e.target as HTMLElement).closest?.('a[data-note]') as HTMLElement | null;
+    if (!a?.dataset.note) return;
+    e.preventDefault();
+    window.dispatchEvent(new CustomEvent('fd:open-note', { detail: { note: a.dataset.note, from: st.owner } }));
+  });
   // Plain text in — formatting comes from the toolbar, never from a paste.
   doc.addEventListener('paste', (e) => {
     e.preventDefault();
@@ -161,6 +227,7 @@ function build(w: WardInstance): State {
     if (text) document.execCommand('insertText', false, text);
   });
   doc.addEventListener('keydown', (e) => {
+    if (pickerKeys(st, e)) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
       link(st);
@@ -178,16 +245,18 @@ function build(w: WardInstance): State {
   return st;
 }
 
-/** Re-read the ward's knobs (config changed, or first paint). */
+/** Re-read the target's knobs (config changed, or first paint). */
 function apply(st: State): void {
-  st.cfg = noteConfig(st.w);
-  st.root.dataset.paper = st.cfg.paper;
-  const ink = st.cfg.ink;
+  const cfg = st.target?.cfg ?? noteConfig({ i: '', type: 'note', size: '2x2' });
+  st.root.dataset.paper = cfg.paper;
+  const ink = cfg.ink;
   for (const k of ['pen', 'eraser', 'clearInk']) st.btn[k]!.hidden = !ink;
   st.color.hidden = !ink;
   st.width.hidden = !ink;
-  st.btn.transcribe!.hidden = !ink || st.cfg.transcribe === 'off';
+  st.btn.transcribe!.hidden = !ink || cfg.transcribe === 'off';
   if (!ink) setTool(st, 'text');
+  st.doc.contentEditable = st.target && st.loaded ? 'true' : 'false';
+  st.root.toggleAttribute('data-empty', !st.target);
   // The pen defaults to the text colour of THIS card — its theme, not the page's.
   if (!st.color.dataset.set) {
     const rgb = /(\d+),\s*(\d+),\s*(\d+)/.exec(getComputedStyle(st.doc).color);
@@ -201,7 +270,7 @@ function mount(st: State, b: HTMLElement): void {
   b.classList.remove('overflow-y-auto');
   b.classList.add('flex');
   b.append(st.root);
-  restoreExpandedWard(st.w.i, () => openDialog(st));
+  restoreExpandedWard(st.owner, () => openDialog(st));
   fit(st);
 }
 
@@ -280,82 +349,383 @@ const fmtTime = (iso: string) => new Date(iso.includes('T') ? iso : iso.replace(
 
 function setStatus(st: State, text: string): void {
   st.status.textContent = text;
-  st.err.textContent = '';
+  if (!st.conflict) st.err.textContent = '';
 }
 function fail(st: State, text: string): void {
   st.err.textContent = text;
   st.err.title = text;
 }
 
+/** Another surface saved this document first. Autosave holds; the user picks:
+ *  Reload (their unsaved edits go — the other version is the one kept) or
+ *  Keep mine (this editor's version overwrites, knowingly). */
+function conflict(st: State, other: { updated: string | null } | undefined): void {
+  st.conflict = true;
+  st.err.textContent = '';
+  st.err.title = '';
+  st.err.append(`Changed elsewhere${other?.updated ? ` at ${fmtTime(other.updated)}` : ''} — `);
+  const reload = el('button', 'np-fix', 'Reload');
+  reload.type = 'button';
+  reload.title = 'Take the other version; your unsaved edits here are discarded';
+  const keep = el('button', 'np-fix', 'Keep mine');
+  keep.type = 'button';
+  keep.title = 'Save this version over the other one';
+  reload.addEventListener('click', () => {
+    void load(st, true).then((ok) => {
+      if (!ok && st.conflict) {
+        conflict(st, other);
+        toast('Could not reload the note. Your draft is still here.', undefined, true);
+      }
+    });
+  });
+  keep.addEventListener('click', () => {
+    st.conflict = false;
+    st.err.textContent = '';
+    st.docDirty = st.inkDirty = true;
+    void flushDoc(st, false, true).then(() => flushInk(st, false, true));
+  });
+  st.err.append(reload, ' · ', keep);
+  st.status.textContent = 'Not saved';
+}
+
 const pendingWrites = new Set<Promise<unknown>>();
-async function put(st: State, patch: { html?: string; ink?: string }, unload = false): Promise<boolean> {
-  setStatus(st, 'Saving…');
-  const saving = postJson(`/api/note/${st.w.i}`, patch, 'PUT', unload && JSON.stringify(patch).length < KEEPALIVE_MAX ? { keepalive: true } : {});
-  pendingWrites.add(saving);
-  const res = await saving.finally(() => pendingWrites.delete(saving));
-  if (!res.ok) {
-    fail(st, res.status === 0 ? 'Save failed — offline?' : (res.data?.error ?? 'Save failed'));
-    return false;
-  }
-  setStatus(st, `Saved ${fmtTime((res.data as { updated: string }).updated)}`);
-  return true;
+/** One save, after the previous one finished (so it carries the rev that one
+ *  returned). The DOCUMENT is bound when the save is queued — a patch made of
+ *  A's content can only ever be sent to A's address, whatever the editor shows
+ *  by the time its turn comes; only the rev is read at send time. */
+function put(st: State, patch: { html?: string; ink?: string }, unload = false, force = false): Promise<boolean> {
+  const t = st.target;
+  const gen = st.gen;
+  if (!t) return Promise.resolve(false);
+  const run = async (): Promise<boolean> => {
+    if (st.conflict && !force && st.gen === gen) return false;
+    if (st.gen === gen) setStatus(st, 'Saving…');
+    const body = { ...patch, rev: st.rev, etag: st.etag, ...(force ? { force: true } : {}) };
+    const saving = postJson(t.api, body, 'PUT', unload && JSON.stringify(body).length < KEEPALIVE_MAX ? { keepalive: true } : {});
+    pendingWrites.add(saving);
+    st.saving++;
+    const res = await saving.finally(() => {
+      pendingWrites.delete(saving);
+      st.saving--;
+    });
+    if (st.gen !== gen) return res.ok; // the editor moved on (pagehide flushes only — open() drains first); it landed on its own document
+    if (res.status === 409) {
+      conflict(st, (res.data as { doc?: { updated: string | null } } | null)?.doc);
+      return false;
+    }
+    if (!res.ok) {
+      fail(st, res.status === 0 ? 'Save failed — offline?' : (res.data?.error ?? 'Save failed'));
+      return false;
+    }
+    const d = res.data as { updated: string; rev: number; etag?: string };
+    st.rev = d.rev;
+    st.etag = d.etag;
+    setStatus(st, `Saved ${fmtTime(d.updated)}`);
+    return true;
+  };
+  const p = st.chain.then(run, run);
+  st.chain = p.catch(() => {});
+  return p;
 }
 
 function markDoc(st: State): void {
+  if (!st.target) return;
   // Text typed into an empty document lands as a bare text node; give it the
   // paragraph every later line gets (the command re-fires input, once).
   if (st.doc.firstChild?.nodeType === Node.TEXT_NODE && document.activeElement === st.doc) document.execCommand('formatBlock', false, 'p');
   st.docDirty = true;
+  st.docSeq++;
   setStatus(st, 'Editing…');
   updateCount(st);
+  st.onInput?.();
   clearTimeout(st.docTimer);
   st.docTimer = window.setTimeout(() => void flushDoc(st), SAVE_MS);
 }
-async function flushDoc(st: State, unload = false): Promise<void> {
+/** Save the text if it is dirty. The flag clears only when the save succeeded
+ *  AND nothing was typed since it was queued; a failure leaves it set. True =
+ *  this flush's save landed. After the editor moved to another document the
+ *  flags belong to that one and are left alone. */
+function flushDoc(st: State, unload = false, force = false): Promise<boolean> {
   clearTimeout(st.docTimer);
-  if (!st.docDirty) return;
-  st.docDirty = false;
-  if (!(await put(st, { html: st.doc.innerHTML }, unload))) st.docDirty = true;
+  if (!st.docDirty) return Promise.resolve(true);
+  if (st.docFlight && st.docFlight.seq === st.docSeq && !force) return st.docFlight.p;
+  const gen = st.gen;
+  const seq = st.docSeq;
+  const p = put(st, { html: st.doc.innerHTML }, unload, force).then((ok) => {
+    if (ok && st.gen === gen && st.docSeq === seq) st.docDirty = false;
+    return ok;
+  });
+  const flight = { seq, p };
+  st.docFlight = flight;
+  void p.finally(() => { if (st.docFlight === flight) st.docFlight = null; });
+  return p;
 }
 function markInk(st: State): void {
   st.inkDirty = true;
+  st.inkSeq++;
   clearTimeout(st.inkTimer);
   st.inkTimer = window.setTimeout(() => void flushInk(st), SAVE_MS);
 }
-async function flushInk(st: State, unload = false): Promise<void> {
+function flushInk(st: State, unload = false, force = false): Promise<boolean> {
   clearTimeout(st.inkTimer);
-  if (!st.inkDirty) return;
-  st.inkDirty = false;
+  if (!st.inkDirty) return Promise.resolve(true);
+  if (st.inkFlight && st.inkFlight.seq === st.inkSeq && !force) return st.inkFlight.p;
+  const gen = st.gen;
+  const seq = st.inkSeq;
   // One decimal is a tenth of a CSS pixel — invisible, and half the bytes.
   const ink = JSON.stringify(st.strokes.map((s) => ({ ...s, p: s.p.map((q) => q.map((n) => Math.round(n * 10) / 10)) })));
-  if (!(await put(st, { ink }, unload))) st.inkDirty = true;
+  const p = put(st, { ink }, unload, force).then((ok) => {
+    if (ok && st.gen === gen && st.inkSeq === seq) st.inkDirty = false;
+    return ok;
+  });
+  const flight = { seq, p };
+  st.inkFlight = flight;
+  void p.finally(() => { if (st.inkFlight === flight) st.inkFlight = null; });
+  return p;
+}
+/** Everything pending on the open document — the two halves, then whatever a
+ *  timer had already queued — until nothing is left unsaved. False the moment
+ *  a save fails (the flags stay set, so nothing is lost silently). */
+async function flushAll(st: State): Promise<boolean> {
+  const gen = st.gen;
+  for (let round = 0; round < 4; round++) {
+    const [doc, ink] = await Promise.all([flushDoc(st), flushInk(st)]);
+    if (!doc || !ink) return false;
+    await st.chain; // saves queued earlier by a timer finish too
+    if (st.gen !== gen) return true;
+    if (!st.docDirty && !st.inkDirty) return true;
+  }
+  return !st.docDirty && !st.inkDirty;
 }
 
-async function load(st: State): Promise<void> {
-  const res = await fetch(`/api/note/${st.w.i}`, { headers: { accept: 'application/json' } }).catch(() => null);
-  const d = res?.ok ? ((await res.json().catch(() => null)) as { html: string; ink: string; updated: string | null } | null) : null;
+/** Fetch the open document. False when it could not be loaded (the editor shows why) or the editor moved on meanwhile. */
+async function load(st: State, discard = false): Promise<boolean> {
+  const t = st.target;
+  if (!t) return false;
+  const gen = st.gen;
+  const requestGen = ++st.loadGen;
+  const docSeq = st.docSeq, inkSeq = st.inkSeq;
+  setStatus(st, 'Loading…');
+  const res = await fetch(t.api, { headers: { accept: 'application/json' } }).catch(() => null);
+  const d = res?.ok ? ((await res.json().catch(() => null)) as { html: string; ink: string; updated: string | null; rev?: number; etag?: string } | null) : null;
+  if (st.gen !== gen || st.loadGen !== requestGen || st.docSeq !== docSeq || st.inkSeq !== inkSeq || (!discard && (st.docDirty || st.inkDirty))) return false;
   if (!d) {
-    fail(st, 'Could not load the note.');
-    return;
+    fail(st, res?.status === 404 ? 'This note is gone.' : 'Could not load the note.');
+    st.status.textContent = '';
+    return false;
   }
-  st.doc.innerHTML = d.html; // sanitized server-side — the only HTML this ward ever trusts
+  st.rev = d.rev ?? 0;
+  st.etag = d.etag;
+  st.loaded = true;
+  if (discard) st.docDirty = st.inkDirty = st.conflict = false;
+  apply(st);
+  st.doc.innerHTML = d.html; // sanitized server-side — the only HTML this editor ever trusts
   try {
     const raw = JSON.parse(d.ink) as unknown;
     st.strokes = Array.isArray(raw) ? raw.filter((s): s is Stroke => !!s && typeof s === 'object' && Array.isArray((s as Stroke).p)) : [];
   } catch {
     st.strokes = [];
   }
+  st.fresh.clear();
   updateCount(st);
+  st.onInput?.();
   setStatus(st, d.updated ? `Saved ${fmtTime(d.updated)}` : '');
   fit(st);
-  const saved = readDesktopCheckpoint<{ tool: Tool; color: string; width: string; top: number; left: number }>(`note:${st.w.i}`);
+  const saved = readDesktopCheckpoint<{ tool: Tool; color: string; width: string; top: number; left: number }>(`note:${st.owner}`);
   if (saved) {
     if (['text', 'pen', 'eraser'].includes(saved.tool)) setTool(st, saved.tool);
     if (/^#[0-9a-f]{6}$/i.test(saved.color)) st.color.value = saved.color;
     if (Number(saved.width) >= 1 && Number(saved.width) <= 12) st.width.value = saved.width;
     requestAnimationFrame(() => st.page.scrollTo(saved.left, saved.top));
   }
+  return true;
 }
+
+/** Point the editor at a document (or at nothing). What is pending on the
+ *  current one is saved first; if that fails the editor stays where it is and
+ *  returns false — the caller keeps its selection. Calls run one after another
+ *  (two rapid selections cannot interleave their flushes). */
+function open(st: State, target: EditorTarget | null): Promise<boolean> {
+  const p = st.opening.then(() => openNow(st, target));
+  st.opening = p.catch(() => {});
+  return p;
+}
+async function openNow(st: State, target: EditorTarget | null): Promise<boolean> {
+  if (st.target && st.target.id !== target?.id) {
+    if (st.conflict || !(await flushAll(st))) {
+      if (!st.conflict) fail(st, 'Unsaved changes — save them (or Reload) before leaving this note.');
+      return false;
+    }
+  }
+  const same = st.target?.id === target?.id && !!target;
+  st.target = target;
+  if (same) {
+    apply(st);
+    return st.loaded || load(st);
+  }
+  st.gen++;
+  st.rev = 0;
+  st.etag = undefined;
+  st.loaded = false;
+  if (picker?.st === st) closePicker();
+  st.conflict = false;
+  st.docDirty = st.inkDirty = false;
+  st.docSeq = st.inkSeq = 0;
+  st.docFlight = st.inkFlight = null;
+  clearTimeout(st.docTimer);
+  clearTimeout(st.inkTimer);
+  clearTimeout(st.liveTimer);
+  st.doc.innerHTML = '';
+  st.strokes = [];
+  st.cur = null;
+  st.fresh.clear();
+  st.sel = null;
+  st.ai?.remove();
+  st.ai = null;
+  st.err.textContent = '';
+  st.count.textContent = '';
+  apply(st);
+  redraw(st);
+  if (!target) {
+    st.status.textContent = '';
+    return true;
+  }
+  return load(st); // false = shown, but not loaded: the caller must not treat it as selected
+}
+
+// ------------------------------------------------------------ note links
+
+// Typing [[ opens a picker over the caret listing the user's notes (every
+// notebook, /api/notes); picking one replaces "[[query" with a note link —
+// <a data-note="id">Title</a>, what the sanitizer keeps and what backlinks
+// are counted from. One picker at a time, page-wide; hosted like the context
+// menu (inside the open modal dialog, coordinates corrected by a probe).
+interface Picker {
+  st: State;
+  el: HTMLElement;
+  node: Text;
+  /** Where "[[" starts in `node`, and the caret offset the query runs to. */
+  start: number;
+  items: { id: string; title: string; notebook: string | null }[];
+  at: number;
+  q: string;
+  timer: number;
+  gen: number;
+}
+let picker: Picker | null = null;
+function closePicker(): void {
+  clearTimeout(picker?.timer);
+  picker?.el.remove();
+  picker = null;
+}
+function caretText(): { node: Text; offset: number } | null {
+  const sel = document.getSelection();
+  if (!sel?.isCollapsed || !sel.rangeCount) return null;
+  const r = sel.getRangeAt(0);
+  return r.startContainer.nodeType === Node.TEXT_NODE ? { node: r.startContainer as Text, offset: r.startOffset } : null;
+}
+function linkPicker(st: State): void {
+  const c = st.target ? caretText() : null;
+  const m = c ? /\[\[([^\[\]]{0,60})$/.exec(c.node.data.slice(0, c.offset)) : null;
+  if (!c || !m || !st.doc.contains(c.node)) {
+    if (picker?.st === st) closePicker();
+    return;
+  }
+  const q = m[1]!;
+  if (!picker || picker.st !== st || picker.node !== c.node) {
+    closePicker();
+    const box = el('div', 'np-pick');
+    box.setAttribute('role', 'listbox');
+    box.setAttribute('aria-label', 'Link a note');
+    (st.doc.closest('dialog[open]:modal') ?? document.body).append(box);
+    picker = { st, el: box, node: c.node, start: c.offset - m[0].length, items: [], at: 0, q, timer: 0, gen: 0 };
+  }
+  const p = picker;
+  p.q = q;
+  p.gen++;
+  p.start = c.offset - m[0].length;
+  clearTimeout(p.timer);
+  p.timer = window.setTimeout(async () => {
+    const gen = ++p.gen;
+    const res = await fetch(`/api/notes?q=${encodeURIComponent(q)}&limit=8`, { headers: { accept: 'application/json' } }).catch(() => null);
+    const d = res?.ok ? ((await res.json().catch(() => null)) as { notes: Picker['items'] } | null) : null;
+    if (picker !== p || p.gen !== gen) return;
+    p.items = (d?.notes ?? []).filter((n) => n.id !== st.target?.id);
+    p.at = 0;
+    renderPicker(p);
+  }, 120);
+  renderPicker(p);
+}
+function renderPicker(p: Picker): void {
+  const { el: box } = p;
+  box.textContent = '';
+  if (!p.items.length) box.append(el('div', 'np-pick-hint', p.q ? `No note matches “${p.q}”.` : 'Type a note title…'));
+  p.items.forEach((n, i) => {
+    const b = el('button', 'np-pick-b');
+    b.type = 'button';
+    b.setAttribute('role', 'option');
+    b.setAttribute('aria-selected', String(i === p.at));
+    b.append(el('span', 'truncate', n.title));
+    b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the caret in the document
+    b.addEventListener('click', () => pickNote(p, n));
+    box.append(b);
+  });
+  // Under the caret; inside a transformed dialog "fixed" is relative to it, so probe (0,0) and correct.
+  const sel = document.getSelection();
+  const r = sel?.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : p.st.doc.getBoundingClientRect();
+  box.style.left = '0px';
+  box.style.top = '0px';
+  const o = box.getBoundingClientRect();
+  box.style.left = `${Math.max(8, Math.min(r.left, innerWidth - o.width - 8)) - o.left}px`;
+  box.style.top = `${Math.max(8, Math.min(r.bottom + 4, innerHeight - o.height - 8)) - o.top}px`;
+}
+function pickNote(p: Picker, n: { id: string; title: string }): void {
+  const { st, node, start } = p;
+  closePicker();
+  if (!node.isConnected || !st.target) return;
+  const end = Math.min(node.data.length, start + 2 + p.q.length);
+  const r = document.createRange();
+  r.setStart(node, start);
+  r.setEnd(node, end);
+  const sel = document.getSelection()!;
+  sel.removeAllRanges();
+  sel.addRange(r);
+  st.doc.focus();
+  document.execCommand('insertHTML', false, `<a data-note="${n.id}">${esc(n.title)}</a>&nbsp;`);
+  markDoc(st);
+}
+/** Arrow keys / Enter / Escape while the picker is up. True = handled. */
+function pickerKeys(st: State, e: KeyboardEvent): boolean {
+  const p = picker;
+  if (!p || p.st !== st) return false;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closePicker();
+    return true;
+  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!p.items.length) return false;
+    e.preventDefault();
+    p.at = (p.at + (e.key === 'ArrowDown' ? 1 : p.items.length - 1)) % p.items.length;
+    renderPicker(p);
+    return true;
+  }
+  if ((e.key === 'Enter' || e.key === 'Tab') && p.items[p.at]) {
+    e.preventDefault();
+    pickNote(p, p.items[p.at]!);
+    return true;
+  }
+  return false;
+}
+document.addEventListener('selectionchange', () => {
+  // The caret left the [[ run (a click elsewhere, arrow keys): the picker goes.
+  if (!picker) return;
+  const c = caretText();
+  if (!c || c.node !== picker.node || c.offset < picker.start + 2) closePicker();
+});
+document.addEventListener('click', (e) => {
+  if (picker && !picker.el.contains(e.target as Node) && !picker.st.doc.contains(e.target as Node)) closePicker();
+});
 
 // ------------------------------------------------------------------- ink
 
@@ -428,7 +798,7 @@ function pt(st: State, e: PointerEvent): Pt {
 const palm = (st: State, e: PointerEvent) => e.pointerType === 'touch' && st.penSeen;
 
 function down(st: State, e: PointerEvent): void {
-  if (st.tool === 'text' || palm(st, e)) return;
+  if (st.tool === 'text' || palm(st, e) || !st.target) return;
   if (e.pointerType === 'pen') st.penSeen = true;
   e.preventDefault();
   st.canvas.setPointerCapture(e.pointerId);
@@ -464,7 +834,7 @@ function up(st: State, e: PointerEvent): void {
   st.fresh.add(s);
   markInk(st);
   fit(st);
-  if (st.cfg.transcribe === 'live') scheduleLive(st);
+  if (st.target?.cfg.transcribe === 'live') scheduleLive(st);
 }
 function erase(st: State, at: Pt): void {
   const before = st.strokes.length;
@@ -529,17 +899,21 @@ function setBusy(st: State, busy: boolean): void {
 }
 
 async function transcribe(st: State, strokes: Stroke[]): Promise<void> {
+  const t = st.target;
+  if (!t) return;
   const set = strokes.filter((s) => st.strokes.includes(s));
   if (!set.length || st.busy) {
-    if (set.length && st.cfg.transcribe === 'live') scheduleLive(st); // busy: try again after
+    if (set.length && t.cfg.transcribe === 'live') scheduleLive(st); // busy: try again after
     return;
   }
   const b = bbox(set);
+  const gen = st.gen;
   setBusy(st, true);
   setStatus(st, 'Reading the handwriting…');
-  const res = await postJson(`/api/note/${st.w.i}`, { action: 'transcribe', image: inkImage(set, b) });
+  const res = await postJson(t.api, { action: 'transcribe', image: inkImage(set, b) });
   const d = res.data as { text?: string; error?: string } | null;
   setBusy(st, false);
+  if (st.gen !== gen) return; // a different note is open now: its text is not this one's
   if (!res.ok) {
     fail(st, d?.error ?? 'Could not read the handwriting.');
     return;
@@ -551,12 +925,12 @@ async function transcribe(st: State, strokes: Stroke[]): Promise<void> {
     return;
   }
   insertAt(st, text, b.y);
-  if (!st.cfg.keepInk) {
+  if (!t.cfg.keepInk) {
     st.strokes = st.strokes.filter((s) => !set.includes(s));
     redraw(st);
     markInk(st);
   }
-  if (st.fresh.size && st.cfg.transcribe === 'live') scheduleLive(st);
+  if (st.fresh.size && t.cfg.transcribe === 'live') scheduleLive(st);
 }
 
 // -------------------------------------------------------------- ✨ Rime
@@ -579,8 +953,10 @@ function toggleAi(st: State): void {
     st.ai = null;
     return;
   }
+  if (!st.target) return;
   const bar = el('div', 'np-ai');
   const mode = el('select', 'input');
+  mode.setAttribute('aria-label', 'What Rime should do');
   for (const [v, l] of MODES) {
     const o = el('option', undefined, l);
     o.value = v;
@@ -590,6 +966,7 @@ function toggleAi(st: State): void {
   prompt.type = 'text';
   prompt.maxLength = 1000;
   prompt.placeholder = 'Or tell Rime what to do…';
+  prompt.setAttribute('aria-label', 'Custom instruction');
   const run = el('button', 'btn-primary min-h-0 px-2 py-1 text-xs', 'Run');
   run.type = 'button';
   run.addEventListener('mousedown', (e) => e.preventDefault());
@@ -619,18 +996,21 @@ const blockOf = (node: Node, doc: HTMLElement): Element | null => {
 };
 
 async function runAi(st: State, mode: string, prompt: string): Promise<void> {
-  if (st.busy) return;
+  const t = st.target;
+  if (st.busy || !t) return;
   const range = st.sel && !st.sel.collapsed && st.doc.contains(st.sel.commonAncestorContainer) ? st.sel.cloneRange() : null;
   const text = range ? range.toString() : st.doc.innerText;
   if (!text.trim()) {
     fail(st, 'Nothing to work on yet.');
     return;
   }
+  const gen = st.gen;
   setBusy(st, true);
   setStatus(st, 'Rime is thinking…');
-  const res = await postJson(`/api/note/${st.w.i}`, { action: 'ai', mode, prompt, text });
+  const res = await postJson(t.api, { action: 'ai', mode, prompt, text });
   const d = res.data as { text?: string; error?: string } | null;
   setBusy(st, false);
+  if (st.gen !== gen) return; // a different note is open now
   if (!res.ok) {
     fail(st, d?.error ?? 'Rime could not do that.');
     return;
@@ -659,12 +1039,13 @@ async function runAi(st: State, mode: string, prompt: string): Promise<void> {
 // ------------------------------------------------------------- export
 
 function exportHtml(st: State): string {
-  return `<!doctype html><meta charset="utf-8"><title>${esc(wardTitle(st.w))}</title><style>body{max-width:60rem;margin:2rem auto;padding:0 1rem;font:16px/1.7 system-ui,sans-serif}blockquote{border-left:3px solid #999;margin:0;padding-left:.75em;color:#555}pre{background:#f3f3f3;padding:.5em .65em;white-space:pre-wrap}</style>${st.doc.innerHTML}`;
+  const title = st.target?.title ?? 'Note';
+  return `<!doctype html><meta charset="utf-8"><title>${esc(title)}</title><style>body{max-width:60rem;margin:2rem auto;padding:0 1rem;font:16px/1.7 system-ui,sans-serif}blockquote{border-left:3px solid #999;margin:0;padding-left:.75em;color:#555}pre{background:#f3f3f3;padding:.5em .65em;white-space:pre-wrap}</style>${st.doc.innerHTML}`;
 }
 function download(st: State): void {
   const a = el('a');
   a.href = URL.createObjectURL(new Blob([exportHtml(st)], { type: 'text/html' }));
-  a.download = `${wardTitle(st.w).replace(/[^\w-]+/g, '-').replace(/^-|-$/g, '') || 'note'}.html`;
+  a.download = `${(st.target?.title ?? 'note').replace(/[^\w-]+/g, '-').replace(/^-|-$/g, '') || 'note'}.html`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
 }
@@ -687,7 +1068,12 @@ function dialog(): HTMLDialogElement | null {
   const d = document.getElementById('note-dialog') as HTMLDialogElement | null;
   if (!d) return null;
   dlg = d;
-  d.querySelector('[data-nd-close]')?.addEventListener('click', () => d.close());
+  const tryClose = async () => {
+    if (!shown || (await flushAll(shown)) && !shown.conflict) d.close();
+    else toast('The note has unsaved changes — fix the save before closing.', undefined, true);
+  };
+  d.querySelector('[data-nd-close]')?.addEventListener('click', () => void tryClose());
+  d.addEventListener('cancel', (e) => { e.preventDefault(); void tryClose(); });
   d.addEventListener('close', () => {
     const st = shown;
     shown = null;
@@ -695,8 +1081,14 @@ function dialog(): HTMLDialogElement | null {
     if (!st) return;
     delete st.root.dataset.full;
     st.btn.expand!.hidden = false;
-    const b = body(st.w.i);
-    if (b && states.get(st.w.i) === st) mount(st, b);
+    const b = body(st.owner);
+    if (b && states.get(st.owner) === st) mount(st, b);
+    if (st.owner === 'note-link') {
+      st.ro.disconnect();
+      clearTimeout(st.liveTimer);
+      states.delete(st.owner);
+      st.root.remove();
+    }
   });
   return d;
 }
@@ -706,12 +1098,12 @@ function openDialog(st: State): void {
   if (!d) return;
   if (shown) d.close();
   shown = st;
-  expandedDesktopWard(st.w.i);
-  d.querySelector('[data-nd-title]')!.textContent = wardTitle(st.w);
+  expandedDesktopWard(st.owner);
+  d.querySelector('[data-nd-title]')!.textContent = st.target?.title ?? 'Notepad';
   st.root.dataset.full = '';
   st.btn.expand!.hidden = true; // the dialog's ✕ is the way back
   d.querySelector('[data-nd-host]')!.append(st.root);
-  const b = body(st.w.i);
+  const b = body(st.owner);
   if (b) {
     b.textContent = '';
     b.append(el('p', 'wd-note text-xs text-ink-faint', 'Open in the editor…'));
@@ -720,23 +1112,112 @@ function openDialog(st: State): void {
   fit(st);
 }
 
+/** A link can name an unfiled note or a notebook with no dashboard tile. */
+export async function openLinkedNote(id: string): Promise<void> {
+  if (!/^[a-z0-9-]{1,32}$/.test(id)) return;
+  const d = dialog();
+  if (!d) return;
+  if (shown) {
+    if (!(await flushAll(shown)) || shown.conflict) return;
+    await new Promise<void>((resolve) => { d.addEventListener('close', () => resolve(), { once: true }); d.close(); });
+  }
+  const st = build('note-link', true);
+  states.set(st.owner, st);
+  if (!(await open(st, { id, api: `/api/note/${id}?ward=`, title: 'Note', cfg: noteConfig({ i: '', type: 'note', size: '2x2' }) }))) {
+    st.ro.disconnect();
+    states.delete(st.owner);
+    toast('That note could not be opened.', undefined, true);
+    return;
+  }
+  openDialog(st);
+}
+
+// ------------------------------------------------------ the editor API
+
+/** An editor for whoever hosts one (the notebook): `root` goes wherever it
+ *  should show, `open` points it at a document. It is registered under `owner`
+ *  so the page-wide flush handlers (a mention, a relaunch, pagehide) save it. */
+export interface NoteEditor {
+  root: HTMLElement;
+  /** The editable element — read-only access for an outline or a word count. */
+  doc: HTMLElement;
+  /** The open document's id, or null. */
+  id(): string | null;
+  /** Show a document (null = nothing). False = unsaved edits could not be saved; the editor stays put. */
+  open(target: EditorTarget | null): Promise<boolean>;
+  /** Save what is pending; true when nothing is left unsaved. */
+  flush(): Promise<boolean>;
+  dirty(): boolean;
+  /** Called after every edit and every load. */
+  onInput(fn: (() => void) | null): void;
+  /** The editor's expanded layout (full toolbar, wide page). */
+  full(on: boolean): void;
+  destroy(): void;
+}
+
+export function createNoteEditor(owner: string): NoteEditor {
+  const st = build(owner, false);
+  states.set(owner, st);
+  apply(st);
+  return {
+    root: st.root,
+    doc: st.doc,
+    id: () => st.target?.id ?? null,
+    open: (t) => open(st, t),
+    flush: () => flushAll(st),
+    dirty: () => st.docDirty || st.inkDirty || st.conflict,
+    onInput: (fn) => { st.onInput = fn; },
+    full: (on) => { st.root.toggleAttribute('data-full', on); fit(st); },
+    destroy: () => {
+      if (picker?.st === st) closePicker();
+      st.ro.disconnect();
+      clearTimeout(st.liveTimer);
+      if (states.get(owner) === st) states.delete(owner);
+    },
+  };
+}
+
+/** Redraw after the host resized the editor (a pane switch, a dialog open). */
+export function refitNoteEditors(): void {
+  for (const st of states.values()) fit(st);
+}
+
 // -------------------------------------------------------------- registry
 
 document.execCommand('defaultParagraphSeparator', false, 'p');
 
 // The ✨ bar takes focus, so the selection it should work on is the last one
-// made inside a document — tracked here, once, for every notepad on the page.
+// made inside a document — tracked here, once, for every editor on the page.
 document.addEventListener('selectionchange', () => {
   const sel = document.getSelection();
   if (!sel?.rangeCount) return;
   const range = sel.getRangeAt(0);
   for (const st of states.values()) if (st.doc.contains(range.commonAncestorContainer)) st.sel = range.cloneRange();
 });
-// The agent's write_note landed (logic.ts relays the stream event): pull the
-// new document unless the user is mid-edit — their keystrokes win.
+// The document was saved elsewhere — the agent's write_note, or another
+// surface's editor (logic.ts relays the stream event): every editor showing
+// it pulls the new version, unless the user is mid-edit there (their keystrokes
+// win, and their next save meets the rev check instead), or it is the editor
+// whose own save this is (in flight, or already at that rev).
 window.addEventListener('fd:note', (e) => {
-  const st = states.get(String((e as CustomEvent<{ ward?: string }>).detail?.ward ?? ''));
-  if (st && !st.docDirty) void load(st);
+  const d = (e as CustomEvent<{ ward?: string; note?: string; rev?: number; meta?: boolean; gone?: boolean }>).detail ?? {};
+  if (d.meta) return; // a title or tag changed — the notebook list cares, the document did not move
+  for (const st of states.values()) {
+    if (!st.target) continue;
+    if (st.target.id !== d.note && st.owner !== d.ward) continue;
+    if (d.gone) {
+      clearTimeout(st.docTimer);
+      clearTimeout(st.inkTimer);
+      st.conflict = st.docDirty || st.inkDirty || st.saving > 0;
+      st.loaded = false;
+      apply(st);
+      fail(st, 'This note was deleted. Copy any unsaved text before closing.');
+      continue;
+    }
+    if (st.saving || st.docDirty || st.inkDirty || st.conflict) continue;
+    if (d.rev !== undefined && st.rev >= d.rev) continue;
+    void load(st);
+  }
 });
 window.addEventListener('fd:ward-context', event => {
   const { wards, waitUntil } = (event as CustomEvent<{ wards: string[]; waitUntil(p: Promise<unknown>): void }>).detail;
@@ -746,8 +1227,7 @@ window.addEventListener('fd:ward-context', event => {
       const st = states.get(id);
       if (!st) continue;
       if (st.busy) throw Error('Wait for the note operation to finish before mentioning it.');
-      await Promise.all([flushDoc(st), flushInk(st)]);
-      if (st.docDirty || st.inkDirty) throw Error('The mentioned note could not be saved. Your message is still a draft.');
+      if (!(await flushAll(st))) throw Error('The mentioned note could not be saved. Your message is still a draft.');
     }
   })());
 });
@@ -756,9 +1236,8 @@ window.addEventListener('fd:before-workspace-navigation', event => {
     await Promise.all(pendingWrites);
     for (const st of states.values()) {
       if (st.busy) throw Error('Wait for the note operation to finish before relaunching.');
-      await Promise.all([flushDoc(st), flushInk(st)]);
-      if (st.docDirty || st.inkDirty) throw Error('The note could not be saved. Try again before relaunching.');
-      saveDesktopState(`note:${st.w.i}`, { tool: st.tool, color: st.color.value, width: st.width.value, top: st.page.scrollTop, left: st.page.scrollLeft });
+      if (!(await flushAll(st))) throw Error('The note could not be saved. Try again before relaunching.');
+      saveDesktopState(`note:${st.owner}`, { tool: st.tool, color: st.color.value, width: st.width.value, top: st.page.scrollTop, left: st.page.scrollLeft });
     }
   })());
 });
@@ -775,15 +1254,13 @@ RENDERERS.note = {
     if (!b) return;
     let st = states.get(w.i);
     if (!st) {
-      st = build(w);
+      st = build(w.i, true);
       states.set(w.i, st);
-      apply(st);
       mount(st, b);
-      void load(st);
+      void open(st, wardTarget(w));
       return;
     }
-    st.w = w;
-    apply(st);
+    void open(st, wardTarget(w)); // the same document: knobs re-read; another one (config.note changed): flushed, then loaded
     if (shown === st) return; // it is in the dialog; the body already says so
     mount(st, b);
   },

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db.ts';
 import { broadcast } from '../logic-engine.ts';
-import { activeConversationRow, addMessage, appendItems, getConversation, userItemFor } from './conversations.ts';
+import { activeConversationRow, addMessage, appendItems, getConversation, transcript, userItemFor } from './conversations.ts';
 import type { Dialect } from './provider.ts';
 import type { ToolCtx, ToolDef } from './tools.ts';
+import { CHILD_ANSWER_MAX, openQuestion } from './inbox.ts';
 
 /** Runtime-local receipts survive reloads; executable promises never cross a runtime. */
 export interface AgentTask {
@@ -25,7 +26,7 @@ interface Row {
   id: string; user_id: number; ward: string; conversation_id: number;
   tool: string; reason: string; state: AgentTask['state']; background: number;
   started_at: number; finished_at: number | null; error: string | null;
-  result: string; output: string; output_offset: number;
+  result: string; output: string; output_offset: number; notified: number;
   provider: string | null; model: string | null; endpoint: string | null;
 }
 interface Running {
@@ -61,9 +62,9 @@ function row(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string): Row {
 export const isLive = (id: string): boolean => live.has(id);
 /** A child run's job row, or null — the address check for messages and the framing lines.
  *  conversation_id is the PARENT thread it was started from: where its traffic goes. */
-export function childJob(userId: number, id: string): { id: string; ward: string; reason: string; state: AgentTask['state']; conversation_id: number; provider: string | null; model: string | null } | null {
+export function childJob(userId: number, id: string): { id: string; ward: string; reason: string; state: AgentTask['state']; conversation_id: number; notified: number; provider: string | null; model: string | null } | null {
   if (typeof id !== 'string' || id.length > 40) return null;
-  return (db().prepare("SELECT id, ward, reason, state, conversation_id, provider, model FROM agent_jobs WHERE id=? AND user_id=? AND tool='spawn_agent'").get(id, userId) as ReturnType<typeof childJob>) ?? null;
+  return (db().prepare("SELECT id, ward, reason, state, conversation_id, notified, provider, model FROM agent_jobs WHERE id=? AND user_id=? AND tool='spawn_agent'").get(id, userId) as ReturnType<typeof childJob>) ?? null;
 }
 export function assertChildCapacity(userId: number): void {
   if ((db().prepare("SELECT count(*) AS n FROM agent_jobs WHERE user_id=? AND tool='spawn_agent' AND state IN ('running','stopping')").get(userId) as { n: number }).n >= MAX_CHILDREN)
@@ -100,6 +101,20 @@ export function readTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string, curs
   while (JSON.stringify(text).length > 9000) text = text.slice(0, Math.floor(text.length * .8));
   const next = Math.min(from, start + all.length) + text.length;
   return { task: view(r), text, next, truncated: cursor < start, complete: next >= start + all.length };
+}
+
+/** The child stays attached to its own thread; opening it never activates or copies it. */
+export function readChildTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string) {
+  const r = row(ctx, id);
+  if (r.tool !== 'spawn_agent') throw Error('This task is not a child agent.');
+  const conv = db().prepare('SELECT id FROM agent_conversations WHERE user_id=? AND ward=? AND task_id=?')
+    .get(ctx.userId, ctx.ward, id) as { id: number } | undefined;
+  const messages = db().prepare(`SELECT id,text,status,result FROM agent_inbox WHERE user_id=? AND ward=? AND sender='user' ORDER BY id DESC LIMIT 50`)
+    .all(ctx.userId, id) as { id: number; text: string; status: string; result: string }[];
+  const question = r.state === 'running' ? openQuestion(ctx.userId, id, ctx.ward) : null;
+  return { task: view(r), transcript: conv ? transcript(conv.id) : [], output: r.output, truncated: r.output_offset > 0,
+    canMessage: r.state === 'running' && isLive(id), messages: messages.reverse(),
+    question: question ? { id: question.id, text: question.text, maxLength: CHILD_ANSWER_MAX } : null };
 }
 export function backgroundTasks(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id?: string): AgentTask[] {
   const tasks = id ? [view(row(ctx, id))] : listTasks(ctx);
@@ -196,6 +211,7 @@ function childBrief(r: Row): string {
  */
 async function wakeParent(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string): Promise<void> {
   const r = row(ctx, id);
+  if (r.notified || r.state === 'cancelled' || r.state === 'interrupted') return;
   try {
     const { sendMessage } = await import('./inbox.ts');
     await sendMessage(r.user_id, { to: r.ward, from: r.id, mode: 'steer', conversation: r.conversation_id,
@@ -229,9 +245,9 @@ export async function runTask(name: string, args: Record<string, unknown>, ctx: 
     if (ctx.task) throw Error('A child run cannot start another run. Do the work yourself or ask your parent.');
     assertChildCapacity(ctx.userId);
   }
-  // ponytail: keep the latest 100 settled receipts per user; add export if long-term task archives are needed.
+  // ponytail: keep the latest 100 ordinary receipts; child identities live with their conversations.
   // A background job whose notice is still owed is never pruned — its report is undelivered.
-  store.prepare(`DELETE FROM agent_jobs WHERE user_id=? AND state NOT IN ('running','stopping') AND NOT (background=1 AND notified=0) AND id NOT IN
+  store.prepare(`DELETE FROM agent_jobs WHERE user_id=? AND tool!='spawn_agent' AND state NOT IN ('running','stopping') AND NOT (background=1 AND notified=0) AND id NOT IN
     (SELECT id FROM agent_jobs WHERE user_id=? ORDER BY started_at DESC LIMIT 100)`).run(ctx.userId, ctx.userId);
   const id = randomUUID(), ac = new AbortController();
   const background = args.background === true || def.spawn === true;

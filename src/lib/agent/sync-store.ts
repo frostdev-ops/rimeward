@@ -19,6 +19,7 @@ import { INSTANCE_KEY, dashboardForSync, validateInstance, installInstance } fro
 import { isDesktop } from '../dev/runtime.ts';
 import { BG_DIR, listBackgrounds, MAX_PER_USER } from '../backgrounds.ts';
 import { brandFile, BRAND_DIR, SLOTS, isSlot } from '../brand-files.ts';
+import { NOTE_KEY, NOTEBOOK_KEY, changedNotes, installNote, installNotebook, noteRecord, notebookRecord, validateNoteRecord, validateNotebookRecord } from '../note-sync.ts';
 
 export const SYNC_RECORD_MAX = 64 * 1024 * 1024;
 export interface SyncRecord {
@@ -182,6 +183,10 @@ export function validateRecord(record: SyncRecord) {
     payloadData(JSON.stringify(asset.data));
   } else if (record.key === INSTANCE_KEY) {
     validateInstance(value);
+  } else if (NOTE_KEY.test(record.key)) {
+    if (value !== null && validateNoteRecord(value).id !== record.key.slice(5)) throw failure('Note record id mismatch.');
+  } else if (NOTEBOOK_KEY.test(record.key)) {
+    if (value !== null && validateNotebookRecord(value).id !== record.key.slice(9)) throw failure('Notebook record id mismatch.');
   } else if (record.key.startsWith("work/")) {
     workParts(record.key);
     if (value !== null) payloadData(record.payload);
@@ -267,6 +272,14 @@ export function captureRime(user: number) {
   }
   for (const row of getDb().prepare("SELECT key FROM agent_sync_records WHERE user_id=? AND key LIKE 'appearance/image/%' AND payload!='null'").all(user) as { key: string }[])
     if (!images.has(row.key)) store(user, row.key, null);
+  // Notes and notebooks: one record each, rewritten only when the row's
+  // fingerprint moved (note-sync.ts); a vanished row becomes a null record.
+  const notes = changedNotes(user, (key) => !!syncRecord(user, key));
+  for (const id of notes.ids) store(user, `note/${id}`, noteRecord(user, id));
+  for (const key of notes.gone) store(user, key, null);
+  for (const id of notes.books) store(user, `notebook/${id}`, notebookRecord(user, id));
+  for (const row of getDb().prepare("SELECT key FROM agent_sync_records WHERE user_id=? AND key LIKE 'notebook/%' AND payload!='null'").all(user) as { key: string }[])
+    if (!notes.books.includes(row.key.slice(9))) store(user, row.key, null);
   if (!isDesktop()) for (const slot of Object.keys(SLOTS)) {
     assetDirectory(BRAND_DIR);
     if (!isSlot(slot)) continue;
@@ -400,6 +413,16 @@ export function refreshWorkRecord(user: number, key: string) {
     store(user, key, dashboardForSync(user));
     return;
   }
+  if (NOTE_KEY.test(key)) {
+    const note = noteRecord(user, key.slice(5));
+    if (note || syncRecord(user, key)) store(user, key, note);
+    return;
+  }
+  if (NOTEBOOK_KEY.test(key)) {
+    const notebook = notebookRecord(user, key.slice(9));
+    if (notebook || syncRecord(user, key)) store(user, key, notebook);
+    return;
+  }
   if (key.startsWith('appearance/image/')) {
     assetDirectory(BG_DIR);
     const file = path.join(BG_DIR, `${user}-${key.slice(17)}.webp`);
@@ -432,6 +455,25 @@ function replaceFile(target: string, data: string | Buffer) {
 export function installRecord(user: number, record: SyncRecord) {
   validateRecord(record);
   if (record.key === INSTANCE_KEY) installInstance(user, JSON.parse(record.payload));
+  if (NOTE_KEY.test(record.key) || NOTEBOOK_KEY.test(record.key)) {
+    const value: unknown = JSON.parse(record.payload);
+    const isNote = NOTE_KEY.test(record.key);
+    const id = record.key.slice(isNote ? 5 : 9);
+    const previousNotebook = isNote ? noteRecord(user, id)?.notebook : null;
+    if (isNote) installNote(user, id, value === null ? null : validateNoteRecord(value));
+    else installNotebook(user, id, value === null ? null : validateNotebookRecord(value));
+    store(user, record.key, value);
+    // Open surfaces on this runtime reload the document / the notebook (late import: the engine imports this module's callers).
+    const rec = isNote && value ? (value as { notebook: string | null; rev: number }) : null;
+    void import('../logic-engine.ts').then((m) => {
+      if (isNote) {
+        m.broadcast(user, 'note', value === null ? { note: id, gone: true } : { note: id, synced: true });
+        if (previousNotebook && previousNotebook !== rec?.notebook) m.broadcast(user, 'notebook', { notebook: previousNotebook });
+        if (rec?.notebook) m.broadcast(user, 'notebook', { notebook: rec.notebook });
+      } else m.broadcast(user, 'notebook', { notebook: id });
+    });
+    return;
+  }
   if (record.key.startsWith('appearance/image/')) {
     assetDirectory(BG_DIR, record.payload !== 'null');
     const file = path.join(BG_DIR, `${user}-${record.key.slice(17)}.webp`);

@@ -36,11 +36,13 @@ Mentions capture context when you send. They do not authorize a command, send a 
 
 Use the activity view to inspect tool work. A new message can steer a running turn. **Chat history** keeps previous conversations; starting a new chat archives the current one after the operation succeeds.
 
+Use `/compact` to summarize older context while keeping the full transcript on disk. It runs on the conversation's owning computer, including when you send it from another desktop. The connection stays open while the summary is prepared; wait for the result before requesting another compaction.
+
 ## Set approvals before giving work to an agent
 
 Review each Rime ward's approvals and unattended-turn limits in its configuration. The default approval policy is oriented around outbound actions, but policies can be changed; do not assume every write or command will always prompt.
 
-Native commands run with your computer account's permissions inside an approved project. Tool approval, an existing terminal's **Allow Rime to type**, and a CLI's **Standard / Unrestricted** setting are separate controls. Grant only the autonomy that fits the work.
+Native commands run with your computer account's permissions inside an approved project. **Let Rime control** is on by default in every terminal. You and Rime can type in the same session while it is on. Turn it off to stop Rime input; your keyboard stays active. Native command tools still follow the chat's approval setting.
 
 Rime's targeted patch tool validates edits and protects dirty or human-owned buffers, with recovery copies before destructive writes. Review a patch and the resulting diff for consequential changes. Recovery and permission checks do not replace judgment about a command's effects.
 
@@ -51,6 +53,12 @@ Use **Run in background**, **Ctrl+B**, or `/background` when available. **Tasks*
 Use the individual task's **Stop** when you want to stop that work. Stopping a response is not a universal rollback, and stopping a wait does not necessarily terminate the process being observed. Check task and terminal status before running a command again. Runtime restarts mark unfinished task records interrupted rather than replaying them.
 
 Rime can delegate a bounded assignment to a child agent with its own thread. Children inherit tool, project, and approval restrictions; an unattended child reports work that needs confirmation. Multiple agents can consume more model usage, so use delegation when independent work justifies it.
+
+In **Tasks**, choose a child's **Open conversation** to read its transcript and live activity. Send instructions directly while it runs, answer a question it is waiting on, or use **Stop child**. Message delivery shows whether the child read your message or ended before receiving it. **Back to tasks** returns to the parent controls. Completed child conversations remain readable; sending here does not restart a finished run.
+
+Unsent child drafts survive closing and reopening the conversation, and the desktop saves them for an app restart. A waiting question appears above the composer; your answer is tied to that question. Connection loss keeps the transcript and draft visible while reconnecting. If delivery cannot be confirmed, check **Message delivery** before sending the same instruction again.
+
+Child notifications are delivered once. A failed or stopped receiving turn closes its message receipts; recovery does not replay them later. Stopped children retain their results without waking the parent. Queued monitor prompts check that their Leyline is still enabled before starting, and stopping a turn also discards unattended prompts already queued behind it.
 
 ## Memory, skills, and automations
 

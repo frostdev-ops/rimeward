@@ -22,6 +22,7 @@ import {
 } from "./projects.ts";
 import {
   startSession,
+  restartSession,
   listSessions,
   readSession,
   writeSession,
@@ -201,23 +202,33 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ),
   terminal_list: wrap(
     "read",
-    "List terminal sessions, delegated tasks, assignments and permission modes. Check overlapping assignments before delegating; coordination cannot isolate external CLI writes.",
+    "List terminal sessions, delegated tasks and assignments. agentInput reports whether Let Rime control is on. Check overlapping assignments before delegating; coordination cannot isolate external CLI writes.",
     schema({ ...context }, ["runtime"]),
     (a, c) => listSessions(c.userId, a.project),
   ),
   terminal_start: wrap(
     "write",
-    "Open a visible Terminal tab for an intentional interactive shell, Codex, or Claude Code session in a project. Use terminal_exec for routine commands instead of creating tabs. New sessions always use Human mode. The user can start sessions with delegated control through the Terminal ward. Never install CLIs or guess credentials. The session outlives views. Review output and changes before declaring completion.",
+    "Reuse an interactive shell, Codex, or Claude Code session in a project, restoring its saved tab if needed. Set newSession:true only when a separate session is wanted. Initial task instructions apply only to new sessions. Read the screen before sending input: a reused session may already be busy, or a restored CLI may show its native conversation picker. Let Rime control is on by default, so you and the user can type in the same session; off blocks only Rime input. Use terminal_exec for routine commands. Never install CLIs or guess credentials. Review output and changes before declaring completion.",
     schema(
       {
         ...context,
         kind: { type: "string", enum: ["shell", "codex", "claude"] },
+        session: str("Existing session ID to reuse or restore; must match this project and kind"),
+        newSession: { type: "boolean", description: "Open a separate session instead of reusing one (default false)" },
         task: str("Task instructions"),
         assignment: str("Assigned files or area; disclose overlapping work"),
       },
       ["runtime", "project", "kind", "task", "assignment"],
     ),
     async (a, c) => {
+      projectPath(c.userId, a.project);
+      if (a.session && a.newSession) throw new Error("Choose an existing session or request a new one.");
+      if (!a.newSession) {
+        const sessions = listSessions(c.userId, a.project).filter(s => !s.command && s.kind === a.kind);
+        const existing = a.session ? sessions.find(s => s.id === a.session) : sessions.find(s => s.state === "running") ?? sessions[0];
+        if (a.session && !existing) throw new Error("Session not found in this project for this program.");
+        if (existing) return restartSession(c.userId, existing.id);
+      }
       return startSession(c.userId, {
         project: a.project,
         kind: a.kind,
@@ -230,7 +241,7 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   terminal_exec: {
     ...wrap(
       "confirm",
-      "Run a native shell command in a desktop project without opening a Terminal tab. Output and Stop controls are in chat Tasks; users can open its retained screen through Terminal's Rime commands menu. Returns exit_code for normal exits; signal/cancellation/termination returns null with exit_signal, cancelled and termination_reason. Commands can change files and access this computer/network; the ward approval policy applies. Use background:true for long work; task_output reads live logs. Stop terminates this command's process, not a user's existing terminal. Prefer this tool for routine commands; terminal_start is for intentional interactive shells or terminal agents. Never assume an exit code proves a requested change is correct.",
+      "Run a native shell command in a desktop project without opening a Terminal tab. Output and Stop controls are in chat Tasks; users can open its retained screen through Terminal's Task manager. Returns exit_code for normal exits; signal/cancellation/termination returns null with exit_signal, cancelled and termination_reason. Commands can change files and access this computer/network; the ward approval policy applies. Use background:true for long work; task_output reads live logs. Stop terminates this command's process, not a user's existing terminal. Prefer this tool for routine commands; terminal_start is for intentional interactive shells or terminal agents. Never assume an exit code proves a requested change is correct.",
       schema({ ...context, command: str("Exact shell command; /bin/sh on macOS/Linux, PowerShell on Windows"), title: str("Short task label") }, ["runtime", "project", "command"]),
       async (a, c) => {
         c.signal?.throwIfAborted();
@@ -294,7 +305,7 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ), backgroundable: true, cancellable: true },
   terminal_input: wrap(
     "write",
-    "Send exact input to a session with agentInput enabled. The user can enable Rime input in Session settings without restarting, then release human control. Read the latest screen first. Never blindly replay uncertain input or guess approval keys; user takeover pauses agent input.",
+    "Send exact input to a session with Let Rime control on (agentInput:true, the default). If off, the user can turn on the terminal's toggle; no restart or separate handoff is needed. Read the latest screen first. Never blindly replay uncertain input or guess approval keys; turning the toggle off stops Rime input.",
     schema(
       {
         ...session,

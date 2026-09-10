@@ -4,14 +4,16 @@ import type { gitView } from "../../lib/dev/projects.ts";
 import { icon } from "./icon.ts";
 import { chooseProject, askText, confirmAction, dialog as workspaceDialog } from "./workspace-dialogs.ts";
 import { RENDERERS, body, poll } from "./wards.ts";
-import { el, toast } from "./dom.ts";
+import { el, toast, reducedMotion } from "./dom.ts";
 import { readPages, pageOfCard } from "./pages.ts";
 import { CATALOG, type WardInstance } from "../../lib/wards.ts";
 import {
   DEV_WARDS,
   terminalExitLabel,
+  terminalNeedsRestore,
   type Project,
   type SessionView,
+  type SessionResourceView,
   type TerminalKind,
 } from "../../lib/dev/types.ts";
 import { Terminal } from "@xterm/xterm";
@@ -251,32 +253,48 @@ async function mount(w: WardInstance) {
       let connected = false, streamReady = false, launching = false, failure = "";
       let retrySnapshot: ReturnType<typeof setTimeout> | undefined;
       let painting: Promise<void> | undefined, outputs: { sequence: number; data: string }[] = [];
-      let outputSize = 0, resync = false, released = false;
+      let outputSize = 0, resync = false, changingControl = false;
       let sessionOptions = "", autoAttach = !state.session && !state.closedSessions?.length;
       let attaching = Promise.resolve();
       const tabVisible = (s: SessionView) => (!s.command || state.tabs?.includes(s.id)) && !state.closedSessions?.includes(s.id);
       const uncertain = new Set<string>();
+      const restored = new Set<string>();
       const canType = () => !stopped && !!session && connected && streamReady && session.state === "running" &&
         session.owner === owner && !uncertain.has(session.id);
+      async function setRimeControl(enabled: boolean) {
+        const id = state.session;
+        if (!id || changingControl) return;
+        changingControl = true;
+        rimeToggle.checked = enabled;
+        draw();
+        try {
+          await inputBuffer.flush();
+          if (!connected || !streamReady || state.session !== id) return;
+          await api("configure", { id, agentInput: enabled }, "POST");
+          await update();
+        } finally { changingControl = false; draw(); resize(); if (!enabled && canType()) term.focus(); }
+      }
+      const rimeControl = el("label", "switch term-rime-control", "Let Rime control");
+      const rimeToggle = el("input");
+      rimeToggle.type = "checkbox";
+      rimeToggle.onchange = () => { void setRimeControl(rimeToggle.checked).catch(e => toast(e.message, undefined, true)); };
+      rimeControl.prepend(rimeToggle);
       const take = button("Take control", async () => {
         const id = state.session;
         if (!id) return;
-        await update(); // Reconcile the screen before acknowledging uncertain input.
+        await update();
         if (!connected || !streamReady || state.session !== id) return;
         await api("control", { id, takeover: true }, "POST");
-        released = false;
         uncertain.delete(id);
-        await update();
-        resize();
-        term.focus();
+        await update(); resize(); term.focus();
       });
       take.className = "term-control";
-      const restart = button("Start again", async () => {
+      const restart = button("Resume session", async () => {
         const id = state.session;
         if (id) await launch(undefined, id);
       });
       restart.className = "term-control";
-      footer.append(take, restart);
+      footer.append(rimeControl, take, restart);
       const keys = el("div", "term-keys");
       let showKeys = matchMedia("(pointer: coarse)").matches;
       for (const [label, data, direction] of [["Esc", "\x1b"], ["Tab", "\t"], ["Left", "\x1b[D", "180deg"],
@@ -292,27 +310,30 @@ async function mount(w: WardInstance) {
       }
       surface.after(keys);
       function draw() {
-        const writable = canType();
+        const writable = canType() && !changingControl;
         term.options.disableStdin = !writable;
         empty.hidden = !!session || !connected;
         screen.hidden = !session;
 
         newButton.disabled = launching;
         empty.querySelectorAll<HTMLButtonElement>("button").forEach(b => { b.disabled = launching; });
-        take.hidden = session?.state !== "running" || writable;
-        take.disabled = !connected || !streamReady;
+        rimeControl.hidden = session?.state !== "running";
+        if (!changingControl) rimeToggle.checked = !!session?.agentInput;
+        rimeToggle.disabled = !connected || !streamReady || changingControl;
+        take.hidden = session?.state !== "running" || canType();
+        take.disabled = !connected || !streamReady || changingControl;
         take.textContent = session && uncertain.has(session.id) ? "Review & take control" : "Take control";
-        restart.hidden = !session || session.state === "running";
+        restart.hidden = !session || !!session.command || session.state === "running";
         restart.disabled = !connected || launching;
         keys.hidden = !showKeys || !session || session.state !== "running";
         keys.querySelectorAll<HTMLButtonElement>("button").forEach(b => { b.disabled = !writable; });
         const text = failure ? failure : !connected || !streamReady ? "Reconnecting…" : !session ? "Ready" :
-          session.state !== "running" ? terminalExitLabel(session) :
+          session.state !== "running" ? terminalExitLabel(session) : changingControl ? "Saving…" :
           uncertain.has(session.id) ? "Input unconfirmed · review the screen" :
-          writable ? "You’re in control" : session.owner ? "Viewing · controlled elsewhere" : "Viewing only";
+          writable ? session.agentInput ? "Shared with Rime" : "You’re in control" : session.owner ? "Viewing · controlled elsewhere" : "Viewing only";
         if (status.textContent !== text) status.textContent = text;
         status.dataset.state = !connected || !streamReady || (session && uncertain.has(session.id)) ? "attention" : writable ? "active" : "idle";
-        status.title = session ? `${names[session.kind]} · Rime input ${session.agentInput ? "enabled" : "off"}${session.kind === "shell" ? "" : ` · ${session.mode === "yolo" ? "Unrestricted" : "Standard"} CLI permissions`}` : "";
+        status.title = session ? `${names[session.kind]} · ${session.agentInput ? "You and Rime can both type in this session" : "Rime input is off; you can keep typing"}` : "";
       }
       let resizeTimer: ReturnType<typeof setTimeout> | undefined, resizing = false, lastSize = "";
       const resize = () => {
@@ -341,7 +362,7 @@ async function mount(w: WardInstance) {
           for (const s of visible) {
             const row = el("div", "term-tab");
             row.setAttribute("role", "presentation");
-            const tab = button(`${s.title === s.kind ? names[s.kind] : s.title}${s.state === "running" ? "" : ` · ${s.state}`}`, () => attach(s.id));
+            const tab = button(s.title === s.kind ? names[s.kind] : s.title, () => attach(s.id));
             tab.className = "term-tab-label";
             tab.dataset.session = s.id;
             tab.id = `terminal-tab-${w.i}-${s.id}`;
@@ -430,6 +451,11 @@ async function mount(w: WardInstance) {
             sessionList();
             if (state.session) {
               const id = state.session;
+              const saved = list.find(s => s.id === id);
+              if (saved && terminalNeedsRestore(saved) && !restored.has(id)) {
+                restored.add(id);
+                await api("restart", { id }, "POST").catch(e => toast(e.message, undefined, true));
+              }
               const result = await api<ReturnType<typeof readSession>>("sessions", { id, ...(sequence === undefined ? {} : { after: sequence }) });
               if (stopped || state.session !== id) return;
               session = result.session;
@@ -438,7 +464,7 @@ async function mount(w: WardInstance) {
               if (result.reset) term.reset();
               if (result.data) await new Promise<void>(resolve => term.write(result.data, resolve));
               sequence = result.session.sequence;
-              if (session.state === "running" && !session.owner && !session.agentInput && !released && !uncertain.has(id))
+              if (session.state === "running" && !session.owner && !uncertain.has(id))
                 session = await api<SessionView>("control", { id }, "POST").catch(e => { if (e.status === 409) return session as SessionView; throw e; });
             }
             connected = true;
@@ -475,7 +501,7 @@ async function mount(w: WardInstance) {
           if (switched) {
             session = undefined;
             sequence = undefined;
-            outputs = []; outputSize = 0; released = false; lastSize = "";
+            outputs = []; outputSize = 0; lastSize = "";
             term.reset();
           }
           await update();
@@ -495,7 +521,6 @@ async function mount(w: WardInstance) {
           const s: SessionView = previous ? await api("restart", { id: previous }, "POST") :
             await api("sessions", { project: state.project, kind: "shell", mode: "human", cols: term.cols, rows: term.rows, ...options }, "POST");
           await attach(s.id);
-          // This action created the session for this human; make it ready to type.
           await api("control", { id: s.id, takeover: true }, "POST");
           await update();
           resize();
@@ -513,20 +538,20 @@ async function mount(w: WardInstance) {
         if (!stopped) { draw(); toast((error as Error).message, undefined, true); }
       });
       const send = (data: string, binary = false) => {
-        if (state.session && canType()) inputBuffer.send(state.session, data, binary);
+        if (state.session && !changingControl && canType()) inputBuffer.send(state.session, data, binary);
       };
       const listener = term.onData(data => void send(data));
       const binaryListener = term.onBinary(data => send(data, true));
       const start = button("Open terminal", () => launch());
       start.className = "btn-primary";
       const agentChoices = el("div", "term-agent-choices");
-      agentChoices.append(button("Codex", () => sessionDialog(undefined, "codex")), button("Claude Code", () => sessionDialog(undefined, "claude")));
+      agentChoices.append(button("Codex", () => sessionDialog("codex")), button("Claude Code", () => sessionDialog("claude")));
       const mark = el("span", "dev-empty-icon"); mark.append(icon("code"));
       empty.append(mark, el("h3", undefined, "A terminal for your project"),
         el("p", undefined, "Open a shell, or work with a terminal agent."), start, agentChoices);
 
-      function sessionDialog(existing?: SessionView, initial: TerminalKind = "shell") {
-        const { d, form, actions, error, submit } = workspaceDialog(existing ? "Session settings" : "New terminal session");
+      function sessionDialog(initial: TerminalKind = "shell") {
+        const { d, form, actions, error, submit } = workspaceDialog("New terminal session");
         d.classList.add("term-session-dialog");
         const field = (label: string, control: HTMLElement) => {
           const row = el("label", undefined, label);
@@ -537,38 +562,23 @@ async function mount(w: WardInstance) {
         for (const [value, name] of Object.entries(names)) program.add(new Option(name, value));
         program.value = initial;
         const shell = select("Shell", [...new Set<string>(caps.shells)]);
-        const mode = select("Permission mode", []);
-        mode.add(new Option("Standard — keep CLI permission prompts", "human"));
-        mode.add(new Option("Unrestricted — bypass CLI permissions", "yolo"));
-        mode.value = existing?.nextMode === "yolo" ? "yolo" : "human";
         const agentInput = el("input"); agentInput.type = "checkbox";
-        agentInput.checked = existing?.agentInput ?? false;
-        agentInput.setAttribute("aria-label", "Allow Rime to type");
-        const agentField = field("Allow Rime to type", agentInput);
+        agentInput.checked = true;
+        const agentField = el("label", "switch term-rime-control", "Let Rime control");
+        agentField.prepend(agentInput);
         const task = el("textarea", "input");
         task.rows = 3; task.maxLength = 8000;
         task.placeholder = "What would you like the agent to work on?";
         const taskField = field("Initial task (optional)", task);
         const options = el("details", "term-launch-options");
         const shellField = field("Shell", shell);
-        const permissionField = field("CLI permissions", mode);
-        options.append(el("summary", undefined, "More options"), shellField, permissionField, agentField);
-        const modeHelp = el("p", "term-help");
-        const describeMode = () => {
-          modeHelp.textContent = "Rime input includes answering CLI prompts and changes immediately. Taking control pauses Rime; release control to let it type. " +
-            (program.value === "shell" && !existing || existing?.kind === "shell" ? "Shell commands run with your desktop account’s permissions." :
-            mode.value === "human" ? "The CLI keeps its own permission prompts." : "Unrestricted disables the CLI’s approval and sandbox protections on its next start.");
-        };
-        mode.onchange = describeMode;
-        describeMode();
-        options.append(modeHelp);
+        options.append(el("summary", undefined, "Shell options"), shellField);
         const availability = el("p", "term-help");
         const syncProgram = () => {
           const kind = program.value as TerminalKind;
           taskField.hidden = kind === "shell";
           shellField.hidden = kind !== "shell";
-          permissionField.hidden = kind === "shell";
-          describeMode();
+          options.hidden = kind !== "shell";
           const missing = kind !== "shell" && !caps.agents[kind];
           submit.disabled = missing;
           submit.textContent = kind === "shell" ? "Open terminal" : `Start ${names[kind]}`;
@@ -581,30 +591,18 @@ async function mount(w: WardInstance) {
             availability.append(link);
           }
         };
-        if (existing) {
-          options.open = true;
-          shellField.hidden = true;
-          permissionField.hidden = existing.kind === "shell";
-          actions.before(el("p", "term-help", `${existing.title} · ${names[existing.kind]}. CLI permission changes apply on the next start.`), options);
-          submit.textContent = "Save settings";
-        } else {
-          actions.before(field("Program", program), taskField, availability, options);
-          program.onchange = syncProgram;
-          syncProgram();
-        }
+        actions.before(field("Program", program), taskField, availability, agentField,
+          el("p", "term-help", "You can always type. Leave this on for Rime to use the same session with you."), options);
+        program.onchange = syncProgram;
+        syncProgram();
         form.onsubmit = async e => {
           e.preventDefault();
           submit.disabled = true;
           error.hidden = true;
           try {
-            if (existing) {
-              await api("configure", { id: existing.id, agentInput: agentInput.checked, ...(existing.kind !== "shell" ? { mode: mode.value } : {}) }, "POST");
-              await update();
-            } else {
-              const kind = program.value as TerminalKind;
-              await launch({ kind, mode: kind === "shell" ? "human" : mode.value, agentInput: agentInput.checked, ...(kind === "shell" ? { shell: shell.value } : { task: task.value }),
-                title: `${names[kind]} ${list.filter(s => s.kind === kind && !s.command).length + 1}` });
-            }
+            const kind = program.value as TerminalKind;
+            await launch({ kind, agentInput: agentInput.checked, ...(kind === "shell" ? { shell: shell.value } : { task: task.value }),
+              title: `${names[kind]} ${list.filter(s => s.kind === kind && !s.command).length + 1}` });
             d.close();
           } catch (e) {
             error.textContent = (e as Error).message;
@@ -683,40 +681,15 @@ async function mount(w: WardInstance) {
           localStorage.setItem("rimeward-terminal-accessibility", String(term.options.screenReaderMode));
         });
         action(showKeys ? "Hide extra keys" : "Show extra keys", () => { showKeys = !showKeys; draw(); });
-        const commands = list.filter(s => s.command && !tabVisible(s));
-        if (commands.length) action("Rime commands…", () => {
-          const { d, form, error, actions, submit } = workspaceDialog("Rime commands");
-          const choices = select("Command", []);
-          for (const s of commands) choices.add(new Option(`${s.title} · ${s.state}`, s.id));
-          actions.before(el("p", "term-help", "Routine commands stay in chat Tasks. Open a terminal view here when you need it."), choices);
-          submit.textContent = "Open in terminal";
-          form.onsubmit = async e => {
-            e.preventDefault(); submit.disabled = true; error.hidden = true;
-            try { await attach(choices.value); d.close(); }
-            catch (e) { error.textContent = (e as Error).message; error.hidden = false; }
-            finally { submit.disabled = false; }
-          };
-          d.onclose = () => d.remove();
-        });
-        const closed = list.filter(s => !s.command && state.closedSessions?.includes(s.id));
-        if (closed.length) {
-          menu.append(el("hr"));
-          for (const s of closed) action(`Reopen ${s.title}${s.state === "running" ? "" : ` · ${s.state}`}`, () => attach(s.id));
-        }
+        action("Task manager…", taskManager);
         if (session) {
           const target = session;
           menu.append(el("hr"));
-          action("Session settings…", () => sessionDialog(target));
           action("Rename session…", async () => {
             const title = await askText("Session name");
             if (title?.trim()) { await api("configure", { id: target.id, title }, "POST"); await update(); }
           });
           if (target.state === "running") {
-            action(target.agentInput ? "Let Rime type" : "Release input control", async () => {
-              await inputBuffer.flush();
-              released = true;
-              await api("release", { id: target.id }, "POST"); await update();
-            }, !canType());
             action("Interrupt process", () => api("interrupt", { id: target.id }, "POST"), !canType());
             menu.append(el("hr"));
             action("End session…", async () => {
@@ -725,9 +698,169 @@ async function mount(w: WardInstance) {
                 await update();
               }
             }, !connected, true);
-          }
+          } else if (!target.command) action("Delete session…", () => deleteSaved(target), !connected, true);
         }
       });
+      let taskDialog: HTMLDialogElement | undefined;
+      function taskManager() {
+        const { d, form, error, actions } = workspaceDialog("Task manager");
+        taskDialog = d;
+        d.classList.add("term-task-manager");
+        const headingIcon = el("span", "term-task-heading-icon");
+        headingIcon.setAttribute("aria-hidden", "true"); headingIcon.append(icon("chart"));
+        d.querySelector("h2")?.prepend(headingIcon);
+        const dismiss = button("Close", () => closeManager());
+        dismiss.classList.add("term-task-dismiss");
+        dismiss.setAttribute("aria-label", "Close");
+        actions.replaceChildren(dismiss);
+        dismiss.replaceChildren(icon("close"), document.createTextNode("Close"));
+        let closing = false;
+        const closeManager = async () => {
+          if (closing) return;
+          closing = true;
+          if (!reducedMotion()) await d.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateY(8px)" }], { duration: 140 }).finished;
+          d.close();
+        };
+        d.oncancel = e => { e.preventDefault(); void closeManager(); };
+        form.onsubmit = e => e.preventDefault();
+        const summary = el("p", "term-task-summary", "Loading sessions…");
+        const filters = el("div", "term-task-filters"), search = input("Find a session");
+        search.type = "search";
+        const searchField = el("label", "term-task-search"); searchField.append(icon("search"), search);
+        let filter = "All", sort = "Session", descending = false;
+        let records: SessionResourceView[] = [], loading = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const filterButtons = ["All", "Running", "Saved"].map(value => {
+          const b = button(value, () => { filter = value; drawTasks(true); });
+          b.className = "term-task-filter"; filters.append(b); return b;
+        });
+        filters.append(searchField);
+        const scroll = el("div", "term-task-scroll"), table = el("table", "table term-task-table");
+        table.setAttribute("aria-label", "Terminal sessions and resource usage");
+        const head = el("thead"), headings = el("tr"), rows = el("tbody");
+        for (const label of ["Session", "Status", "CPU", "Memory", "PID", "Actions"]) {
+          const th = el("th"); th.scope = "col";
+          if (label === "Memory") th.title = "Resident memory including child processes; shared pages may be counted more than once.";
+          if (["Session", "CPU", "Memory"].includes(label)) {
+            const b = button(label, () => { descending = sort === label ? !descending : label !== "Session"; sort = label; drawTasks(true); });
+            b.className = "term-task-sort"; b.setAttribute("aria-label", label); b.append(icon("down")); th.append(b); th.dataset.sort = label;
+          } else th.textContent = label;
+          if (label === "PID") th.className = "term-task-pid";
+          headings.append(th);
+        }
+        head.append(headings); table.append(head, rows); scroll.append(table);
+        const emptyTasks = el("p", "term-task-empty", "No sessions to show."); emptyTasks.hidden = true;
+        const note = el("p", "term-help", "Darker rows use more resources. Usage includes child processes; 100% CPU is one core.");
+        actions.before(summary, filters, scroll, emptyTasks, note);
+        const entries = new Map<string, ReturnType<typeof makeRow>>();
+        const memory = (bytes: number | null) => bytes === null ? "—" : bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${(bytes / 1e6).toFixed(1)} MB`;
+        function makeRow(s: SessionResourceView) {
+          const row = el("tr"); row.dataset.session = s.id;
+          const nameCell = el("td"), name = el("strong"), detail = el("span", "term-task-detail");
+          const identity = el("div", "term-task-identity"), text = el("div");
+          text.append(name, detail); identity.append(icon(s.kind === "shell" ? "code" : "bot"), text); nameCell.append(identity);
+          const stateCell = el("td"), status = el("span", "term-task-status"); stateCell.append(status);
+          const cpu = el("td", "term-task-number"), meter = el("div", "term-task-meter"), fill = el("i"), cpuText = el("span");
+          fill.setAttribute("aria-hidden", "true"); meter.append(fill, cpuText); cpu.append(meter);
+          const mem = el("td", "term-task-number"), pid = el("td", "term-task-pid term-task-number");
+          const controls = el("td"), buttons = el("div", "term-task-actions");
+          const open = button("Open", async () => { await attach(s.id); await closeManager(); });
+          open.prepend(icon("right")); open.setAttribute("aria-label", `Open ${s.title}`);
+          const remove = button("", async () => {
+            const target = records.find(item => item.id === s.id);
+            if (!target) return;
+            remove.disabled = true;
+            try {
+              if (target.state === "running") {
+                if (!await confirmAction(`End ${target.title}? The process will stop. Its saved screen stays available.`)) return;
+                await api("sessions", { id: target.id }, "DELETE");
+              } else if (!await deleteSaved(target)) return;
+              await refresh(); await update();
+            } finally { if (remove.isConnected) remove.disabled = false; }
+          });
+          buttons.append(open, remove); controls.append(buttons);
+          row.append(nameCell, stateCell, cpu, mem, pid, controls);
+          return { row, name, detail, status, cpuText, fill, mem, pid, remove };
+        }
+        function drawTasks(animate = false) {
+          const positions = new Map([...entries].filter(([, e]) => e.row.isConnected && !e.row.hidden).map(([id, e]) => [id, e.row.getBoundingClientRect().top]));
+          for (const { row } of entries.values()) for (const animation of row.getAnimations()) if (animation.id === "term-task-reorder") animation.cancel();
+          const query = search.value.trim().toLowerCase();
+          const visible = records.filter(s => (filter === "All" || (s.state === "running" ? "Running" : "Saved") === filter) &&
+            `${s.title} ${names[s.kind]} ${s.pid ?? ""}`.toLowerCase().includes(query));
+          visible.sort((a, b) => Number(b.state === "running") - Number(a.state === "running") ||
+            (sort === "CPU" ? (a.cpuPercent ?? -1) - (b.cpuPercent ?? -1) : sort === "Memory" ? (a.memoryBytes ?? -1) - (b.memoryBytes ?? -1) : a.title.localeCompare(b.title)) * (descending ? -1 : 1));
+          for (const b of filterButtons) b.setAttribute("aria-pressed", String(b.textContent === filter));
+          for (const th of headings.querySelectorAll<HTMLElement>("[data-sort]")) th.setAttribute("aria-sort", th.dataset.sort === sort ? descending ? "descending" : "ascending" : "none");
+          const active = records.filter(s => s.state === "running");
+          const maxCpu = Math.max(100, ...active.map(s => s.cpuPercent ?? 0));
+          const maxMemory = Math.max(256 * 1024 * 1024, ...active.map(s => s.memoryBytes ?? 0));
+          summary.textContent = `${active.length} running · ${records.length - active.length} saved · ${memory(active.some(s => s.memoryBytes === null) ? null : active.reduce((total, s) => total + (s.memoryBytes ?? 0), 0))} in use`;
+          const recordIds = new Set(records.map(s => s.id)), visibleIds = new Set(visible.map(s => s.id));
+          for (const [id, entry] of entries) {
+            if (recordIds.has(id)) continue;
+            entries.delete(id);
+            if (entry.row.contains(document.activeElement)) search.focus();
+            if (reducedMotion()) entry.row.remove();
+            else void entry.row.animate([{ opacity: 1 }, { opacity: 0, transform: "translateX(8px)" }], { duration: 140, fill: "forwards" }).finished.then(() => entry.row.remove());
+          }
+          for (const [id, entry] of entries) entry.row.hidden = !visibleIds.has(id);
+          visible.forEach((s, index) => {
+            let entry = entries.get(s.id);
+            const added = !entry;
+            if (!entry) { entry = makeRow(s); entries.set(s.id, entry); }
+            const { row, name, detail, status, cpuText, fill, mem, pid, remove } = entry;
+            name.textContent = s.title === s.kind ? names[s.kind] : s.title;
+            detail.textContent = s.command ? "Rime command" : names[s.kind];
+            status.textContent = s.state === "running" ? "Running" : "Saved";
+            status.dataset.running = String(s.state === "running");
+            cpuText.textContent = s.cpuPercent === null ? "—" : `${s.cpuPercent.toFixed(1)}%`;
+            fill.style.transform = `scaleX(${Math.min(1, (s.cpuPercent ?? 0) / 100)})`;
+            const load = s.state === "running" ? 1 - (1 - (s.cpuPercent ?? 0) / maxCpu) * (1 - (s.memoryBytes ?? 0) / maxMemory) : 0;
+            row.style.setProperty("--task-load", String(load));
+            mem.textContent = memory(s.memoryBytes); pid.textContent = s.pid === null ? "—" : String(s.pid);
+            const action = s.state === "running" ? "End" : "Delete";
+            if (remove.dataset.action !== action) { remove.dataset.action = action; remove.replaceChildren(icon(action === "End" ? "stop" : "trash"), document.createTextNode(action)); }
+            remove.setAttribute("aria-label", `${action} ${s.title}`);
+            row.hidden = false;
+            if (rows.children[index] !== row) rows.insertBefore(row, rows.children[index] ?? null);
+            if (added && !reducedMotion()) row.animate([{ opacity: 0, transform: "translateY(5px)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: "ease-out" });
+          });
+          if (!reducedMotion()) for (const s of visible) {
+            const row = entries.get(s.id)?.row, before = positions.get(s.id);
+            if (!row || before === undefined) continue;
+            const offset = before - row.getBoundingClientRect().top;
+            if (Math.abs(offset) < 1) continue;
+            row.animate([{ transform: `translateY(${offset}px)` }, { transform: "none" }], { duration: 380, easing: "cubic-bezier(0.22, 1, 0.36, 1)", id: "term-task-reorder" });
+          }
+          emptyTasks.hidden = visible.length > 0;
+          if (animate && !reducedMotion()) rows.animate([{ opacity: .45, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: "ease-out" });
+        }
+        async function refresh() {
+          clearTimeout(timer);
+          if (!d.open || loading) return;
+          loading = true;
+          try {
+            if (document.hidden) return;
+            const result = await api<{ sessions: SessionResourceView[]; error?: string }>("session-resources", { project: state.project });
+            if (!d.open) return;
+            records = result.sessions; drawTasks();
+            error.textContent = result.error ?? ""; error.hidden = !result.error;
+          } catch (e) { error.textContent = (e as Error).message; error.hidden = false; }
+          finally { loading = false; if (d.open) timer = setTimeout(() => void refresh(), 2000); }
+        }
+        search.oninput = () => drawTasks(true);
+        d.onclose = () => { clearTimeout(timer); taskDialog = undefined; d.remove(); };
+        void refresh();
+      }
+      async function deleteSaved(target: SessionView) {
+        if (!await confirmAction(`Delete ${target.title} and its saved terminal history? Project files and Codex or Claude conversations are kept.`)) return false;
+        await api("session-history", { id: target.id }, "DELETE");
+        state.closedSessions = state.closedSessions?.filter(id => id !== target.id);
+        state.tabs = state.tabs?.filter(id => id !== target.id);
+        await remember(); await update();
+        return true;
+      }
       menu.addEventListener("toggle", e => {
         const open = (e as ToggleEvent).newState === "open";
         more.setAttribute("aria-expanded", String(open));
@@ -753,6 +886,7 @@ async function mount(w: WardInstance) {
           if (!event) { streamReady = false; inputBuffer.clear(); draw(); return; }
           if (event.type === "reset") { streamReady = true; resync = true; void update(); return; }
           if (event.type === "session") {
+            if (!event.data) { resync = true; void update(); return; }
             const next = event.data as SessionView;
             if (next.project !== state.project) return;
             const at = list.findIndex(s => s.id === next.id);
@@ -779,6 +913,7 @@ async function mount(w: WardInstance) {
           drainOutput();
         }),
         () => {
+          taskDialog?.close();
           if (menu.matches(":popover-open")) menu.hidePopover();
           clearTimeout(resizeTimer); clearTimeout(retrySnapshot); inputBuffer.clear();
           ro.disconnect(); listener.dispose(); binaryListener.dispose(); term.dispose();

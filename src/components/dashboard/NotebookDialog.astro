@@ -1,0 +1,33 @@
+---
+import Icon from '../Icon.astro';
+// One dialog serves every Notebook ward: the notebook's navigation, its note
+// list and ONE shared note editor (note.ts createNoteEditor) live in the three
+// panes below; under 640px data-pane shows one at a time. notebook.ts owns
+// all behavior; everything here is inert markup.
+---
+
+<dialog id="notebook-dialog" class="fd-dialog fd-dialog-full">
+  <form method="dialog" class="flex h-full flex-col gap-2 p-3">
+    <div class="flex items-center justify-between gap-2">
+      <div class="flex min-w-0 items-center gap-1">
+        <h2 class="section-title truncate" data-nb-title>Notebook</h2>
+        <button type="button" class="btn min-h-0 px-1.5 py-1 text-xs" data-nb-rename title="Rename the notebook" aria-label="Rename the notebook"><Icon id="pen" /></button>
+      </div>
+      <button type="button" class="btn min-h-0 px-2 py-1 text-xs" data-nb-close aria-label="Close"><Icon id="close" /></button>
+    </div>
+    <div class="nb" data-nb-root data-pane="list">
+      <nav class="nb-nav" data-nb-nav aria-label="Notebook navigation"></nav>
+      <section class="nb-list" data-nb-list aria-label="Notes">
+        <div class="nb-list-head" data-nb-list-head></div>
+        <div class="nb-rows" data-nb-rows></div>
+        <p class="nb-hint" data-nb-hint></p>
+      </section>
+      <section class="nb-edit" data-nb-edit aria-label="Note">
+        <div class="nb-edit-head" data-nb-edit-head></div>
+        <div class="nb-outline" data-nb-outline hidden></div>
+        <p class="nb-empty text-xs text-ink-faint" data-nb-empty>Choose a note, or create one.</p>
+        <div class="flex min-h-0 flex-1 flex-col" data-nb-host hidden></div>
+      </section>
+    </div>
+  </form>
+</dialog>

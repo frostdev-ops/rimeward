@@ -19,7 +19,8 @@ import {
   subscribeDev,
 } from "./runtime.ts";
 import { projectOf, projectPath } from "./projects.ts";
-import type { SessionView, PermissionMode, TerminalKind } from "./types.ts";
+import { processUsage } from './process-usage.ts';
+import type { SessionView, SessionResourceView, PermissionMode, TerminalKind } from "./types.ts";
 
 const require = createRequire(import.meta.url);
 const MAX_HISTORY = 1024 * 1024;
@@ -121,6 +122,7 @@ export function cliArgs(
   kind: TerminalKind,
   mode: PermissionMode,
   task = "",
+  resume = false,
 ): string[] {
   if (kind === "shell") return [];
   // The task is the CLI's positional prompt: a leading dash would be parsed as an option and could
@@ -128,12 +130,14 @@ export function cliArgs(
   if (/^\s*-/.test(task)) throw new DevError("A task cannot start with '-'.");
   if (kind === "codex")
     return [
+      ...(resume ? ["resume"] : []),
       ...(mode === "yolo"
         ? ["--dangerously-bypass-approvals-and-sandbox"]
         : ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"]),
       ...(task ? [task] : []),
     ];
   return [
+    ...(resume ? ["--resume"] : []),
     ...(mode === "yolo"
       ? ["--dangerously-skip-permissions"]
       : ["--permission-mode", "default"]),
@@ -192,6 +196,16 @@ export function listSessions(user: number, project?: string): SessionView[] {
       )
       .all(user, project ?? null, project ?? null) as Row[]
   ).map(r => view(r));
+}
+export async function sessionResources(user: number, project?: string): Promise<{ sessions: SessionResourceView[]; error?: string }> {
+  const sessions = listSessions(user, project);
+  const pids = sessions.flatMap(s => { const pid = live.get(s.id)?.pty.pid; return pid ? [pid] : []; });
+  let error: string | undefined;
+  const usage = pids.length ? await processUsage(pids).catch(() => { error = 'Resource usage is temporarily unavailable.'; return new Map(); }) : new Map();
+  return { sessions: sessions.map(s => {
+    const pid = live.get(s.id)?.pty.pid ?? null;
+    return { ...s, pid, cpuPercent: pid ? usage.get(pid)?.cpuPercent ?? null : null, memoryBytes: pid ? usage.get(pid)?.memoryBytes ?? null : null };
+  }), ...(error ? { error } : {}) };
 }
 function persist(s: Live) {
   clearTimeout(s.flush);
@@ -261,6 +275,7 @@ export async function startSession(
     assignment?: string;
     title?: string;
   },
+  saved?: Row,
 ): Promise<SessionView> {
   requireDesktop();
   const p = projectOf(user, opts.project),
@@ -295,7 +310,7 @@ export async function startSession(
     require("@xterm/headless") as typeof import("@xterm/headless");
   const { SerializeAddon } =
     require("@xterm/addon-serialize") as typeof import("@xterm/addon-serialize");
-  const id = crypto.randomUUID();
+  const id = saved?.id ?? crypto.randomUUID();
   const { cols, rows } = dimensions(opts.cols ?? 100, opts.rows ?? 30);
   const term = new Terminal({
     cols,
@@ -312,7 +327,7 @@ export async function startSession(
     assignment = (opts.assignment ?? "").slice(0, 2000);
   // argv is passed directly to the executable, never concatenated into a shell command.
   let program = command,
-    args = cliArgs(kind, mode, task);
+    args = cliArgs(kind, mode, task, !!saved);
   if (kind === "shell" && process.platform !== "win32") args = ["-l"];
   if (opts.command !== undefined) {
     args = process.platform === "win32"
@@ -355,7 +370,8 @@ export async function startSession(
     });
   } catch (error) { term.dispose(); throw error; }
   try {
-    workDb()
+    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active' WHERE id=? AND user_id=?").run(mode, id, user);
+    else workDb()
       .prepare(
         "INSERT INTO terminal_sessions(id,user_id,project,kind,mode,title,state,task,assignment,shell,agent_input,cols,rows,is_command) VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?)",
       )
@@ -369,7 +385,7 @@ export async function startSession(
         task,
         assignment,
         kind === "shell" ? shell : "",
-        Number(opts.agentInput ?? mode !== "human"),
+        Number(opts.agentInput ?? true),
         cols,
         rows,
         Number(opts.command !== undefined),
@@ -379,22 +395,25 @@ export async function startSession(
     term.dispose();
     throw error;
   }
+  const restored = saved ? `\x1bc${saved.snapshot}\r\n\x1b[0m\x1b[2m${kind === "shell" ? "Shell restored. Previous commands were not rerun." : "Choose your saved conversation to continue."}\x1b[0m\r\n` : "";
+  const restoredBytes = Buffer.byteLength(restored);
   const s: Live = {
     pty,
     term,
     serializer,
-    sequence: 0,
+    sequence: saved?.sequence ?? 0,
     chunks: [],
     head: 0,
     bytes: 0,
-    pending: [],
-    pendingBytes: 0,
-    queuedBytes: 0,
+    pending: restored ? [restored] : [],
+    pendingBytes: restoredBytes,
+    queuedBytes: restoredBytes,
     paused: false,
     user,
     id,
   };
   live.set(id, s);
+  if (restored) flushOutput(s);
   pty.onData((data) => {
     const bytes = Buffer.byteLength(data);
     s.pending.push(data);
@@ -475,20 +494,21 @@ export function controlSession(
   claimInput(row, owner, takeover);
   return view(row);
 }
-// Viewing never claims input. Human ownership survives idle time and reconnects;
-// another client can explicitly take it, and agents can never take it from a human.
-function claimInput(row: Row, owner: string, takeover = false, interrupt = false) {
-  if (owner.startsWith("agent:") && (!row.agent_input && !interrupt))
-    throw new DevError("Rime input is off. Enable it in this terminal's session settings.", 409);
+// Human clients share their existing lease; Rime may also type when the toggle is on.
+function claimInput(row: Row, owner: string, takeover = false) {
+  if (!/^(client|agent):[\w:-]{1,113}$/.test(owner)) throw new DevError("Invalid input owner.");
+  if (owner.startsWith("agent:") && !row.agent_input)
+    throw new DevError('Rime control is off. Turn on "Let Rime control" in this terminal.', 409);
+  if (owner.startsWith("agent:")) return;
   const before = leaseOwner(ownerKey(row.id));
-  claimLease(ownerKey(row.id), owner, takeover && owner.startsWith("client:"), owner.startsWith("client:") ? Infinity : 30_000);
+  claimLease(ownerKey(row.id), owner, takeover, Infinity);
   if (before !== owner) emitDev(row.user_id, "session", row.id, view(row));
 }
 function running(user: number, id: string): Live {
   rowOf(user, id);
   const s = live.get(id);
   if (!s)
-    throw new DevError("This process has ended. Start a new session.", 409);
+    throw new DevError("This process has ended. Resume the session to continue.", 409);
   return s;
 }
 export function writeSession(
@@ -528,7 +548,7 @@ export function resizeSession(
 }
 export function interruptSession(user: number, id: string, owner: string) {
   const s = running(user, id);
-  claimInput(rowOf(user, id), owner, false, true);
+  claimInput(rowOf(user, id), owner);
   s.pty.write("\x03");
 }
 export function closeSession(user: number, id: string, reason: 'cancelled' | 'closed' = 'closed') {
@@ -555,10 +575,8 @@ export function configureSession(
   if (opts.assignment !== undefined && typeof opts.assignment !== "string") throw new DevError("Invalid assignment.");
   if (opts.review !== undefined && typeof opts.review !== "string") throw new DevError("Invalid review.");
   if (opts.agentInput !== undefined) {
-    if (typeof opts.agentInput !== "boolean") throw new DevError("Invalid Rime input setting.");
+    if (typeof opts.agentInput !== "boolean") throw new DevError("Invalid Rime control setting.");
     workDb().prepare("UPDATE terminal_sessions SET agent_input=? WHERE id=?").run(Number(opts.agentInput), id);
-    const current = leaseOwner(ownerKey(id));
-    if (!opts.agentInput && current?.startsWith("agent:")) releaseLease(ownerKey(id), current);
   }
   if (opts.title !== undefined) {
     workDb().prepare("UPDATE terminal_sessions SET title=? WHERE id=?").run(opts.title.trim(), id);
@@ -632,12 +650,9 @@ export function releaseControl(user: number, id: string, owner: string) {
 
 export function restartSession(user: number, id: string) {
   const row = rowOf(user, id);
-  if (row.state === "running")
-    throw new DevError(
-      "Terminate this process before starting another with its saved settings.",
-      409,
-    );
-  // A new interface, not a replay of an old task or approval response.
+  if (live.has(id)) return Promise.resolve(view(row));
+  if (row.is_command) throw new DevError("Completed commands stay in task history. Open a shell to continue.", 409);
+  // Keep the tab and saved screen. Native CLIs choose a saved conversation; never replay a task.
   return startSession(user, {
     project: row.project,
     kind: row.kind,
@@ -647,5 +662,17 @@ export function restartSession(user: number, id: string) {
     rows: row.rows,
     shell: row.shell || undefined,
     title: row.title,
-  });
+    assignment: row.assignment,
+  }, row);
+}
+
+export function deleteSession(user: number, id: string) {
+  rowOf(user, id);
+  if (live.has(id)) throw new DevError("End this session before deleting its saved history.", 409);
+  workDb().transaction(() => {
+    workDb().prepare("DELETE FROM task_receipts WHERE session=?").run(id);
+    workDb().prepare("DELETE FROM terminal_sessions WHERE id=? AND user_id=?").run(id, user);
+  })();
+  releaseLease(ownerKey(id), leaseOwner(ownerKey(id)) ?? "");
+  emitDev(user, "session", id);
 }

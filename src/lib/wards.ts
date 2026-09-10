@@ -222,6 +222,11 @@ export const CATALOG: Record<string, CatalogEntry> = {
     concepts: ['notepad', 'note', 'notes', 'scratch', 'scratchpad', 'write', 'writing', 'draw', 'drawing', 'sketch', 'ink', 'pen', 'handwriting', 'stylus', 'journal', 'memo', 'editor', 'rich text', 'markdown', 'paper', 'doodle', 'whiteboard'],
     does: ['stores rich text and ink strokes', 'pen and eraser drawing', 'rime transcribes handwriting to text', 'runs writing commands on the text', 'expands into a full editor', 'anchors schedules every n minutes or at a time of day'],
   },
+  notebook: {
+    title: 'Notebook', defaultSize: '2x2', icon: 'notebook', blurb: 'Notes in sections with tags, pins, saved views and search — the notepad, organized.', multi: true, configurable: true, category: 'write',
+    concepts: ['notebook', 'notes', 'journal', 'diary', 'wiki', 'knowledge base', 'zettelkasten', 'second brain', 'sections', 'chapters', 'tags', 'pinned', 'archive', 'trash', 'search', 'writing', 'documents', 'binder', 'collection', 'organize', 'outline', 'index'],
+    does: ['organizes notes into sections and tags', 'searches titles text and tags', 'pins and orders notes by hand', 'saves filtered sorted views as list table or cards', 'archives and trashes notes with restore and delete forever', 'links an existing notepad document', 'generates an index of the notebook', 'opens a full editor for each note', 'links notes to each other and lists backlinks', 'defines typed properties per notebook', 'starts notes from templates', 'answers questions from the notes', 'syncs notes between the server and paired desktops'],
+  },
   checklist: {
     title: 'Checklist', defaultSize: '2x2', icon: 'check', blurb: 'Same list, compact — a second view of any database.', link: 'notion', multi: true, legacy: true, configurable: true, category: 'notion',
     concepts: ['checklist', 'tasks', 'todo', 'tick', 'done', 'list'],
@@ -353,6 +358,22 @@ export interface NoteConfig {
   model?: string;
   /** Legacy: the text a note held before the document store; seeds the first draft. */
   text?: string;
+  /** The document this ward shows (lib/note.ts) — absent = its own id. Set
+   *  when a notebook note is put on the dashboard; the SAME row, never a copy. */
+  note?: string;
+}
+
+/** The Notebook ward: the notepad's knobs (its shared editor reads them) plus
+ *  the notebook it shows — absent = its own id, the way a note's document is. */
+export interface NotebookConfig extends Omit<NoteConfig, 'text' | 'note'> {
+  notebook?: string;
+}
+export function notebookConfig(w: WardInstance): NotebookConfig {
+  const { text: _t, note: _n, ...knobs } = noteConfig(w);
+  const cfg: NotebookConfig = knobs;
+  const raw = w.config ?? {};
+  if (typeof raw.notebook === 'string' && WARD_ID_RE.test(raw.notebook) && raw.notebook !== w.i) cfg.notebook = raw.notebook;
+  return cfg;
 }
 
 /** A note ward's knobs with every default applied (a fresh ward has none yet). */
@@ -368,6 +389,7 @@ export function noteConfig(w: WardInstance): NoteConfig {
   if (cfg.provider === 'compat' && typeof raw.endpoint === 'string' && ENDPOINT_NAME_RE.test(raw.endpoint)) cfg.endpoint = raw.endpoint;
   if (typeof raw.model === 'string' && raw.model.trim() && raw.model.length <= 100) cfg.model = raw.model.trim();
   if (typeof raw.text === 'string' && raw.text) cfg.text = raw.text.slice(0, 2000);
+  if (typeof raw.note === 'string' && WARD_ID_RE.test(raw.note) && raw.note !== w.i) cfg.note = raw.note;
   return cfg;
 }
 
@@ -557,6 +579,8 @@ export function wardTitle(w: WardInstance): string {
 // ------------------------------------------------------------- validation
 
 const ID_RE = /^[a-z0-9-]{1,32}$/;
+/** The id shape of a ward, a note document and a notebook alike. */
+export const WARD_ID_RE = ID_RE;
 /** Today's whole-dashboard cap, now per page; the total is the hard ceiling. */
 export const MAX_WARDS_PER_PAGE = 40;
 export const MAX_WARDS = 200;
@@ -828,6 +852,8 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
     // take the layout down. `text` is the pre-store note, kept as the seed.
     case 'note':
       return { ...noteConfig({ i: '', type: 'note', size: '2x2', config: raw }) };
+    case 'notebook':
+      return { ...notebookConfig({ i: '', type: 'notebook', size: '2x2', config: raw }) };
     // A whole page (or a few of its fields, or only the capture line). `page`
     // is optional so a fresh ward shows its picker instead of failing the layout.
     case 'notion-page': {

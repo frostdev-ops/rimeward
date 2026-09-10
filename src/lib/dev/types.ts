@@ -43,8 +43,18 @@ export interface SessionView {
   evidence?: { reviewer: string; at: string; sequence: number; diff: string | null; files: { path: string; hash: string | null }[]; checks: { command: string; exitCode: number | null }[]; stale?: boolean };
   taskState: "active" | "needs-attention" | "done" | "cancelled";
 }
+export interface SessionResourceView extends SessionView {
+  pid: number | null;
+  cpuPercent: number | null;
+  memoryBytes: number | null;
+}
+export function terminalNeedsRestore(session: Pick<SessionView, 'state' | 'command' | 'terminationReason'>): boolean {
+  return !session.command && session.state !== 'running' && (session.state === 'interrupted' ||
+    session.terminationReason === 'runtime-shutdown' || session.terminationReason === 'runtime-interrupted');
+}
 /** Older session responses have no termination metadata; do not guess their signals. */
-export function terminalExitLabel(session: Pick<SessionView, 'state' | 'exitCode' | 'exitSignal' | 'terminationReason'>): string {
+export function terminalExitLabel(session: Pick<SessionView, 'state' | 'command' | 'exitCode' | 'exitSignal' | 'terminationReason'>): string {
+  if (terminalNeedsRestore(session)) return 'Saved';
   const label = session.terminationReason === 'cancelled' ? 'Cancelled' :
     session.terminationReason === 'closed' ? 'Terminated' :
     session.state === 'interrupted' || session.terminationReason === 'runtime-interrupted' ? 'Interrupted' :

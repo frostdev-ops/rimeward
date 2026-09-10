@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import { backgroundPath } from '../backgrounds.ts';
 
 const localPaths = /^\/(?:_astro\/|api\/(?:native\/|logout(?:\?|$)|runtime(?:\?|$)|dashboard(?:\?|$)|instance(?:\/|\?|$)|dev\/|store\/|agent\/models(?:\?|$)|logic\/stream(?:\?|$)|account\/(?:theme|background)(?:\?|$))|desktop\/|dash(?:\/|\?|$)|brand\/|favicon|apple-touch-icon)/;
-const wardPath = /^\/api\/(?:(?:agent|browser(?:\/stream)?|note|comms)\/([^/?]+)|agent\/([^/?]+)\/voice)$/;
+const wardPath = /^\/api\/(?:(?:agent|browser(?:\/stream)?|note|notebook|comms)\/([^/?]+)|agent\/([^/?]+)\/voice)$/;
 /** Kept pure so routing can be checked without starting either backend. */
 export function requestWard(path: string): string | undefined {
   const url = new URL(path, 'https://rimeward.invalid');
@@ -23,6 +23,8 @@ export async function routeInstance(context: APIContext): Promise<Response | und
   if (!user) return;
   const { request, url } = context;
   const path = url.pathname + url.search;
+  // Replicated documents belong to this account on every runtime, including offline.
+  if (/^\/api\/(?:notes$|(?:note|notebook)\/)/.test(url.pathname)) return;
   // These operations authorize their explicit target, never page placement.
   if (url.pathname.startsWith('/api/remote-desktop/')) return;
   if (url.pathname.startsWith('/api/devices/')) return;

@@ -86,8 +86,15 @@ export function mergeInstance(server: InstanceDashboard, local: InstanceDashboar
     pageIds.set(page.id, id);
     pages.push({ ...page, id, device, title: collision && page.title === 'Home' ? 'Personal' : page.title });
   }
+  // A Notepad's `config.note` / a Notebook's `config.notebook` name a local record by a ward id; a re-keyed ward re-keys that reference too.
+  const refs = (w: WardInstance) => {
+    if (!w.config) return {};
+    const cfg = { ...w.config };
+    for (const k of w.type === 'note' ? ['note'] : w.type === 'notebook' ? ['notebook'] : []) if (typeof cfg[k] === 'string' && wardIds.has(cfg[k] as string)) cfg[k] = wardIds.get(cfg[k] as string);
+    return { config: cfg };
+  };
   for (const w of imported) layout.push({ ...w, i: wardIds.get(w.i) ?? w.i, device: w.type === 'remote-desktop' ? w.device : device,
-    page: pageIds.get(pageOf(w, local.pages, local.layout)), ...(w.in ? { in: wardIds.get(w.in) } : {}) });
+    page: pageIds.get(pageOf(w, local.pages, local.layout)), ...(w.in ? { in: wardIds.get(w.in) } : {}), ...refs(w) });
   return { dashboard: validateInstance({ ...server, pages, layout }), wardIds };
 }
 
@@ -98,12 +105,28 @@ export async function moveLocalWardState(user: number, ids: Map<string, string>)
     if (before === after) continue;
     const { rekeySession } = await import('../browser/session.ts');
     await rekeySession(user, before, after);
-    for (const table of ['notes', 'timers', 'packets', 'agent_conversations', 'agent_wakes', 'agent_inbox', 'comms_messages', 'agent_tasks', 'agent_jobs']) {
-      const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-      if (!columns.some(c => c.name === 'user_id')) continue;
-      for (const field of ['ward', 'tile', 'sender']) if (columns.some(c => c.name === field))
-        db.prepare(`UPDATE ${table} SET ${field}=? WHERE user_id=? AND ${field}=?`).run(after, user, before);
-    }
+    db.transaction(() => {
+      for (const table of ['notes', 'timers', 'packets', 'agent_conversations', 'agent_wakes', 'agent_inbox', 'comms_messages', 'agent_tasks', 'agent_jobs']) {
+        const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+        if (!columns.some(c => c.name === 'user_id')) continue;
+        for (const field of ['ward', 'tile', 'sender']) if (columns.some(c => c.name === field))
+          db.prepare(`UPDATE ${table} SET ${field}=? WHERE user_id=? AND ${field}=?`).run(after, user, before);
+      }
+      // A notebook keyed by that ward id, the notes filed in it, and the search index rows of a re-keyed document follow.
+      db.prepare('UPDATE notebooks SET id=? WHERE user_id=? AND id=?').run(after, user, before);
+      db.prepare('UPDATE notes SET notebook=? WHERE user_id=? AND notebook=?').run(after, user, before);
+      db.prepare('UPDATE notes_fts SET id=? WHERE user_id=? AND id=?').run(after, user, before);
+      db.prepare('UPDATE note_links SET src=? WHERE user_id=? AND src=?').run(after, user, before);
+      db.prepare('UPDATE note_links SET dst=? WHERE user_id=? AND dst=?').run(after, user, before);
+      // Stored anchors are the source of the link index; re-key both or the next save restores the old target.
+      db.prepare('UPDATE notes SET html=replace(html, ?, ?), rev=rev+1 WHERE user_id=? AND instr(html, ?) > 0')
+        .run(`data-note="${before}"`, `data-note="${after}"`, user, `data-note="${before}"`);
+      // Sync records under the old key would read as a deletion; the re-keyed rows are captured afresh.
+      for (const prefix of ['note/', 'notebook/']) {
+        db.prepare('DELETE FROM agent_sync_records WHERE user_id=? AND key=?').run(user, prefix + before);
+        db.prepare('DELETE FROM agent_sync_baselines WHERE user_id=? AND key=?').run(user, prefix + before);
+      }
+    })();
     if (isDesktop()) workDb().prepare('UPDATE ward_state SET ward=? WHERE user_id=? AND ward=?').run(after, user, before);
     for (const prefix of ['comms_token', 'comms_app', 'mcp_token'])
       db.prepare('UPDATE settings SET key=? WHERE key=?').run(`${prefix}:${user}:${after}`, `${prefix}:${user}:${before}`);

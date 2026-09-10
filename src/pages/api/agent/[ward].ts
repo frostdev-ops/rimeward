@@ -5,7 +5,7 @@ import { validateMentionLabels, type WardMention } from '../../../lib/agent/ment
 import { validateWardMentions } from '../../../lib/agent/ward-context.ts';
 import { parseCommand } from '../../../lib/agent/commands.ts';
 import { syncRime, syncStatus } from '../../../lib/agent/sync.ts';
-import { listTasks, readTask, backgroundTasks, cancelTask } from '../../../lib/agent/tasks.ts';
+import { listTasks, readTask, readChildTask, backgroundTasks, cancelTask } from '../../../lib/agent/tasks.ts';
 
 export const prerender = false;
 
@@ -22,6 +22,7 @@ export const GET: APIRoute = async ({ params, locals, url }) => {
     if (!agentWardConfig(userId, ctx.ward)) return Response.json({ error: 'not an agent ward' }, { status: 400 });
     try {
       const id = url.searchParams.get('task');
+      if (id && url.searchParams.has('session')) return Response.json(readChildTask(ctx, id), { headers: { 'cache-control': 'no-store' } });
       return Response.json(id ? readTask(ctx, id, Number(url.searchParams.get('cursor') ?? 0), url.searchParams.get('output') !== 'true') : { tasks: listTasks(ctx) }, { headers: { 'cache-control': 'no-store' } });
     } catch (err) { return Response.json({ error: err instanceof Error ? err.message : 'Task unavailable' }, { status: 400 }); }
   }
@@ -42,17 +43,26 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     file_ids?: unknown;
     ward_ids?: unknown;
     ward_mentions?: unknown;
-    action?: 'clear' | 'confirm' | 'decline' | 'interrupt' | 'background' | 'cancel-task';
+    action?: 'clear' | 'confirm' | 'decline' | 'interrupt' | 'background' | 'cancel-task' | 'message-child';
     task?: string;
+    questionId?: unknown;
     confirmId?: string;
     /** steer: hand the message to the turn already running (JSON {steered}); never a stream. */
     mode?: 'steer';
   } | null;
   if (!body) return Response.json({ error: 'bad body' }, { status: 400 });
+  const typed = typeof body.message === 'string' ? body.message.trim().slice(0, 8000) : '';
+  const command = body.action ? null : parseCommand(typed);
   // Local controls must remain responsive while reconciliation is in flight.
-  if (!body.action && body.mode !== 'steer') await syncRime(userId);
+  if (!body.action && body.mode !== 'steer' && command?.name !== 'compact') await syncRime(userId);
   const cfg = agentWardConfig(userId, ward);
   if (!cfg) return Response.json({ error: 'not an agent ward' }, { status: 400 });
+  if (body.action === 'message-child') {
+    try {
+      const { messageChild } = await import('../../../lib/agent/inbox.ts');
+      return Response.json(await messageChild(userId, ward, String(body.task ?? ''), body.message, body.questionId));
+    } catch (err) { return Response.json({ error: err instanceof Error ? err.message : 'Could not message child agent' }, { status: 400 }); }
+  }
   if (body.action === 'background' || body.action === 'cancel-task') {
     try {
       const ctx = { userId, ward };
@@ -72,11 +82,24 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
   // model call in flight is aborted). False = nothing was running.
   if (body.action === 'interrupt') return Response.json({ ok: true, interrupted: interruptTurn(userId, ward, 'the user') });
 
-  const typed = typeof body.message === 'string' ? body.message.trim().slice(0, 8000) : '';
-  // Conversation control answers as plain JSON, ahead of the busy gate — these
-  // never call the model, and /clear is exactly what you want mid-turn.
-  const command = body.action ? null : parseCommand(typed);
+  // Commands answer JSON ahead of the busy gate. Compaction calls the model,
+  // so flush headers before synchronization and keep the remote route alive.
   if (command) {
+    if (command.name === 'compact') {
+      const encoder = new TextEncoder();
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const send = (text: string) => { try { controller.enqueue(encoder.encode(text)); } catch { /* disconnected; compaction still finishes */ } };
+          send(' '); heartbeat = setInterval(() => send(' '), 10_000);
+          void syncRime(userId).then(() => runCommand(userId, ward, command.name, command.args))
+            .then(value => send(JSON.stringify(value)), error => send(JSON.stringify({ error: error instanceof Error ? error.message : 'command failed' })))
+            .finally(() => { clearInterval(heartbeat); try { controller.close(); } catch {} });
+        },
+        cancel() { clearInterval(heartbeat); },
+      });
+      return new Response(stream, { headers: { 'content-type': 'application/json', 'cache-control': 'no-store, no-transform', 'x-accel-buffering': 'no' } });
+    }
     try {
       return Response.json(await runCommand(userId, ward, command.name, command.args));
     } catch (err) {

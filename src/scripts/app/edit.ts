@@ -1569,8 +1569,16 @@ function showCfgSection(dialog: HTMLDialogElement, type: string): void {
   if (agentProvider && type === 'agent' && !agentProvider.querySelector('[value="default"]')) {
     agentProvider.prepend(new Option('Rime default', 'default'));
     agentProvider.value = 'default';
-  } else if (type === 'note') agentProvider?.querySelector('[value="default"]')?.remove();
-  if (type === 'agent' || type === 'note') void loadAgentModels(dialog);
+  } else if (type === 'note' || type === 'notebook') agentProvider?.querySelector('[value="default"]')?.remove();
+  if (type === 'agent' || type === 'note' || type === 'notebook') void loadAgentModels(dialog);
+  if (type === 'note') {
+    const picker = q<HTMLSelectElement>('#aw-nt-note', dialog);
+    if (picker) {
+      delete picker.dataset.want; // a fresh ward: its own document (fillConfig sets the want for an existing one)
+      picker.value = '';
+    }
+    void loadNoteDocs(dialog);
+  }
   if (type === 'spacer') syncFx(dialog);
   // A fresh launcher starts with one row; fillConfig rebuilds the rows for an existing ward.
   if (type === 'applink') {
@@ -1594,6 +1602,30 @@ function alRow(dialog: HTMLDialogElement, l: Record<string, unknown> = {}): void
 /** The scene picker only matters for the scene effect. */
 function syncFx(dialog: HTMLDialogElement): void {
   q('[data-fx-scene]', dialog)?.classList.toggle('hidden', q<HTMLSelectElement>('#aw-fx', dialog)?.value !== 'scene');
+}
+
+// ------------------------------------------------------------ notepad ward
+
+/** The Document picker: every note of the user's (id + title + notebook), the
+ *  ward's own document first. Async — `data-want` remembers the value
+ *  fillConfig asked for before the options existed, and `data-loaded` tells
+ *  readConfig the choice is real (until then the stored identity is kept). */
+async function loadNoteDocs(dialog: HTMLDialogElement): Promise<void> {
+  const sel = q<HTMLSelectElement>('#aw-nt-note', dialog);
+  if (!sel) return;
+  delete sel.dataset.loaded;
+  const res = await fetch('/api/notes?limit=100', { headers: { accept: 'application/json' } }).catch(() => null);
+  const data = res?.ok ? ((await res.json().catch(() => null)) as { notes?: { id: string; title: string; notebook: string | null }[] } | null) : null;
+  if (!data?.notes) return; // the list stays empty; a stored link is kept as-is
+  const want = sel.dataset.want ?? sel.value;
+  for (const o of [...sel.options]) if (o.value) o.remove();
+  const books = new Map<string, string>();
+  for (const w of state.values()) if (w.type === 'notebook') books.set((w.config?.notebook as string | undefined) ?? w.i, w.title ?? 'Notebook');
+  for (const n of data.notes) sel.append(new Option(n.notebook ? `${n.title} — ${books.get(n.notebook) ?? 'Notebook'}` : n.title, n.id));
+  if (want && !data.notes.some((n) => n.id === want)) sel.append(new Option(`${want} (not found)`, want));
+  sel.value = want;
+  sel.dispatchEvent(new Event('change', { bubbles: true })); // SearchSelect relabels
+  sel.dataset.loaded = '1';
 }
 
 // ------------------------------------------------------------- agent ward
@@ -1784,6 +1816,8 @@ interface Field {
 let lastSecrets: Record<string, string> = {};
 const pendingSecrets = new Map<string, Record<string, string>>();
 
+/** Record identities survive Configure unless a loaded picker explicitly changes them. */
+const IDENTITY: Record<string, string[]> = { note: ['note'], notebook: ['notebook'] };
 const FIELDS: Record<string, Field[]> = {
   'remote-desktop': [
     { sel: '#aw-rd-auto', key: 'autoConnect', kind: 'bool' },
@@ -1860,6 +1894,17 @@ const FIELDS: Record<string, Field[]> = {
   ],
   note: [
     { sel: '#aw-nt-text', key: 'text' }, // the pre-store note, the seed of a document not yet saved
+    { sel: '#aw-nt-note', key: 'note' }, // the document shown (blank = its own); see loadNoteDocs
+    { sel: '#aw-nt-paper', key: 'paper', def: 'plain' },
+    { sel: '#aw-nt-transcribe', key: 'transcribe', def: 'manual' },
+    { sel: '#aw-nt-ink', key: 'ink', kind: 'bool', def: true },
+    { sel: '#aw-nt-keep', key: 'keepInk', kind: 'bool' },
+    { sel: '#aw-ag-provider', key: 'provider', def: 'openrouter' },
+    { sel: '#aw-ag-endpoint', key: 'endpoint' },
+    { sel: '#aw-ag-model', key: 'model' },
+  ],
+  // The notebook's editor draws with the notepad's knobs; the notebook itself is the ward's own (config.notebook is set by the agent, not here).
+  notebook: [
     { sel: '#aw-nt-paper', key: 'paper', def: 'plain' },
     { sel: '#aw-nt-transcribe', key: 'transcribe', def: 'manual' },
     { sel: '#aw-nt-ink', key: 'ink', kind: 'bool', def: true },
@@ -2011,8 +2056,12 @@ function fillConfig(dialog: HTMLDialogElement, w: WardInstance): void {
       else if (f.kind === 'bool') q<HTMLInputElement>(f.sel, dialog)!.checked = (cfg[f.key] ?? f.def ?? false) === true;
       else set(f.sel, cfg[f.key] ?? f.def);
     }
+    if (w.type === 'note') {
+      const picker = q<HTMLSelectElement>('#aw-nt-note', dialog);
+      if (picker) picker.dataset.want = typeof cfg.note === 'string' ? cfg.note : '';
+    }
     if (w.type === 'spacer') syncFx(dialog);
-    if (w.type === 'note' || w.type === 'agent') void loadAgentModels(dialog); // selectCard's load ran before this provider was set
+    if (w.type === 'note' || w.type === 'notebook' || w.type === 'agent') void loadAgentModels(dialog); // selectCard's load ran before this provider was set
     return;
   }
   switch (w.type) {
@@ -2336,6 +2385,14 @@ function bootDialog(): void {
       const w = state.get(editingId)!;
       if (Object.keys(secrets).length) pendingSecrets.set(w.i, { ...pendingSecrets.get(w.i), ...secrets });
       w.title = title.value.trim() || undefined;
+      // A ward's identity link (which document a notepad shows, which notebook a
+      // Notebook ward shares) rides along unless a loaded picker made the choice:
+      // without this a Configure would silently point the ward back at its own id.
+      for (const k of IDENTITY[w.type] ?? []) {
+        const picker = q<HTMLElement>(`[data-identity="${k}"]`, dialog);
+        if (picker?.dataset.loaded) continue;
+        if (w.config?.[k] !== undefined && cfg[k] === undefined) cfg[k] = w.config[k];
+      }
       w.config = cfg;
       applyTitle(w);
       dialog.close();

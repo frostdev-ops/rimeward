@@ -62,7 +62,9 @@ import { createPacket, listPackets, markPassed, completePacket } from '../flow.t
 import { asAccount, mailInbox, sendNow } from '../mail.ts';
 import { normalizeTheme, parseTheme } from '../theme.ts';
 import { getAttachment, listAttachments, readPages, searchAttachment, storeAttachment, attachmentPath } from './attachments.ts';
-import { getNote, noteWard, plainText, saveNote, textToHtml } from '../note.ts';
+import { plainText, readNote, resolveNote, textToHtml, writeNote } from '../note.ts';
+import { askNotebook, createNote, getNotebook, linkNote, listNotebooks, listNotes, noteBacklinks, notebookIndex, notebookWardsOf, purgeNote, unlinkNote, updateNoteMeta } from '../notebook.ts';
+import { getNoteMeta } from '../note.ts';
 import { runShell, shellNetworkEnabled } from './shell.ts';
 import { webSearch } from './websearch.ts';
 import { scheduleWake, cancelWake, listWakes } from './wakes.ts';
@@ -128,6 +130,18 @@ const num = (description: string) => ({ type: 'number', description });
 const bool = (description: string) => ({ type: 'boolean', description });
 
 // ---------------------------------------------------------------- helpers
+
+/** What read_note / write_note were given: `note` is an exact document id, `ward` a note ward (legacy — the document it shows). */
+function noteRef(userId: number, a: Record<string, unknown>): { id: string; ward: WardInstance | null } {
+  if (typeof a.note === 'string' && a.note) {
+    const n = resolveNote(userId, a.note, true);
+    if (!n) throw new Error(`no note "${a.note}" — search_notes / list_notebooks give note ids`);
+    return n;
+  }
+  const n = resolveNote(userId, a.ward);
+  if (!n) throw new Error(`no note ward "${a.ward}" — call get_layout for ward ids, or pass a note id as \`note\``);
+  return n;
+}
 
 /** An inbox row as the model reads it. */
 const receipt = (m: InboxRow) => ({
@@ -370,28 +384,154 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   read_note: {
     kind: 'read',
-    description: 'The text of a notepad ward (type "note") — the user\'s own writing, plus whatever their handwriting was transcribed into.',
-    parameters: obj({ ward: str('the note ward id (get_layout)') }, ['ward']),
+    description: 'The text of a note: a notepad ward (type "note", by ward id) or a notebook note (by note id — list_notebooks / search_notes give them; pass it as `note`, never as `ward`). The user\'s own writing, plus whatever their handwriting was transcribed into; ink that was never transcribed is not text.',
+    parameters: obj({ ward: str('a note ward id (get_layout) — the document that ward shows'), note: str('an exact note id (list_notebooks / search_notes)') }),
     run: (a, ctx) => {
-      const w = noteWard(ctx.userId, a.ward);
-      if (!w) throw new Error(`no note ward "${a.ward}" — call get_layout for the real ids`);
-      const doc = getNote(ctx.userId, w);
-      return { ward: w.i, title: wardTitle(w), text: plainText(doc.html), updated: doc.updated };
+      const n = noteRef(ctx.userId, a);
+      const doc = readNote(ctx.userId, n.ward ?? n.id);
+      return { id: doc.id, ward: n.ward?.i, title: n.ward ? wardTitle(n.ward) : doc.title, text: plainText(doc.html), updated: doc.updated, rev: doc.rev, etag: doc.etag };
     },
   },
   write_note: {
     kind: 'write',
-    description: 'Write into a notepad ward: append paragraphs to it, or replace the whole document. Plain text; a blank line separates paragraphs. The ink layer is untouched.',
-    parameters: obj({ ward: str('the note ward id'), text: str('what to write'), mode: { type: 'string', enum: ['append', 'replace'], description: 'default append' } }, ['ward', 'text']),
+    description: 'Write into a note (a notepad ward id or a note id): append paragraphs to it, or replace the whole document. Plain text; a blank line separates paragraphs. The ink layer is untouched. Pass the rev and etag read_note returned to refuse stale writes, including after sync.',
+    parameters: obj({ ward: str('a note ward id — the document that ward shows'), note: str('an exact note id'), text: str('what to write'), mode: { type: 'string', enum: ['append', 'replace'], description: 'default append' }, rev: num('the rev from read_note — the write fails if the note changed since'), etag: str('the etag from read_note — detects conflicting changes across runtimes') }, ['text']),
     run: (a, ctx) => {
-      const w = noteWard(ctx.userId, a.ward);
-      if (!w) throw new Error(`no note ward "${a.ward}" — call get_layout for the real ids`);
+      const n = noteRef(ctx.userId, a);
       const text = String(a.text ?? '').trim();
       if (!text) throw new Error('nothing to write');
-      const html = a.mode === 'replace' ? textToHtml(text) : getNote(ctx.userId, w).html + textToHtml(text);
-      const updated = saveNote(ctx.userId, w, { html });
-      broadcast(ctx.userId, 'note', { ward: w.i }); // the open ward reloads its document
-      return { ok: true, ward: w.i, updated };
+      const target = n.ward ?? n.id;
+      const html = a.mode === 'replace' ? textToHtml(text) : readNote(ctx.userId, target).html + textToHtml(text);
+      const { updated, rev, etag } = writeNote(ctx.userId, target, { html, rev: typeof a.rev === 'number' ? a.rev : undefined, etag: typeof a.etag === 'string' ? a.etag : undefined });
+      broadcast(ctx.userId, 'note', { ward: n.ward?.i, note: n.id }); // the open ward reloads its document
+      return { ok: true, id: n.id, ward: n.ward?.i, updated, rev, etag };
+    },
+  },
+  list_notebooks: {
+    kind: 'read',
+    description: 'The user\'s notebooks (Notebook wards organize note documents into sections, tags and pins). With `notebook`, that notebook\'s index: its sections and every live note\'s id + title (no bodies — read_note one).',
+    parameters: obj({ notebook: str('a notebook id for its index') }),
+    run: (a, ctx) => {
+      if (typeof a.notebook === 'string' && a.notebook) {
+        const book = getNotebook(ctx.userId, a.notebook);
+        if (!book) throw new Error(`no notebook "${a.notebook}"`);
+        const templates = listNotes(ctx.userId, { notebook: book.id, template: true, limit: 50 }).notes.map((n) => ({ id: n.id, title: n.title || 'Untitled template' }));
+        return { notebook: { id: book.id, title: book.title, sections: book.sections, properties: book.props, views: book.views.map((v) => ({ id: v.id, title: v.title, layout: v.layout })), templates }, index: notebookIndex(ctx.userId, book.id) };
+      }
+      return { notebooks: listNotebooks(ctx.userId).map((b) => ({ id: b.id, title: b.title, notes: b.count, sections: b.sections })) };
+    },
+  },
+  search_notes: {
+    kind: 'read',
+    description: 'Find notes: full-text over titles, text and tags (transcribed handwriting included, raw ink never), or list by notebook / tag / status. Metadata and a matching snippet per hit, never bodies; page with offset. Omit notebook to search every note.',
+    parameters: obj({
+      q: str('words to find (all must match, prefixes allowed)'),
+      notebook: str('limit to one notebook; "none" = standalone notes'),
+      tag: str('limit to one tag'),
+      status: { type: 'string', enum: ['active', 'archived', 'trash'], description: 'default active' },
+      templates: bool('true = list the notebook\'s templates instead of its notes'),
+      limit: num('per page, default 10, cap 20'),
+      offset: num('page start, default 0'),
+    }),
+    run: (a, ctx) => {
+      const page = listNotes(ctx.userId, {
+        q: typeof a.q === 'string' ? a.q : undefined,
+        notebook: a.notebook === 'none' ? null : typeof a.notebook === 'string' && a.notebook ? a.notebook : undefined,
+        tag: typeof a.tag === 'string' && a.tag ? a.tag : undefined,
+        status: a.status,
+        template: a.templates === true || undefined,
+        limit: Math.min(Math.max(Math.round(Number(a.limit) || 10), 1), 20),
+        offset: Math.max(Math.round(Number(a.offset) || 0), 0),
+      });
+      return {
+        total: page.total, next: page.next,
+        notes: page.notes.map((n) => ({ id: n.id, title: n.title || n.excerpt.slice(0, 60) || 'Untitled', notebook: n.notebook, section: n.section, tags: n.tags, pinned: n.pinned, updated: n.updated, archived: !!n.archived, trashed: !!n.trashed, ...(Object.keys(n.props).length ? { properties: n.props } : {}), ...(n.template ? { template: true } : {}), snippet: n.snippet?.replace(/\u0001/g, '«').replace(/\u0002/g, '»') })),
+        note: page.next !== undefined ? 'More pages: pass offset=next.' : undefined,
+      };
+    },
+  },
+  create_note: {
+    kind: 'write',
+    description: 'A new note document — in a notebook (optionally in one of its sections), or standalone when no notebook is given. Plain text body; a blank line separates paragraphs. `from` = a template note id of that notebook (list_notebooks lists them): its text, tags and properties seed the note. `properties` = values by property id from the notebook\'s schema.',
+    parameters: obj({ notebook: str('the notebook id (list_notebooks)'), section: str('a section id of that notebook'), title: str('the title'), text: str('the body, plain text'), tags: { type: 'array', items: { type: 'string' }, description: 'tags' }, from: str('a template note id'), properties: { type: 'object', description: 'property values by property id', additionalProperties: true } }),
+    run: (a, ctx) => {
+      const meta = createNote(ctx.userId, {
+        notebook: typeof a.notebook === 'string' && a.notebook ? a.notebook : undefined,
+        section: typeof a.section === 'string' && a.section ? a.section : undefined,
+        title: typeof a.title === 'string' ? a.title : '',
+        html: typeof a.text === 'string' && a.text.trim() ? textToHtml(a.text.trim()) : undefined,
+        tags: Array.isArray(a.tags) ? a.tags : undefined,
+        from: typeof a.from === 'string' && a.from ? a.from : undefined,
+        props: a.properties && typeof a.properties === 'object' ? a.properties : undefined,
+      });
+      if (meta.notebook) broadcast(ctx.userId, 'notebook', { notebook: meta.notebook });
+      return { ok: true, note: meta };
+    },
+  },
+  update_note: {
+    kind: 'write',
+    description: 'A note\'s metadata, never its text (write_note does that): title, section, tags, pin, archive (a shelf) or trash (recoverable; trashed:false restores), property values, template flag, and which notebook is its home — notebook:"" unfiles it, another id moves it. Nothing here deletes the document (purge_note does, from the trash only).',
+    parameters: obj({
+      id: str('the note id'), title: str('new title'), section: str('a section id of its notebook, or "" for none'),
+      tags: { type: 'array', items: { type: 'string' }, description: 'the full tag list' }, pinned: bool('pin it'),
+      archived: bool('true = archive, false = unarchive'), trashed: bool('true = trash, false = restore'), notebook: str('its home notebook id; "" = standalone'),
+      properties: { type: 'object', description: 'property values to merge, by property id of its notebook; "" clears one', additionalProperties: true }, template: bool('true = a template (New ▾ offers it; lists leave it out)'),
+    }, ['id']),
+    run: (a, ctx) => {
+      // `id` is an exact note id (a ward alias is never followed). Materialize,
+      // move/unfile and the metadata change are one transaction: a rejected tag
+      // or section leaves the home notebook, section, order and text as they were.
+      const n = resolveNote(ctx.userId, a.id, true);
+      if (!n) throw new Error(`no note "${a.id}" — search_notes / list_notebooks give note ids`);
+      const { before, meta } = getDb().transaction(() => {
+        if (n.ward) writeNote(ctx.userId, n.ward, {});
+        const before = getNoteMeta(ctx.userId, n.id)!.notebook;
+        if (typeof a.notebook === 'string' && a.notebook !== (before ?? '')) {
+          if (a.notebook) linkNote(ctx.userId, a.notebook, n.id, { move: true });
+          else unlinkNote(ctx.userId, n.id);
+        }
+        const patch: Record<string, unknown> = {};
+        for (const k of ['title', 'section', 'tags', 'pinned', 'archived', 'trashed', 'template'] as const) if (a[k] !== undefined) patch[k] = a[k];
+        if (a.properties !== undefined) patch.props = a.properties;
+        return { before, meta: updateNoteMeta(ctx.userId, n.id, patch) };
+      })();
+      for (const book of new Set([before, meta.notebook])) if (book) broadcast(ctx.userId, 'notebook', { notebook: book });
+      broadcast(ctx.userId, 'note', { note: n.id, meta: true });
+      return { ok: true, note: meta };
+    },
+  },
+  ask_notebook: {
+    kind: 'read',
+    description: 'Answer a question from the notes of one notebook: the best full-text matches (up to 8, bodies trimmed) go to the notebook ward\'s model in one call, which answers from them and names its sources. Counts against the 60/h one-shot window. For a specific note\'s text use read_note.',
+    parameters: obj({ notebook: str('the notebook id (list_notebooks)'), question: str('the question') }, ['notebook', 'question']),
+    run: async (a, ctx) => {
+      const w = notebookWardsOf(ctx.userId, String(a.notebook ?? ''))[0];
+      if (!w) throw new Error(`no Notebook ward shows "${String(a.notebook)}" — list_notebooks gives ids`);
+      return askNotebook(ctx.userId, w, String(a.question ?? ''));
+    },
+  },
+  note_backlinks: {
+    kind: 'read',
+    description: 'The notes whose text links to a note ([[Title]] links the editor stores as note links), with their home notebooks.',
+    parameters: obj({ note: str('an exact note id') }, ['note']),
+    run: (a, ctx) => {
+      const n = resolveNote(ctx.userId, a.note, true);
+      if (!n) throw new Error(`no note "${String(a.note)}"`);
+      return { note: n.id, backlinks: noteBacklinks(ctx.userId, n.id) };
+    },
+  },
+  purge_note: {
+    kind: 'confirm',
+    description: 'Delete a note for good — only a note that is already in the trash (update_note trashed:true first). Irreversible: the document, its ink, its index entry and its links are gone on every runtime it synced to.',
+    parameters: obj({ id: str('the note id') }, ['id']),
+    run: (a, ctx) => {
+      const n = resolveNote(ctx.userId, a.id, true);
+      if (!n) throw new Error(`no note "${String(a.id)}"`);
+      const meta = getNoteMeta(ctx.userId, n.id);
+      purgeNote(ctx.userId, n.id);
+      if (meta?.notebook) broadcast(ctx.userId, 'notebook', { notebook: meta.notebook });
+      broadcast(ctx.userId, 'note', { note: n.id, gone: true });
+      return { ok: true, purged: n.id };
     },
   },
   // ---------------------------------------------------------------- memory + skills
@@ -867,7 +1007,7 @@ export const TOOLS: Record<string, ToolDef> = {
         hidden: bool('keep the ward off the dashboard — it still shows in Edit and Leylines mode. Use it for a "note" ward that only exists to anchor a schedule.'),
         group: str('id of a "container" ward to put it inside (groups unfold in place when tapped)'),
         page: str('page id (list_pages) to put it on; default the first page. A ward in a group follows the group\'s page.'),
-        config: { type: 'object', description: 'per-type config (links:[{url, icon?, statusService?}] (or a single url) for applink, url for embed, account all|google|microsoft|zoho|mailbox + unreadOnly for mail, icon (emoji or icon name) for button, services (targets, or host:cpu|mem|disk) or group + view wards|dots for service-group, db + view table|list for notion-db, duration + optional rounds/work/rest/long/loop (a routine) for timer, paper plain|lines|grid|dots + ink + transcribe off|manual|live + keepInk + provider/model for note (its text is read_note/write_note), source/metric/chart/hours for chart, effect none|glass|magnify|aurora|scene + scene for spacer/separator…)', additionalProperties: true },
+        config: { type: 'object', description: 'per-type config (links:[{url, icon?, statusService?}] (or a single url) for applink, url for embed, account all|google|microsoft|zoho|mailbox + unreadOnly for mail, icon (emoji or icon name) for button, services (targets, or host:cpu|mem|disk) or group + view wards|dots for service-group, db + view table|list for notion-db, duration + optional rounds/work/rest/long/loop (a routine) for timer, paper plain|lines|grid|dots + ink + transcribe off|manual|live + keepInk + provider/model for note (its text is read_note/write_note; note = a notebook note id to show that document instead of its own), the same knobs + notebook (the id of another Notebook ward, to share one notebook) for notebook, source/metric/chart/hours for chart, effect none|glass|magnify|aurora|scene + scene for spacer/separator…)', additionalProperties: true },
       },
       ['type']
     ),
