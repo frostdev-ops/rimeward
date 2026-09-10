@@ -1,3 +1,4 @@
+import { saveDocumentBlob } from './document-export.ts';
 import { EditorState } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { basicSetup } from 'codemirror';
@@ -35,7 +36,8 @@ export function createMarkdownPage(options: NotebookPageOptions): NotebookPageEn
   mode.append(new Option('Source and preview', 'split'), new Option('Source', 'source'), new Option('Preview', 'preview'));
   const download = el('button', 'btn', 'Export .md'); download.type = 'button';
   const review = el('button', 'btn', 'Review grammar'); review.type = 'button';
-  tools.append(mode, download, review);
+  const exportStatus = el('span', 'np-export-status'); exportStatus.setAttribute('role', 'status');
+  tools.append(mode, download, review, exportStatus);
   const panes = el('div', 'nb-md-panes'), source = el('div', 'nb-md-source'), preview = el('div', 'np-doc nb-md-preview');
   preview.setAttribute('aria-label', 'Markdown preview');
   panes.append(source, preview); element.append(tools, panes);
@@ -104,9 +106,11 @@ export function createMarkdownPage(options: NotebookPageOptions): NotebookPageEn
       menu.append(menuItem('download', 'Export Markdown', () => download.click()));
     });
   });
-  download.onclick = () => {
-    const url = URL.createObjectURL(new Blob([view.state.doc.toString()], { type: 'text/markdown;charset=utf-8' }));
-    const a = el('a'); a.href = url; a.download = 'note.md'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  download.onclick = async () => {
+    download.disabled = true; exportStatus.textContent = 'Preparing Markdown…';
+    try { exportStatus.textContent = await saveDocumentBlob(new Blob([view.state.doc.toString()], { type: 'text/markdown;charset=utf-8' }), 'note.md'); }
+    catch (error) { exportStatus.textContent = `Export failed: ${(error as Error).message}`; }
+    finally { download.disabled = false; }
   };
   return { element,
     load(value) { const raw = value as { source?: unknown } | null; if (raw !== null && (typeof raw?.source !== 'string' || raw.source.length > 500_000)) throw Error('This Markdown page is invalid or exceeds 500,000 characters.'); const text = typeof raw?.source === 'string' ? raw.source : ''; loading = true; view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } }); loading = false; render(); },

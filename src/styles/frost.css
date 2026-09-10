@@ -1564,6 +1564,8 @@ html.fd-ss-open {
 /* Bottom-center toast (layout saved / removed + undo). */
 .fd-toast {
   position: fixed;
+  max-width: calc(100% - 2rem);
+  overflow-wrap: anywhere;
   bottom: 1.25rem;
   left: 50%;
   translate: -50% 0;
@@ -3891,15 +3893,10 @@ body:has(#splash-canvas.live) .splash-ground::after {
   font-size: 0.8rem;
 }
 [data-nb-sidebar] .tb-label { display: none; }
-@media (min-width: 640px) {
-  .nb[data-nav-collapsed] { --nb-nav-width: 3.25rem; }
-  .nb[data-nav-collapsed] .nb-item { justify-content: center; min-height: 2.25rem; }
-  .nb[data-nav-collapsed] .nb-item > .truncate,
-  .nb[data-nav-collapsed] .nb-item > .nb-n,
-  .nb[data-nav-collapsed] .nb-nav-h > span { display: none; }
-  .nb[data-nav-collapsed] .nb-nav-h { justify-content: center; padding: 0; }
-  .nb[data-nav-collapsed] .nb-nav-h:not(:has(button)) { border-top: 1px solid var(--color-line); }
-}
+/* One drawer toggle hides both navigation and page management. */
+#notebook-dialog .nb[data-nav-collapsed] { grid-template-columns: minmax(0, 1fr); }
+#notebook-dialog .nb[data-nav-collapsed] > :is(.nb-nav, .nb-list) { display: none; }
+#notebook-dialog .nb[data-nav-collapsed] > .nb-edit { display: flex; }
 :is(#notebook-dialog, #note-dialog)[data-document-fullscreen] {
   position: fixed;
   inset: 0;

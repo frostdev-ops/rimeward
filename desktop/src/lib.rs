@@ -64,6 +64,8 @@ pub fn run() {
             commands::workspace_navigation,
             commands::open_workspace,
             commands::open_ward_window,
+            commands::save_document_export,
+            commands::print_document_export,
             commands::close_ward_window,
             runtime::startup_status,
             #[cfg(target_os = "macos")]

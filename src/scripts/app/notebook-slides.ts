@@ -1,3 +1,4 @@
+import { saveDocumentBlob } from './document-export.ts';
 import { bindContextMenu, menuItem, openMenu } from './menu.ts';
 import { askText } from './workspace-dialogs.ts';
 import type { NotebookPageEngine, NotebookPageOptions } from './notebook-page-engine.ts';
@@ -79,8 +80,8 @@ export function createSlidesPage(options: NotebookPageOptions): NotebookPageEngi
     finishText();
     const format = exportType.value;
     const blob = new Blob([format === 'html' ? slidesHtml(state) : format === 'svg' ? slideSvg(slide()) : JSON.stringify(state, null, 2)], { type: format === 'html' ? 'text/html' : format === 'svg' ? 'image/svg+xml' : 'application/json' });
-    const url = URL.createObjectURL(blob); const a = el('a'); a.href = url; a.download = `presentation.${format}`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    if (format === 'html') say('Open the downloaded HTML presentation to present, print, or save as PDF.');
+    say('Preparing export…');
+    void saveDocumentBlob(blob, `presentation.${format}`).then(message => say(message)).catch(error => say(`Export failed: ${error.message}`));
   });
   const imageInput = el('input'); imageInput.type = 'file'; imageInput.accept = 'image/png,image/jpeg,image/webp'; imageInput.hidden = true; element.append(imageInput);
   imageInput.addEventListener('change', async () => {

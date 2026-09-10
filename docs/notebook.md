@@ -66,8 +66,10 @@ heading scrolling. Inputs keep readable mobile sizing and keyboard focus rings.
 ## Page types and document editing
 
 The labeled **New page** button keeps its icon and text readable against the
-accent background. The notebook header collapses navigation into an icon rail
-on desktop, remembers that preference, and switches navigation panes on phones.
+accent background. One notebook drawer toggle hides navigation together with the page list, search
+and New page controls. It remembers the preference; phones and tablets close the
+drawer when opening a document. Opening a notebook without a selected document
+shows the drawer so a page can be chosen.
 **Full screen** fills the app window with the current document and hides the
 notebook navigation/list; the same editor stays mounted. It is available in both
 Notebook and Notepad editors. Escape first leaves full screen, then the usual
@@ -252,3 +254,18 @@ which accepts bounded HTML content and reuses the shared sanitization/document
 store. A failed parse creates no page, and pending/conflicting edits prevent
 switching away from the open document. Importing into an existing editor guards
 against document changes while file reading or confirmation is pending.
+
+## Document export
+
+The labeled **Export** menu offers Word (.docx), Markdown (.md), HTML (.html),
+plain text (.txt), and PDF through a document-only **Print / Save as PDF** preview.
+The editor shows preparation, saved/cancelled, and failure feedback in place.
+Desktop exports use a native Save dialog and an atomic file replacement; success
+is reported after writing finishes. Browser downloads report a download request,
+not an unverified completed save. Markdown, sheet CSV, slide HTML/SVG/JSON and
+drawing SVG/JSON downloads use the same save path.
+
+PDF uses the operating system/browser print dialog. On macOS, choose Save as PDF
+there; the preview excludes notebook navigation and toolbars. Document export
+includes the current editor content, including unsaved text, without changing the
+notebook document. Native export requires the updated desktop build.

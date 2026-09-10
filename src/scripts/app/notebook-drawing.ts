@@ -1,3 +1,4 @@
+import { saveDocumentBlob } from './document-export.ts';
 import { bindContextMenu, menuItem, openMenu } from './menu.ts';
 import { el } from './dom.ts';
 import type { NotebookPageEngine, NotebookPageOptions } from './notebook-page-engine.ts';
@@ -102,7 +103,7 @@ export function createDrawingPage(options: NotebookPageOptions): NotebookPageEng
   }
   function viewChanged() { clearTimeout(wheelTimer); wheelTimer = setTimeout(() => { if (!destroyed) options.onChange(); }, 180); }
   function fit() { const b = drawingBounds(doc.nodes); doc.view.zoom = Math.max(.1, Math.min(2, (width - 40) / b.width, (height - 40) / b.height)); doc.view.x = b.x - (width / doc.view.zoom - b.width) / 2; doc.view.y = b.y - (height / doc.view.zoom - b.height) / 2; render(); viewChanged(); }
-  function download(name: string, contents: string, mime: string) { const url = URL.createObjectURL(new Blob([contents], { type: mime })), a = el('a'); a.href = url; a.download = name; element.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+  function download(name: string, contents: string, mime: string) { status.textContent = 'Preparing export…'; void saveDocumentBlob(new Blob([contents], { type: mime }), name).then(message => { status.textContent = message; }).catch(error => { status.textContent = `Export failed: ${error.message}`; }); }
   function render() {
     svg.setAttribute('viewBox', `${doc.view.x} ${doc.view.y} ${width / doc.view.zoom} ${height / doc.view.zoom}`);
     background.innerHTML = doc.grid ? `<defs><pattern id="${prefix}-grid" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="${1 / doc.view.zoom}" fill="currentColor"/></pattern></defs><rect x="${doc.view.x}" y="${doc.view.y}" width="${width / doc.view.zoom}" height="${height / doc.view.zoom}" fill="url(#${prefix}-grid)"/>` : '';

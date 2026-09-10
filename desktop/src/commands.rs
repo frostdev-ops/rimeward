@@ -64,6 +64,90 @@ async fn workspace_allowed(
         Err("This server is not connected to this desktop".into())
     }
 }
+
+/// Export only to a destination the user selects in the native Save dialog.
+#[tauri::command]
+pub async fn save_document_export(
+    name: String,
+    data: String,
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    use base64::Engine;
+    use std::io::Write;
+    use tauri_plugin_dialog::DialogExt;
+    workspace_allowed(&window, &app).await?;
+    if name.is_empty()
+        || name.len() > 240
+        || name.contains(['/', '\\'])
+        || name.chars().any(char::is_control)
+        || data.len() > 48 * 1024 * 1024
+    {
+        return Err("Invalid export filename or file too large".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|_| "Invalid export data")?;
+    if bytes.len() > 32 * 1024 * 1024 {
+        return Err("Exports are limited to 32 MiB".into());
+    }
+    let (send, receive) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(name)
+        .set_parent(&window)
+        .save_file(move |path| {
+            let _ = send.send(path);
+        });
+    let Some(path) = receive.await.map_err(|_| "Save dialog unavailable")? else {
+        return Ok(None);
+    };
+    let path = path
+        .into_path()
+        .map_err(|_| "Choose a local file destination")?;
+    let parent = path.parent().ok_or("Invalid file destination")?;
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|_| "Unable to prepare export")?;
+    let temporary = parent.join(format!(
+        ".rimeward-export-{:032x}.tmp",
+        u128::from_le_bytes(random)
+    ));
+    let mut created = false;
+    let result = (|| -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        created = true;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, &path)
+    })();
+    if result.is_err() && created {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|error| format!("Could not save export: {error}"))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub async fn print_document_export(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    workspace_allowed(&window, &app).await?;
+    #[cfg(target_os = "macos")]
+    return window.print().map_err(|error| error.to_string());
+    #[cfg(not(target_os = "macos"))]
+    window
+        .eval("window.print()")
+        .map_err(|error| error.to_string())
+}
 /// A ward window uses the caller's authenticated dashboard origin and runtime.
 #[tauri::command]
 pub async fn open_ward_window(

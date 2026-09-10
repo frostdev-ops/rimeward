@@ -36,7 +36,8 @@ export function toast(msg: string, action?: { label: string; fn: () => void }, d
     });
     t.append(b);
   }
-  document.body.append(t);
+  const host = document.activeElement?.closest('dialog[open]') ?? [...document.querySelectorAll('dialog[open]')].at(-1) ?? document.body;
+  host.append(t);
   toastEl = t;
   setTimeout(() => {
     t.dataset.leaving = '1';

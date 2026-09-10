@@ -27,7 +27,9 @@ import { el, postJson, toast } from './dom.ts';
 import { icon, relabel } from './icon.ts';
 import { askText, confirmAction } from './workspace-dialogs.ts';
 import { pageDocument, readPageDocument, type NotebookPageType } from '../../lib/notebook-pages.ts';
-import { sanitizeHtml } from '../../lib/note-text.ts';
+import { sanitizeHtml, plainText } from '../../lib/note-text.ts';
+import { saveDocumentBlob, printDocument } from './document-export.ts';
+import { menuItem, openMenu } from './menu.ts';
 import { createNotebookPage } from './notebook-page-editors.ts';
 import type { NotebookPageEngine } from './notebook-page-engine.ts';
 import { attachWordEditor } from './note-word.ts';
@@ -95,6 +97,7 @@ interface State {
   status: HTMLElement;
   err: HTMLElement;
   count: HTMLElement;
+  exportStatus: HTMLElement;
   btn: Record<string, HTMLButtonElement>;
   color: HTMLInputElement;
   width: HTMLInputElement;
@@ -166,7 +169,8 @@ function build(owner: string, expandable: boolean): State {
   const err = el('span', 'np-err');
   err.setAttribute('role', 'alert');
   const count = el('span', 'np-count');
-  foot.append(status, err, count);
+  const exportStatus = el('span', 'np-export-status'); exportStatus.setAttribute('role', 'status');
+  foot.append(status, err, exportStatus, count);
   const engineHost = el('div', 'np-engine-host');
   engineHost.hidden = true;
   const format = el('select', 'input np-format');
@@ -191,7 +195,7 @@ function build(owner: string, expandable: boolean): State {
 
   const st: State = {
     owner, pageEngine: null, pageType: null, replacePage: false, engineHost, format, word: null, proof: null, target: null, rev: 0, loaded: false, loadGen: 0, gen: 0, chain: Promise.resolve(), opening: Promise.resolve(), docSeq: 0, inkSeq: 0, docFlight: null, inkFlight: null, conflict: false, saving: 0,
-    root, page, doc, canvas, status, err, count, btn: {}, color, width, ai: null, sel: null,
+    root, page, doc, canvas, status, err, count, exportStatus, btn: {}, color, width, ai: null, sel: null,
     strokes: [], cur: null, fresh: new Set(), tool: 'text', penSeen: false,
     docTimer: 0, inkTimer: 0, liveTimer: 0, docDirty: false, inkDirty: false, busy: false,
     ro: new ResizeObserver(() => fit(st)),
@@ -228,7 +232,11 @@ function build(owner: string, expandable: boolean): State {
   sep();
   b.ai = button(tools, 'sparkle', 'Ask Rime — rewrite, fix, summarize, continue…', () => toggleAi(st));
   tools.append(el('span', 'np-grow'));
-  b.download = button(tools, 'download', 'Download as HTML', () => download(st), true);
+  b.download = button(tools, 'download', 'Export document', () => exportMenu(st), true);
+  b.download.classList.add('np-export-button');
+  b.download.append(el('span', undefined, 'Export'));
+  b.download.dataset.pageControl = '';
+  b.download.setAttribute('aria-haspopup', 'menu');
   b.print = button(tools, 'print', 'Print', () => print(st), true);
   b.expand = button(tools, 'resize', 'Expand into the editor', () => openDialog(st));
   b.expand.hidden = !expandable;
@@ -287,12 +295,6 @@ function build(owner: string, expandable: boolean): State {
   importButton.dataset.noteOpenFile = '';
   importButton.dataset.pageControl = '';
   importButton.append(el('span', undefined, 'Import file'));
-  button(tools, 'download', 'Export DOCX', () => {
-    const html = st.pageType === 'markdown' ? sanitizeHtml(marked.parse((st.pageEngine!.serialize() as { source: string }).source, { async: false, gfm: true })) : st.doc.innerHTML;
-    void exportDocx(html, st.target?.title ?? 'Document').then(blob => {
-      const url = URL.createObjectURL(blob), a = el('a'); a.href = url; a.download = `${st.target?.title ?? 'Document'}.docx`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }).catch(error => toast(error.message, undefined, true));
-  }, true);
   return st;
 }
 
@@ -313,6 +315,7 @@ function showDocument(st: State, html: string): void {
   st.pageEngine?.destroy(); st.pageEngine = engine; st.pageType = data?.type ?? null;
   st.engineHost.replaceChildren(); st.engineHost.hidden = !data; st.page.hidden = !!data;
   st.proof?.refresh();
+  st.exportStatus.textContent = '';
   st.format.replaceChildren(new Option('Document', 'document'), new Option('Markdown', 'markdown'));
   if (data && engine) {
     st.root.dataset.pageType = data.type;
@@ -322,23 +325,26 @@ function showDocument(st: State, html: string): void {
   } else { delete st.root.dataset.pageType; st.doc.innerHTML = html; st.format.value = 'document'; st.word?.refresh(); }
   apply(st);
 }
+function documentMarkdown(html: string): string {
+  const converter = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+  converter.addRule('strike', { filter: node => ['S', 'STRIKE', 'DEL'].includes(node.nodeName), replacement: content => `~~${content}~~` });
+  converter.addRule('task', { filter: node => node.nodeName === 'INPUT' && (node as HTMLInputElement).type === 'checkbox', replacement: (_, node) => (node as HTMLInputElement).checked ? '[x] ' : '[ ] ' });
+  converter.addRule('table', { filter: 'table', replacement: (_, node) => {
+    const rows = [...(node as HTMLTableElement).rows].map(row => [...row.cells].map(cell => (cell.textContent ?? '').trim().replace(/\|/g, '\\|').replace(/\n/g, '<br>')));
+    if (!rows.length) return '';
+    const width = Math.max(...rows.map(row => row.length));
+    const line = (row: string[]) => `| ${Array.from({ length: width }, (_, i) => row[i] ?? '').join(' | ')} |`;
+    return `\n\n${line(rows[0]!)}\n${line(Array(width).fill('---'))}\n${rows.slice(1).map(line).join('\n')}\n\n`;
+  } });
+  return converter.turndown(html);
+}
 async function changeFormat(st: State, value: string): Promise<void> {
   if (!st.target || !st.loaded || value === (st.pageType ?? 'document')) return;
   if (st.pageType && st.pageType !== 'markdown') { st.format.value = st.pageType; return; }
   if (!await confirmAction(`Switch to ${value === 'markdown' ? 'Markdown' : 'Document'}? The content is kept, but formatting that the other format cannot represent may change.`)) { st.format.value = st.pageType ?? 'document'; return; }
   st.replacePage = true;
   if (value === 'markdown') {
-    const converter = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
-    converter.addRule('strike', { filter: node => ['S', 'STRIKE', 'DEL'].includes(node.nodeName), replacement: content => `~~${content}~~` });
-    converter.addRule('task', { filter: node => node.nodeName === 'INPUT' && (node as HTMLInputElement).type === 'checkbox', replacement: (_, node) => (node as HTMLInputElement).checked ? '[x] ' : '[ ] ' });
-    converter.addRule('table', { filter: 'table', replacement: (_, node) => {
-      const rows = [...(node as HTMLTableElement).rows].map(row => [...row.cells].map(cell => (cell.textContent ?? '').trim().replace(/\|/g, '\\|').replace(/\n/g, '<br>')));
-      if (!rows.length) return '';
-      const width = Math.max(...rows.map(row => row.length));
-      const line = (row: string[]) => `| ${Array.from({ length: width }, (_, i) => row[i] ?? '').join(' | ')} |`;
-      return `\n\n${line(rows[0]!)}\n${line(Array(width).fill('---'))}\n${rows.slice(1).map(line).join('\n')}\n\n`;
-    } });
-    const source = converter.turndown(st.doc.innerHTML);
+    const source = documentMarkdown(st.doc.innerHTML);
     showDocument(st, pageDocument('markdown', { source }));
   } else if (st.pageType === 'markdown') {
     const source = (st.pageEngine!.serialize() as { source: string }).source;
@@ -1145,24 +1151,45 @@ async function runAi(st: State, mode: string, prompt: string): Promise<void> {
 
 // ------------------------------------------------------------- export
 
+function exportContent(st: State): string {
+  return st.pageType === 'markdown' ? sanitizeHtml(marked.parse((st.pageEngine!.serialize() as { source: string }).source, { async: false, gfm: true })) : st.doc.innerHTML;
+}
 function exportHtml(st: State): string {
   const title = st.target?.title ?? 'Note';
-  return `<!doctype html><meta charset="utf-8"><title>${esc(title)}</title><style>body{max-width:60rem;margin:2rem auto;padding:0 1rem;font:16px/1.7 system-ui,sans-serif}blockquote{border-left:3px solid #999;margin:0;padding-left:.75em;color:#555}pre{background:#f3f3f3;padding:.5em .65em;white-space:pre-wrap}</style>${st.doc.innerHTML}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>body{max-width:60rem;margin:2rem auto;padding:0 1rem;font:16px/1.7 system-ui,sans-serif}blockquote{border-left:3px solid #999;margin:0;padding-left:.75em;color:#555}pre{background:#f3f3f3;padding:.5em .65em;white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #999;padding:6px}img{max-width:100%}[data-word-page]{break-after:page}[data-word-page]:last-child{break-after:auto}</style></head><body>${exportContent(st)}</body></html>`;
 }
-function download(st: State): void {
-  const a = el('a');
-  a.href = URL.createObjectURL(new Blob([exportHtml(st)], { type: 'text/html' }));
-  a.download = `${(st.target?.title ?? 'note').replace(/[^\w-]+/g, '-').replace(/^-|-$/g, '') || 'note'}.html`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+function exportMenu(st: State): void {
+  if (!st.target || !st.loaded) { st.exportStatus.textContent = 'Load a document before exporting.'; return; }
+  const rect = st.btn.download!.getBoundingClientRect();
+  openMenu(rect.left, rect.bottom, menu => {
+    const choices = st.pageType && st.pageType !== 'markdown' ? [['json', 'Page JSON'], ['txt', 'Plain text (.txt)']] : [['docx', 'Word (.docx)'], ['pdf', 'PDF / Print…'], ['md', 'Markdown (.md)'], ['html', 'Web page (.html)'], ['txt', 'Plain text (.txt)']];
+    for (const [format, label] of choices) menu.append(menuItem('download', label!, () => void exportDocument(st, format!)));
+  });
+}
+async function exportDocument(st: State, format: string): Promise<void> {
+  if (!st.target || !st.loaded || st.btn.download!.disabled) return;
+  const gen = st.gen, title = st.target.title || 'Document', html = exportContent(st);
+  const name = `${title.replace(/[\/\\]/g, '-').slice(0, 150)}.${format}`;
+  if (format === 'pdf') { print(st); return; }
+  st.btn.download!.disabled = true; st.btn.download!.setAttribute('aria-busy', 'true');
+  st.exportStatus.textContent = `Preparing ${format.toUpperCase()}…`;
+  try {
+    let blob: Blob;
+    if (format === 'docx') blob = await exportDocx(html, title);
+    else if (format === 'html') blob = new Blob([exportHtml(st)], { type: 'text/html;charset=utf-8' });
+    else if (format === 'md') blob = new Blob([st.pageType === 'markdown' ? (st.pageEngine!.serialize() as { source: string }).source : documentMarkdown(html)], { type: 'text/markdown;charset=utf-8' });
+    else if (format === 'json') blob = new Blob([JSON.stringify(st.pageEngine?.serialize(), null, 2)], { type: 'application/json' });
+    else blob = new Blob([st.pageEngine?.text() ?? plainText(html)], { type: 'text/plain;charset=utf-8' });
+    if (st.gen === gen) st.exportStatus.textContent = 'Choose where to save the file…';
+    const result = await saveDocumentBlob(blob, name);
+    if (st.gen === gen) st.exportStatus.textContent = result;
+  } catch (error) { if (st.gen === gen) st.exportStatus.textContent = `Export failed: ${error instanceof Error ? error.message : String(error)}`; }
+  finally { st.btn.download!.disabled = false; st.btn.download!.removeAttribute('aria-busy'); }
 }
 function print(st: State): void {
-  const w = window.open('', '_blank');
-  if (!w) return;
-  w.document.write(exportHtml(st));
-  w.document.close();
-  w.focus();
-  w.print();
+  if (!st.target || !st.loaded) return;
+  printDocument(exportHtml(st), st.target.title || 'Document');
+  st.exportStatus.textContent = 'Print preview opened. Choose Print / Save as PDF.';
 }
 
 // -------------------------------------------------------- shared dialog

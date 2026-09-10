@@ -11,6 +11,8 @@ fn main() {
             "workspace_navigation",
             "open_workspace",
             "open_ward_window",
+            "save_document_export",
+            "print_document_export",
             "close_ward_window",
             "startup_status",
             "macos_permissions",

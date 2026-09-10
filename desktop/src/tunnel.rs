@@ -127,6 +127,8 @@ pub async fn start(
             .permission("allow-workspace-navigation")
             .permission("allow-open-workspace")
             .permission("allow-open-ward-window")
+            .permission("allow-save-document-export")
+            .permission("allow-print-document-export")
             .permission("allow-close-ward-window"),
     )
     .map_err(|_| "Could not enable this server's browser wards")?;

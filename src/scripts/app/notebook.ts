@@ -173,6 +173,7 @@ RENDERERS.notebook = {
 interface Dlg {
   w: WardInstance;
   importing?: boolean;
+  drawerClosed: boolean;
   nbId: string;
   meta: Meta;
   nav: Nav;
@@ -202,27 +203,29 @@ let dlg: HTMLDialogElement | null = null;
 let cur: Dlg | null = null;
 let refreshTimer = 0;
 
-const narrowNotebook = matchMedia('(max-width: 639px)');
+const narrowNotebook = matchMedia('(max-width: 1050px)');
 let sidebarCollapsed = false;
 try { sidebarCollapsed = localStorage.getItem('fd-notebook-sidebar-collapsed') === '1'; } catch { /* private storage */ }
 function syncNotebookChrome(c: Dlg): void {
   if (!dlg) return;
-  c.els.root.toggleAttribute('data-nav-collapsed', sidebarCollapsed);
+  c.els.root.toggleAttribute('data-nav-collapsed', c.drawerClosed);
   const fullscreen = dlg.querySelector<HTMLButtonElement>('[data-document-fullscreen-toggle]')!;
   fullscreen.disabled = !c.selected;
   const openFile = dlg.querySelector<HTMLButtonElement>('[data-nb-open]'); if (openFile) openFile.disabled = !!c.importing;
   if (!c.selected && dlg.hasAttribute('data-document-fullscreen')) setDocumentFullscreen(dlg, false);
-  const expanded = !dlg.hasAttribute('data-document-fullscreen') && (narrowNotebook.matches ? c.els.root.dataset.pane === 'nav' : !sidebarCollapsed);
+  const expanded = !dlg.hasAttribute('data-document-fullscreen') && !c.drawerClosed;
   const button = dlg.querySelector<HTMLElement>('[data-nb-sidebar]')!;
-  relabel(button, expanded ? 'left' : narrowNotebook.matches ? 'list' : 'right', expanded ? 'Collapse sidebar' : 'Expand sidebar');
+  relabel(button, expanded ? 'left' : 'list', expanded ? 'Hide navigation and pages' : 'Show navigation and pages');
   button.setAttribute('aria-expanded', String(expanded));
 }
 function setPane(c: Dlg, pane: 'nav' | 'list' | 'edit'): void {
   if (pane !== 'edit' && dlg?.hasAttribute('data-document-fullscreen')) setDocumentFullscreen(dlg, false);
   c.els.root.dataset.pane = pane;
+  if (pane !== 'edit') c.drawerClosed = false;
+  else if (narrowNotebook.matches) c.drawerClosed = true;
   syncNotebookChrome(c);
 }
-narrowNotebook.addEventListener('change', () => { if (cur) syncNotebookChrome(cur); });
+narrowNotebook.addEventListener('change', () => { if (cur) { if (narrowNotebook.matches && cur.els.root.dataset.pane === 'edit') cur.drawerClosed = true; syncNotebookChrome(cur); } });
 
 function dialog(): HTMLDialogElement | null {
   if (dlg) return dlg;
@@ -255,12 +258,11 @@ function dialog(): HTMLDialogElement | null {
     if (!cur) return;
     const wasFullscreen = d.hasAttribute('data-document-fullscreen');
     setDocumentFullscreen(d, false);
-    if (narrowNotebook.matches) setPane(cur, wasFullscreen || cur.els.root.dataset.pane !== 'nav' ? 'nav' : cur.selected ? 'edit' : 'list');
-    else {
-      sidebarCollapsed = wasFullscreen ? false : !sidebarCollapsed;
-      try { localStorage.setItem('fd-notebook-sidebar-collapsed', sidebarCollapsed ? '1' : '0'); } catch { /* private storage */ }
-      syncNotebookChrome(cur);
-    }
+    const open = wasFullscreen || cur.drawerClosed;
+    cur.drawerClosed = !open;
+    sidebarCollapsed = cur.drawerClosed;
+    try { localStorage.setItem('fd-notebook-sidebar-collapsed', sidebarCollapsed ? '1' : '0'); } catch { /* private storage */ }
+    setPane(cur, open ? 'list' : 'edit');
   });
   d.querySelector('[data-document-fullscreen-toggle]')?.addEventListener('click', () => {
     if (!cur?.selected) return;
@@ -316,7 +318,7 @@ async function openNotebook(w: WardInstance, opts: { note?: string; q?: string; 
     };
     els.editHost.append(editor.root);
     const c: Dlg = {
-      w, nbId: w.i, meta: { notebook: emptyBook(w), tags: [], linkable: [], notes: [], total: 0 }, nav: { kind: 'all' }, query: defaultQuery(), notes: [], total: 0, selected: null, editor,
+      w, drawerClosed: false, nbId: w.i, meta: { notebook: emptyBook(w), tags: [], linkable: [], notes: [], total: 0 }, nav: { kind: 'all' }, query: defaultQuery(), notes: [], total: 0, selected: null, editor,
       listGen: 0, selecting: Promise.resolve(), metaSaves: Promise.resolve(true), failedFields: new Set(), metaGen: 0, linksGen: 0, els,
     };
     cur = c;
@@ -333,7 +335,10 @@ async function openNotebook(w: WardInstance, opts: { note?: string; q?: string; 
     c.query.sort = 'rank';
     setNav(c, { kind: 'all' }, true);
   }
-  if (opts.note) await select(c, opts.note);
+  if (opts.note) {
+    await select(c, opts.note);
+    if (cur === c && c.selected && sidebarCollapsed) { c.drawerClosed = true; syncNotebookChrome(c); }
+  }
   if (opts.create) await createNote(c, undefined, typeof opts.create === 'string' ? opts.create : undefined);
   refitNoteEditors();
 }

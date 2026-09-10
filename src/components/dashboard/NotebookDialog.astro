@@ -10,7 +10,7 @@ import Icon from '../Icon.astro';
   <form method="dialog" class="flex h-full flex-col gap-2 p-3">
     <div class="flex items-center justify-between gap-2">
       <div class="flex min-w-0 items-center gap-1">
-        <button type="button" class="btn nb-chrome-button" data-nb-sidebar aria-controls="notebook-navigation" aria-expanded="true" title="Collapse sidebar" aria-label="Collapse sidebar"><Icon id="left" /></button>
+        <button type="button" class="btn nb-chrome-button" data-nb-sidebar aria-controls="notebook-navigation notebook-pages" aria-expanded="true" title="Hide navigation and pages" aria-label="Hide navigation and pages"><Icon id="left" /></button>
         <h2 class="section-title truncate" data-nb-title>Notebook</h2>
         <button type="button" class="btn min-h-0 px-1.5 py-1 text-xs" data-nb-rename title="Rename the notebook" aria-label="Rename the notebook"><Icon id="pen" /></button>
       </div>
@@ -22,7 +22,7 @@ import Icon from '../Icon.astro';
     </div>
     <div class="nb" data-nb-root data-pane="list">
       <nav id="notebook-navigation" class="nb-nav" data-nb-nav aria-label="Notebook navigation"></nav>
-      <section class="nb-list" data-nb-list aria-label="Notes">
+      <section id="notebook-pages" class="nb-list" data-nb-list aria-label="Notes">
         <div class="nb-list-head" data-nb-list-head></div>
         <div class="nb-rows" data-nb-rows></div>
         <p class="nb-hint" data-nb-hint></p>

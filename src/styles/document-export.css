@@ -1,0 +1,23 @@
+#document-export-preview { padding:16px; overflow:auto; }
+.document-export-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.document-export-bar strong { flex:1; }
+.document-export-status { font-size:12px; color:var(--color-ink-muted); padding:8px 0; }
+.document-export-content { background:white; color:#111; min-height:80%; padding:24px; }
+.np-export-status { font-size:11px; max-width:100%; overflow-wrap:anywhere; }
+@media print {
+  body:has(#document-export-preview) > :not(#document-export-preview),
+  #document-export-preview .document-export-bar,
+  #document-export-preview .document-export-status { display:none !important; }
+  html:has(#document-export-preview), body:has(#document-export-preview) { background:white !important; height:auto !important; overflow:visible !important; }
+  #document-export-preview { display:block !important; position:static !important; width:auto !important; max-width:none !important; height:auto !important; max-height:none !important; overflow:visible !important; margin:0 !important; padding:0; border:0; box-shadow:none; transform:none !important; }
+  #document-export-preview .document-export-content { padding:0; overflow:visible; }
+  #document-export-preview [data-word-page] { break-after:page; }
+  #document-export-preview [data-word-page]:last-child { break-after:auto; }
+}
+@media print {
+  body:has(#document-export-preview)::before,
+  body:has(#document-export-preview)::after,
+  #document-export-preview::backdrop { display:none !important; }
+}
+
+.np-tools .np-export-button { color:var(--color-ink); font-weight:600; border:1px solid var(--color-line-strong); padding:0.4rem 0.6rem; }
