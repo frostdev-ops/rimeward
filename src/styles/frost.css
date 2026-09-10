@@ -3914,3 +3914,23 @@ body:has(#splash-canvas.live) .splash-ground::after {
 @media (prefers-reduced-motion: reduce) {
   .nb { transition: none; }
 }
+
+/* Popovers escape card/dialog clipping while staying inside the visible app viewport. */
+.fd-popup-layer {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: visible;
+  background: transparent;
+  color: inherit;
+  pointer-events: none;
+}
+.fd-popup-layer > * { pointer-events: auto; }
+.fd-popup-layer::backdrop { background: transparent; pointer-events: none; }
+.fd-ss-list { min-height: 0; }

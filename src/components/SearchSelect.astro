@@ -27,6 +27,7 @@
 ---
 
 <script>
+  import { popupLayer, popupViewport, popupFrame } from '../scripts/app/popup-layer.ts';
   // How many options before the search box earns its place. Below this the
   // panel is just a nicer, thumb-sized list.
   const SEARCH_MIN = 8;
@@ -54,6 +55,7 @@
     field: Field;
     trigger: HTMLButtonElement;
     backdrop: HTMLElement;
+    layer: HTMLElement;
     panel: HTMLElement;
     list: HTMLElement;
     input: HTMLInputElement | null;
@@ -63,8 +65,6 @@
     /** Free-text field: the search box is also the value, so an unmatched
      *  query offers itself as a row instead of "No matches". */
     free: boolean;
-    /** The coordinate space fixed children of the host land in (see frame()). */
-    frame: { x: number; y: number; scale: number };
   } | null = null;
 
   let seq = 0;
@@ -373,59 +373,34 @@
     syncTrigger(field);
   }
 
-  /**
-   * The coordinate space a position:fixed child of `host` actually lands in.
-   * Normally the viewport — but transform, filter and backdrop-filter each make
-   * an ancestor the containing block for its fixed descendants, and .fd-dialog
-   * has a transform while it animates open and a backdrop-filter for the whole
-   * time under a glass theme. So viewport coordinates can be both offset AND
-   * scaled.
-   *
-   * A 100px probe answers both: where its origin lands, and what its size came
-   * out as. It has to be a plain throwaway element, not the panel — the panel
-   * carries its own entrance transform, which would corrupt the reading.
-   */
-  function frame(host: HTMLElement): { x: number; y: number; scale: number } {
-    const probe = document.createElement('div');
-    probe.style.cssText = 'position:fixed;left:0;top:0;width:100px;height:100px;';
-    host.appendChild(probe);
-    const r = probe.getBoundingClientRect();
-    probe.remove();
-    return { x: r.left, y: r.top, scale: r.width ? r.width / 100 : 1 };
-  }
-
-  /** Only ever writes top/left/width, so one frame correction covers both the
-   *  popover and the sheet. Every value written is in the host's space, which
-   *  is why each one goes through `into`. */
+  /** Fit the popup to its chosen side in the visible viewport, including the keyboard. */
   function position() {
     const st = openState;
     if (!st) return;
-    const { panel, trigger, sheet, frame: f } = st;
-    const into = (viewportPx: number, axis: 'x' | 'y') => (viewportPx - f[axis]) / f.scale;
-    const size = (px: number) => px / f.scale;
-
+    if (!st.trigger.isConnected) { close(); return; }
+    const { panel, trigger, sheet } = st;
+    const f = popupFrame(st.layer), viewport = popupViewport();
+    const into = (value: number, axis: 'x' | 'y') => (value - f[axis]) / f.scale;
+    const size = (value: number) => value / f.scale;
     if (sheet) {
-      panel.style.width = `${size(window.innerWidth)}px`;
-      panel.style.maxHeight = '85vh';
-      panel.style.left = `${into(0, 'x')}px`;
-      // offsetHeight is in the host's space already — the rendered height is
-      // that times the scale.
-      panel.style.top = `${into(window.innerHeight - panel.offsetHeight * f.scale, 'y')}px`;
+      panel.style.width = `${size(viewport.width)}px`;
+      panel.style.maxHeight = `${size(viewport.height * .85)}px`;
+      panel.style.left = `${into(viewport.left, 'x')}px`;
+      panel.style.top = `${into(Math.max(viewport.top, viewport.bottom - panel.offsetHeight * f.scale), 'y')}px`;
       return;
     }
-
     const box = trigger.getBoundingClientRect();
-    const width = Math.min(Math.max(box.width, 288), window.innerWidth - 16);
-    const below = window.innerHeight - box.bottom;
-    const room = Math.max(below, box.top) - 16;
+    const width = Math.min(Math.max(box.width, 288), Math.max(1, viewport.width - 16));
     panel.style.width = `${size(width)}px`;
-    panel.style.maxHeight = `${size(Math.min(360, room))}px`;
-    // Flip above when the space below cannot hold a usable list.
-    const flip = below < 220 && box.top > below;
-    const top = flip ? box.top - panel.offsetHeight * f.scale - 6 : box.bottom + 6;
-    const left = Math.min(Math.max(8, box.left), window.innerWidth - width - 8);
-    panel.style.left = `${into(left, 'x')}px`;
-    panel.style.top = `${into(top, 'y')}px`;
+    panel.style.maxHeight = `${size(Math.max(1, Math.min(360, viewport.height - 16)))}px`;
+    const below = Math.max(0, viewport.bottom - box.bottom - 14);
+    const above = Math.max(0, box.top - viewport.top - 14);
+    const flip = below < panel.offsetHeight * f.scale && above > below;
+    panel.style.maxHeight = `${size(Math.max(1, Math.min(360, viewport.height - 16, flip ? above : below)))}px`;
+    const height = panel.offsetHeight * f.scale;
+    const top = flip ? box.top - height - 6 : box.bottom + 6;
+    panel.style.left = `${into(Math.max(viewport.left + 8, Math.min(box.left, viewport.right - width - 8)), 'x')}px`;
+    panel.style.top = `${into(Math.max(viewport.top + 8, Math.min(top, viewport.bottom - height - 8)), 'y')}px`;
   }
 
   function open(field: Field, trigger: HTMLButtonElement) {
@@ -433,9 +408,7 @@
     const sheet = isPhone();
     const rows = rowsOf(field);
     const free = isFree(field);
-    // A modal <dialog> paints in the top layer, above anything in the body no
-    // matter its z-index — so a panel for a field inside one has to live in
-    // that dialog to be visible at all.
+    // Keep the modal's DOM ancestry, but promote the popup above its clipping box.
     const host = (field.closest('dialog[open]') as HTMLElement | null) ?? document.body;
 
     const backdrop = document.createElement('div');
@@ -486,8 +459,8 @@
     panel.appendChild(list);
     input?.setAttribute('aria-controls', list.id);
 
-    host.append(backdrop, panel);
-    openState = { field, trigger, backdrop, panel, list, input, rows, active: -1, sheet, free, frame: frame(host) };
+    const layer = popupLayer(host); layer.append(backdrop, panel);
+    openState = { field, trigger, backdrop, layer, panel, list, input, rows, active: -1, sheet, free };
     render(''); // fills the list, so the height position() measures is real
     position();
 
@@ -504,12 +477,12 @@
 
     // On a phone the keyboard would cover the list it is filtering; let the
     // thumb scroll first and only focus the box when someone types.
-    if (input && !sheet) input.focus();
-    else panel.focus?.();
+    if (input && !sheet) input.focus({ preventScroll: true });
+    else panel.focus({ preventScroll: true });
 
     input?.addEventListener('input', () => {
       render(input!.value);
-      if (!sheet) position(); // the list shrank; keep a flipped panel anchored
+      position(); // search and the keyboard can both change the available height
     });
     backdrop.addEventListener('click', close);
     list.addEventListener('click', (e) => {
@@ -526,11 +499,11 @@
     document.documentElement.classList.remove('fd-ss-open');
     st.backdrop.classList.remove('fd-ss-in');
     st.panel.classList.remove('fd-ss-in');
+    st.backdrop.style.pointerEvents = st.panel.style.pointerEvents = 'none';
     // Match the CSS; a transitionend alone strands the nodes if it never fires
     // (reduced motion cuts every duration to 0.01ms and may not fire at all).
     setTimeout(() => {
-      st.backdrop.remove();
-      st.panel.remove();
+      st.layer.remove();
     }, 320);
     if (st.trigger.isConnected) st.trigger.focus({ preventScroll: true });
   }
@@ -604,9 +577,10 @@
     });
   }
 
-  addEventListener('resize', () => {
-    if (openState) position();
-  });
+  addEventListener('resize', position);
+  window.visualViewport?.addEventListener('resize', position);
+  window.visualViewport?.addEventListener('scroll', position);
+  addEventListener('scroll', e => { if (openState && !(e.target instanceof Node && openState.panel.contains(e.target))) position(); }, { capture: true, passive: true });
   // A dialog closing under an open panel (Escape reaches it first in some
   // browsers) would strand the panel over the page.
   document.addEventListener('close', () => close(), true);
@@ -615,6 +589,7 @@
   const DONE = 'select[data-fd-ss], input[data-fd-ss]';
 
   function scan() {
+    if (openState && (!openState.field.isConnected || openState.field.disabled)) close();
     // The :not() is what keeps this cheap enough to run on a dashboard that
     // mutates on every SSE tick — the CSS engine filters, not JS.
     document.querySelectorAll<Field>(NEW).forEach(enhance);

@@ -5,7 +5,7 @@ import '../../styles/note-word.css';
 
 interface WordOptions { doc: HTMLElement; tools: HTMLElement; changed(): void; title(): string; identity(): string }
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-export function attachWordEditor({ doc, tools, changed, title, identity }: WordOptions) {
+export function attachWordEditor({ doc, tools, changed: onChanged, title, identity }: WordOptions) {
   const control = new AbortController(), signal = control.signal;
   let saved: Range | null = null, tracking = false, internal = false, composing = false, author = 'You', disposed = false;
   let compositionDeleted = '', compositionStart = 0;
@@ -19,10 +19,48 @@ export function attachWordEditor({ doc, tools, changed, title, identity }: WordO
   function restore(range = saved) { doc.focus(); const selection = window.getSelection(); if (range && doc.contains(range.commonAncestorContainer)) { selection?.removeAllRanges(); selection?.addRange(range); } else { const next = document.createRange(); next.selectNodeContents(doc); next.collapse(false); selection?.removeAllRanges(); selection?.addRange(next); } }
   function offset(range: Range, end = false) { const before = document.createRange(); before.selectNodeContents(doc); before.setEnd(end ? range.endContainer : range.startContainer, end ? range.endOffset : range.startOffset); return before.toString().length; }
   function textRange(start: number, end: number) { const range = document.createRange(), walker = document.createTreeWalker(doc, NodeFilter.SHOW_TEXT); let count = 0, first = false; while (walker.nextNode()) { const node = walker.currentNode, length = node.textContent?.length ?? 0; if (!first && start <= count + length) { range.setStart(node, Math.max(0, start - count)); first = true; } if (first && end <= count + length) { range.setEnd(node, Math.max(0, end - count)); return range; } count += length; } if (!first) { range.selectNodeContents(doc); range.collapse(false); } else range.setEnd(doc, doc.childNodes.length); return range; }
-  function native(command: string, value?: string) { restore(); internal = true; try { document.execCommand('styleWithCSS', false, 'true'); document.execCommand(command, false, value); } finally { internal = false; } remember(); changed(); refresh(); }
+  function native(command: string, value?: string) { if (command === 'undo' || command === 'redo') { history(command); return; } restore(); internal = true; try { document.execCommand('styleWithCSS', false, 'true'); document.execCommand(command, false, value); } finally { internal = false; } remember(); changed(); refresh(); }
   function insert(html: string, range = currentRange()) { restore(range); internal = true; try { document.execCommand('insertHTML', false, html); } finally { internal = false; } remember(); changed(); refresh(); }
-  // Structural edits use one native replacement so the browser can undo the entire action.
-  function mutate(work: () => void) { restore(); const before = doc.innerHTML, range = currentRange(), start = range ? offset(range) : 0; try { work(); const after = doc.innerHTML; if (before === after) return; doc.innerHTML = before; const all = document.createRange(); all.selectNodeContents(doc); insert(after, all); saved = textRange(start, start); restore(); } catch (error) { doc.innerHTML = before; message(error instanceof Error ? error.message : 'Unable to edit this selection.'); } }
+  // Editing a page is a DOM update, not pasting the whole document inside its current block.
+  // ponytail: full-document undo is bounded to 40 entries / 16 MiB per stack; use incremental transactions if large-document typing becomes slow.
+  type Snapshot = { html: string; start: number; end: number };
+  const undo: Snapshot[] = [], redo: Snapshot[] = [];
+  let historyIdentity = identity(), restoring = false;
+  const snapshot = (): Snapshot => { const range = currentRange(); return { html: doc.innerHTML.replace(/ title="[^"]*"/g, ''), start: range ? offset(range) : 0, end: range ? offset(range, true) : 0 }; };
+  let baseline = snapshot();
+  function push(stack: Snapshot[], value: Snapshot) {
+    stack.push(value); let size = stack.reduce((n, item) => n + item.html.length, 0);
+    while (stack.length > 1 && (stack.length > 40 || size > 16 * 1024 * 1024)) size -= stack.shift()!.html.length;
+  }
+  function record() {
+    const next = snapshot(), key = identity();
+    if (key !== historyIdentity) { historyIdentity = key; undo.length = redo.length = 0; baseline = next; return; }
+    if (next.html === baseline.html) return;
+    if (!restoring) { push(undo, baseline); redo.length = 0; }
+    baseline = next;
+  }
+  function changed() { record(); onChanged(); }
+  function history(direction: 'undo' | 'redo'): void {
+    record(); const source = direction === 'undo' ? undo : redo, target = direction === 'undo' ? redo : undo;
+    const value = source.pop(); if (!value) return;
+    push(target, snapshot()); restoring = true;
+    try { doc.innerHTML = value.html; baseline = value; refresh(); saved = textRange(value.start, value.end); restore(); onChanged(); }
+    finally { restoring = false; baseline = snapshot(); }
+  }
+  function repairPages(): boolean {
+    let repaired = false;
+    for (const page of [...doc.querySelectorAll<HTMLElement>('[data-word-page]')]) {
+      if (page.querySelector('[data-word-page]')) { page.replaceWith(...page.childNodes); repaired = true; }
+    }
+    return repaired;
+  }
+  function mutate(work: () => void) {
+    restore(); record(); const before = snapshot();
+    try {
+      work(); repairPages();
+      saved = textRange(before.start, before.end); restore(); changed(); refresh();
+    } catch (error) { doc.innerHTML = before.html; saved = textRange(before.start, before.end); restore(); message(error instanceof Error ? error.message : 'Unable to edit this selection.'); }
+  }
   function panel(name: string) { const p = document.createElement('div'); p.className = 'np-word-panel'; p.setAttribute('role', 'tabpanel'); p.id = `word-${crypto.randomUUID()}`; p.hidden = panels.size > 0; const b = document.createElement('button'); b.type = 'button'; b.textContent = name; b.setAttribute('role', 'tab'); b.setAttribute('aria-controls', p.id); b.setAttribute('aria-selected', String(!p.hidden)); b.tabIndex = p.hidden ? -1 : 0; b.addEventListener('click', () => { for (const [key, value] of panels) value.hidden = key !== name; for (const button of tabButtons) { button.setAttribute('aria-selected', String(button === b)); button.tabIndex = button === b ? 0 : -1; } }, { signal }); b.addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const i = tabButtons.indexOf(b), target = event.key === 'Home' ? 0 : event.key === 'End' ? tabButtons.length - 1 : (i + (event.key === 'ArrowRight' ? 1 : -1) + tabButtons.length) % tabButtons.length; tabButtons[target].click(); tabButtons[target].focus(); }, { signal }); tabs.append(b); tabButtons.push(b); panels.set(name, p); notice.before(p); return p; }
   function button(parent: HTMLElement, label: string, work: () => void | Promise<void>) { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = label; b.addEventListener('mousedown', event => { remember(); event.preventDefault(); }, { signal }); b.addEventListener('click', () => { void Promise.resolve(work()).catch(error => message(error instanceof Error ? error.message : 'Unable to complete this action.')); }, { signal }); parent.append(b); return b; }
   function select(parent: HTMLElement, label: string, values: [string, string][], work: (value: string) => void) { const input = document.createElement('select'); input.setAttribute('aria-label', label); input.title = label; for (const [value, text] of values) { const option = document.createElement('option'); option.value = value; option.textContent = text; input.append(option); } input.addEventListener('pointerdown', remember, { signal }); input.addEventListener('change', () => work(input.value), { signal }); parent.append(input); return input; }
@@ -64,7 +102,7 @@ export function attachWordEditor({ doc, tools, changed, title, identity }: WordO
   const pageSize = select(layout, 'Paper size', [['letter', 'Letter'], ['a4', 'A4']], () => applyPage());
   const orientation = select(layout, 'Page orientation', [['portrait', 'Portrait'], ['landscape', 'Landscape']], () => applyPage());
   const margins = select(layout, 'Page margins', [['20', 'Normal margins'], ['12.7', 'Narrow margins'], ['25.4', 'One-inch margins'], ['32', 'Wide margins']], () => applyPage());
-  function applyPage() { mutate(() => { ensurePage(); for (const page of doc.querySelectorAll<HTMLElement>('[data-word-page]')) { page.dataset.wordPage = `${pageSize.value}-${orientation.value}`; page.style.width = `${pageSize.value === 'a4' ? orientation.value === 'landscape' ? 297 : 210 : orientation.value === 'landscape' ? 279 : 216}mm`; page.style.padding = `${margins.value}mm`; } }); }
+  function applyPage() { mutate(() => { repairPages(); ensurePage(); for (const page of doc.querySelectorAll<HTMLElement>('[data-word-page]')) { page.dataset.wordPage = `${pageSize.value}-${orientation.value}`; page.style.width = `${pageSize.value === 'a4' ? orientation.value === 'landscape' ? 297 : 210 : orientation.value === 'landscape' ? 279 : 216}mm`; page.style.padding = `${margins.value}mm`; } }); }
   button(layout, 'Page break', () => mutate(() => { const range = currentRange(); const page = ensurePage(); const next = page.cloneNode(false) as HTMLElement; if (range && page.contains(range.startContainer)) { const tail = range.cloneRange(); tail.setEnd(page, page.childNodes.length); next.append(tail.extractContents()); } if (!next.childNodes.length) next.innerHTML = '<p><br></p>'; next.style.pageBreakBefore = 'always'; page.after(next); }));
   for (const part of ['header', 'footer'] as const) button(layout, part === 'header' ? 'Edit header' : 'Edit footer', () => { mutate(() => { const page = ensurePage(); let region = page.querySelector<HTMLElement>(`[data-word-${part}]`); if (!region) { region = document.createElement(part); region.setAttribute(`data-word-${part}`, 'true'); region.innerHTML = `<p>${part === 'header' ? escape(title()) : 'Footer'}</p>`; part === 'header' ? page.prepend(region) : page.append(region); } }); const region = pageAt()?.querySelector<HTMLElement>(`[data-word-${part}]`); if (region) { const range = document.createRange(); range.selectNodeContents(region); saved = range; restore(); } });
   button(layout, 'Page number', () => insert('<span data-page-number="true">1</span>'));
@@ -152,7 +190,8 @@ export function attachWordEditor({ doc, tools, changed, title, identity }: WordO
       if (image) menu.append(menuItem('trash', 'Remove image', () => run(() => mutate(() => image.remove())), true));
     });
   }, signal);
-  doc.addEventListener('beforeinput', event => { const input = event as InputEvent; if (!tracking || internal || composing || input.isComposing || !input.cancelable) return; let range = currentRange(); if (!range) return;
+  doc.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); event.stopPropagation(); history(event.shiftKey ? 'redo' : 'undo'); } }, { signal });
+  doc.addEventListener('beforeinput', event => { const input = event as InputEvent; if (input.inputType === 'historyUndo' || input.inputType === 'historyRedo') { input.preventDefault(); history(input.inputType === 'historyUndo' ? 'undo' : 'redo'); return; } if (!tracking || internal || composing || input.isComposing || !input.cancelable) return; let range = currentRange(); if (!range) return;
     if (['insertText', 'insertReplacementText', 'insertParagraph', 'insertLineBreak'].includes(input.inputType)) { input.preventDefault(); replacement(range, input.inputType === 'insertParagraph' || input.inputType === 'insertLineBreak' ? '\n' : input.data ?? ''); }
     else if (input.inputType.startsWith('delete')) { if (range.collapsed) { const selection = window.getSelection() as Selection & { modify?: (alter: string, direction: string, granularity: string) => void }; const backward = /Backward$/.test(input.inputType); if (selection.modify) { selection.modify('extend', backward ? 'backward' : 'forward', input.inputType.includes('Word') ? 'word' : input.inputType.includes('Line') ? 'lineboundary' : 'character'); range = currentRange() ?? range; } else { const index = offset(range), source = doc.textContent ?? '', step = backward ? [...source.slice(0, index)].at(-1)?.length ?? 0 : [...source.slice(index)][0]?.length ?? 0; range = textRange(backward ? Math.max(0, index - step) : index, backward ? index : index + step); } } if (!range.collapsed) { input.preventDefault(); replacement(range, ''); } }
   }, { signal, capture: true });
@@ -161,7 +200,7 @@ export function attachWordEditor({ doc, tools, changed, title, identity }: WordO
   doc.addEventListener('compositionend', event => { composing = false; if (!tracking || !event.data) return; queueMicrotask(() => { if (disposed) return; const range = textRange(compositionStart, compositionStart + event.data.length); replacement(range, event.data, compositionDeleted); }); }, { signal });
   document.addEventListener('selectionchange', remember, { signal });
   doc.addEventListener('input', () => { if (!internal) refresh(); }, { signal });
-  function refresh() { for (const mark of doc.querySelectorAll<HTMLElement>('[data-comment]')) mark.title = `${mark.dataset.author ?? 'Comment'}: ${mark.dataset.comment ?? ''}`; for (const change of doc.querySelectorAll<HTMLElement>('[data-change]')) change.title = `${change.tagName === 'DEL' ? 'Deleted' : 'Inserted'} by ${change.dataset.author ?? 'Unknown'}`; for (const [i, page] of [...doc.querySelectorAll<HTMLElement>('[data-word-page]')].entries()) for (const number of page.querySelectorAll<HTMLElement>('[data-page-number]')) number.textContent = String(i + 1); const page = doc.querySelector<HTMLElement>('[data-word-page]'); if (page) { const [size, direction] = (page.dataset.wordPage ?? 'letter-portrait').split('-'); pageSize.value = size; orientation.value = direction; margins.value = String(parseFloat(page.style.padding) || 20); } }
+  function refresh() { const repaired = repairPages(); if (identity() !== historyIdentity) record(); for (const mark of doc.querySelectorAll<HTMLElement>('[data-comment]')) mark.title = `${mark.dataset.author ?? 'Comment'}: ${mark.dataset.comment ?? ''}`; for (const change of doc.querySelectorAll<HTMLElement>('[data-change]')) change.title = `${change.tagName === 'DEL' ? 'Deleted' : 'Inserted'} by ${change.dataset.author ?? 'Unknown'}`; for (const [i, page] of [...doc.querySelectorAll<HTMLElement>('[data-word-page]')].entries()) for (const number of page.querySelectorAll<HTMLElement>('[data-page-number]')) number.textContent = String(i + 1); const page = doc.querySelector<HTMLElement>('[data-word-page]'); if (page) { const [size, direction] = (page.dataset.wordPage ?? 'letter-portrait').split('-'); pageSize.value = size; orientation.value = direction; margins.value = String(parseFloat(page.style.padding) || 20); } if (repaired) changed(); }
   refresh();
-  return { refresh, replace(range: Range, value: string) { replacement(range, value); }, destroy() { disposed = true; control.abort(); ribbon.remove(); } };
+  return { refresh, record, history, replace(range: Range, value: string) { replacement(range, value); }, destroy() { disposed = true; control.abort(); ribbon.remove(); } };
 }

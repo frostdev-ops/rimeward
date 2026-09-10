@@ -269,3 +269,10 @@ PDF uses the operating system/browser print dialog. On macOS, choose Save as PDF
 there; the preview excludes notebook navigation and toolbars. Document export
 includes the current editor content, including unsaved text, without changing the
 notebook document. Native export requires the updated desktop build.
+
+Paper-size, margin and other structural edits update the existing document DOM;
+they do not paste the document into itself. Previously nested page wrappers are
+flattened while preserving their contents. Document undo/redo retains bounded
+snapshots across text and structural changes. Shared selects, context menus and
+note-link suggestions use a top-layer overlay and visible-viewport positioning
+so dialog/card clipping cannot hide them.

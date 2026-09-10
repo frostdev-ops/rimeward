@@ -30,6 +30,7 @@ import { pageDocument, readPageDocument, type NotebookPageType } from '../../lib
 import { sanitizeHtml, plainText } from '../../lib/note-text.ts';
 import { saveDocumentBlob, printDocument } from './document-export.ts';
 import { menuItem, openMenu } from './menu.ts';
+import { popupLayer, popupFrame, popupViewport } from './popup-layer.ts';
 import { createNotebookPage } from './notebook-page-editors.ts';
 import type { NotebookPageEngine } from './notebook-page-engine.ts';
 import { attachWordEditor } from './note-word.ts';
@@ -386,6 +387,7 @@ function mount(st: State, b: HTMLElement): void {
 // ------------------------------------------------------------- document
 
 function cmd(st: State, name: string, value?: string): void {
+  if (st.word && (name === 'undo' || name === 'redo')) { st.word.history(name); return; }
   st.doc.focus();
   document.execCommand(name, false, value);
   markDoc(st);
@@ -542,6 +544,7 @@ function markDoc(st: State): void {
   // Text typed into an empty document lands as a bare text node; give it the
   // paragraph every later line gets (the command re-fires input, once).
   if (st.doc.firstChild?.nodeType === Node.TEXT_NODE && document.activeElement === st.doc) document.execCommand('formatBlock', false, 'p');
+  if (!st.pageEngine) st.word?.record();
   st.docDirty = true;
   st.docSeq++;
   setStatus(st, 'Editing…');
@@ -716,6 +719,7 @@ async function openNow(st: State, target: EditorTarget | null): Promise<boolean>
 interface Picker {
   st: State;
   el: HTMLElement;
+  layer: HTMLElement;
   node: Text;
   /** Where "[[" starts in `node`, and the caret offset the query runs to. */
   start: number;
@@ -726,9 +730,10 @@ interface Picker {
   gen: number;
 }
 let picker: Picker | null = null;
+document.addEventListener('close', () => closePicker(), true);
 function closePicker(): void {
   clearTimeout(picker?.timer);
-  picker?.el.remove();
+  picker?.layer.remove();
   picker = null;
 }
 function caretText(): { node: Text; offset: number } | null {
@@ -750,8 +755,8 @@ function linkPicker(st: State): void {
     const box = el('div', 'np-pick');
     box.setAttribute('role', 'listbox');
     box.setAttribute('aria-label', 'Link a note');
-    (st.doc.closest('dialog[open]:modal') ?? document.body).append(box);
-    picker = { st, el: box, node: c.node, start: c.offset - m[0].length, items: [], at: 0, q, timer: 0, gen: 0 };
+    const layer = popupLayer((st.doc.closest('dialog[open]:modal') ?? document.body) as HTMLElement); layer.append(box);
+    picker = { st, el: box, layer, node: c.node, start: c.offset - m[0].length, items: [], at: 0, q, timer: 0, gen: 0 };
   }
   const p = picker;
   p.q = q;
@@ -783,14 +788,17 @@ function renderPicker(p: Picker): void {
     b.addEventListener('click', () => pickNote(p, n));
     box.append(b);
   });
-  // Under the caret; inside a transformed dialog "fixed" is relative to it, so probe (0,0) and correct.
   const sel = document.getSelection();
   const r = sel?.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : p.st.doc.getBoundingClientRect();
-  box.style.left = '0px';
-  box.style.top = '0px';
-  const o = box.getBoundingClientRect();
-  box.style.left = `${Math.max(8, Math.min(r.left, innerWidth - o.width - 8)) - o.left}px`;
-  box.style.top = `${Math.max(8, Math.min(r.bottom + 4, innerHeight - o.height - 8)) - o.top}px`;
+  const frame = popupFrame(p.layer), viewport = popupViewport();
+  box.style.minWidth = '0';
+  box.style.maxWidth = `${Math.max(1, viewport.width - 16) / frame.scale}px`;
+  box.style.maxHeight = `${Math.max(1, Math.min(224, viewport.height - 16)) / frame.scale}px`;
+  const width = box.offsetWidth * frame.scale, height = box.offsetHeight * frame.scale;
+  const top = r.bottom + height + 12 > viewport.bottom ? r.top - height - 4 : r.bottom + 4;
+  box.style.left = `${(Math.max(viewport.left + 8, Math.min(r.left, viewport.right - width - 8)) - frame.x) / frame.scale}px`;
+  box.style.top = `${(Math.max(viewport.top + 8, Math.min(top, viewport.bottom - height - 8)) - frame.y) / frame.scale}px`;
+
 }
 function pickNote(p: Picker, n: { id: string; title: string }): void {
   const { st, node, start } = p;
