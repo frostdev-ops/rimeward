@@ -136,7 +136,7 @@ test("real terminal attachment, no replay, human control and explicit terminatio
     writeSession(1, s.id, "agent:rime", "echo resumed\r");
     assert.throws(() => readSession(2, s.id));
   } finally {
-    closeSession(1, s.id);
+    await closeSession(1, s.id);
   }
 });
 
@@ -166,7 +166,7 @@ test("terminal permissions change live, denied input cannot claim ownership, and
     assert.throws(() => writeSession(1, s.id, "agent:rime", "denied\r"));
     assert.throws(() => configureSession(1, s.id, { agentInput: true, mode: "invalid" as never }));
     assert.equal(readSession(1, s.id).session.agentInput, false);
-  } finally { t.mock.timers.reset(); closeSession(1, s.id); }
+  } finally { t.mock.timers.reset(); await closeSession(1, s.id); }
 });
 
 test("streamed terminal output is ordered, bounded and drains before exit; restart keeps settings without replaying tasks", async () => {
@@ -201,8 +201,8 @@ test("streamed terminal output is ordered, bounded and drains before exit; resta
     const next = await restartSession(1, s.id);
     assert.equal(next.agentInput, true);
     assert.equal(next.task, "");
-    closeSession(1, next.id);
-  } finally { stop(); if (readSession(1, s.id, sequence).session.state === "running") closeSession(1, s.id); }
+    await closeSession(1, next.id);
+  } finally { stop(); if (readSession(1, s.id, sequence).session.state === "running") await closeSession(1, s.id); }
 });
 
 test("worktrees preserve disk changes, dirty recovery buffers, and unrelated shared-tree changes", async () => {
@@ -451,5 +451,5 @@ test('task receipts survive reads and mark changed evidence stale', async () => 
     fs.writeFileSync(path.join(dir, 'reviewed.txt'), 'changed later');
     saved = readSession(1, session.id).session;
     assert.equal(saved.evidence!.stale, true);
-  } finally { closeSession(1, session.id); }
+  } finally { await closeSession(1, session.id); }
 });

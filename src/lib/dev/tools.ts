@@ -249,7 +249,7 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
         if (!shell) throw Error('PowerShell is not installed.');
         const session = await startSession(c.userId, { project: a.project, kind: 'shell', mode: 'human', shell,
           command: a.command, task: a.command, title: a.title || 'Rime command' });
-        const stop = () => { if (listSessions(c.userId).some(s => s.id === session.id && s.state === 'running')) closeSession(c.userId, session.id, 'cancelled'); };
+        const stop = () => { if (listSessions(c.userId).some(s => s.id === session.id && s.state === 'running')) void closeSession(c.userId, session.id, 'cancelled'); };
         c.signal?.addEventListener('abort', stop, { once: true });
         let after = 0, output = '', truncated = false;
         try {
@@ -331,8 +331,8 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
     "confirm",
     "Terminate a native process. Removing its ward only detaches the view; this explicitly ends work.",
     schema(session, ["runtime", "session"]),
-    (a, c) => {
-      closeSession(c.userId, a.session);
+    async (a, c) => {
+      await closeSession(c.userId, a.session);
       return { closing: true };
     },
   ),

@@ -6,6 +6,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import type { IPty } from "node-pty";
+import type { Socket } from "node:net";
 import type { Terminal as Headless } from "@xterm/headless";
 import type { SerializeAddon } from "@xterm/addon-serialize";
 import {
@@ -50,6 +51,8 @@ type Row = {
 };
 interface Live {
   pty: IPty;
+  input?: Socket;
+  exited: Promise<void>;
   term: Headless;
   serializer: SerializeAddon;
   sequence: number;
@@ -61,7 +64,7 @@ interface Live {
   queuedBytes: number;
   paused: boolean;
   closing?: boolean;
-  terminationReason?: 'cancelled' | 'closed' | 'runtime-shutdown';
+  terminationReason?: 'cancelled' | 'closed' | 'runtime-shutdown' | 'input-error';
   outputTimer?: ReturnType<typeof setTimeout>;
   flush?: ReturnType<typeof setTimeout>;
   user: number;
@@ -69,15 +72,18 @@ interface Live {
 }
 const live = new Map<string, Live>();
 function stopPty(s: Live, reason?: Live['terminationReason']) {
-  if (s.closing) return;
+  if (s.closing) return s.exited;
   if (reason) {
     workDb().prepare('UPDATE terminal_sessions SET termination_reason=? WHERE id=?').run(reason, s.id);
     s.terminationReason = reason;
   }
   s.closing = true;
+  // Cancel queued Windows input before tearing down its ConPTY pipe.
+  s.input?.destroy();
   s.pty.kill();
   // A process that traps SIGHUP would otherwise hold its slot (and its row at "running") forever.
   setTimeout(() => { if (live.get(s.id) === s) try { s.pty.kill("SIGKILL"); } catch {} }, 5000).unref();
+  return s.exited;
 }
 const ownerKey = (id: string) => `terminal:${id}`;
 export function executable(name: string): string | null {
@@ -397,8 +403,10 @@ export async function startSession(
   }
   const restored = saved ? `\x1bc${saved.snapshot}\r\n\x1b[0m\x1b[2m${kind === "shell" ? "Shell restored. Previous commands were not rerun." : "Choose your saved conversation to continue."}\x1b[0m\r\n` : "";
   const restoredBytes = Buffer.byteLength(restored);
+  const exited = Promise.withResolvers<void>();
   const s: Live = {
     pty,
+    exited: exited.promise,
     term,
     serializer,
     sequence: saved?.sequence ?? 0,
@@ -413,6 +421,15 @@ export async function startSession(
     id,
   };
   live.set(id, s);
+  // node-pty 1.1 exposes errors only from conout; conin otherwise crashes the host.
+  // ponytail: pinned private handle; remove when node-pty exposes input errors publicly.
+  if (process.platform === "win32") {
+    s.input = (pty as IPty & { _agent?: { inSocket?: Socket } })._agent?.inSocket;
+    s.input?.on("error", error => {
+      console.error("[terminal] Input pipe failed", error);
+      if (!s.closing && live.get(id) === s) stopPty(s, 'input-error');
+    });
+  }
   if (restored) flushOutput(s);
   pty.onData((data) => {
     const bytes = Buffer.byteLength(data);
@@ -441,6 +458,7 @@ export async function startSession(
       term.dispose();
       // ConPTY's worker can outlive a naturally exited shell; release its handles too.
       if (process.platform === "win32") try { stopPty(s); } catch { /* already closed */ }
+      exited.resolve();
     });
   });
   if (!cleanupInstalled) {
@@ -507,7 +525,7 @@ function claimInput(row: Row, owner: string, takeover = false) {
 function running(user: number, id: string): Live {
   rowOf(user, id);
   const s = live.get(id);
-  if (!s)
+  if (!s || s.closing)
     throw new DevError("This process has ended. Resume the session to continue.", 409);
   return s;
 }
@@ -552,9 +570,11 @@ export function interruptSession(user: number, id: string, owner: string) {
   s.pty.write("\x03");
 }
 export function closeSession(user: number, id: string, reason: 'cancelled' | 'closed' = 'closed') {
-  const s = running(user, id);
+  rowOf(user, id);
+  const s = live.get(id);
+  if (!s) return Promise.resolve();
   persist(s);
-  stopPty(s, reason);
+  return stopPty(s, reason);
 }
 export function configureSession(
   user: number,
@@ -630,8 +650,8 @@ export function shutdownTerminals(): Promise<void> {
       try { persist(s); }
       catch (error) { console.error("[terminal] Failed to save shutdown snapshot", error); }
       finally {
-        try { stopPty(s, 'runtime-shutdown'); } catch { /* already exited */ }
-        resolve();
+        try { void stopPty(s, 'runtime-shutdown').then(resolve); }
+        catch (error) { console.error("[terminal] Failed to stop session during shutdown", error); resolve(); }
       }
     });
   }))).then(() => {});

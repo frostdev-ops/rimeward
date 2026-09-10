@@ -39,7 +39,7 @@ try {
         if (result.session.state !== "running" || !rendered) failures++;
       } finally {
         try {
-          closeSession(1, session.id);
+          await closeSession(1, session.id);
         } catch {}
       }
     }

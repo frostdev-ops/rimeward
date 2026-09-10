@@ -21,7 +21,7 @@ Terminal output uses one shared event stream per desktop rather than polling. In
 
 Transient snapshot failures retry independently of terminal activity; input is enabled only after both snapshot reconciliation and the live stream are ready. Explicit Quit drains pending output through xterm before saving its screen and stopping the process. Opening the selected interactive tab after runtime shutdown automatically restores its screen and starts its shell or native CLI resume chooser in place. Explicitly ended sessions remain stopped until resumed; one-shot commands are never replayed. A tab closed by the user stays hidden until opened in **Task manager…**. **Delete session** removes the stopped terminal record, saved screen, and review receipt; project files and native Codex/Claude conversations remain. Running sessions must be ended first.
 
-Windows also releases the PTY after a shell exits naturally, so ConPTY's worker does not keep the runtime alive. Cleanup is applied once per session, including explicit termination and Quit.
+Windows also releases the PTY after a shell exits naturally, so ConPTY's worker does not keep the runtime alive. Cleanup is applied once per session, including explicit termination and Quit. Ending a session waits for native exit and the final saved screen before completing. Windows input pipes cancel queued writes before termination; an unexpected input-pipe error is logged and ends that session as **Input failed**, without replaying uncertain input or crashing the runtime.
 
 Only canonical `NNN_lowercase_name.sql` migrations are loaded. Finder/cloud conflict copies such as `001_init 2.sql` are ignored instead of being treated as new database migrations.
 

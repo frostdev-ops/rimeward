@@ -56,6 +56,7 @@ export function terminalNeedsRestore(session: Pick<SessionView, 'state' | 'comma
 export function terminalExitLabel(session: Pick<SessionView, 'state' | 'command' | 'exitCode' | 'exitSignal' | 'terminationReason'>): string {
   if (terminalNeedsRestore(session)) return 'Saved';
   const label = session.terminationReason === 'cancelled' ? 'Cancelled' :
+    session.terminationReason === 'input-error' ? 'Input failed' :
     session.terminationReason === 'closed' ? 'Terminated' :
     session.state === 'interrupted' || session.terminationReason === 'runtime-interrupted' ? 'Interrupted' :
     session.terminationReason === 'runtime-shutdown' ? 'Stopped on shutdown' :

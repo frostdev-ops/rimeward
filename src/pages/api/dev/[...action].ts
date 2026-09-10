@@ -306,7 +306,7 @@ export const ALL: APIRoute = async ({ params, request, locals, url }) => {
       if (action === "configure") return json(configureSession(user, id, body));
     }
     if (request.method === "DELETE" && action === "sessions") {
-      closeSession(user, id);
+      await closeSession(user, id);
       return json({ ok: true });
     }
     if (request.method === "DELETE" && action === "session-history") {
