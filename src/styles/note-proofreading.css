@@ -1,0 +1,7 @@
+.np-proof-tools { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.np-proof-tools label { display:flex; align-items:center; gap:4px; font-size:11px; white-space:nowrap; }
+.np-proof-tools input { accent-color:var(--color-accent); }
+.np-proof-panel { max-height:180px; overflow:auto; padding:8px; background:var(--color-surface-2); font-size:12px; }
+.np-proof-issue { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:6px; border-left:3px solid #eab308; }
+.np-proof-error { border-left-color:#ef4444; }
+.np-proof-issue .btn { font-size:11px; padding:3px 7px; }

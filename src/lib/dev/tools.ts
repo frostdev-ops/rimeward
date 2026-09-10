@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import { workDb } from "./runtime.ts";
+import { terminalIsLog } from "./types.ts";
 import type { ToolDef, ToolCtx } from "../agent/tools.ts";
 import { requireDesktop } from "./runtime.ts";
 import {
@@ -202,9 +203,9 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ),
   terminal_list: wrap(
     "read",
-    "List terminal sessions, delegated tasks and assignments. agentInput reports whether Let Rime control is on. Check overlapping assignments before delegating; coordination cannot isolate external CLI writes.",
-    schema({ ...context }, ["runtime"]),
-    (a, c) => listSessions(c.userId, a.project),
+    "List interactive sessions and running commands; completed command logs are hidden unless history:true. Retained logs are limited to the newest 100 for 30 days. agentInput reports whether Let Rime control is on. Check overlapping assignments before delegating; coordination cannot isolate external CLI writes.",
+    schema({ ...context, history: { type: "boolean", description: "Include retained completed command logs (default false)" } }, ["runtime"]),
+    (a, c) => listSessions(c.userId, a.project).filter(s => a.history === true || !terminalIsLog(s)),
   ),
   terminal_start: wrap(
     "write",

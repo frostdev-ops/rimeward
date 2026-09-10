@@ -14,6 +14,7 @@ import { WMO_ICON } from '../../lib/icon-names.ts';
 import { icon } from './icon.ts';
 import { SCENES, sceneDefaults, type SceneId } from '../../lib/theme.ts';
 import type { BgHandle } from './bg-scene.ts';
+import { inWardView, popoutWard } from './ward-view.ts';
 
 type LinkName = 'google' | 'microsoft' | 'notion' | 'zoho' | 'mailbox' | 'icloud';
 
@@ -36,6 +37,7 @@ interface Me {
 export { ago, el, getJson, hm, isHttpUrl };
 
 export function body(id: string): HTMLElement | null {
+  if (!inWardView(id)) return null;
   return document.querySelector(`[data-wd="${id}"] [data-body]`);
 }
 
@@ -573,6 +575,7 @@ export function readLayout(): WardInstance[] {
 /** Boot one ward instance (idempotent per instance id). edit.ts uses this
  *  for freshly added wards too. */
 export function bootInstance(w: WardInstance): void {
+  if (!inWardView(w.i)) return;
   if (booted.has(w.i)) return;
   booted.set(w.i, () => {});
   const r = RENDERERS[w.type];
@@ -586,7 +589,7 @@ export function bootInstance(w: WardInstance): void {
     connectChip(w.i, link);
     return;
   }
-  const stop = r.intervalMs ? poll(() => r.render(w), r.intervalMs, () => pageOfCard(w.i) !== currentPage()) : () => {};
+  const stop = r.intervalMs ? poll(() => r.render(w), r.intervalMs, () => popoutWard ? !inWardView(w.i) : pageOfCard(w.i) !== currentPage()) : () => {};
   booted.set(w.i, () => {
     stop();
     RENDERERS[w.type]?.stop?.(w.i);
@@ -607,6 +610,7 @@ export function unbootInstance(id: string): void {
  *  stable (edit.ts mutates it), so poll/subscription closures see the new
  *  config too; this just repaints now instead of next tick. */
 export function rerenderInstance(w: WardInstance): void {
+  if (!inWardView(w.i)) return;
   if (w.type === 'container') return; // its body holds live wards, not a paint
   const r = RENDERERS[w.type];
   const b = body(w.i);
@@ -624,11 +628,19 @@ const idle = (fn: () => void, timeout: number) => ('requestIdleCallback' in wind
  *  stream on its own IntersectionObserver.) */
 const CANVAS_TYPES = new Set(['spacer']);
 
-/** The page on stage boots (idempotent); the NEXT tab pre-warms on idle so the
- *  likely swap is warm; every other page is unbooted — never more than two
- *  pages live per tab. The DOM keeps every page's last render regardless. */
+/** A group can gain or lose children while its window stays open. */
+export function refreshWardView(): void {
+  if (!popoutWard) return;
+  for (const w of readLayout()) {
+    if (inWardView(w.i)) bootInstance(w);
+    else unbootInstance(w.i);
+  }
+}
+
+/** The current page boots, with the next page pre-warmed on idle. */
 function bootStage(): void {
   const layout = readLayout();
+  if (popoutWard) { refreshWardView(); return; }
   const pages = readPages();
   const cur = currentPage();
   const i = pages.findIndex((p) => p.id === cur);

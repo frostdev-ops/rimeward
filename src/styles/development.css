@@ -237,6 +237,12 @@ dialog.fd-dialog.term-task-manager { width:min(960px, calc(100vw - 2rem)); max-w
 .term-task-manager h2 { display:flex; align-items:center; gap:.65rem; }
 .term-task-heading-icon { display:inline-flex; color:var(--color-accent-hi); }
 .term-task-summary { color:var(--color-ink-muted); font-size:.8rem; font-variant-numeric:tabular-nums; }
+.term-task-bulk { display:flex; align-items:center; flex-wrap:wrap; gap:.6rem; margin:.6rem 0 .85rem; font-size:.75rem; }
+.term-task-manager .term-task-select-all, .term-task-manager .term-task-history { display:inline-flex; flex-direction:row; align-items:center; gap:.45rem; margin:0; cursor:pointer; }
+.term-task-manager .term-task-history { margin-left:auto; }
+.term-task-selection { color:var(--color-ink-muted); font-variant-numeric:tabular-nums; }
+.term-task-bulk .btn { display:inline-flex; align-items:center; gap:.35rem; font-size:.73rem; }
+.term-task-manager input[type="checkbox"] { accent-color:var(--color-accent); width:1rem; height:1rem; flex-shrink:0; cursor:pointer; }
 .term-task-filters { display:flex; align-items:center; gap:.3rem; margin:.6rem 0; }
 .term-task-filter { border:1px solid transparent; border-radius:.5rem; padding:.45rem .8rem; font-size:.78rem; color:var(--color-ink-muted); cursor:pointer; transition:background-color 160ms,color 160ms,border-color 160ms; }
 .term-task-filter[aria-pressed="true"] { color:var(--color-accent-hi); background:color-mix(in srgb,var(--color-accent) 10%,var(--color-surface)); border-color:color-mix(in srgb,var(--color-accent) 25%,var(--color-line)); }
@@ -247,6 +253,7 @@ dialog.fd-dialog.term-task-manager { width:min(960px, calc(100vw - 2rem)); max-w
 .term-task-table thead { position:sticky; top:0; z-index:1; background:var(--color-surface-2); }
 .term-task-table th { white-space:nowrap; }
 .term-task-table tbody tr, .term-task-table tbody tr:hover { background-color:color-mix(in srgb,var(--color-surface),var(--task-hot) calc(var(--task-load,0) * 100%)); transition:background-color 650ms var(--fd-ease); }
+.term-task-table tbody tr[data-selected="true"] { box-shadow:inset 3px 0 var(--color-accent); }
 .term-task-sort { display:inline-flex; align-items:center; gap:.3rem; cursor:pointer; font:inherit; text-transform:inherit; }
 :where(.term-task-sort) [data-icon] { visibility:hidden; transition:rotate 150ms; }
 :where([aria-sort="ascending"] .term-task-sort) [data-icon] { visibility:visible; rotate:180deg; }

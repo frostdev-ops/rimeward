@@ -1,8 +1,11 @@
 import type { APIRoute } from 'astro';
 import { getPages, saveDashboard } from '../../lib/dashboard.ts';
 import { broadcast, pruneUserLogic } from '../../lib/logic-engine.ts';
-import { validateLayout, validatePages } from '../../lib/wards.ts';
+import { validateLayout, validatePages, wardTitle } from '../../lib/wards.ts';
 import { isCommsType } from '../../lib/comms/types.ts';
+import { getDb } from '../../lib/db.ts';
+import { getNoteMeta } from '../../lib/note.ts';
+import { ensureNotebook, linkNote, notebookIdOf } from '../../lib/notebook.ts';
 
 export const prerender = false;
 
@@ -14,7 +17,29 @@ export const PUT: APIRoute = async ({ request, locals }) => {
   if (pages === null) return Response.json({ error: 'invalid_pages' }, { status: 400 });
   const layout = validateLayout(body?.layout, pages ?? getPages(locals.user!.userId));
   if (!layout) return Response.json({ error: 'invalid_layout' }, { status: 400 });
-  saveDashboard(locals.user!.userId, layout, pages);
+  const userId = locals.user!.userId;
+  const moves = body?.noteMoves ?? [];
+  if (!Array.isArray(moves) || moves.length > 200 || moves.some(m => !m || typeof m.id !== 'string' || typeof m.notebook !== 'string' || !layout.some(w => w.i === m.notebook && w.type === 'notebook'))) {
+    return Response.json({ error: 'invalid_note_moves' }, { status: 400 });
+  }
+  const notebooks = new Set<string>();
+  try {
+    getDb().transaction(() => {
+      for (const move of moves) {
+        const w = layout.find(w => w.i === move.notebook && w.type === 'notebook')!;
+        const id = notebookIdOf(w);
+        const before = getNoteMeta(userId, move.id);
+        if (before?.notebook) notebooks.add(before.notebook);
+        ensureNotebook(userId, id, wardTitle(w));
+        linkNote(userId, id, move.id, { move: true });
+        notebooks.add(id);
+      }
+      saveDashboard(userId, layout, pages);
+    })();
+  } catch (err) {
+    return Response.json({ error: err instanceof Error ? err.message : 'could not move the notepad' }, { status: 400 });
+  }
+  for (const notebook of notebooks) broadcast(userId, 'notebook', { notebook });
   // Removed wards must not leave live schedules, packets, or graph edges.
   pruneUserLogic(locals.user!.userId);
   // A chat ward's credentials arrive beside the layout (edit.ts), for wards

@@ -561,6 +561,10 @@ const CHAT_CAP_PER_HOUR = 60;
 export function takeModelSlot(userId: number): void {
   takeSlot(modelWindow, userId, MODEL_CAP_PER_HOUR, 'model');
 }
+/** Multi-call notebook jobs check their budget before sending the first batch. */
+export function availableModelSlots(userId: number): number {
+  return MODEL_CAP_PER_HOUR - (modelWindow.get(userId) ?? []).filter(t => Date.now() - t < 3600_000).length;
+}
 const noteFireWindow = new Map<number, number[]>();
 const NOTE_FIRE_CAP_PER_HOUR = 120;
 

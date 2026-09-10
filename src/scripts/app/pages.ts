@@ -9,6 +9,7 @@
 import { DEFAULT_PAGES, MAX_PAGES, validatePages, type PageDef } from '../../lib/wards.ts';
 import { el, holdToFire, keyboardInUse, q, reducedMotion, toast } from './dom.ts';
 import { menuItem, openMenu } from './menu.ts';
+import { popoutWard, stageWardView } from './ward-view.ts';
 
 let pages: PageDef[] = DEFAULT_PAGES;
 let current = '';
@@ -54,6 +55,7 @@ export function restage(): void {
 }
 
 function stamp(): void {
+  if (popoutWard) { stageWardView(); return; }
   for (const n of topCards()) n.toggleAttribute('data-wd-off', (n.dataset.page ?? firstPage()) !== current);
   for (const b of nav?.querySelectorAll<HTMLElement>('[data-page-tab]') ?? []) {
     if (b.dataset.pageTab === current) b.setAttribute('aria-current', 'page');
@@ -116,6 +118,7 @@ function swap(from: number, to: number, apply: () => void): void {
 }
 
 export function showPage(id: string, opts: { replace?: boolean; silent?: boolean; instant?: boolean } = {}): void {
+  if (popoutWard) { stageWardView(); return; }
   if (!pages.some((p) => p.id === id)) id = firstPage();
   // Leylines mode lays every page out in flow (below); a tab just scrolls there.
   if (grid?.classList.contains('wiring')) {
@@ -320,6 +323,7 @@ export function bootPages(): void {
     pages = DEFAULT_PAGES;
   }
   const fromHash = () => new URLSearchParams(location.hash.slice(1)).get('p');
+  if (popoutWard) { current = firstPage(); stageWardView(); return; }
   let stored: string | null = null;
   try {
     stored = localStorage.getItem(pageStorageKey());

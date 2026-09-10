@@ -25,6 +25,16 @@ import { noteConfig, wardTitle, type NoteConfig, type WardInstance } from '../..
 import { RENDERERS, body } from './wards.ts';
 import { el, postJson, toast } from './dom.ts';
 import { icon } from './icon.ts';
+import { askText, confirmAction } from './workspace-dialogs.ts';
+import { pageDocument, readPageDocument, type NotebookPageType } from '../../lib/notebook-pages.ts';
+import { sanitizeHtml } from '../../lib/note-text.ts';
+import { createNotebookPage } from './notebook-page-editors.ts';
+import type { NotebookPageEngine } from './notebook-page-engine.ts';
+import { attachWordEditor } from './note-word.ts';
+import { attachProofreading } from './note-proofreading.ts';
+import { importDocx, exportDocx } from './note-docx.ts';
+import TurndownService from 'turndown';
+import { marked } from 'marked';
 
 /** [x, y] in page CSS px (the scroll content's box), pressure 0..1. */
 type Pt = [number, number, number];
@@ -48,6 +58,13 @@ export interface EditorTarget {
 interface State {
   /** The ward this editor answers for in the flush handlers (mention, relaunch). */
   owner: string;
+  pageEngine: NotebookPageEngine | null;
+  pageType: NotebookPageType | null;
+  replacePage: boolean;
+  engineHost: HTMLElement;
+  format: HTMLSelectElement;
+  word: ReturnType<typeof attachWordEditor> | null;
+  proof: ReturnType<typeof attachProofreading> | null;
   target: EditorTarget | null;
   /** The stored revision of the open document; every save hands it back. */
   rev: number;
@@ -149,7 +166,14 @@ function build(owner: string, expandable: boolean): State {
   err.setAttribute('role', 'alert');
   const count = el('span', 'np-count');
   foot.append(status, err, count);
-  root.append(tools, page, foot);
+  const engineHost = el('div', 'np-engine-host');
+  engineHost.hidden = true;
+  const format = el('select', 'input np-format');
+  format.setAttribute('aria-label', 'Document format');
+  format.dataset.pageControl = '';
+  format.append(new Option('Document', 'document'), new Option('Markdown', 'markdown'));
+  tools.prepend(format);
+  root.append(tools, page, engineHost, foot);
 
   const color = el('input', 'np-adv');
   color.type = 'color';
@@ -165,7 +189,7 @@ function build(owner: string, expandable: boolean): State {
   width.setAttribute('aria-label', 'Pen width');
 
   const st: State = {
-    owner, target: null, rev: 0, loaded: false, loadGen: 0, gen: 0, chain: Promise.resolve(), opening: Promise.resolve(), docSeq: 0, inkSeq: 0, docFlight: null, inkFlight: null, conflict: false, saving: 0,
+    owner, pageEngine: null, pageType: null, replacePage: false, engineHost, format, word: null, proof: null, target: null, rev: 0, loaded: false, loadGen: 0, gen: 0, chain: Promise.resolve(), opening: Promise.resolve(), docSeq: 0, inkSeq: 0, docFlight: null, inkFlight: null, conflict: false, saving: 0,
     root, page, doc, canvas, status, err, count, btn: {}, color, width, ai: null, sel: null,
     strokes: [], cur: null, fresh: new Set(), tool: 'text', penSeen: false,
     docTimer: 0, inkTimer: 0, liveTimer: 0, docDirty: false, inkDirty: false, busy: false,
@@ -207,6 +231,8 @@ function build(owner: string, expandable: boolean): State {
   b.print = button(tools, 'print', 'Print', () => print(st), true);
   b.expand = button(tools, 'resize', 'Expand into the editor', () => openDialog(st));
   b.expand.hidden = !expandable;
+  b.expand.dataset.pageControl = '';
+  format.onchange = () => void changeFormat(st, format.value);
 
   doc.addEventListener('input', () => {
     markDoc(st);
@@ -219,12 +245,6 @@ function build(owner: string, expandable: boolean): State {
     if (!a?.dataset.note) return;
     e.preventDefault();
     window.dispatchEvent(new CustomEvent('fd:open-note', { detail: { note: a.dataset.note, from: st.owner } }));
-  });
-  // Plain text in — formatting comes from the toolbar, never from a paste.
-  doc.addEventListener('paste', (e) => {
-    e.preventDefault();
-    const text = e.clipboardData?.getData('text/plain') ?? '';
-    if (text) document.execCommand('insertText', false, text);
   });
   doc.addEventListener('keydown', (e) => {
     if (pickerKeys(st, e)) return;
@@ -242,7 +262,87 @@ function build(owner: string, expandable: boolean): State {
   canvas.addEventListener('pointercancel', (e) => up(st, e));
   st.ro.observe(doc);
   st.ro.observe(page);
+  st.word = attachWordEditor({ doc, tools, changed: () => markDoc(st), title: () => st.target?.title ?? 'Document' });
+  st.proof = attachProofreading({ doc, tools, api: () => st.loaded && !st.pageEngine ? st.target?.api ?? null : null, onChange: () => markDoc(st), replace: (range, text) => st.word!.replace(range, text) });
+  const file = el('input'); file.type = 'file'; file.accept = '.docx,.md,.markdown'; file.hidden = true; tools.append(file);
+  const importButton = button(tools, 'upload', 'Import DOCX or Markdown', () => file.click(), true);
+  file.onchange = async () => {
+    const selected = file.files?.[0]; if (!selected || !st.target || !st.loaded) return;
+    const gen = st.gen;
+    if (serializeDocument(st).trim() && !await confirmAction('Replace this document with the imported file?')) { file.value = ''; return; }
+    importButton.disabled = true;
+    try {
+      if (/\.docx$/i.test(selected.name)) {
+        const imported = await importDocx(selected);
+        if (st.gen !== gen) return;
+        st.replacePage = true; showDocument(st, sanitizeHtml(imported.html)); markDoc(st);
+        if (imported.warnings.length) toast(imported.warnings.join(' '));
+      } else {
+        if (selected.size > 500_000) throw Error('Markdown files must be under 500 KB.');
+        const source = await selected.text(); if (st.gen !== gen) return;
+        st.replacePage = true; showDocument(st, pageDocument('markdown', { source })); markDoc(st);
+      }
+    } catch (error) { toast((error as Error).message, undefined, true); }
+    finally { importButton.disabled = false; file.value = ''; }
+  };
+  button(tools, 'download', 'Export DOCX', () => {
+    const html = st.pageType === 'markdown' ? sanitizeHtml(marked.parse((st.pageEngine!.serialize() as { source: string }).source, { async: false, gfm: true })) : st.doc.innerHTML;
+    void exportDocx(html, st.target?.title ?? 'Document').then(blob => {
+      const url = URL.createObjectURL(blob), a = el('a'); a.href = url; a.download = `${st.target?.title ?? 'Document'}.docx`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }).catch(error => toast(error.message, undefined, true));
+  }, true);
   return st;
+}
+
+function serializeDocument(st: State): string {
+  return st.pageEngine && st.pageType ? pageDocument(st.pageType, st.pageEngine.serialize(), st.pageEngine.text()) : st.doc.innerHTML;
+}
+function showDocument(st: State, html: string): void {
+  const data = readPageDocument(html);
+  let engine: NotebookPageEngine | null = null;
+  if (data) {
+    if (data.type !== 'markdown' && data.state !== null && (typeof data.state !== 'object' || (data.state as { version?: unknown }).version !== 1)) throw Error('This page uses an unsupported format version.');
+    engine = createNotebookPage(data.type, { api: () => st.loaded ? st.target?.api ?? null : null, onChange: () => {
+      if (!engine || st.pageEngine !== engine) return;
+      st.doc.textContent = engine.text(); markDoc(st);
+    } });
+    try { engine.load(data.state); } catch (error) { engine.destroy(); throw error; }
+  }
+  st.pageEngine?.destroy(); st.pageEngine = engine; st.pageType = data?.type ?? null;
+  st.engineHost.replaceChildren(); st.engineHost.hidden = !data; st.page.hidden = !!data;
+  st.proof?.refresh();
+  st.format.replaceChildren(new Option('Document', 'document'), new Option('Markdown', 'markdown'));
+  if (data && engine) {
+    st.root.dataset.pageType = data.type;
+    if (data.type !== 'markdown') st.format.append(new Option(data.type[0]!.toUpperCase() + data.type.slice(1), data.type));
+    st.format.value = data.type;
+    st.engineHost.append(engine.element); st.doc.textContent = engine.text();
+  } else { delete st.root.dataset.pageType; st.doc.innerHTML = html; st.format.value = 'document'; st.word?.refresh(); }
+  apply(st);
+}
+async function changeFormat(st: State, value: string): Promise<void> {
+  if (!st.target || !st.loaded || value === (st.pageType ?? 'document')) return;
+  if (st.pageType && st.pageType !== 'markdown') { st.format.value = st.pageType; return; }
+  if (!await confirmAction(`Switch to ${value === 'markdown' ? 'Markdown' : 'Document'}? The content is kept, but formatting that the other format cannot represent may change.`)) { st.format.value = st.pageType ?? 'document'; return; }
+  st.replacePage = true;
+  if (value === 'markdown') {
+    const converter = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+    converter.addRule('strike', { filter: node => ['S', 'STRIKE', 'DEL'].includes(node.nodeName), replacement: content => `~~${content}~~` });
+    converter.addRule('task', { filter: node => node.nodeName === 'INPUT' && (node as HTMLInputElement).type === 'checkbox', replacement: (_, node) => (node as HTMLInputElement).checked ? '[x] ' : '[ ] ' });
+    converter.addRule('table', { filter: 'table', replacement: (_, node) => {
+      const rows = [...(node as HTMLTableElement).rows].map(row => [...row.cells].map(cell => (cell.textContent ?? '').trim().replace(/\|/g, '\\|').replace(/\n/g, '<br>')));
+      if (!rows.length) return '';
+      const width = Math.max(...rows.map(row => row.length));
+      const line = (row: string[]) => `| ${Array.from({ length: width }, (_, i) => row[i] ?? '').join(' | ')} |`;
+      return `\n\n${line(rows[0]!)}\n${line(Array(width).fill('---'))}\n${rows.slice(1).map(line).join('\n')}\n\n`;
+    } });
+    const source = converter.turndown(st.doc.innerHTML);
+    showDocument(st, pageDocument('markdown', { source }));
+  } else if (st.pageType === 'markdown') {
+    const source = (st.pageEngine!.serialize() as { source: string }).source;
+    showDocument(st, sanitizeHtml(marked.parse(source, { async: false, gfm: true })));
+  }
+  markDoc(st); st.pageEngine?.focus();
 }
 
 /** Re-read the target's knobs (config changed, or first paint). */
@@ -255,7 +355,8 @@ function apply(st: State): void {
   st.width.hidden = !ink;
   st.btn.transcribe!.hidden = !ink || cfg.transcribe === 'off';
   if (!ink) setTool(st, 'text');
-  st.doc.contentEditable = st.target && st.loaded ? 'true' : 'false';
+  st.doc.contentEditable = st.target && st.loaded && !st.pageEngine ? 'true' : 'false';
+  st.format.disabled = !st.target || !st.loaded;
   st.root.toggleAttribute('data-empty', !st.target);
   // The pen defaults to the text colour of THIS card — its theme, not the page's.
   if (!st.color.dataset.set) {
@@ -292,8 +393,8 @@ function toggleBlock(st: State, tag: string): void {
   cmd(st, 'formatBlock', cur === tag ? 'p' : tag);
 }
 
-function link(st: State): void {
-  const url = window.prompt('Link to', 'https://');
+async function link(st: State): Promise<void> {
+  const url = await askText('Link to', 'https://');
   if (!url || url === 'https://') return;
   if (window.getSelection()?.isCollapsed) cmd(st, 'insertHTML', `<a href="${esc(url)}">${esc(url)}</a>`);
   else cmd(st, 'createLink', url);
@@ -393,7 +494,7 @@ const pendingWrites = new Set<Promise<unknown>>();
  *  returned). The DOCUMENT is bound when the save is queued — a patch made of
  *  A's content can only ever be sent to A's address, whatever the editor shows
  *  by the time its turn comes; only the rev is read at send time. */
-function put(st: State, patch: { html?: string; ink?: string }, unload = false, force = false): Promise<boolean> {
+function put(st: State, patch: { html?: string; ink?: string; replacePage?: boolean }, unload = false, force = false): Promise<boolean> {
   const t = st.target;
   const gen = st.gen;
   if (!t) return Promise.resolve(false);
@@ -429,7 +530,7 @@ function put(st: State, patch: { html?: string; ink?: string }, unload = false, 
 }
 
 function markDoc(st: State): void {
-  if (!st.target) return;
+  if (!st.target || !st.loaded) return;
   // Text typed into an empty document lands as a bare text node; give it the
   // paragraph every later line gets (the command re-fires input, once).
   if (st.doc.firstChild?.nodeType === Node.TEXT_NODE && document.activeElement === st.doc) document.execCommand('formatBlock', false, 'p');
@@ -451,8 +552,8 @@ function flushDoc(st: State, unload = false, force = false): Promise<boolean> {
   if (st.docFlight && st.docFlight.seq === st.docSeq && !force) return st.docFlight.p;
   const gen = st.gen;
   const seq = st.docSeq;
-  const p = put(st, { html: st.doc.innerHTML }, unload, force).then((ok) => {
-    if (ok && st.gen === gen && st.docSeq === seq) st.docDirty = false;
+  const p = put(st, { html: serializeDocument(st), ...(st.replacePage ? { replacePage: true } : {}) }, unload, force).then((ok) => {
+    if (ok && st.gen === gen && st.docSeq === seq) { st.docDirty = false; st.replacePage = false; }
     return ok;
   });
   const flight = { seq, p };
@@ -519,7 +620,10 @@ async function load(st: State, discard = false): Promise<boolean> {
   st.loaded = true;
   if (discard) st.docDirty = st.inkDirty = st.conflict = false;
   apply(st);
-  st.doc.innerHTML = d.html; // sanitized server-side — the only HTML this editor ever trusts
+  try { showDocument(st, d.html); } catch (error) {
+    st.loaded = false; apply(st); fail(st, `Could not open this page: ${(error as Error).message}`); st.status.textContent = ''; return false;
+  }
+  st.replacePage = false;
   try {
     const raw = JSON.parse(d.ink) as unknown;
     st.strokes = Array.isArray(raw) ? raw.filter((s): s is Stroke => !!s && typeof s === 'object' && Array.isArray((s as Stroke).p)) : [];
@@ -570,12 +674,13 @@ async function openNow(st: State, target: EditorTarget | null): Promise<boolean>
   if (picker?.st === st) closePicker();
   st.conflict = false;
   st.docDirty = st.inkDirty = false;
+  st.replacePage = false;
   st.docSeq = st.inkSeq = 0;
   st.docFlight = st.inkFlight = null;
   clearTimeout(st.docTimer);
   clearTimeout(st.inkTimer);
   clearTimeout(st.liveTimer);
-  st.doc.innerHTML = '';
+  showDocument(st, '');
   st.strokes = [];
   st.cur = null;
   st.fresh.clear();
@@ -1170,6 +1275,7 @@ export function createNoteEditor(owner: string): NoteEditor {
     full: (on) => { st.root.toggleAttribute('data-full', on); fit(st); },
     destroy: () => {
       if (picker?.st === st) closePicker();
+      st.pageEngine?.destroy(); st.word?.destroy(); st.proof?.destroy();
       st.ro.disconnect();
       clearTimeout(st.liveTimer);
       if (states.get(owner) === st) states.delete(owner);
@@ -1227,7 +1333,7 @@ window.addEventListener('fd:ward-context', event => {
       const st = states.get(id);
       if (!st) continue;
       if (st.busy) throw Error('Wait for the note operation to finish before mentioning it.');
-      if (!(await flushAll(st))) throw Error('The mentioned note could not be saved. Your message is still a draft.');
+      if (st.conflict || !(await flushAll(st))) throw Error('The note could not be saved. Your edits are still a draft.');
     }
   })());
 });
@@ -1269,6 +1375,7 @@ RENDERERS.note = {
     if (!st) return;
     void flushDoc(st);
     void flushInk(st);
+    st.pageEngine?.destroy(); st.word?.destroy(); st.proof?.destroy();
     st.ro.disconnect();
     clearTimeout(st.liveTimer);
     states.delete(id);

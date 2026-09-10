@@ -13,6 +13,7 @@ import { ACTIONS } from '../../lib/logic.ts';
 import { createAgentVoice, type VoiceState } from './agent-voice.ts';
 import { completeCommand, parseCommand, type CommandSpec } from '../../lib/agent/commands.ts';
 import type { AgentTask } from '../../lib/agent/tasks.ts';
+import type { UserQuestion, PendingQuestion, UserAnswer } from '../../lib/agent/questions.ts';
 import type { TranscriptMsg } from '../../lib/agent/conversations.ts';
 import { CATALOG, pageOf, wardTitle, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body, note, readLayout } from './wards.ts';
@@ -286,6 +287,7 @@ interface Pending {
   confirmId: string;
   summary: string;
   patch?: string;
+  question?: UserQuestion;
 }
 
 /** Who asked for the turn this item belongs to. Server-stamped and stored, so
@@ -337,6 +339,8 @@ interface Ui {
   pendingText: HTMLElement;
   pendingDetails: HTMLDetailsElement;
   pendingPatch: HTMLElement;
+  questionBox: HTMLElement;
+  questionId?: string;
   status: HTMLElement;
   /** How full the thread is, next to the status line. */
   context: HTMLElement;
@@ -350,6 +354,9 @@ interface State {
   w: WardInstance;
   items: Item[];
   pending: Pending | null;
+  question?: PendingQuestion | null;
+  questionDrafts?: Map<string, UserAnswer>;
+  questionSubmitting?: boolean;
   /** A locally-streamed turn is in flight (server `busy` just adds a row). */
   busy: boolean;
   /** A turn is running somewhere else — another tab, another device, or an
@@ -732,6 +739,69 @@ window.addEventListener('fd:before-workspace-navigation', event => {
     }
   }));
 });
+const currentQuestion = (st: State): PendingQuestion | null => st.pending?.question ? { ...st.pending.question, id: st.pending.confirmId } : st.question ?? null;
+
+function paintQuestion(st: State, ui: Ui): void {
+  const question = currentQuestion(st), box = ui.questionBox;
+  box.hidden = !question;
+  if (!question) { ui.questionId = undefined; box.replaceChildren(); return; }
+  const drafts = st.questionDrafts ??= new Map<string, UserAnswer>();
+  const checkpoint = `agent-question:${st.w.i}:${question.id}`;
+  if (!drafts.has(question.id)) drafts.set(question.id, readDesktopState<UserAnswer>(checkpoint) ?? (question.input === 'multiple' ? [] : ''));
+  const save = (value: UserAnswer) => { drafts.set(question.id, value); saveDesktopState(checkpoint, value); paint(st); };
+  const answer = async (value: UserAnswer | null) => {
+    if (st.questionSubmitting || currentQuestion(st)?.id !== question.id) return;
+    st.questionSubmitting = true; paint(st);
+    const payload = { action: 'answer-question', questionId: question.id, answer: value };
+    try {
+      if (question.wait) await post(st, payload, {});
+      else {
+        const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, payload);
+        if (status !== 200 || !data?.answered) throw Error(data?.error ?? 'Could not send your answer.');
+        st.question = null;
+      }
+      if (currentQuestion(st)?.id !== question.id) { drafts.delete(question.id); saveDesktopState(checkpoint, undefined); }
+    } catch (error) { toast(error instanceof Error ? error.message : 'Could not send your answer.', undefined, true); }
+    finally { st.questionSubmitting = false; paint(st); if (!currentQuestion(st) && ui.input.isConnected) ui.input.focus(); }
+  };
+  if (ui.questionId !== question.id) {
+    ui.questionId = question.id; box.replaceChildren();
+    const heading = el('div', 'ag-question-heading'); heading.append(icon('bot'), el('span', undefined, question.wait ? 'Rime is waiting for your answer' : 'A question from Rime'));
+    const group = el('fieldset', 'ag-question-fields'), legend = el('legend', 'ag-question-title', question.question);
+    group.append(legend);
+    if (question.input === 'text') {
+      const input = el('textarea', 'input ag-question-text'); input.rows = 3; input.maxLength = 8000;
+      input.setAttribute('aria-label', question.question); input.placeholder = 'Your answer…';
+      input.oninput = () => save(input.value); group.append(input);
+    } else {
+      group.append(el('p', 'ag-question-hint', question.input === 'single' ? 'Choose one' : 'Choose one or more'));
+      const groupName = `question-${crypto.randomUUID()}`;
+      for (const option of question.options) {
+        const label = el('label', 'ag-question-option'), input = el('input');
+        input.type = question.input === 'single' ? 'radio' : 'checkbox'; input.name = groupName; input.value = option;
+        input.onchange = () => save(question.input === 'single' ? option : [...group.querySelectorAll<HTMLInputElement>('input:checked')].map(x => x.value));
+        label.append(input, el('span', undefined, option)); group.append(label);
+      }
+    }
+    const actions = el('div', 'ag-question-actions');
+    const skip = el('button', 'btn', 'Skip'); skip.type = 'button'; skip.onclick = () => { void answer(null); };
+    const submit = el('button', 'btn-primary', question.wait ? 'Answer & continue' : 'Send answer'); submit.type = 'button'; submit.dataset.questionSubmit = '';
+    submit.setAttribute('aria-label', question.wait ? 'Answer and continue' : 'Send answer');
+    submit.prepend(icon('right')); submit.onclick = () => { void answer(drafts.get(question.id) ?? ''); };
+    actions.append(skip, submit); box.append(heading, group, actions);
+  }
+  const value = drafts.get(question.id);
+  for (const input of box.querySelectorAll<HTMLInputElement>('input')) {
+    input.checked = Array.isArray(value) ? value.includes(input.value) : value === input.value;
+    input.disabled = !!st.questionSubmitting;
+  }
+  const text = box.querySelector<HTMLTextAreaElement>('textarea');
+  if (text) { if (text.value !== value) text.value = typeof value === 'string' ? value : ''; text.disabled = !!st.questionSubmitting; }
+  const valid = Array.isArray(value) ? value.length > 0 : typeof value === 'string' && !!value.trim() && value.length <= 8000;
+  for (const button of box.querySelectorAll<HTMLButtonElement>('button')) button.disabled = !!st.questionSubmitting || (button.hasAttribute('data-question-submit') && !valid);
+  box.setAttribute('aria-busy', String(!!st.questionSubmitting));
+}
+
 function paint(st: State): void {
   if (st.busy || st.remote) reloadHolds.add(st.w.i);
   else reloadHolds.delete(st.w.i);
@@ -755,13 +825,14 @@ function paint(st: State): void {
     ui.voiceStatus.textContent = st.voiceState?.message ?? '';
     ui.voiceStatus.dataset.error = String(voicePhase === 'error');
     // Mid-turn the composer stays open: a send steers the running turn.
-    ui.send.disabled = st.configured === false || st.uploading > 0 || st.clearing || (!st.draft.trim() && !st.attachments.length);
+    ui.send.disabled = !!st.pending?.question || st.configured === false || st.uploading > 0 || st.clearing || (!st.draft.trim() && !st.attachments.length);
     const working = st.busy || st.remote;
-    const status = st.pending ? 'Approval needed' : st.clearing ? 'Starting a new chat…' : working ? 'Working · send a follow-up to steer' : st.sharedStatus || 'Rimeward agent';
+    const status = st.pending?.question ? 'Waiting for your answer' : st.pending ? 'Approval needed' : st.clearing ? 'Starting a new chat…' : working ? 'Working · send a follow-up to steer' : st.sharedStatus || 'Rimeward agent';
     if (ui.status.textContent !== status) ui.status.textContent = status;
     paintContext(ui.context, st.context);
     ui.root.dataset.working = String(working);
-    ui.input.placeholder = st.configured === false ? 'Reconnect or configure a local provider in Account…' : working ? 'Add a follow-up…' : 'Message Rime…';
+    ui.input.disabled = !!st.pending?.question;
+    ui.input.placeholder = st.pending?.question ? 'Answer the question above to continue…' : st.configured === false ? 'Reconnect or configure a local provider in Account…' : working ? 'Add a follow-up…' : 'Message Rime…';
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-attach]').forEach(b => { b.disabled = st.configured === false; });
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-clear]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-history]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
@@ -771,12 +842,13 @@ function paint(st: State): void {
     ui.tasksButton.setAttribute('aria-label', `Tasks${running ? ` (${running} running)` : ''}`);
     ui.tasksButton.title = `Tasks${running ? ` · ${running} running` : ''}`;
     ui.tasksButton.dataset.count = running ? String(running) : '';
-    ui.pendingBox.classList.toggle('hidden', !st.pending);
-    ui.pendingBox.classList.toggle('flex', !!st.pending);
+    ui.pendingBox.classList.toggle('hidden', !st.pending || !!st.pending.question);
+    ui.pendingBox.classList.toggle('flex', !!st.pending && !st.pending.question);
     ui.pendingText.textContent = st.pending?.summary ?? '';
     ui.pendingDetails.hidden = !st.pending?.patch;
     if (ui.pendingPatch.textContent !== (st.pending?.patch ?? '')) ui.pendingPatch.textContent = st.pending?.patch ?? '';
     paintChips(st, ui.chips);
+    paintQuestion(st, ui);
   }
 }
 
@@ -795,6 +867,7 @@ async function refetch(st: State, settled = false): Promise<void> {
   st.tasks = data.tasks ?? [];
   if (!st.remote || !data.busy) st.items = itemsFrom(data.transcript ?? []);
   st.pending = data.pending ?? null;
+  st.question = data.question ?? null;
   // A turn is running elsewhere (another client, or an automation) — its live
   // frames repaint over this, but the thread is busy either way.
   st.remote = !settled && !!data.busy;
@@ -891,6 +964,9 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource): boolean {
     case 'pending':
       st.pending = e.pending ?? null;
       return true;
+    case 'question':
+      st.question = e.question ?? null;
+      return true;
     case 'usage':
       if (typeof e.tokens === 'number' && typeof e.model === 'string') st.context = e;
       return true;
@@ -981,6 +1057,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
           // wipe a note here anyway. Other clients follow from that ping.
           st.items = [];
           st.pending = null;
+          st.question = null;
           st.attachments = [];
         } else {
           st.items.push({ k: 'note', text: String(data.text ?? '') });
@@ -1039,7 +1116,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
 }
 
 function submit(st: State, ui: Ui): void {
-  if (st.configured === false) return;
+  if (st.configured === false || st.pending?.question) return;
   const text = ui.input.value.trim();
   if (text.length > 8000) { toast('Your draft exceeds 8,000 characters. Shorten it before sending.'); return; }
   const mentions = activeMentions(text, st.mentions);
@@ -1122,7 +1199,10 @@ function openTasks(st: State): void {
   actions.querySelector('button')!.textContent = 'Close';
   form.onsubmit = e => e.preventDefault();
   const list = el('div', 'ag-task-list');
-  actions.before(list);
+  const history = el('input'); history.type = 'checkbox';
+  const historyLabel = el('label', 'ag-task-history'); historyLabel.append(history, icon('history'), document.createTextNode('Show completed logs'));
+  historyLabel.title = 'Newest 100 completed logs, kept for up to 30 days';
+  actions.before(historyLabel, list);
   let selected: string | null = null, cursor = 0, result = false;
   let output: HTMLPreElement | null = null, more: HTMLButtonElement | null = null;
   let signature = '', fetching = false;
@@ -1143,7 +1223,7 @@ function openTasks(st: State): void {
     if (!d.open || fetching) return;
     fetching = true;
     try {
-      const { status, data } = await getJson(endpoint);
+      const { status, data } = await getJson(`${endpoint}&history=${history.checked}`);
       if (!d.open) return;
       if (status !== 200) { if (!list.childElementCount) list.append(el('p', undefined, data?.error ?? 'Tasks unavailable.')); return; }
       st.tasks = data.tasks ?? []; paint(st);
@@ -1214,6 +1294,7 @@ function openTasks(st: State): void {
     } catch { if (!list.childElementCount) list.append(el('p', undefined, 'Connection lost. Reopen Tasks to retry.')); }
     finally { fetching = false; }
   };
+  history.onchange = () => { signature = ''; void refresh(); };
   const timer = setInterval(() => { void refresh(); }, 2000);
   d.addEventListener('close', () => { clearInterval(timer); d.remove(); }, { once: true });
   void refresh();
@@ -1418,6 +1499,7 @@ async function clearChat(st: State): Promise<void> {
   st.items = [];
   st.pending = null;
   st.attachments = [];
+  st.question = null;
   st.mentions = [];
   setDraft(st, '');
   for (const ui of st.uis) ui.follow = true;
@@ -1763,6 +1845,8 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   const decline = el('button', 'btn', 'Cancel');
   decline.type = 'button'; decline.dataset.agDecline = '';
   pendingBox.append(pendingText, pendingDetails, approve, decline);
+  const questionBox = el('section', 'ag-question'); questionBox.hidden = true;
+  questionBox.setAttribute('aria-label', 'Question from Rime');
   const form = el('form', 'ag-composer');
   form.addEventListener('submit', e => e.preventDefault());
   const chips = el('div', 'ag-chips hidden');
@@ -1811,9 +1895,9 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   }
   modeLabel.append(document.createTextNode('Conversation'), conversationMode);
   voiceOptions.append(readLabel, modeLabel);
-  footer.append(pendingBox, form, voiceOptions, voiceStatus, help);
+  footer.append(questionBox, pendingBox, form, voiceOptions, voiceStatus, help);
   host.append(stage, footer);
-  return { root, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, readResponses, conversationMode, chips, pendingBox, pendingText, pendingDetails, pendingPatch, status, context, jump, follow: true, rendered: [] };
+  return { root, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, readResponses, conversationMode, chips, pendingBox, pendingText, pendingDetails, pendingPatch, questionBox, status, context, jump, follow: true, rendered: [] };
 }
 
 // ------------------------------------------------------------ shared dialog
@@ -2034,6 +2118,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   if (!st.busy && st.revision === revision) {
     if (!st.remote || !data.busy) st.items = itemsFrom(data.transcript ?? []);
     st.pending = data.pending ?? null;
+    st.question = data.question ?? null;
     st.remote = !!data.busy; // a turn already running when this client loaded
     if (st.remote && !st.items.some(it => it.k === 'thinking' || (it.k === 'step' && it.running))) st.items.push({ k: 'thinking' });
   }

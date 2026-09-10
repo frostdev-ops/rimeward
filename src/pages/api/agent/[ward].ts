@@ -6,6 +6,7 @@ import { validateWardMentions } from '../../../lib/agent/ward-context.ts';
 import { parseCommand } from '../../../lib/agent/commands.ts';
 import { syncRime, syncStatus } from '../../../lib/agent/sync.ts';
 import { listTasks, readTask, readChildTask, backgroundTasks, cancelTask } from '../../../lib/agent/tasks.ts';
+import { broadcast } from '../../../lib/logic-engine.ts';
 
 export const prerender = false;
 
@@ -23,7 +24,7 @@ export const GET: APIRoute = async ({ params, locals, url }) => {
     try {
       const id = url.searchParams.get('task');
       if (id && url.searchParams.has('session')) return Response.json(readChildTask(ctx, id), { headers: { 'cache-control': 'no-store' } });
-      return Response.json(id ? readTask(ctx, id, Number(url.searchParams.get('cursor') ?? 0), url.searchParams.get('output') !== 'true') : { tasks: listTasks(ctx) }, { headers: { 'cache-control': 'no-store' } });
+      return Response.json(id ? readTask(ctx, id, Number(url.searchParams.get('cursor') ?? 0), url.searchParams.get('output') !== 'true') : { tasks: listTasks(ctx, url.searchParams.get('history') === 'true') }, { headers: { 'cache-control': 'no-store' } });
     } catch (err) { return Response.json({ error: err instanceof Error ? err.message : 'Task unavailable' }, { status: 400 }); }
   }
   await syncRime(userId);
@@ -34,7 +35,7 @@ export const GET: APIRoute = async ({ params, locals, url }) => {
 };
 
 export const POST: APIRoute = async ({ params, request, locals }) => {
-  const { agentWardConfig, backgroundTurn, clearThread, interruptTurn, resolveConfirmTurn, steerTurn, runChatTurn, runCommand, wardBusy } = await import('../../../lib/agent/core.ts');
+  const { agentWardConfig, backgroundTurn, clearThread, interruptTurn, resolveConfirmTurn, prepareUserAnswer, steerTurn, runChatTurn, runCommand, wardBusy } = await import('../../../lib/agent/core.ts');
   const userId = locals.user!.userId;
   const ward = String(params.ward);
 
@@ -43,7 +44,8 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     file_ids?: unknown;
     ward_ids?: unknown;
     ward_mentions?: unknown;
-    action?: 'clear' | 'confirm' | 'decline' | 'interrupt' | 'background' | 'cancel-task' | 'message-child';
+    action?: 'clear' | 'confirm' | 'decline' | 'interrupt' | 'background' | 'cancel-task' | 'message-child' | 'answer-question';
+    answer?: unknown;
     task?: string;
     questionId?: unknown;
     confirmId?: string;
@@ -123,12 +125,25 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     steerTurn(userId, ward, { text: typed, from: 'user', wardIds, mentions });
     return Response.json({ steered: true });
   }
+  const answering = body.action === 'answer-question';
+  let waitingQuestion = false;
+  if (answering) {
+    let resume = false;
+    try { const result = prepareUserAnswer(userId, ward, String(body.questionId ?? ''), body.answer); waitingQuestion = result.waiting; resume = result.resume; }
+    catch (error) { return Response.json({ error: error instanceof Error ? error.message : 'Invalid answer' }, { status: 409 }); }
+    if (!waitingQuestion) {
+      if (resume) void runChatTurn(userId, ward, { message: '', fileIds: [] }, () => {}).catch(error => {
+        broadcast(userId, 'agent-live', { ward, event: { type: 'end', error: error instanceof Error ? error.message : 'Could not continue after your answer.' } });
+      });
+      return Response.json({ answered: true, queued: true });
+    }
+  }
   if (wardBusy(userId, ward)) return Response.json({ error: 'busy' }, { status: 409 });
 
-  const deciding = body.action === 'confirm' || body.action === 'decline';
+  const deciding = body.action === 'confirm' || body.action === 'decline' || waitingQuestion;
   const message = typed;
   const fileIds = Array.isArray(body.file_ids) ? body.file_ids.map(Number).filter(Number.isInteger).slice(0, 8) : [];
-  if (!deciding && !message && !fileIds.length) return Response.json({ error: 'empty message' }, { status: 400 });
+  if (!deciding && !answering && !message && !fileIds.length) return Response.json({ error: 'empty message' }, { status: 400 });
 
   const enc = new TextEncoder();
   let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -146,8 +161,8 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
         }
       };
       const run = deciding
-        ? resolveConfirmTurn(userId, ward, String(body.confirmId ?? ''), body.action === 'confirm', send)
-        : runChatTurn(userId, ward, { message, fileIds, wardIds, mentions }, send);
+        ? resolveConfirmTurn(userId, ward, String(waitingQuestion ? body.questionId : body.confirmId ?? ''), waitingQuestion ? body.answer !== null : body.action === 'confirm', send, waitingQuestion ? body.answer : undefined)
+        : runChatTurn(userId, ward, { message: answering ? '' : message, fileIds: answering ? [] : fileIds, wardIds, mentions }, send);
       run
         .then((turn) => send({ type: 'done', reply: turn.reply, steps: turn.steps, pending: turn.pending ?? null }))
         .catch((err) => send({ type: 'error', error: err instanceof Error ? err.message : 'turn failed' }))

@@ -63,6 +63,8 @@ pub fn run() {
             commands::ward_touch,
             commands::workspace_navigation,
             commands::open_workspace,
+            commands::open_ward_window,
+            commands::close_ward_window,
             runtime::startup_status,
             #[cfg(target_os = "macos")]
             permissions::macos_permissions
@@ -109,8 +111,10 @@ pub fn run() {
             // Close = hide: the tunnel only helps while the app is alive.
             #[cfg(desktop)]
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
             #[cfg(not(desktop))]
             let _ = (window, event);

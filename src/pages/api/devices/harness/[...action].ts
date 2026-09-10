@@ -1,4 +1,5 @@
 import { REMOTE_DESKTOP_HEADER, requireRemoteLayoutVersion } from '../../../../lib/dev/remote-desktop-contract.ts';
+import { NOTE_FORMAT, NOTE_FORMAT_HEADER, noteRecordNeedsFormat } from '../../../../lib/notebook-pages.ts';
 import { modelFailure } from "../../../../lib/agent/diagnostics.ts";
 import { randomUUID } from "node:crypto";
 import { voiceAction, voiceBody } from '../../../../lib/agent/voice.ts';
@@ -80,6 +81,7 @@ export const ALL: APIRoute = async ({
       const key = url.searchParams.get("key");
       if (key) {
         value = syncRecord(user, key);
+        if (Number(request.headers.get(NOTE_FORMAT_HEADER) ?? 1) < NOTE_FORMAT && noteRecordNeedsFormat(value as { key: string; payload: string } | null)) return Response.json({ error: 'Update Rimeward to sync this document format.' }, { status: 426 });
         if (!value)
           return Response.json({ error: "Record not found." }, { status: 404 });
       } else {
@@ -102,6 +104,7 @@ export const ALL: APIRoute = async ({
           endpoints,
           config: { provider, model, effort, persona, ...(provider === 'compat' && typeof endpoint === 'string' ? { endpoint } : {}) },
           manifest: syncManifest(user),
+          noteFormat: NOTE_FORMAT,
         };
       }
     } else if (request.method === "GET" && params.action === "models") {
@@ -123,6 +126,7 @@ export const ALL: APIRoute = async ({
       }
     } else if (request.method === "POST" && !params.action) {
       const body = await bodyOf(request);
+      if (Number(request.headers.get(NOTE_FORMAT_HEADER) ?? 1) < NOTE_FORMAT && (noteRecordNeedsFormat(body.record) || (typeof body.record?.key === 'string' && noteRecordNeedsFormat(syncRecord(user, body.record.key))))) return Response.json({ error: 'Update Rimeward to sync this document format.' }, { status: 426 });
       if (body.record?.key?.startsWith('appearance/brand/')) return Response.json({ error: 'Instance brand assets are managed on the server.' }, { status: 403 });
       if (body.record?.key === INSTANCE_KEY && typeof body.record.payload === 'string')
         requireRemoteLayoutVersion(JSON.parse(body.record.payload)?.layout, version);

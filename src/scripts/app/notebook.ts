@@ -21,6 +21,8 @@ import type { Layout, Notebook, PropDef, PropType, SavedView, Section, Sort, Sta
 import { RENDERERS, body, note as noteMsg } from './wards.ts';
 import { el, getJson, holdToFire, postJson, reducedMotion, toast } from './dom.ts';
 import { icon } from './icon.ts';
+import type { NotebookPageType } from '../../lib/notebook-pages.ts';
+import { askText, confirmAction } from './workspace-dialogs.ts';
 import { menuItem, openMenu } from './menu.ts';
 import { createNoteEditor, openLinkedNote, refitNoteEditors, type NoteEditor } from './note.ts';
 
@@ -118,7 +120,13 @@ async function renderCompact(w: WardInstance): Promise<void> {
   search.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && search.value.trim()) void openNotebook(w, { q: search.value.trim() });
   });
-  bar.append(search, btn('plus', 'New note', () => void openNotebook(w, { create: true })), btn('resize', 'Open the notebook', () => void openNotebook(w)));
+  const add = btn('plus', 'New page', () => {
+    const r = add.getBoundingClientRect();
+    openMenu(r.left, r.bottom, menu => {
+      for (const [kind, label, glyph] of [['document', 'Document', 'note'], ['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen']] as const) menu.append(menuItem(glyph, label, () => void openNotebook(w, { create: kind === 'document' ? true : kind })));
+    });
+  });
+  bar.append(search, add, btn('resize', 'Open the notebook', () => void openNotebook(w)));
   root.append(bar);
   const rows = el('div', 'nb-c-rows');
   rows.setAttribute('role', 'list');
@@ -220,7 +228,7 @@ function dialog(): HTMLDialogElement | null {
 const defaultQuery = (): Query => ({ status: 'active', sort: 'manual', dir: 'asc', group: 'none', layout: 'list' });
 const emptyBook = (w: WardInstance): Notebook => ({ id: w.i, title: wardTitle(w), sections: [], views: [], props: [], created: '', updated: '' });
 
-async function openNotebook(w: WardInstance, opts: { note?: string; q?: string; create?: boolean } = {}): Promise<void> {
+async function openNotebook(w: WardInstance, opts: { note?: string; q?: string; create?: boolean | NotebookPageType } = {}): Promise<void> {
   const d = dialog();
   if (!d) return;
   if (cur && cur.w.i !== w.i) {
@@ -265,7 +273,7 @@ async function openNotebook(w: WardInstance, opts: { note?: string; q?: string; 
     setNav(c, { kind: 'all' }, true);
   }
   if (opts.note) await select(c, opts.note);
-  if (opts.create) await createNote(c);
+  if (opts.create) await createNote(c, undefined, typeof opts.create === 'string' ? opts.create : undefined);
   refitNoteEditors();
 }
 
@@ -427,7 +435,6 @@ function renderNav(c: Dlg): void {
     for (const t of c.meta.tags.slice(0, 40)) nav.append(navItem(c, 'tag', t.tag, { kind: 'tag', tag: t.tag }, t.n));
   }
   head('Views', btn('plus', 'Save the current list as a view', () => void saveView(c), 'nb-nav-act'));
-  if (!book.views.length) nav.append(el('p', 'px-2 text-[10px] text-ink-faint', 'Filter, sort and lay out the list, then save it here.'));
   for (const v of book.views) {
     nav.append(navItem(c, v.layout === 'table' ? 'database' : v.layout === 'cards' ? 'page' : 'eye', v.title, { kind: 'view', id: v.id }, undefined, (m) => {
       m.append(el('div', 'ctx-label', v.title));
@@ -438,7 +445,6 @@ function renderNav(c: Dlg): void {
   }
   const addProp = btn('plus', 'Add a property', () => addPropertyMenu(c, addProp), 'nb-nav-act');
   head('Properties', addProp);
-  if (!book.props.length) nav.append(el('p', 'px-2 text-[10px] text-ink-faint', 'Typed fields every note in this notebook can carry — columns in a table view, filters in a saved view.'));
   for (const p of book.props) {
     const b = el('button', 'nb-item');
     b.type = 'button';
@@ -467,8 +473,6 @@ function renderNav(c: Dlg): void {
   nav.append(navItem(c, 'trash', 'Trash', { kind: 'status', status: 'trash' }));
   if (c.meta.linkable.length) {
     head('Notepads');
-    const p = el('p', 'px-2 text-[10px] text-ink-faint', 'Dashboard notepads not in any notebook — add one here and both show the same document.');
-    nav.append(p);
     for (const l of c.meta.linkable.slice(0, 20)) {
       const b = el('button', 'nb-item');
       b.type = 'button';
@@ -486,19 +490,19 @@ function renderNav(c: Dlg): void {
 }
 
 async function addSection(c: Dlg): Promise<void> {
-  const title = window.prompt('New section', '');
+  const title = await askText('New section', '');
   if (!title?.trim()) return;
   const r = await op(c, { op: 'notebook', sections: [...c.meta.notebook.sections, { title: title.trim() }] });
   if (r) scheduleRefresh(c);
 }
 async function renameSection(c: Dlg, s: Section): Promise<void> {
-  const title = window.prompt('Rename section', s.title);
+  const title = await askText('Rename section', s.title);
   if (!title?.trim() || title.trim() === s.title) return;
   const r = await op(c, { op: 'notebook', sections: c.meta.notebook.sections.map((x) => (x.id === s.id ? { ...x, title: title.trim() } : x)) });
   if (r) scheduleRefresh(c);
 }
 async function deleteSection(c: Dlg, s: Section): Promise<void> {
-  if (!window.confirm(`Delete the section “${s.title}”? Its notes stay in the notebook, unfiled.`)) return;
+  if (!await confirmAction(`Delete the section “${s.title}”? Its notes stay in the notebook, unfiled.`)) return;
   const r = await op(c, { op: 'notebook', sections: c.meta.notebook.sections.filter((x) => x.id !== s.id) });
   if (r) {
     if (c.nav.kind === 'section' && c.nav.id === s.id) setNav(c, { kind: 'all' });
@@ -510,7 +514,7 @@ function viewOf(c: Dlg, title: string, id?: string): Record<string, unknown> {
   return { id, title, section: q.section === 'none' ? undefined : q.section, tag: q.tag, status: q.status, pinned: q.pinned, q: q.q, props: q.props, sort: q.sort === 'rank' ? 'updated' : q.sort, dir: q.dir, group: q.group, layout: q.layout };
 }
 async function saveView(c: Dlg): Promise<void> {
-  const title = window.prompt('Save the current filter, sort and layout as a view named', '');
+  const title = await askText('Save the current filter, sort and layout as a view named', '');
   if (!title?.trim()) return;
   const r = await op(c, { op: 'notebook', views: [...c.meta.notebook.views, viewOf(c, title.trim())] });
   if (r) {
@@ -520,7 +524,7 @@ async function saveView(c: Dlg): Promise<void> {
   }
 }
 async function renameView(c: Dlg, v: SavedView): Promise<void> {
-  const title = window.prompt('Rename view', v.title);
+  const title = await askText('Rename view', v.title);
   if (!title?.trim() || title.trim() === v.title) return;
   const r = await op(c, { op: 'notebook', views: c.meta.notebook.views.map((x) => (x.id === v.id ? { ...x, title: title.trim() } : x)) });
   if (r) scheduleRefresh(c);
@@ -540,7 +544,7 @@ async function deleteView(c: Dlg, v: SavedView): Promise<void> {
   }
 }
 async function renameNotebook(c: Dlg): Promise<void> {
-  const title = window.prompt('Notebook name', c.meta.notebook.title || wardTitle(c.w));
+  const title = await askText('Notebook name', c.meta.notebook.title || wardTitle(c.w));
   if (!title?.trim()) return;
   const r = await op(c, { op: 'notebook', title: title.trim() });
   if (r) {
@@ -560,11 +564,11 @@ function addPropertyMenu(c: Dlg, anchor: HTMLElement): void {
   });
 }
 async function addProperty(c: Dlg, type: PropType): Promise<void> {
-  const name = window.prompt(`Name of the new ${PROP_TYPE_LABELS[type].toLowerCase()} property`, '');
+  const name = await askText(`Name of the new ${PROP_TYPE_LABELS[type].toLowerCase()} property`, '');
   if (!name?.trim()) return;
   const def: Record<string, unknown> = { name: name.trim(), type };
   if (type === 'select') {
-    const opts = window.prompt('Choices, comma separated', '');
+    const opts = await askText('Choices, comma separated', '');
     if (!opts?.trim()) return;
     def.options = opts.split(',').map((o) => o.trim()).filter(Boolean);
   }
@@ -572,13 +576,13 @@ async function addProperty(c: Dlg, type: PropType): Promise<void> {
   if (r) scheduleRefresh(c);
 }
 async function renameProperty(c: Dlg, p: PropDef): Promise<void> {
-  const name = window.prompt('Rename property', p.name);
+  const name = await askText('Rename property', p.name);
   if (!name?.trim() || name.trim() === p.name) return;
   const r = await op(c, { op: 'notebook', props: c.meta.notebook.props.map((x) => (x.id === p.id ? { ...x, name: name.trim() } : x)) });
   if (r) scheduleRefresh(c);
 }
 async function editPropertyOptions(c: Dlg, p: PropDef): Promise<void> {
-  const opts = window.prompt('Choices, comma separated (a removed choice stays on the notes that had it until they are edited)', (p.options ?? []).join(', '));
+  const opts = await askText('Choices, comma separated (a removed choice stays on the notes that had it until they are edited)', (p.options ?? []).join(', '));
   if (opts === null) return;
   const options = opts.split(',').map((o) => o.trim()).filter(Boolean);
   if (!options.length) return;
@@ -586,7 +590,7 @@ async function editPropertyOptions(c: Dlg, p: PropDef): Promise<void> {
   if (r) scheduleRefresh(c);
 }
 async function deleteProperty(c: Dlg, p: PropDef): Promise<void> {
-  if (!window.confirm(`Delete the property “${p.name}”? Its values are removed from every note in this notebook.`)) return;
+  if (!await confirmAction(`Delete the property “${p.name}”? Its values are removed from every note in this notebook.`)) return;
   const r = await op(c, { op: 'notebook', props: c.meta.notebook.props.filter((x) => x.id !== p.id) });
   if (r) scheduleRefresh(c);
 }
@@ -594,8 +598,8 @@ async function deleteProperty(c: Dlg, p: PropDef): Promise<void> {
 async function filterByProperty(c: Dlg, p: PropDef): Promise<void> {
   let v: string | null;
   if (p.type === 'checkbox') v = 'true';
-  else if (p.type === 'select') v = window.prompt(`Show notes whose ${p.name} is one of: ${p.options!.join(', ')}`, p.options![0]);
-  else v = window.prompt(`Show notes whose ${p.name} equals`, '');
+  else if (p.type === 'select') v = await askText(`Show notes whose ${p.name} is one of: ${p.options!.join(', ')}`, p.options![0]);
+  else v = await askText(`Show notes whose ${p.name} equals`, '');
   if (!v?.trim()) return;
   c.query.props = { ...c.query.props, [p.id]: v.trim() };
   c.els.root.dataset.pane = 'list';
@@ -970,7 +974,7 @@ async function trashNote(c: Dlg, n: NoteMeta, trashed: boolean): Promise<void> {
   if (trashed) toast(`Moved ${titleOf(n)} to the trash.`, { label: 'Undo', fn: () => void trashNote(c, n, false) });
 }
 async function purgeNote(c: Dlg, n: NoteMeta): Promise<void> {
-  if (!window.confirm(`Delete “${titleOf(n)}” for good? Its text, ink and links are removed everywhere it synced to. This cannot be undone.`)) return;
+  if (!await confirmAction(`Delete “${titleOf(n)}” for good? Its text, ink and links are removed everywhere it synced to. This cannot be undone.`)) return;
   if (!(await leaveIfOpen(c, n.id))) return;
   const r = await op(c, { op: 'purge', id: n.id });
   if (!r) return;
@@ -978,7 +982,7 @@ async function purgeNote(c: Dlg, n: NoteMeta): Promise<void> {
   toast(`Deleted ${titleOf(n)} for good.`);
 }
 async function emptyTrash(c: Dlg): Promise<void> {
-  if (!window.confirm(`Delete every note in this notebook's trash for good (${c.total})? This cannot be undone.`)) return;
+  if (!await confirmAction(`Delete every note in this notebook's trash for good (${c.total})? This cannot be undone.`)) return;
   if (c.selected?.trashed && !(await leaveIfOpen(c, c.selected.id))) return;
   const r = await op(c, { op: 'empty-trash' });
   if (!r) return;
@@ -1012,22 +1016,22 @@ async function newNoteMenu(c: Dlg, anchor: HTMLElement): Promise<void> {
   const { status, data } = await getJson(`/api/notebook/${c.w.i}?part=list&template=1&sort=title&dir=asc&limit=20`);
   const templates = status === 200 ? (data as { notes: NoteMeta[] }).notes : [];
   if (cur !== c) return;
-  if (!templates.length) return createNote(c);
   const r = anchor.getBoundingClientRect();
   openMenu(r.left, r.bottom, (m) => {
-    m.append(menuItem('plus', 'Blank note', () => void createNote(c)));
-    m.append(el('div', 'ctx-label', 'From a template'));
+    m.append(menuItem('note', 'Document', () => void createNote(c)));
+    for (const [type, label, glyph] of [['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen']] as const) m.append(menuItem(glyph, label, () => void createNote(c, undefined, type)));
+    if (templates.length) m.append(el('div', 'ctx-label', 'From a template'));
     for (const t of templates) m.append(menuItem('copy', titleOf(t), () => void createNote(c, t.id)));
   });
 }
 
-async function createNote(c: Dlg, from?: string): Promise<void> {
+async function createNote(c: Dlg, from?: string, kind?: NotebookPageType): Promise<void> {
   if (!(await c.editor.flush())) {
     toast('Save the open note first — it has changes that did not save.', undefined, true);
     return;
   }
   const section = c.query.section && c.query.section !== 'none' ? c.query.section : undefined;
-  const r = await op(c, { op: 'create', section, from, template: c.query.template === true || undefined });
+  const r = await op(c, { op: 'create', section, from, kind, template: c.query.template === true || undefined });
   if (!r) return;
   const meta = r.note as NoteMeta;
   if (c.query.status !== 'active' || c.query.q || c.query.pinned || c.query.tag || c.query.props) setNav(c, section ? { kind: 'section', id: section } : meta.template ? { kind: 'templates' } : { kind: 'all' });
@@ -1074,7 +1078,7 @@ function renderAsk(c: Dlg): void {
   const { rows, listHead, hint } = c.els;
   listHead.textContent = '';
   listHead.append(btn('left', 'Back to sections', () => { c.els.root.dataset.pane = 'nav'; }, 'btn nb-back min-h-0 px-2 py-1 text-xs'), el('span', 'text-xs text-ink-muted', 'Ask this notebook'));
-  hint.textContent = 'Answers use up to 8 matching notes. Open a source to read its full context.';
+  hint.textContent = '';
   rows.textContent = '';
   rows.removeAttribute('role');
   const box = el('div', 'nb-ask');
@@ -1083,6 +1087,9 @@ function renderAsk(c: Dlg): void {
   q.type = 'text';
   q.placeholder = 'What do my notes say about…';
   q.setAttribute('aria-label', 'Question');
+  const scope = el('select', 'input');
+  scope.setAttribute('aria-label', 'Notes to include');
+  scope.append(new Option('Automatic', 'auto'), new Option('All notes', 'all'), new Option('Matching notes', 'matches'));
   const go = el('button', 'btn-primary min-h-0 px-2 py-1 text-xs', 'Ask');
   go.type = 'button';
   const out = el('div', 'nb-ask-a');
@@ -1091,20 +1098,25 @@ function renderAsk(c: Dlg): void {
   const ask = async () => {
     const text = q.value.trim();
     if (!text || go.disabled) return;
-    go.disabled = true;
+    go.disabled = q.disabled = scope.disabled = true;
+    if (!(await c.metaSaves) || c.failedFields.size || !(await c.editor.flush()) || c.editor.dirty()) {
+      go.disabled = q.disabled = scope.disabled = false; toast('Save the open note before asking. Its latest edits have not been saved.', undefined, true); return;
+    }
+    if (!box.isConnected || cur !== c || c.nav.kind !== 'ask') return;
     out.setAttribute('aria-busy', 'true');
     out.textContent = 'Thinking…';
     src.textContent = '';
-    const res = await postJson(`/api/notebook/${c.w.i}`, { op: 'ask', q: text });
-    go.disabled = false;
+    const res = await postJson(`/api/notebook/${c.w.i}`, { op: 'ask', q: text, scope: scope.value });
+    go.disabled = q.disabled = scope.disabled = false;
     out.removeAttribute('aria-busy');
-    if (cur !== c || c.nav.kind !== 'ask') return;
+    if (!box.isConnected || cur !== c || c.nav.kind !== 'ask') return;
     if (!res.ok) {
       out.textContent = '';
       toast((res.data as { error?: string })?.error ?? 'The model call failed.', undefined, true);
       return;
     }
-    const d = res.data as { answer: string; sources: { id: string; title: string }[] };
+    const d = res.data as { answer: string; sources: { id: string; title: string }[]; coverage?: { used: number; total: number; condensed: boolean } };
+    hint.textContent = d.coverage ? `Used ${d.coverage.used} of ${d.coverage.total} active notes${d.coverage.condensed ? ' · condensed in batches' : ''}` : '';
     out.textContent = d.answer;
     if (d.sources.length) {
       src.append(el('span', 'text-[10px] text-ink-faint', 'From:'));
@@ -1123,7 +1135,7 @@ function renderAsk(c: Dlg): void {
       void ask();
     }
   });
-  form.append(q, go);
+  form.append(q, scope, go);
   box.append(form, out, src);
   rows.append(box);
   q.focus();

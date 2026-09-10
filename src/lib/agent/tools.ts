@@ -1,5 +1,6 @@
 import { DEV_TOOLS } from '../dev/tools.ts';
 import { listTasks, readTask, waitTask, cancelTask } from './tasks.ts';
+import { postUserQuestion } from './questions.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { sharedTool, serverTool } from './sync.ts';
 import { randomBytes } from 'node:crypto';
@@ -304,6 +305,14 @@ const dropDoc = (kind: StoreKind, a: Record<string, any>, ctx: ToolCtx) => {
 const docName = str('a slug, [a-z0-9-] ≤48 chars, e.g. "user-timezone" or "deploy-check"');
 
 export const TOOLS: Record<string, ToolDef> = {
+  ask_user_question: {
+    kind: 'read',
+    description: 'Ask the user a concise question inline in this conversation. input: single for one choice, multiple for multiple selections, or text for free text. Provide 2–12 options for choice questions. wait defaults true: pause this conversation until the user answers, without assuming any choice. wait:false lets you continue independent work and delivers the answer later. Ask only one unanswered question at a time. Child runs should ask their parent instead.',
+    parameters: obj({ question: str('The complete question'), input: { type: 'string', enum: ['single', 'multiple', 'text'] },
+      options: { type: 'array', items: { type: 'string' }, description: 'Distinct choices for single/multiple; omit for text' },
+      wait: { type: 'boolean', default: true, description: 'Wait for user input before continuing (default true)' } }, ['question']),
+    run: postUserQuestion,
+  },
   ...DEV_TOOLS,
   // ------------------------------------------------------------------ reads
   get_layout: {
@@ -1421,12 +1430,12 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   task_list: {
     kind: 'read',
-    description: 'List running and recent tool tasks in this chat, including tasks sent to the background. Tasks stay on the runtime that started them.',
-    parameters: obj({ cursor: num('Task list offset; default 0') }),
+    description: 'List active tasks and undelivered background results in this chat. Completed logs are hidden by default; history:true includes retained logs (newest 100 for 30 days). Read an exact task with task_output. Tasks stay on their originating runtime.',
+    parameters: obj({ cursor: num('Task list offset; default 0'), history: bool('Include retained completed logs; default false') }),
     run: (a, ctx) => {
       const cursor = a.cursor ?? 0;
       if (!Number.isSafeInteger(cursor) || cursor < 0) throw Error('cursor must be a non-negative integer.');
-      const all = listTasks(ctx), tasks = all.slice(cursor, cursor + 10);
+      const all = listTasks(ctx, a.history === true), tasks = all.slice(cursor, cursor + 10);
       return { tasks, complete: cursor + tasks.length >= all.length, next: cursor + tasks.length };
     },
   },

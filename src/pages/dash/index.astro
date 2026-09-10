@@ -14,7 +14,7 @@ import NoteDialog from '../../components/dashboard/NoteDialog.astro';
 import NotebookDialog from '../../components/dashboard/NotebookDialog.astro';
 import WardThemeDialog from '../../components/dashboard/WardThemeDialog.astro';
 import { getDashboard, getPages } from '../../lib/dashboard.ts';
-import { pageOf } from '../../lib/wards.ts';
+import { pageOf, wardTitle } from '../../lib/wards.ts';
 import { getGraph, getRuns } from '../../lib/logic-engine.ts';
 import { getSetting } from '../../lib/settings.ts';
 import { syncRime } from '../../lib/agent/sync.ts';
@@ -27,6 +27,8 @@ if (isDesktop()) {
 }
 const layout = getDashboard(userId);
 const pages = getPages(userId);
+const popoutWard = Astro.url.searchParams.get('ward') || undefined;
+const selectedWard = layout.find(w => w.i === popoutWard);
 // Entrance stagger per PAGE: an off-stage card (display:none) starts its CSS
 // entrance the first time its page shows, so each page cascades from 80ms.
 const seen = new Map<string, number>();
@@ -50,8 +52,9 @@ const logicJson = JSON.stringify({
 }).replaceAll('<', '\\u003c');
 ---
 
-<AppLayout title="Rimeward" fonts={layout.map((w) => w.theme?.font)}>
-  <main class="mx-auto max-w-7xl px-4 py-6">
+<AppLayout title={selectedWard ? `${wardTitle(selectedWard)} — Rimeward` : 'Rimeward'} fonts={layout.map((w) => w.theme?.font)}>
+  <main class="mx-auto max-w-7xl px-4 py-6" data-popout-ward={popoutWard} data-ward-window-scope={String(userId)}>
+    {popoutWard && <div class="flex items-center gap-2"><button type="button" id="ward-window-return" class="btn text-xs"><Icon id="left" /> Back to dashboard</button><p id="ward-window-missing" class="text-sm text-ink-muted" hidden={!!selectedWard}>This ward is no longer on the dashboard.</p></div>}
     <div id="alerts" data-mode={alertMode}></div>
     <div id="sse-banner" class="banner banner-warn hidden">Live feed lost — retrying…</div>
 

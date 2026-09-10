@@ -87,9 +87,20 @@ function view(r: Row): AgentTask {
 function publish(r: Row) {
   broadcast(r.user_id, 'agent-live', { ward: r.ward, event: { type: 'task', task: view(r) } });
 }
-export function listTasks(ctx: Pick<ToolCtx, 'userId' | 'ward'>): AgentTask[] {
+function cleanTaskLogs(userId: number) {
+  // Unreported results for a current conversation/running child still carry work.
+  db().prepare(`DELETE FROM agent_jobs WHERE user_id=? AND tool!='spawn_agent' AND state NOT IN ('running','stopping')
+    AND NOT (background=1 AND notified=0 AND EXISTS (SELECT 1 FROM agent_conversations c WHERE c.id=agent_jobs.conversation_id
+      AND (c.active=1 OR EXISTS (SELECT 1 FROM agent_jobs child WHERE child.id=c.task_id AND child.state IN ('running','stopping')))))
+    AND (finished_at < ? OR id NOT IN (SELECT id FROM agent_jobs WHERE user_id=? AND tool!='spawn_agent' AND state NOT IN ('running','stopping')
+      ORDER BY finished_at DESC,started_at DESC,id DESC LIMIT 100))`).run(userId, Date.now() - 30 * 86400_000, userId);
+}
+export function listTasks(ctx: Pick<ToolCtx, 'userId' | 'ward'> & Partial<Pick<ToolCtx, 'conv'>>, history = true): AgentTask[] {
+  cleanTaskLogs(ctx.userId);
+  const conversation = ctx.conv ?? activeConversationRow(ctx.userId, ctx.ward)?.id ?? 0;
   return (db().prepare(`SELECT id,tool,reason,state,background,started_at,finished_at,error,provider,model,endpoint FROM agent_jobs WHERE user_id=? AND ward=?
-    ORDER BY state IN ('running','stopping') DESC, started_at DESC LIMIT 100`).all(ctx.userId, ctx.ward) as Row[]).map(view);
+    AND (? OR state IN ('running','stopping') OR (background=1 AND notified=0 AND conversation_id=?))
+    ORDER BY state IN ('running','stopping') DESC, started_at DESC LIMIT 100`).all(ctx.userId, ctx.ward, Number(history), conversation) as Row[]).map(view);
 }
 /** Output offsets are absolute, so a rolling log can report an explicit gap. */
 export function readTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string, cursor = 0, result = false) {
@@ -245,10 +256,7 @@ export async function runTask(name: string, args: Record<string, unknown>, ctx: 
     if (ctx.task) throw Error('A child run cannot start another run. Do the work yourself or ask your parent.');
     assertChildCapacity(ctx.userId);
   }
-  // ponytail: keep the latest 100 ordinary receipts; child identities live with their conversations.
-  // A background job whose notice is still owed is never pruned — its report is undelivered.
-  store.prepare(`DELETE FROM agent_jobs WHERE user_id=? AND tool!='spawn_agent' AND state NOT IN ('running','stopping') AND NOT (background=1 AND notified=0) AND id NOT IN
-    (SELECT id FROM agent_jobs WHERE user_id=? ORDER BY started_at DESC LIMIT 100)`).run(ctx.userId, ctx.userId);
+  cleanTaskLogs(ctx.userId);
   const id = randomUUID(), ac = new AbortController();
   const background = args.background === true || def.spawn === true;
   // A child's cancel reaches the tools it started, backgrounded or not.

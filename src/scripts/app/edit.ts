@@ -14,11 +14,13 @@ import { normalizeWardTheme, wardThemeAttrs, WARD_STYLE_PROPS, type WardTheme } 
 import { ensureFonts } from './fonts.ts';
 import { ACTIONS, TRIGGERS } from '../../lib/logic.ts';
 import { registryDoes, searchCatalog } from '../../lib/catalog-search.ts';
-import { TAB_ID, bootInstance, readLayout, rerenderInstance, unbootInstance } from './wards.ts';
+import { TAB_ID, bootInstance, readLayout, refreshWardView, rerenderInstance, unbootInstance } from './wards.ts';
 import { el, getJson, holdToFire, keyboardInUse, newId, normalizeUrl, postJson, q, reducedMotion, toast } from './dom.ts';
 import { closeMenu, menuItem, openMenu } from './menu.ts';
 import { currentPage, firstPage, pageOfCard, publishPages, readPages, restage, showPage } from './pages.ts';
 import type { PageDef } from '../../lib/wards.ts';
+import { popOutWard } from './ward-window.ts';
+import { popoutWard } from './ward-view.ts';
 
 const state = new Map<string, WardInstance>();
 let grid: HTMLElement;
@@ -321,6 +323,8 @@ function publishLayout(layout: WardInstance[]): void {
 // is the one hook that covers all of them.
 
 const undoStack: WardInstance[][] = [];
+// Document moves stay beside the layout draft until Done; restoring a card cancels its move.
+const noteMoves = new Map<string, { id: string; notebook: string }>();
 /** The layout as of the last recorded point, and its identity. */
 let baseline: WardInstance[] = [];
 let baseKey = '';
@@ -353,6 +357,7 @@ function record(): void {
   syncGroups();
   syncTray();
   const now = layoutOf();
+  for (const w of now) noteMoves.delete(w.i);
   const key = layoutKey(now);
   if (key === baseKey) return;
   undoStack.push(baseline);
@@ -387,9 +392,10 @@ async function save(): Promise<boolean> {
   // Credentials typed into a ward's Configure dialog ride BESIDE the layout —
   // the server seals them; they never enter layout_json or the other tabs.
   const tokens = Object.fromEntries(pendingSecrets);
-  const { ok } = await postJson('/api/dashboard', { layout, pages: readPages(), from: TAB_ID, ...(pendingSecrets.size ? { tokens } : {}) }, 'PUT');
+  const { ok } = await postJson('/api/dashboard', { layout, pages: readPages(), from: TAB_ID, ...(pendingSecrets.size ? { tokens } : {}), ...(noteMoves.size ? { noteMoves: [...noteMoves.values()] } : {}) }, 'PUT');
   if (ok) {
     pendingSecrets.clear();
+    noteMoves.clear();
     publishLayout(layout);
   }
   return ok;
@@ -837,6 +843,7 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
     publishLayout(next);
     if (pages) publishPages(pages);
     restage();
+    refreshWardView();
     for (const w of added) {
       const shell = shells.get(w.i)!;
       revealShell(shell);
@@ -918,6 +925,12 @@ function bootDrag(): void {
   /** Where the card came from, for Escape-to-revert. */
   let originNext: Element | null = null;
   let originParent: HTMLElement | null = null;
+  let hotNotebook: HTMLElement | null = null;
+  const clearNotebook = () => {
+    hotNotebook?.removeAttribute('data-drop-hot');
+    hotNotebook?.querySelector('[data-notebook-drop-label]')?.remove();
+    hotNotebook = null;
+  };
   /** Edge auto-scroll arms only after the pointer has been OUTSIDE the edge
    *  band — grabbing a card that sits near the viewport edge must not creep. */
   let armedEdge = false;
@@ -1044,6 +1057,19 @@ function bootDrag(): void {
         break;
       }
     }
+    const book = node.dataset.wdType === 'note' && over?.dataset.wdType === 'notebook' ? over : null;
+    if (book !== hotNotebook) {
+      clearNotebook();
+      if (book) {
+        hotNotebook = book;
+        book.setAttribute('data-drop-hot', '1');
+        const label = el('div', 'wd-notebook-drop', 'Move to notebook');
+        label.dataset.notebookDropLabel = '1';
+        label.setAttribute('role', 'status');
+        book.append(label);
+      }
+    }
+    if (hotNotebook) return;
     const now = performance.now();
     if (now - lastSwapAt < 60) return;
     const flipTo = (mutate: () => void) => {
@@ -1162,6 +1188,14 @@ function bootDrag(): void {
 
   const endDrag = (e?: PointerEvent, revert = false) => {
     if (e && e.pointerId !== activePointer) return;
+    revert ||= e?.type === 'pointercancel';
+    if (started && e?.type === 'pointerup') {
+      lastX = e.clientX;
+      lastY = e.clientY;
+      reorder();
+    }
+    const notebook = !revert && e?.type === 'pointerup' ? hotNotebook : null;
+    clearNotebook();
     if (holdT) clearTimeout(holdT);
     holdT = 0;
     window.removeEventListener('touchmove', blockScroll);
@@ -1192,6 +1226,10 @@ function bootDrag(): void {
     setTimeout(() => (justDragged = false), 0);
     delete n.dataset.dragging;
     n.style.transform = '';
+    if (notebook) {
+      void moveNotepad(n, notebook);
+      return;
+    }
     if (revert && changed && originParent?.isConnected) {
       // Escape: put the card back where it came from — page included — save nothing.
       const p = originParent;
@@ -1263,6 +1301,27 @@ function bootDrag(): void {
     },
     { capture: true }
   );
+}
+
+async function moveNotepad(node: HTMLElement, notebook: HTMLElement): Promise<void> {
+  const w = state.get(node.dataset.wd!);
+  const book = state.get(notebook.dataset.wd!);
+  if (w?.type !== 'note' || book?.type !== 'notebook') return;
+  // Drain the existing editor before removing its surface; a failed save keeps the card.
+  const pending: Promise<unknown>[] = [];
+  window.dispatchEvent(new CustomEvent('fd:ward-context', { detail: { wards: [w.i], waitUntil: (p: Promise<unknown>) => pending.push(p) } }));
+  try {
+    await Promise.all(pending);
+    if (!isEditing() || !node.isConnected || !notebook.isConnected) return;
+    noteMoves.set(w.i, { id: typeof w.config?.note === 'string' ? w.config.note : w.i, notebook: book.i });
+    state.delete(w.i);
+    unbootInstance(w.i);
+    flip(() => node.remove(), node);
+    commit();
+    toast(`Moved ${wardTitle(w)} to ${wardTitle(book)} — Done to save.`, { label: 'Undo', fn: undo });
+  } catch {
+    toast('Save the notepad before moving it. Your edits are still in the notepad.', undefined, true);
+  }
 }
 
 // ---------------------------------------------------------- resize engine
@@ -1395,6 +1454,7 @@ function sizeMatrix(node: HTMLElement, w: WardInstance): HTMLElement {
 function wardMenu(x: number, y: number, node: HTMLElement, w: WardInstance): void {
   openMenu(x, y, (m) => {
     m.append(el('div', 'ctx-label', wardTitle(w)));
+    if (!isEditing()) m.append(menuItem('resize', 'Pop out ward', () => void popOutWard(w.i)));
 
     m.append(sizeMatrix(node, w));
 
@@ -2437,6 +2497,8 @@ export function bootEdit(): void {
   baseline = structuredClone(layoutOf());
   baseKey = layoutKey(baseline);
 
+  if (popoutWard) return;
+
   const btn = (name: string) => q<HTMLButtonElement>(`[data-tb="${name}"]`, toolbar)!;
   const hint = q('[data-tb-hint]', toolbar);
   const coarse = matchMedia('(pointer: coarse)').matches;
@@ -2503,12 +2565,13 @@ export function bootEdit(): void {
   bootMenu();
   bootDialog();
   bootGroups();
-  const recovered = readDesktopCheckpoint<{ layout: unknown; pages: unknown; undo?: unknown[]; editing: boolean; page?: string }>('layout-draft');
+  const recovered = readDesktopCheckpoint<{ layout: unknown; pages: unknown; undo?: unknown[]; noteMoves?: [string, { id: string; notebook: string }][]; editing: boolean; page?: string }>('layout-draft');
   const pages = recovered && validatePages(recovered.pages);
   const layout = pages && validateLayout(recovered?.layout, pages);
   if (recovered && pages && layout) {
     if (recovered.editing) {
       setEditing(true);
+      for (const [ward, move] of recovered.noteMoves ?? []) noteMoves.set(ward, move);
       publishPages(pages);
       applyLayout(layout, new Set(), true);
       if (recovered.page && pages.some(page => page.id === recovered.page)) showPage(recovered.page);
@@ -2520,7 +2583,7 @@ export function bootEdit(): void {
     (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(Promise.resolve().then(async () => {
       if (pendingSecrets.size) throw Error('Save the ward credentials with Done before opening macOS permission settings.');
       if (!isEditing() && !(await save())) throw Error('The dashboard could not be saved. Try again before relaunching.');
-      saveDesktopState('layout-draft', { layout: layoutOf(), pages: readPages(), undo: undoStack, editing: isEditing(), page: currentPage() });
+      saveDesktopState('layout-draft', { layout: layoutOf(), pages: readPages(), undo: undoStack, noteMoves: [...noteMoves], editing: isEditing(), page: currentPage() });
     }));
   });
 }

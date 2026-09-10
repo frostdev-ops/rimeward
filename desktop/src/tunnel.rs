@@ -117,12 +117,17 @@ pub async fn start(
     app.add_capability(
         tauri::ipc::CapabilityBuilder::new(format!("browser-{origin}"))
             .window("main")
+            .window("ward-*")
             .local(false)
             .remote(format!("{origin}/*"))
+            .permission("core:event:allow-listen")
+            .permission("core:event:allow-unlisten")
             .permission("allow-ward-browser")
             .permission("allow-ward-touch")
             .permission("allow-workspace-navigation")
-            .permission("allow-open-workspace"),
+            .permission("allow-open-workspace")
+            .permission("allow-open-ward-window")
+            .permission("allow-close-ward-window"),
     )
     .map_err(|_| "Could not enable this server's browser wards")?;
     stop(app).await;

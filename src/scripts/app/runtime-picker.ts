@@ -17,7 +17,7 @@ async function connections() {
 }
 document.getElementById('manage-environments')?.addEventListener('click', () => void connections().catch(e => toast((e as Error).message)));
 
-if (native && (!local || base)) {
+if (native && (!local || base) && !document.querySelector('main[data-popout-ward]')) {
   // Old bookmarks and app upgrades return to the same authenticated app shell.
   void native.invoke('open_workspace', { runtime: 'local', page: new URLSearchParams(location.hash.slice(1)).get('p') ?? undefined }).catch(() => {});
 } else if (host) {

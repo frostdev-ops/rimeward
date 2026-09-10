@@ -20,6 +20,8 @@ for(const type of DEV_WARDS)RENDERERS[type]={render:async w=>{const target=body(
 document.getElementById('dev-open-project')?.addEventListener('click',()=>{void import('./workspace-dialogs.ts').then(m=>m.openProjectWorkspace()).catch(e=>toast(e.message,undefined,true));});
 import { bootEdit } from './edit.ts';
 import { bootLogicEdit } from './logic-edit.ts';
+import './ward-window.ts';
+import { popoutWard } from './ward-view.ts';
 
 // The entrance cascade is pure CSS (.wd-enter in frost.css, staggered via an
 // inline animation-delay per shell). Never animate cards with WAAPI here: a
@@ -31,4 +33,4 @@ bootPages(); // stages the current page before any ward boots
 ensureStream(); // layout and theme updates also reach pages with only development wards
 bootWards();
 bootEdit();
-bootLogicEdit();
+if (!popoutWard) bootLogicEdit();

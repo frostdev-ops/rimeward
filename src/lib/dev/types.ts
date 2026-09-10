@@ -48,6 +48,7 @@ export interface SessionResourceView extends SessionView {
   cpuPercent: number | null;
   memoryBytes: number | null;
 }
+export const terminalIsLog = (session: Pick<SessionView, 'command' | 'state'>): boolean => !!session.command && session.state !== 'running';
 export function terminalNeedsRestore(session: Pick<SessionView, 'state' | 'command' | 'terminationReason'>): boolean {
   return !session.command && session.state !== 'running' && (session.state === 'interrupted' ||
     session.terminationReason === 'runtime-shutdown' || session.terminationReason === 'runtime-interrupted');

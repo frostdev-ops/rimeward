@@ -1119,6 +1119,22 @@ body:has(.wd-grid.wiring) .fd-toast {
   opacity: 0.94;
 }
 
+.editing [data-wd-type="notebook"][data-drop-hot] {
+  z-index: 31;
+}
+.wd-notebook-drop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--color-accent);
+  border-radius: inherit;
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font-weight: 600;
+  pointer-events: none;
+}
+
 /* ------------------------------------------------------ searchable select
    The clothes for components/SearchSelect.astro, which builds every node below
    at runtime. Here rather than in the component because @apply only resolves in

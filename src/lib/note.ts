@@ -4,6 +4,7 @@ import { getDashboard } from './dashboard.ts';
 import type { WardInstance } from './wards.ts';
 import { excerpt, noteLinks, plainText, sanitizeHtml } from './note-text.ts';
 import { emitNoteEvent } from './note-events.ts';
+import { readPageDocument } from './notebook-pages.ts';
 
 export { excerpt, plainText, sanitizeHtml, textToHtml, noteLinks } from './note-text.ts';
 
@@ -22,7 +23,7 @@ export { excerpt, plainText, sanitizeHtml, textToHtml, noteLinks } from './note-
 // row. Every save bumps `rev`; a save that names the rev it started from is
 // refused (409) when another surface saved in between.
 
-export const NOTE_HTML_MAX = 512 * 1024;
+export const NOTE_HTML_MAX = 16 * 1024 * 1024;
 export const NOTE_INK_MAX = 2 * 1024 * 1024;
 export const NOTE_TITLE_MAX = 120;
 export const NOTE_TAG_MAX = 32;
@@ -224,6 +225,8 @@ export interface NotePatch {
   rev?: number;
   etag?: string;
   force?: boolean;
+  /** Explicitly confirmed page conversion/import; ordinary text writers cannot discard structured state. */
+  replacePage?: boolean;
 }
 
 /** Store a patch (any half may be absent). Throws with a `status` for the
@@ -247,6 +250,17 @@ function writeNoteTx(userId: number, w: WardInstance | string, patch: NotePatch)
   if (patch.html !== undefined) {
     if (patch.html.length > NOTE_HTML_MAX) throw Object.assign(new Error('the document is too large'), { status: 413 });
     html = sanitizeHtml(patch.html);
+    if (html.length > NOTE_HTML_MAX) throw Object.assign(new Error('the document is too large'), { status: 413 });
+    const page = readPageDocument(html), previousPage = readPageDocument(cur.html);
+    const pageMarker = /<[^>]*\bdata-page(?:-state)?\s*=/i;
+    // Page engines own one complete wrapper. Legacy append writers must not save
+    // trailing paragraphs that the engine would hide and discard on its next edit.
+    if (pageMarker.test(patch.html) && (!page || html.indexOf('</div>') !== html.length - 6 || html.indexOf('<div', 1) !== -1)) {
+      throw Object.assign(new Error('Invalid structured page: its state and all content must remain in one complete page document.'), { status: 400 });
+    }
+    if (pageMarker.test(cur.html) && (!previousPage || previousPage.type !== page?.type) && patch.replacePage !== true) {
+      throw Object.assign(new Error('This is a structured notebook page. Use its editor, or explicitly confirm replacing its page type before writing ordinary text.'), { status: 400 });
+    }
   }
   if (patch.ink !== undefined) {
     if (patch.ink.length > NOTE_INK_MAX) throw Object.assign(new Error('too much ink — clear some strokes'), { status: 413 });

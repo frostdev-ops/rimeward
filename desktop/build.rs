@@ -10,6 +10,8 @@ fn main() {
             "ward_touch",
             "workspace_navigation",
             "open_workspace",
+            "open_ward_window",
+            "close_ward_window",
             "startup_status",
             "macos_permissions",
         ]),

@@ -4,6 +4,12 @@ Notepad edits one document. Notebook organizes those same documents into section
 tags, pins, saved views and typed properties. A document can appear in a Notebook
 and multiple Notepad wards without copying its content.
 
+In dashboard edit mode, drag a Notepad onto the center of a Notebook to show
+the “Move to notebook” target. Dropping removes the standalone card from the draft;
+Done saves its document membership and the layout together. Undo restores the card
+before saving, and Cancel discards the move. The notebook sidebar's add action
+still includes a document while keeping its Notepad card on the dashboard.
+
 ## Documents and storage
 
 Migration `025_notebooks.sql` adds notebooks and document metadata; migration
@@ -57,6 +63,54 @@ menus and the link picker use the app's theme tokens. Entrances and state change
 use the existing easing/keyframes; reduced motion disables movement and smooth
 heading scrolling. Inputs keep readable mobile sizing and keyboard focus rings.
 
+## Page types and document editing
+
+New page offers Document, Markdown, Spreadsheet, Slides and Drawing. Each engine
+uses the same document id, revisions, conflict handling, backups and sync. Its
+validated JSON state and searchable text are stored together in one sanitized
+HTML wrapper; ordinary text writers cannot append outside that wrapper or replace
+the page type without explicit conversion. The shared document limit is 16 MiB.
+Enhanced formats stay local when paired with an older server; format negotiation
+prevents older sanitizers from stripping page state or rich formatting.
+
+- Markdown uses the GFM parser and CodeMirror source/preview editing, with syntax
+  highlighting, fenced-language support, slash snippets, completion, search,
+  Markdown import/export and grammar suggestions. Switching between Document and
+  Markdown is explicit because their formatting capabilities differ.
+- Spreadsheet provides one sheet up to 200 rows by 52 columns, cell/range selection,
+  keyboard editing, safe formulas with references/ranges and common functions,
+  number/currency/percentage formats, styling, structural edits, sizing, undo/redo,
+  TSV clipboard and CSV import/export. It does not provide XLSX or cross-sheet formulas.
+- Slides provides layouts, slide ordering, editable text/shapes/raster images,
+  positioning/sizing/layers, speaker notes, presentation mode, undo/redo and SVG,
+  JSON and standalone HTML export. The HTML presentation supports browser print/PDF;
+  PPTX is not supported. Limits are 100 slides and 200 objects per slide.
+- Drawing provides flowchart shapes, text, bar/line/pie charts, anchored straight
+  and elbow connectors/arrows, selection and sizing, styles, alignment/layers,
+  grid/snapping, zoom/pan, undo/redo and JSON/SVG export. JSON import is supported;
+  draw.io XML and obstacle-avoiding routing are not. Limits are 500 shapes and
+  1,000 connectors.
+
+Document tools add fonts, sizes, colors, highlighting, paragraph alignment,
+line spacing and before/after spacing, indentation, tables, raster images,
+find/replace, page setup, headers/footers and page-number fields. Comments persist
+on their selected passages. Track changes records inserted/deleted text, including
+paste and IME, with accept/reject actions; formatting and layout changes apply
+directly. Page breaks are explicit, with browser/Word pagination on export.
+
+DOCX import/export uses real OOXML packages and retains supported runs, headings,
+lists, merged tables, raster images, margins, headers/footers, page fields, comments
+and tracked text changes. Import reports unsupported features rather than silently
+claiming exact Word fidelity. Embedded files are bounded; external images are not
+fetched. This is a practical document editor, not complete Microsoft Word parity.
+
+Grammar review uses the page's configured Rime model. Clear errors receive red
+underlines and optional style suggestions yellow underlines, with right-click
+replacements and a suggestion list. Native spelling/autocorrect remains available;
+agent autocorrect applies only high-confidence spelling replacements. Live grammar
+is opt-in, stale responses are discarded, and deleted text/code are excluded from
+Document review. Markdown offers syntax-aware editing and explicit grammar review.
+
 ## Properties, links and templates
 
 Each notebook has up to 20 properties: text, number, date, choice or checkbox.
@@ -91,11 +145,14 @@ Title lookup accepts an exact title, a unique prefix or an id. `note.attach` sea
 the notebook and adds matches to the flow packet for a following `agent.ask`; it
 does not attach content to a Notion page.
 
-Ask retrieves up to eight notes using any-word FTS, falling back to recent notes
-when no terms match. Context is bounded to 3,000 characters per note and 24,000 total.
-One shared 60-per-hour model slot supplies a response through the ward's configured
-provider. Sources open their documents. Repeated Enter while a request is pending
-cannot submit duplicate calls. Ask is one question at a time, without a follow-up
+Ask offers Automatic, All notes and Matching notes. Automatic summaries use every
+active non-template note rather than searching for the word "summarize". Large
+notebooks are read in bounded batches and their findings combined, with coverage
+and all selected sources shown. Matching mode uses up to eight FTS matches with
+bounded excerpts. The hourly model budget is checked before a multi-call summary;
+each call uses the shared 60-per-hour window and the ward's configured provider.
+Ask waits for pending document saves. Sources open their documents, and repeated
+Enter while a request is pending cannot submit duplicate calls. Ask is one question at a time, without a follow-up
 conversation. Agent tools expose listing, search, CRUD, backlinks, purge and Ask;
 permanent purge is confirmation gated.
 
@@ -118,27 +175,13 @@ even when the two content revisions are equal. Moving a document refreshes both
 notebooks. Pairing rekeys document/notebook ids, membership, stored `data-note`
 links and backlink rows together, and drops stale sync records/baselines.
 
-## Completion validation
+## Local build verification
 
-Validation uses throwaway data directories and authenticated browser fixtures.
-No production user data or paid model calls are needed.
+For this expansion the user requested compilation and a combined local build,
+with no tests, browser probes or golden regeneration. The prior notebook checks
+remain in the repository. Visual behavior, document round trips and interactions
+are reserved for the user's manual testing of the local app.
 
-- Existing unit suite: 481 passing; TypeScript, production build and desktop lint pass.
-- Storage probes cover both migrations, ownership, exact/alias resolution, atomic
-  writes, FTS, links, typed properties, templates, manual purge and real Leyline
-  execution. Regression checks include equal-revision conflicts, first upload,
-  metadata timestamps, pairing link rewrites and emptying over 1,000 trashed notes.
-- Browser walkthroughs cover properties, table/cards and saved views, Configure
-  selection/clearing, wiki links/backlinks, template ink, Ask/sources, confirmed
-  purge, cross-notebook navigation and failed/delayed saves and loads. Visual checks
-  cover dark Lucide, light Phosphor, desktop, tablet, phone and reduced motion.
-- `npm run goldens` regenerates the standard screens and runs the existing editor,
-  terminal, conversation, permissions, remote desktop and browser checks.
-- The remote workspace smoke harness runs independent desktop/server processes
-  over HTTPS and pairing. Its Notebook extension verifies first upload, metadata,
-  offline reads/writes, both content-conflict directions, stable conflict copies,
-  concurrent purge and Ask through shared-model HTTP using a fixture response.
-
-Signing, packaged-runtime validation, production relay health, installation and
-installer publication belong to the coordinated Release Agent sequence. Fixture
-model transport proves request routing; it does not claim a live provider response.
+The build owner waits for the terminal-permission and pop-out-window tasks before
+snapshotting the shared checkout. Production deployment and installer publication
+are separate from this local build.

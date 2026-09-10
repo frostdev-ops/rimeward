@@ -38,6 +38,12 @@ Use the activity view to inspect tool work. A new message can steer a running tu
 
 Use `/compact` to summarize older context while keeping the full transcript on disk. It runs on the conversation's owning computer, including when you send it from another desktop. The connection stays open while the summary is prepared; wait for the result before requesting another compaction.
 
+## Answer Rime's questions
+
+Rime can ask inline with one choice, multiple selections, or a text field. By default it pauses the conversation until you choose **Answer & continue**; **Skip** tells it no answer was supplied. Your theme and icons apply to the form, and draft answers survive reloads. Rime can optionally ask without pausing while it does independent work.
+
+Completed task logs are hidden from Rime's default queries and the Tasks drawer. **Show completed logs** reveals retained history; ordinary logs keep only the newest 100 for up to 30 days. Active tasks, undelivered results for current conversations, and child conversation records are preserved.
+
 ## Set approvals before giving work to an agent
 
 Review each Rime ward's approvals and unattended-turn limits in its configuration. The default approval policy is oriented around outbound actions, but policies can be changed; do not assume every write or command will always prompt.

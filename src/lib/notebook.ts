@@ -683,20 +683,57 @@ export function askContext(userId: number, notebook: string, question: string): 
 
 /** One model call (the ward's provider/model, the shared 60/h window) over the
  *  notes `askContext` picked. The answer plus the notes it saw. */
-export async function askNotebook(userId: number, w: WardInstance, question: string): Promise<{ answer: string; sources: { id: string; title: string }[] }> {
+export async function askNotebook(userId: number, w: WardInstance, question: string, scope: 'auto' | 'all' | 'matches' = 'auto'): Promise<{ answer: string; sources: { id: string; title: string }[]; coverage: { scope: string; total: number; used: number; condensed: boolean } }> {
   const q = question.replace(/\s+/g, ' ').trim().slice(0, 500);
   if (!q) throw bad('ask something');
   const notebook = notebookIdOf(w);
-  const sources = askContext(userId, notebook, q);
-  if (!sources.length) return { answer: 'This notebook has no notes to answer from yet.', sources: [] };
-  // Late imports: the engine imports this module for the note.* actions, and the
-  // model layer reaches the sync store, which reads notes for their records.
-  const [{ takeModelSlot }, { askModel }] = await Promise.all([import('./logic-engine.ts'), import('./agent/oneshot.ts')]);
-  takeModelSlot(userId);
+  const all = scope === 'all' || (scope === 'auto' && /\b(all|every|entire|whole)\b|\b(summari[sz]e|summary|overview|recap)\b/i.test(q));
+  const total = listNotes(userId, { notebook, limit: 1 }).total;
+  let sources = all ? [] as { id: string; title: string; text: string }[] : askContext(userId, notebook, q);
+  if (all) {
+    let offset = 0;
+    while (offset < total) {
+      const page = listNotes(userId, { notebook, sort: 'title', dir: 'asc', offset, limit: LIST_MAX });
+      if (!page.notes.length) break;
+      for (const n of page.notes) sources.push({ id: n.id, title: titleOf(n), text: plainText(readNote(userId, n.id).html) });
+      offset += page.notes.length;
+    }
+  }
+  const coverage = { scope: all ? 'all' : 'matches', total, used: sources.length, condensed: false };
+  if (!sources.length) return { answer: 'This notebook has no notes to answer from yet.', sources: [], coverage };
+  const [{ takeModelSlot, availableModelSlots }, { askModel }] = await Promise.all([import('./logic-engine.ts'), import('./agent/oneshot.ts')]);
   const cfg = notebookConfig(w);
-  const answer = await askModel({
-    userId, provider: cfg.provider, endpoint: cfg.endpoint, model: cfg.model, instructions: ASK,
-    text: `NOTES:\n\n${sources.map((s) => `### ${s.title}\n${s.text}`).join('\n\n')}\n\nQUESTION: ${q}`,
-  });
-  return { answer, sources: sources.map((s) => ({ id: s.id, title: s.title })) };
+  const call = async (text: string, instructions = ASK) => {
+    takeModelSlot(userId);
+    return askModel({ userId, provider: cfg.provider, endpoint: cfg.endpoint, model: cfg.model, instructions, text });
+  };
+  // Large notebook summaries read every document in bounded batches, then combine their findings.
+  const parts: string[] = [];
+  for (const source of sources) {
+    const text = source.text || '[No text; handwriting is available only after transcription.]';
+    for (let at = 0; at < text.length; at += ASK_TOTAL_CHARS / 2) parts.push(`### ${source.title}\n${text.slice(at, at + ASK_TOTAL_CHARS / 2)}`);
+  }
+  let batchCount = 1, batchSize = 0;
+  for (const part of parts) { if (batchSize && batchSize + part.length + 2 > ASK_TOTAL_CHARS) { batchCount++; batchSize = 0; } batchSize += part.length + 2; }
+  const needed = batchCount === 1 ? 1 : batchCount * 2 + 1;
+  const available = availableModelSlots(userId);
+  if (needed > available) throw bad(`This summary may need ${needed} model calls, but ${available} remain this hour. Use Matching notes or try again later.`, 429);
+  let material = parts;
+  while (material.join('\n\n').length > ASK_TOTAL_CHARS) {
+    coverage.condensed = true;
+    const batches: string[] = [];
+    let batch = '';
+    for (const part of material) {
+      if (batch && batch.length + part.length > ASK_TOTAL_CHARS) { batches.push(batch); batch = ''; }
+      batch += `${part}\n\n`;
+    }
+    if (batch) batches.push(batch);
+    const summaries: string[] = [];
+    for (const batch of batches) summaries.push((await call(`QUESTION: ${q}\n\nNOTES:\n${batch}`, `${ASK} You are preparing one batch for a combined answer. Cover every supplied note, retain its title in square brackets, and preserve facts relevant to the question. Keep this batch summary under 1500 words.`)));
+    if (summaries.some(summary => summary.length > 10_000)) throw bad('The model returned an oversized batch summary. Try a more specific question.', 502);
+    if (summaries.join('\n\n').length >= material.join('\n\n').length) throw bad('The model did not condense the notebook. Try a more specific question.', 502);
+    material = summaries;
+  }
+  const answer = await call(`COVERAGE: ${coverage.used} of ${coverage.total} active notes; ${coverage.condensed ? 'batch summaries covering the full selected text' : 'note text'}.\n\nNOTES:\n${material.join('\n\n')}\n\nQUESTION: ${q}`);
+  return { answer, sources: sources.map(({ id, title }) => ({ id, title })), coverage };
 }

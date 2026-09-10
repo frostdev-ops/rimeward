@@ -21,6 +21,30 @@ Several dashboards per user, tabbed. Only the page you are on is booted in the
 browser; every ward on every page keeps working on the server (leylines, chat
 bots, timers, watchers never look at what a browser shows).
 
+## Ward windows
+
+Every ward has a **Pop out ward** header button and context-menu action. It opens
+a movable, resizable native window in Rimeward, or a browser pop-up on the web.
+Repeating the action focuses the existing window. The dashboard keeps the ward's
+position with **Show window** and **Bring back** controls while its renderer is
+paused. **Back to dashboard**, or closing the window, restores the dashboard view.
+Browser pop-up blocking is reported without removing the ward.
+
+The window uses `/dash?ward=<id>` on the same authenticated origin/runtime. Its
+ward ID, page, group membership, settings, Leylines, and stored content stay in the
+original dashboard. Groups show their children; individual nested wards can also
+open independently. Bring back individually popped-out children before popping
+out their whole group. Layout editing stays in the dashboard. Editors flush pending
+content through the existing context/navigation hooks; opening or closing a view
+does not terminate native sessions. Terminal input ownership stays per window, so
+the existing **Take control** action applies when moving between terminal views.
+
+Only the selected ward (or group's children) mounts in the window. Other layout
+records remain available for routing and live layout reconciliation. Same-origin,
+account-scoped window messages suspend/restore dashboard renderers, preventing
+two browser canvases from competing over one browser ward's viewport. Pop-outs do
+not overwrite the dashboard's active page or its desktop recovery checkpoint.
+
 ## 1. Model — a property, not a second layout
 
 ```ts

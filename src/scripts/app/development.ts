@@ -437,6 +437,12 @@ async function mount(w: WardInstance) {
             const next: SessionView[] = await api("sessions", { project: state.project });
             if (stopped) return;
             list = next;
+            const ids = new Set(list.map(s => s.id));
+            const stale = state.tabs?.some(id => !ids.has(id)) || state.closedSessions?.some(id => !ids.has(id));
+            if (stale) {
+              state.tabs = state.tabs?.filter(id => ids.has(id)); state.closedSessions = state.closedSessions?.filter(id => ids.has(id));
+              await remember();
+            }
             if (state.session && !list.some(s => s.id === state.session && tabVisible(s))) {
               state.session = undefined; session = undefined; sequence = undefined;
               outputs = []; outputSize = 0; term.reset(); autoAttach = true;
@@ -706,6 +712,7 @@ async function mount(w: WardInstance) {
         const { d, form, error, actions } = workspaceDialog("Task manager");
         taskDialog = d;
         d.classList.add("term-task-manager");
+        error.style.whiteSpace = "pre-line";
         const headingIcon = el("span", "term-task-heading-icon");
         headingIcon.setAttribute("aria-hidden", "true"); headingIcon.append(icon("chart"));
         d.querySelector("h2")?.prepend(headingIcon);
@@ -735,6 +742,17 @@ async function mount(w: WardInstance) {
           b.className = "term-task-filter"; filters.append(b); return b;
         });
         filters.append(searchField);
+        const selection = new Set<string>();
+        let applying = false;
+        const bulk = el("div", "term-task-bulk"), selectedCount = el("span", "term-task-selection", "None selected");
+        const selectAll = el("input"); selectAll.type = "checkbox"; selectAll.setAttribute("aria-label", "Select all matching sessions");
+        const selectLabel = el("label", "term-task-select-all"); selectLabel.append(selectAll, document.createTextNode("Select all"));
+        const history = el("input"); history.type = "checkbox";
+        const historyLabel = el("label", "term-task-history"); historyLabel.append(history, icon("history"), document.createTextNode("History"));
+        historyLabel.title = "Completed command logs · newest 100, kept for up to 30 days";
+        const endSelected = button("End selected", () => bulkAction("end")), deleteSelected = button("Delete selected", () => bulkAction("delete"));
+        endSelected.prepend(icon("stop")); deleteSelected.prepend(icon("trash"));
+        bulk.append(selectLabel, selectedCount, endSelected, deleteSelected, historyLabel);
         const scroll = el("div", "term-task-scroll"), table = el("table", "table term-task-table");
         table.setAttribute("aria-label", "Terminal sessions and resource usage");
         const head = el("thead"), headings = el("tr"), rows = el("tbody");
@@ -751,14 +769,16 @@ async function mount(w: WardInstance) {
         head.append(headings); table.append(head, rows); scroll.append(table);
         const emptyTasks = el("p", "term-task-empty", "No sessions to show."); emptyTasks.hidden = true;
         const note = el("p", "term-help", "Darker rows use more resources. Usage includes child processes; 100% CPU is one core.");
-        actions.before(summary, filters, scroll, emptyTasks, note);
+        actions.before(summary, filters, bulk, scroll, emptyTasks, note);
         const entries = new Map<string, ReturnType<typeof makeRow>>();
         const memory = (bytes: number | null) => bytes === null ? "—" : bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${(bytes / 1e6).toFixed(1)} MB`;
         function makeRow(s: SessionResourceView) {
           const row = el("tr"); row.dataset.session = s.id;
           const nameCell = el("td"), name = el("strong"), detail = el("span", "term-task-detail");
           const identity = el("div", "term-task-identity"), text = el("div");
-          text.append(name, detail); identity.append(icon(s.kind === "shell" ? "code" : "bot"), text); nameCell.append(identity);
+          const selected = el("input"); selected.type = "checkbox"; selected.setAttribute("aria-label", `Select ${s.title}`);
+          selected.onchange = () => { if (selected.checked) selection.add(s.id); else selection.delete(s.id); drawTasks(); };
+          text.append(name, detail); identity.append(selected, icon(s.kind === "shell" ? "code" : "bot"), text); nameCell.append(identity);
           const stateCell = el("td"), status = el("span", "term-task-status"); stateCell.append(status);
           const cpu = el("td", "term-task-number"), meter = el("div", "term-task-meter"), fill = el("i"), cpuText = el("span");
           fill.setAttribute("aria-hidden", "true"); meter.append(fill, cpuText); cpu.append(meter);
@@ -767,20 +787,46 @@ async function mount(w: WardInstance) {
           const open = button("Open", async () => { await attach(s.id); await closeManager(); });
           open.prepend(icon("right")); open.setAttribute("aria-label", `Open ${s.title}`);
           const remove = button("", async () => {
+            if (applying) return;
             const target = records.find(item => item.id === s.id);
             if (!target) return;
             remove.disabled = true;
+            remove.dataset.busy = "true";
             try {
               if (target.state === "running") {
                 if (!await confirmAction(`End ${target.title}? The process will stop. Its saved screen stays available.`)) return;
                 await api("sessions", { id: target.id }, "DELETE");
               } else if (!await deleteSaved(target)) return;
               await refresh(); await update();
-            } finally { if (remove.isConnected) remove.disabled = false; }
+            } finally { delete remove.dataset.busy; if (remove.isConnected) remove.disabled = applying; }
           });
           buttons.append(open, remove); controls.append(buttons);
           row.append(nameCell, stateCell, cpu, mem, pid, controls);
-          return { row, name, detail, status, cpuText, fill, mem, pid, remove };
+          return { row, selected, name, detail, status, cpuText, fill, mem, pid, remove };
+        }
+        async function bulkAction(action: "end" | "delete") {
+          const targets = records.filter(s => selection.has(s.id) && (action === "end" ? s.state === "running" : s.state !== "running"));
+          if (applying || !targets.length) return;
+          if (!await confirmAction(action === "end" ? `End ${targets.length} selected sessions? Their processes will stop; saved screens remain.` :
+            `Delete ${targets.length} selected saved sessions and their terminal history? Project files and native CLI conversations are kept.`)) return;
+          applying = true; drawTasks();
+          try {
+            const results = await Promise.allSettled(targets.map(s => api(action === "end" ? "sessions" : "session-history", { id: s.id }, "DELETE")));
+            const failures: string[] = [], deleted = new Set<string>();
+            results.forEach((r, i) => {
+              const target = targets[i];
+              if (!target) return;
+              if (r.status === "rejected") failures.push(`${target.title}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+              else { selection.delete(target.id); if (action === "delete") deleted.add(target.id); }
+            });
+            if (deleted.size) {
+              state.closedSessions = state.closedSessions?.filter(id => !deleted.has(id));
+              state.tabs = state.tabs?.filter(id => !deleted.has(id));
+              await remember();
+            }
+            await refresh(); await update();
+            if (failures.length) { error.textContent = failures.join("\n"); error.hidden = false; }
+          } finally { applying = false; drawTasks(); }
         }
         function drawTasks(animate = false) {
           const positions = new Map([...entries].filter(([, e]) => e.row.isConnected && !e.row.hidden).map(([id, e]) => [id, e.row.getBoundingClientRect().top]));
@@ -797,6 +843,16 @@ async function mount(w: WardInstance) {
           const maxMemory = Math.max(256 * 1024 * 1024, ...active.map(s => s.memoryBytes ?? 0));
           summary.textContent = `${active.length} running · ${records.length - active.length} saved · ${memory(active.some(s => s.memoryBytes === null) ? null : active.reduce((total, s) => total + (s.memoryBytes ?? 0), 0))} in use`;
           const recordIds = new Set(records.map(s => s.id)), visibleIds = new Set(visible.map(s => s.id));
+          for (const id of selection) if (!recordIds.has(id)) selection.delete(id);
+          const selectedVisible = visible.filter(s => selection.has(s.id));
+          selectAll.checked = visible.length > 0 && selectedVisible.length === visible.length;
+          selectAll.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visible.length;
+          selectAll.disabled = applying || !visible.length;
+          const selectedRunning = records.filter(s => selection.has(s.id) && s.state === "running").length;
+          selectedCount.textContent = applying ? `Applying to ${selection.size} sessions…` : selection.size ? `${selection.size} selected` : "None selected";
+          endSelected.disabled = applying || !selectedRunning;
+          deleteSelected.disabled = applying || selection.size === selectedRunning;
+          history.disabled = applying;
           for (const [id, entry] of entries) {
             if (recordIds.has(id)) continue;
             entries.delete(id);
@@ -810,6 +866,9 @@ async function mount(w: WardInstance) {
             const added = !entry;
             if (!entry) { entry = makeRow(s); entries.set(s.id, entry); }
             const { row, name, detail, status, cpuText, fill, mem, pid, remove } = entry;
+            entry.selected.checked = selection.has(s.id); entry.selected.disabled = applying;
+            entry.selected.setAttribute("aria-label", `Select ${s.title}`);
+            row.dataset.selected = String(entry.selected.checked);
             name.textContent = s.title === s.kind ? names[s.kind] : s.title;
             detail.textContent = s.command ? "Rime command" : names[s.kind];
             status.textContent = s.state === "running" ? "Running" : "Saved";
@@ -822,6 +881,7 @@ async function mount(w: WardInstance) {
             const action = s.state === "running" ? "End" : "Delete";
             if (remove.dataset.action !== action) { remove.dataset.action = action; remove.replaceChildren(icon(action === "End" ? "stop" : "trash"), document.createTextNode(action)); }
             remove.setAttribute("aria-label", `${action} ${s.title}`);
+            remove.disabled = applying || remove.dataset.busy === "true";
             row.hidden = false;
             if (rows.children[index] !== row) rows.insertBefore(row, rows.children[index] ?? null);
             if (added && !reducedMotion()) row.animate([{ opacity: 0, transform: "translateY(5px)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: "ease-out" });
@@ -842,7 +902,7 @@ async function mount(w: WardInstance) {
           loading = true;
           try {
             if (document.hidden) return;
-            const result = await api<{ sessions: SessionResourceView[]; error?: string }>("session-resources", { project: state.project });
+            const result = await api<{ sessions: SessionResourceView[]; error?: string }>("session-resources", { project: state.project, history: String(history.checked) });
             if (!d.open) return;
             records = result.sessions; drawTasks();
             error.textContent = result.error ?? ""; error.hidden = !result.error;
@@ -850,6 +910,8 @@ async function mount(w: WardInstance) {
           finally { loading = false; if (d.open) timer = setTimeout(() => void refresh(), 2000); }
         }
         search.oninput = () => drawTasks(true);
+        selectAll.onchange = () => { for (const [id, entry] of entries) if (!entry.row.hidden) { if (selectAll.checked) selection.add(id); else selection.delete(id); } drawTasks(); };
+        history.onchange = () => { selection.clear(); void refresh(); };
         d.onclose = () => { clearTimeout(timer); taskDialog = undefined; d.remove(); };
         void refresh();
       }

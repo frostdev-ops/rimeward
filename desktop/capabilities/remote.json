@@ -3,7 +3,8 @@
   "identifier": "dashboard",
   "description": "The dashboard page (served by the site) may ask this app for a ward's local browser.",
   "windows": [
-    "main"
+    "main",
+    "ward-*"
   ],
   "remote": {
     "urls": [

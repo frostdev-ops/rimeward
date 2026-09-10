@@ -320,10 +320,13 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                     app.add_capability(
                         tauri::ipc::CapabilityBuilder::new("local-workspace")
                             .window("main")
+                            .window("ward-*")
                             .local(false)
                             .remote(format!("{}/*", origin.origin().ascii_serialization()))
                             .permission("allow-workspace-navigation")
                             .permission("allow-open-workspace")
+                            .permission("allow-open-ward-window")
+                            .permission("allow-close-ward-window")
                             .permission("allow-macos-permissions"),
                     )?;
                     *app.state::<Workspace>().0.lock().await = Some((origin, token));

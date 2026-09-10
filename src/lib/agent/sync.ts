@@ -19,6 +19,7 @@ import {
   type SyncRecord,
 } from "./sync-store.ts";
 import { NOTE_KEY, resolveNoteConflict, validateNoteRecord } from '../note-sync.ts';
+import { NOTE_FORMAT, NOTE_FORMAT_HEADER, noteRecordNeedsFormat } from '../notebook-pages.ts';
 import type {
   AgentProviderId,
   ProviderCall,
@@ -78,7 +79,7 @@ async function request(
     ...init,
     redirect: "error",
     signal: init.signal ?? AbortSignal.timeout(15000),
-    headers: { ...init.headers, [REMOTE_DESKTOP_HEADER]: String(REMOTE_DESKTOP_PROTOCOL), authorization: `Bearer ${token}` },
+    headers: { ...init.headers, [REMOTE_DESKTOP_HEADER]: String(REMOTE_DESKTOP_PROTOCOL), [NOTE_FORMAT_HEADER]: String(NOTE_FORMAT), authorization: `Bearer ${token}` },
   });
   if (response.status === 426) throw Object.assign(new Error('Update Rimeward before synchronizing this dashboard. Your local dashboard is preserved.'), { status: 426 });
   if (!response.ok && !(response.status === 409 && suffix === "")) {
@@ -141,6 +142,7 @@ export function syncRime(user: number, force = false): Promise<void> {
         endpoints?: unknown;
         config: Record<string, unknown>;
         manifest: { key: string; hash: string }[];
+        noteFormat?: number;
       };
       if (
         typeof remote.profile !== "string" ||
@@ -206,6 +208,7 @@ export function syncRime(user: number, force = false): Promise<void> {
         // Re-read after network I/O: an editor or agent may have written in the meantime.
         refreshWorkRecord(user, record.key);
         const current = syncRecord(user, record.key);
+        if ((remote.noteFormat ?? 1) < NOTE_FORMAT && noteRecordNeedsFormat(current)) return;
         if (
           current &&
           current.hash !== record.hash &&
@@ -230,7 +233,9 @@ export function syncRime(user: number, force = false): Promise<void> {
       const keys = [...new Set([...local.keys(), ...other.keys()])].sort(
         (a, b) => rank(a) - rank(b) || a.localeCompare(b),
       );
+      let notesPaused = false;
       for (const key of keys) {
+        if ((remote.noteFormat ?? 1) < NOTE_FORMAT && noteRecordNeedsFormat(syncRecord(user, key))) { notesPaused = true; continue; }
         const ours = local.get(key),
           theirs = other.get(key),
           base = bases.get(key);
@@ -270,7 +275,7 @@ export function syncRime(user: number, force = false): Promise<void> {
             );
         }
       }
-      statuses.set(user, { online: true, syncing: false, at: Date.now() });
+      statuses.set(user, { online: true, syncing: false, at: Date.now(), ...(notesPaused ? { error: 'New document formats are saved locally. Update the server to sync them.' } : {}) });
       if (changed) {
         const { broadcast } = await import("../logic-engine.ts");
         broadcast(user, "refresh", { type: "memory" });

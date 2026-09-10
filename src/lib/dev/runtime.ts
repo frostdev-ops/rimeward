@@ -73,7 +73,7 @@ export function workDb(): Database.Database {
   }
   db.transaction(() => {
     for (const [table, columns] of [
-      ['terminal_sessions', [['exit_signal', 'INTEGER'], ['termination_reason', 'TEXT']]],
+      ['terminal_sessions', [['exit_signal', 'INTEGER'], ['termination_reason', 'TEXT'], ['finished_at', 'INTEGER']]],
       ['buffer_copies', [['raw', 'BLOB'], ['mode', 'INTEGER']]],
     ] as const) {
       const existing = new Set((db.pragma(`table_info(${table})`) as { name: string }[]).map(c => c.name));
@@ -82,6 +82,7 @@ export function workDb(): Database.Database {
     db.exec(`UPDATE terminal_sessions SET state='interrupted',exit_code=NULL,exit_signal=NULL,
       termination_reason=COALESCE(termination_reason,'runtime-interrupted'),
       task_state=CASE WHEN task_state='active' THEN 'needs-attention' ELSE task_state END WHERE state IN ('running','interrupted')`);
+    db.prepare("UPDATE terminal_sessions SET finished_at=? WHERE state!='running' AND finished_at IS NULL").run(Date.now());
   })();
   database = db;
   return db;

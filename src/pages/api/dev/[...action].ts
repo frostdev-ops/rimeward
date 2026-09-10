@@ -161,7 +161,7 @@ export const ALL: APIRoute = async ({ params, request, locals, url }) => {
         );
       if (action === "pairings") return json(await remotePairs(user));
       if (action === "capabilities") return json(terminalCapabilities());
-      if (action === "session-resources") return json(await sessionResources(user, project || undefined));
+      if (action === "session-resources") return json(await sessionResources(user, project || undefined, url.searchParams.get('history') === 'true'));
       if (action === "projects") return json(listProjects(user));
       if (action === "files") return json(tree(user, project, file));
       if (action === "search")

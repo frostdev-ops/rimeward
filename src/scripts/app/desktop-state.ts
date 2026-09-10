@@ -3,7 +3,8 @@ const marker = document.querySelector<HTMLMetaElement>('meta[name="fd-mac-user"]
 const native = !!(window as Window & { __TAURI__?: { core?: unknown } }).__TAURI__?.core;
 const account = native && !document.querySelector('meta[name="rimeward-runtime-base"]') ? marker?.content : undefined;
 export const restoringDesktop = !!account && marker?.dataset.restore === '1';
-const prefix = account ? `rimeward-mac:${account}:` : '';
+const wardWindow = document.querySelector<HTMLElement>('main[data-popout-ward]')?.dataset.popoutWard;
+const prefix = account ? `rimeward-mac:${account}:${wardWindow ? `ward-window:${wardWindow}:` : ''}` : '';
 export function readDesktopState<T>(key: string): T | undefined {
   if (!prefix) return;
   try { return JSON.parse(localStorage.getItem(prefix + key) ?? 'null') ?? undefined; } catch { return; }

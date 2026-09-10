@@ -42,7 +42,7 @@ export function openMenu(x: number, y: number, build: (m: HTMLElement) => void):
   m.style.left = `${Math.max(8, Math.min(x, innerWidth - o.width - 8)) - o.left}px`;
   m.style.top = `${Math.max(8, Math.min(y, innerHeight - o.height - 8)) - o.top}px`;
   menuEl = m;
-  m.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  m.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true });
 }
 
 // Close paths: outside click, Escape, any scroll, a resize.

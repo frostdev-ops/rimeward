@@ -21,6 +21,7 @@ import {
 } from "./runtime.ts";
 import { projectOf, projectPath } from "./projects.ts";
 import { processUsage } from './process-usage.ts';
+import { terminalIsLog } from './types.ts';
 import type { SessionView, SessionResourceView, PermissionMode, TerminalKind } from "./types.ts";
 
 const require = createRequire(import.meta.url);
@@ -194,6 +195,18 @@ function view(r: Row, inspect = false): SessionView {
 }
 export function listSessions(user: number, project?: string): SessionView[] {
   if (project) projectOf(user, project);
+  // Retain completed command logs only: interactive sessions are resumable workspaces.
+  const expired = workDb().prepare(`SELECT id FROM terminal_sessions WHERE user_id=? AND is_command=1 AND state!='running'
+    AND (finished_at < ? OR id NOT IN (SELECT id FROM terminal_sessions WHERE user_id=? AND is_command=1 AND state!='running' ORDER BY finished_at DESC,rowid DESC LIMIT 100))`)
+    .all(user, Date.now() - 30 * 86400_000, user) as { id: string }[];
+  if (expired.length) {
+    workDb().transaction(() => {
+      const receipt = workDb().prepare('DELETE FROM task_receipts WHERE session=?');
+      const session = workDb().prepare('DELETE FROM terminal_sessions WHERE id=? AND user_id=?');
+      for (const { id } of expired) { receipt.run(id); session.run(id, user); }
+    })();
+    emitDev(user, 'session', '');
+  }
   return (
     workDb()
       .prepare(
@@ -203,8 +216,8 @@ export function listSessions(user: number, project?: string): SessionView[] {
       .all(user, project ?? null, project ?? null) as Row[]
   ).map(r => view(r));
 }
-export async function sessionResources(user: number, project?: string): Promise<{ sessions: SessionResourceView[]; error?: string }> {
-  const sessions = listSessions(user, project);
+export async function sessionResources(user: number, project?: string, history = false): Promise<{ sessions: SessionResourceView[]; error?: string }> {
+  const sessions = listSessions(user, project).filter(s => history || !terminalIsLog(s));
   const pids = sessions.flatMap(s => { const pid = live.get(s.id)?.pty.pid; return pid ? [pid] : []; });
   let error: string | undefined;
   const usage = pids.length ? await processUsage(pids).catch(() => { error = 'Resource usage is temporarily unavailable.'; return new Map(); }) : new Map();
@@ -376,7 +389,7 @@ export async function startSession(
     });
   } catch (error) { term.dispose(); throw error; }
   try {
-    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active' WHERE id=? AND user_id=?").run(mode, id, user);
+    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',finished_at=NULL,mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active' WHERE id=? AND user_id=?").run(mode, id, user);
     else workDb()
       .prepare(
         "INSERT INTO terminal_sessions(id,user_id,project,kind,mode,title,state,task,assignment,shell,agent_input,cols,rows,is_command) VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?)",
@@ -449,9 +462,9 @@ export async function startSession(
       persist(s);
       workDb()
         .prepare(
-          "UPDATE terminal_sessions SET state='exited',exit_code=?,exit_signal=?,termination_reason=?,task_state=CASE WHEN ?='cancelled' THEN 'cancelled' WHEN task_state='active' THEN 'needs-attention' ELSE task_state END WHERE id=?",
+          "UPDATE terminal_sessions SET state='exited',exit_code=?,exit_signal=?,termination_reason=?,finished_at=?,task_state=CASE WHEN ?='cancelled' THEN 'cancelled' WHEN task_state='active' THEN 'needs-attention' ELSE task_state END WHERE id=?",
         )
-        .run(reason ? null : exitCode, exitSignal, reason, reason, id);
+        .run(reason ? null : exitCode, exitSignal, reason, Date.now(), reason, id);
       live.delete(id);
       releaseLease(ownerKey(id), leaseOwner(ownerKey(id)) ?? "");
       emitDev(user, "session", id, view(rowOf(user, id)));

@@ -1,7 +1,7 @@
 {
   "name": "rimeward",
   "type": "module",
-  "version": "0.23.12",
+  "version": "0.23.13",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -30,6 +30,8 @@
   "dependencies": {
     "@astrojs/node": "11.1.5",
     "@biomejs/biome": "2.5.12",
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/language-data": "6.5.2",
     "@codemirror/lint": "6.9.7",
     "@codemirror/merge": "6.12.2",
@@ -59,6 +61,7 @@
     "imapflow": "^1.7.7",
     "just-bash": "^3.4.2",
     "mailparser": "^3.9.19",
+    "marked": "^18.0.12",
     "motion": "^13.0.0",
     "node-pop3": "^0.15.0",
     "node-pty": "1.1.0",
@@ -69,6 +72,7 @@
     "tailwindcss": "^4.3.3",
     "tar-stream": "2.2.0",
     "three": "^0.180.0",
+    "turndown": "^7.2.4",
     "ws": "^8.21.3"
   },
   "devDependencies": {
@@ -78,6 +82,7 @@
     "@types/nodemailer": "^8.0.1",
     "@types/tar-stream": "3.1.4",
     "@types/three": "^0.180.0",
+    "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
     "typescript": "^5.9.3"
   },

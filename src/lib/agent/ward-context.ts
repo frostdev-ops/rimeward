@@ -109,7 +109,7 @@ export async function readWardContext(user: number, id: string, agent: string): 
           const output = selected ? readSession(user, selected.id, undefined, false) : undefined;
           data = { ...base, activeSession: selected?.id, screen: output?.screen,
             recentOutput: output ? clip(stripVTControlCharacters(output.data).slice(-8000), 8000) : 'No active session selected.',
-            sessions: sessions.slice(0, 20).map(s => ({ id: s.id, title: s.title, state: s.state, exitCode: s.exitCode })) };
+            sessions: sessions.filter(s => !s.command || s.state === 'running').slice(0, 20).map(s => ({ id: s.id, title: s.title, state: s.state, exitCode: s.exitCode })) };
         } else if (w.type === 'changes') data = { ...base, changes: await gitView(user, project.id) };
         else if (w.type === 'editor' && state.active) data = { ...base, file: readPage(user, project.id, state.active) };
         else data = { ...base, files: treePage(user, project.id, '') };

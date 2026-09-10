@@ -5,6 +5,7 @@ import {
   LIST_MAX, SORTS, STATUSES, askNotebook, createNote, emptyTrash, ensureNotebook, linkNote, linkableNoteWards, listNotes, noteBacklinks, notebookIdOf, notebookIndex,
   notebookWard, purgeNote, reorderNotes, tagCounts, unlinkNote, updateNoteMeta, updateNotebook, type ListQuery, type Sort, type Status,
 } from '../../../lib/notebook.ts';
+import { isNotebookPageType, pageDocument } from '../../../lib/notebook-pages.ts';
 import { wardTitle } from '../../../lib/wards.ts';
 
 export const prerender = false;
@@ -102,7 +103,9 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       case 'create': {
         const section = typeof body.section === 'string' && body.section ? body.section : undefined;
         const from = typeof body.from === 'string' && body.from ? mine(body.from) : undefined;
-        const meta = createNote(userId, { notebook: id, section, title: body.title, tags: body.tags, props: body.props, from, template: body.template === true });
+        if (body.kind !== undefined && !isNotebookPageType(body.kind)) return Response.json({ error: 'unknown page type' }, { status: 400 });
+        const html = !from && isNotebookPageType(body.kind) ? pageDocument(body.kind, null) : undefined;
+        const meta = createNote(userId, { notebook: id, section, html, title: body.title ?? (isNotebookPageType(body.kind) ? `Untitled ${body.kind}` : undefined), tags: body.tags, props: body.props, from, template: body.template === true });
         changed();
         return Response.json({ note: meta });
       }
@@ -141,7 +144,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
         return Response.json({ ok: true, purged: n });
       }
       case 'ask': {
-        const out = await askNotebook(userId, w, typeof body.q === 'string' ? body.q : '');
+        const out = await askNotebook(userId, w, typeof body.q === 'string' ? body.q : '', body.scope === 'all' || body.scope === 'matches' ? body.scope : 'auto');
         return Response.json(out);
       }
       case 'notebook': {
