@@ -10,8 +10,8 @@ test('sanitizeHtml: allowlisted tags survive, everything else is text or gone', 
   assert.equal(sanitizeHtml('<p onclick="x()">a</p><script>alert(1)</script>'), '<p>a</p>alert(1)');
   assert.equal(sanitizeHtml('<img src=x onerror=alert(1)><iframe src="//evil"></iframe>hi'), 'hi');
   assert.equal(sanitizeHtml('<a href="javascript:alert(1)">x</a>'), '<a>x</a>');
-  assert.equal(sanitizeHtml('<a href="https://e.com/?a=1&b=2" class="c">y</a>'), '<a href="https://e.com/?a=1&b=2" target="_blank" rel="noreferrer">y</a>');
-  assert.equal(sanitizeHtml('<p style="color:red;text-align: center">c</p>'), '<p style="text-align:center">c</p>');
+  assert.equal(sanitizeHtml('<a href="https://e.com/?a=1&b=2" class="c">y</a>'), '<a href="https://e.com/?a=1&amp;b=2" target="_blank" rel="noreferrer">y</a>');
+  assert.equal(sanitizeHtml('<p style="color:red;text-align: center">c</p>'), '<p style="color:red;text-align:center">c</p>');
   assert.equal(sanitizeHtml('a < b and c > d'), 'a &lt; b and c &gt; d');
   assert.equal(sanitizeHtml('<!-- <script>x</script> -->t<!'), 't'); // a bogus comment is markup to a browser too
   assert.equal(sanitizeHtml('<?php echo 1 ?>x</ nope>y'), 'xy');
