@@ -15,6 +15,8 @@ fn main() {
             "print_document_export",
             "close_ward_window",
             "startup_status",
+            "update_status",
+            "update_action",
             "macos_permissions",
         ]),
     ))
