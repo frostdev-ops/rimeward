@@ -196,7 +196,9 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     assert.match(String((await a.next(m => m.type === 'error')).message), /http/);
     a.send([{ t: 'resize', w: 900, h: 600 }]);
     await until(() => s!.viewport.width === 900 && s!.viewport.height === 600, 5000, 'resize');
-    assert.deepEqual(jpegSize(await (async () => { a.frames.length = 0; return a.frame(); })()), { width: 1800, height: 1200 });
+    // A frame already in flight can still have the pre-resize dimensions.
+    await until(() => a.frames.length > 0 && jpegSize(a.frames.at(-1)!).width === 1800 && jpegSize(a.frames.at(-1)!).height === 1200, 5000, 'resized frame');
+    assert.deepEqual(jpegSize(a.frames.at(-1)!), { width: 1800, height: 1200 });
 
     // Held reflects execution: Shift-down executed, Shift-up queued behind a
     // slow command, the socket closes → the queued up is purged, the release
