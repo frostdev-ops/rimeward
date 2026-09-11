@@ -32,6 +32,20 @@ The browser and terminal work was separately verified by its owning session,
 including terminal commit `48a77bb`; it was accepted as verified for this handoff.
 The final Rust formatting pass changes no behavior.
 
+After the account checkpoint fix, the combined remote-workspace smoke passed.
+Staged `desktop:check` passed lint, formatting, Clippy and all 13 Rust tests.
+Full `desktop/prebuild.mjs` passed from committed revision `d292473`, followed
+by `test:standalone` covering authentication, dashboard, bundled lint/format,
+recovery, PTY and restart. The packaged knowledge worker and both native helper
+launch checks also passed.
+
+Prebuild exposed Cua's older Rust 1.97.1 pin producing macro libraries rejected
+by the current macOS loader (`mis-aligned LINKEDIT string pool`). Acquisition
+now uses the repository's Rust 1.98.0 pin, matching the host and CI; the fix was
+independently reviewed. Upstream Cua still emits Swift duplicate-symbol and
+dead-code warnings during its successful release build. Its packaged CLI launch
+passed; this does not establish installed-app or native interaction health.
+
 Only macOS arm64 inference and native packaging were exercised locally. Windows
 and Linux installer validation, distributed signing/notarization, deployment,
 and installed-app verification belong to the release procedure. No cloud
