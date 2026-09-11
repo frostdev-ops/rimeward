@@ -22,6 +22,8 @@ if (process.platform === 'darwin') {
     if (revision !== CUA_REVISION) throw Error('Cua source revision mismatch');
     const source = path.join(temporary, 'libs/cua-driver/rust');
     patchCua(source);
+    // Build the worker with the same pinned compiler as the desktop host.
+    fs.copyFileSync(path.join(desktop, '../rust-toolchain.toml'), path.join(source, 'rust-toolchain.toml'));
     const target = 'aarch64-apple-darwin';
     const targetDir = process.env.CARGO_TARGET_DIR ?? path.join(os.tmpdir(), 'rimeward-cua-rust-target');
     run('cargo', ['build', '--locked', '--release', '--bin', 'cua-driver', '--target', target, '--target-dir', targetDir], source);
