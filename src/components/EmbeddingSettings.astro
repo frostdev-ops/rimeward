@@ -1,99 +1,274 @@
-<section class="border-b border-line py-4" data-embedding-settings>
+<section class="border-b border-line py-5" data-embedding-settings>
   <h3 class="text-sm font-medium">Semantic retrieval</h3>
-  <p class="mt-1 text-xs text-ink-muted">Search existing memories, skills, notes, conversations and extracted attachments. Originals stay intact. Keyword search remains available while embeddings are unavailable or rebuilding.</p>
-  <form class="mt-3 grid gap-3" aria-busy="true" data-workspace-checkpoint>
-    <label class="text-xs">Inference location
-      <select name="provider" class="input mt-1 w-full">
-        <option value="local">This desktop · Qwen3-Embedding-8B</option><option value="device">Another paired desktop</option>
-        <option value="openai">OpenAI API · API key</option><option value="openrouter">OpenRouter · API key</option>
-      </select>
+  <p class="mt-1 text-sm text-ink-muted">Find related memories, skills, notes and conversations.</p>
+  <form class="mt-4 grid gap-4" aria-busy="true" data-workspace-checkpoint>
+    <div class="grid min-w-0 gap-4 sm:grid-cols-2">
+      <label class="min-w-0 text-sm">Run embeddings on
+        <select name="provider" class="input mt-1 w-full">
+          <option value="local">This desktop</option><option value="device">Another paired desktop</option>
+          <option value="openai">OpenAI API</option><option value="openrouter">OpenRouter</option>
+        </select>
+      </label>
+      <label class="min-w-0 text-sm" data-quantization>Qwen3-Embedding-8B model
+        <select name="quantization" class="input mt-1 w-full">
+          <option value="Q4_K_M">Q4_K_M · 4.68 GB</option><option value="Q8_0">Q8_0 · 8.05 GB</option>
+        </select>
+      </label>
+      <label class="min-w-0 text-sm" data-device hidden>Paired desktop
+        <select name="device" class="input mt-1 w-full"><option value="">Select a computer</option></select>
+      </label>
+      <label class="min-w-0 text-sm" data-openai hidden>Embedding model
+        <select name="model" class="input mt-1 w-full">
+          <option value="text-embedding-3-small">text-embedding-3-small</option><option value="text-embedding-3-large">text-embedding-3-large</option>
+        </select>
+      </label>
+    </div>
+    <p class="text-xs text-ink-muted" data-selection-help></p>
+    <label class="flex items-start gap-2 text-sm" data-sharing hidden>
+      <input class="mt-1" type="checkbox" name="sharing" />
+      <span>Let my paired devices use this desktop’s model</span>
     </label>
-    <label class="text-xs" data-show="local device">Local model
-      <select name="quantization" class="input mt-1 w-full">
-        <option value="Q4_K_M">Q4_K_M · 4.68 GB download · about 7 GiB memory</option>
-        <option value="Q8_0">Q8_0 · 8.05 GB download · about 11 GiB memory</option>
-      </select>
-    </label>
-    <label class="text-xs" data-show="device" hidden>Paired desktop
-      <select name="device" class="input mt-1 w-full"><option value="">Select a computer</option></select>
-    </label>
-    <label class="text-xs" data-show="openai" hidden>OpenAI embedding model
-      <select name="model" class="input mt-1 w-full"><option value="text-embedding-3-small">text-embedding-3-small</option><option value="text-embedding-3-large">text-embedding-3-large</option></select>
-    </label>
-    <p class="text-xs text-ink-muted" data-show="openai openrouter" hidden>Uses your saved API key. Selected text is sent to this provider for embedding. OpenRouter uses qwen/qwen3-embedding-8b. ChatGPT/Codex sign-in embedding support is unverified and is not used.</p>
-    <label class="text-xs" data-local><input type="checkbox" name="sharing" /> Share this desktop’s local inference with my paired runtimes</label>
-    <div class="flex flex-wrap gap-2">
-      <button class="btn" type="submit">Save retrieval settings</button><button class="btn" type="button" data-action="rebuild">Rebuild index</button>
-      <button class="btn" type="button" data-action="download" data-local>Download local model</button>
-      <button class="btn" type="button" data-action="cancel" data-local>Cancel download</button><button class="btn" type="button" data-action="unload" data-local>Unload local model</button>
+    <div class="flex flex-wrap items-center gap-2" data-unsaved hidden>
+      <button class="btn-primary" type="submit">Save changes</button>
+      <button class="btn" type="button" data-discard>Discard changes</button>
+      <span class="text-xs text-ink-muted">Unsaved changes</span>
     </div>
   </form>
-  <p class="mt-2 text-xs text-ink-muted" data-status role="status" aria-live="polite">Loading retrieval status…</p>
-  <progress class="mt-2 w-full" hidden aria-label="Model download progress"></progress>
-  <p class="mt-2 text-xs text-ink-muted">The selected provider stays selected when offline. Only bounded text inputs and vectors travel to another computer; the search database and project folders stay here. Memory estimates vary with runtime and input size.</p>
+
+  <div class="mt-4 rounded-xl border border-line p-4" data-status role="status" aria-live="polite" aria-atomic="true">
+    <h4 class="text-sm font-semibold" data-state>Loading search status…</h4>
+    <p class="mt-1 text-sm text-ink-muted" data-status-detail>Checking the saved provider and search index.</p>
+    <p class="mt-2 text-sm text-err" data-error hidden></p>
+    <p class="mt-2 text-xs text-ink-muted" data-advisory hidden></p>
+    <dl class="mt-3 grid gap-3 text-xs sm:grid-cols-2" data-metrics hidden>
+      <div><dt class="text-ink-muted">Using</dt><dd class="mt-1" data-location></dd></div>
+      <div><dt class="text-ink-muted">Search index</dt><dd class="mt-1" data-index></dd></div>
+    </dl>
+    <progress class="mt-3 w-full" data-index-progress hidden aria-label="Semantic indexing progress"></progress>
+    <p class="mt-2 text-xs text-ink-muted" data-timing hidden></p>
+    <div class="mt-3 flex flex-wrap gap-2" data-model-actions>
+      <button class="btn-primary" type="button" data-action="download" hidden>Download model</button>
+      <button class="btn" type="button" data-action="unload" hidden>Unload model</button>
+      <button class="btn" type="button" data-refresh hidden>Retry status</button>
+    </div>
+  </div>
+
+  <div class="mt-3 grid gap-3" data-downloads hidden>
+    <div class="rounded-xl border border-line p-3" data-download="Q4_K_M" hidden>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-sm" data-download-label></p>
+        <button class="btn text-xs" type="button" data-action="cancel" data-quantization="Q4_K_M">Cancel download</button>
+      </div>
+      <progress class="mt-2 w-full" aria-label="Q4_K_M download progress"></progress>
+    </div>
+    <div class="rounded-xl border border-line p-3" data-download="Q8_0" hidden>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-sm" data-download-label></p>
+        <button class="btn text-xs" type="button" data-action="cancel" data-quantization="Q8_0">Cancel download</button>
+      </div>
+      <progress class="mt-2 w-full" aria-label="Q8_0 download progress"></progress>
+    </div>
+  </div>
+  <p class="mt-3 text-sm" role="status" data-action-message hidden></p>
+  <details class="mt-4 text-xs text-ink-muted" data-maintenance hidden>
+    <summary class="cursor-pointer">Index maintenance</summary>
+    <p class="mt-2">Recreate the search index if results seem out of date. Your original content is kept.</p>
+    <button class="btn mt-2 text-xs" type="button" data-action="rebuild">Rebuild search index</button>
+  </details>
 </section>
+
+<style>
+  [data-embedding-settings] [hidden] { display: none !important; }
+  [data-embedding-settings] dd, [data-error] { overflow-wrap: anywhere; }
+  [data-status][data-tone="ready"] [data-state] { color: var(--color-ok); }
+  [data-status][data-tone="error"] [data-state] { color: var(--color-err); }
+  progress { display: block; height: .45rem; appearance: none; border: 0; border-radius: 1rem; overflow: hidden; background: var(--color-line); }
+  progress::-webkit-progress-bar { background: var(--color-line); }
+  progress::-webkit-progress-value { background: var(--color-accent); }
+  progress::-moz-progress-bar { background: var(--color-accent); }
+</style>
+
 <script>
+  import type { EmbeddingConfig } from '../lib/agent/embedding-profiles.ts';
+  import type { localEmbeddingStatus } from '../lib/agent/embedding-local.ts';
+  import type { KnowledgeStatus } from '../lib/agent/knowledge.ts';
+  type Device = { id:string; name:string; online:boolean; inference?:{ sharing:boolean; ready:boolean; quantization:string; queryMs?:number } | null };
+  type Status = { config:EmbeddingConfig; desktop:boolean; local:ReturnType<typeof localEmbeddingStatus> | null;
+    index:Partial<KnowledgeStatus>; devices:Device[]; timing?:{ queryMs:number } | null };
   const root = document.querySelector<HTMLElement>('[data-embedding-settings]');
   if (root) {
-    const form = root.querySelector<HTMLFormElement>('form')!, status = root.querySelector<HTMLElement>('[data-status]')!, progress = root.querySelector<HTMLProgressElement>('progress')!;
+    const form = root.querySelector<HTMLFormElement>('form')!;
+    const element = <T extends HTMLElement = HTMLElement>(name:string) => root.querySelector<T>('[data-' + name + ']')!;
+    const text = (name:string,value:string) => {
+      const node = element(name); if (node.textContent !== value) node.textContent = value; return node;
+    };
     const field = (name:string) => form.elements.namedItem(name) as HTMLSelectElement;
     const sharing = form.elements.namedItem('sharing') as HTMLInputElement;
-    const config = () => ({ provider:field('provider').value,quantization:field('quantization').value,device:field('device').value,model:field('model').value,sharing:sharing.checked });
-    let settled = '', saving:Promise<void> | undefined;
-    for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button')) control.disabled = true;
-    let initialized = false,busy = false;
-    const toggle = () => { for (const el of root.querySelectorAll<HTMLElement>('[data-show]')) el.hidden = !el.dataset.show!.split(' ').includes(field('provider').value); };
-    const refresh = async () => {
-      if (busy || document.hidden) return; busy = true;
-      try {
-        const response = await fetch('/api/account/embeddings'); if (!response.ok) throw Error('Retrieval settings unavailable.');
-        const data = await response.json();
-        if (!initialized) {
-          for (const name of ['provider','quantization','model']) field(name).value = data.config[name];
-          if (!field('model').value) field('model').value = 'text-embedding-3-small';
-          sharing.checked = data.config.sharing;
-          for (const device of data.devices ?? []) field('device').add(new Option(`${device.name} · ${device.inference?.ready ? 'ready' : device.online ? 'model unavailable or not sharing' : 'offline'}`,device.id));
-          field('device').value = data.config.device ?? '';
-          for (const el of root.querySelectorAll<HTMLElement>('[data-local]')) el.hidden = !data.desktop;
-          for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button')) control.disabled = false;
-          field('provider').querySelector<HTMLOptionElement>('[value="local"]')!.disabled = !data.desktop;
-          form.setAttribute('aria-busy','false');
-          initialized = true; settled = JSON.stringify(config()); toggle();
-        }
-        const model = data.local?.models.find((m:{ quantization:string }) => m.quantization === field('quantization').value), download = model?.download;
-        progress.hidden = !download || download.done; progress.max = model?.bytes ?? 1; progress.value = download?.received ?? 0;
-        const location = data.config.provider === 'local' ? data.local?.location ?? 'desktop unavailable' : data.config.provider === 'device' ? data.devices.find((d:{ id:string }) => d.id === data.config.device)?.name ?? 'selected desktop unavailable' : data.config.provider === 'openai' ? 'OpenAI API' : 'OpenRouter';
-        const inference = data.config.provider === 'device' ? data.devices.find((d:{ id:string }) => d.id === data.config.device)?.inference : data.config.provider === 'local' ? data.local : data.timing;
-        const queryMs = data.timing?.queryMs ?? inference?.queryMs;
-        status.textContent = [`Inference: ${location}.`,`${data.index.embedded ?? 0}/${data.index.chunks ?? 0} passages indexed${data.index.indexing ? ' · indexing' : ''}.`,
-          inference?.startupMs != null ? `Startup ${inference.startupMs} ms.` : '',queryMs != null ? `Last query ${queryMs} ms.` : '',
-          download && !download.done ? `Downloading ${(download.received/1e9).toFixed(2)}/${(model.bytes/1e9).toFixed(2)} GB.` : '',
-          data.index.error || data.index.vectorError || '',download?.error || '',model?.recommendation || ''].filter(Boolean).join(' ');
-      } catch (e) { status.textContent = e instanceof Error ? e.message : String(e); } finally { busy = false; }
+    const button = (name:string) => root.querySelector<HTMLButtonElement>('[data-action="' + name + '"]')!;
+    let data:Status | undefined, settled = '', initialized = false, revision = 0, pendingAction = '', statusError = '';
+    let saving:Promise<void> | undefined, refreshing:Promise<void> | undefined;
+    const config = ():EmbeddingConfig => {
+      const provider = field('provider').value as EmbeddingConfig['provider'];
+      return { provider,quantization:provider === 'local' || provider === 'device' ? field('quantization').value as EmbeddingConfig['quantization'] : data!.config.quantization,
+        model:provider === 'openai' ? field('model').value : provider === 'openrouter' ? 'qwen/qwen3-embedding-8b' : 'Qwen3-Embedding-8B',
+        ...(provider === 'device' ? { device:field('device').value } : {}),sharing:sharing.checked };
     };
-    const action = async (action:string) => {
-      const value = config(), state = JSON.stringify(value);
-      const response = await fetch('/api/account/embeddings',{ method:'POST',headers:{ 'content-type':'application/json' },body:JSON.stringify({ action,quantization:field('quantization').value,
-        config:value }) });
-      const data = await response.json(); if (!response.ok) throw Error(data.error ?? 'Retrieval action failed.');
-      if (action === 'save') settled = state;
-      status.textContent = action === 'save' ? 'Retrieval settings saved.' : 'Retrieval status updated.'; void refresh();
+    const fingerprint = (c:EmbeddingConfig) => JSON.stringify([c.provider,c.quantization,c.model,c.device ?? '',c.sharing]);
+    const dirty = () => initialized && fingerprint(config()) !== settled;
+    const fill = (c:EmbeddingConfig) => {
+      field('provider').value = c.provider; field('quantization').value = c.quantization;
+      field('model').value = c.provider === 'openai' ? c.model : 'text-embedding-3-small';
+      field('device').value = c.device ?? ''; sharing.checked = c.sharing;
+      settled = fingerprint(c); initialized = true;
+    };
+    const message = (text:string,error = false) => {
+      const node = element('action-message'); node.textContent = text; node.hidden = !text;
+      node.classList.toggle('text-err',error);
+    };
+    const render = () => {
+      for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input,select')) control.disabled = !initialized;
+      for (const control of root.querySelectorAll<HTMLButtonElement>('button[data-action],button[data-discard],button[data-refresh],button[type="submit"]')) control.disabled = !initialized || !!pendingAction;
+      element<HTMLButtonElement>('refresh').disabled = !!refreshing;
+      form.setAttribute('aria-busy',String(!initialized || pendingAction === 'save'));
+      if (!data) return;
+      const draft = config(), changed = dirty(), current = data.config;
+      element('quantization').hidden = !(draft.provider === 'device' || draft.provider === 'local' && data.desktop);
+      element('device').hidden = draft.provider !== 'device'; element('openai').hidden = draft.provider !== 'openai';
+      element('sharing').hidden = !data.desktop || draft.provider !== 'local';
+      element('selection-help').textContent = draft.provider === 'local'
+        ? data.desktop ? 'Runs on this computer. ' + (draft.quantization === 'Q4_K_M' ? 'About 7 GiB memory; Q4 is the default.' : 'About 11 GiB memory.') : 'Local inference requires the desktop app. Choose a paired computer or an API provider here.'
+        : draft.provider === 'device' ? 'Choose a computer sharing this model. It must stay online. Only text and vectors travel; your search index stays here.'
+        : (draft.provider === 'openai' ? 'Uses the saved OpenAI API key.' : 'Uses the saved OpenRouter API key and qwen/qwen3-embedding-8b.') + ' Text is sent to this provider. ChatGPT sign-in does not supply embeddings.';
+      element('unsaved').hidden = !changed && pendingAction !== 'save';
+      form.querySelector<HTMLButtonElement>('[type="submit"]')!.textContent = pendingAction === 'save' ? 'Saving…' : 'Save changes';
+      field('device').required = draft.provider === 'device';
+      if (draft.provider === 'device' && !draft.device) form.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled = true;
+      const local = data.local, model = local?.models.find(m => m.quantization === current.quantization);
+      const device = data.devices.find(d => d.id === current.device);
+      const downloading = !!model?.download && !model.download.done;
+      const { chunks = 0,embedded = 0,indexing = false } = data.index;
+      let title = 'Semantic search ready', detail = 'Your knowledge is ready to search.', tone = 'ready', error = '';
+      if (current.provider === 'local' && !data.desktop) {
+        title = 'Choose where embeddings run'; detail = 'Select a paired desktop or an API provider above. Keyword search is available.'; tone = '';
+      } else if (current.provider === 'device' && (!device?.online || !device.inference?.ready || device.inference.quantization !== current.quantization)) {
+        title = !device ? 'Choose a paired desktop' : !device.online ? 'Selected desktop is offline' : 'Set up the selected desktop';
+        detail = !device ? 'Select a paired desktop above. Keyword search is available.' : !device.online ? 'Semantic search will resume when the selected computer is available. Keyword search still works.'
+          : !device.inference?.sharing ? 'Enable inference sharing in that desktop’s retrieval settings.'
+          : device.inference.quantization !== current.quantization ? 'Select the model variant shared by that desktop: ' + device.inference.quantization + '.'
+          : 'Download the selected model on that desktop. Keyword search still works.'; tone = '';
+      } else if (current.provider === 'local' && downloading) {
+        title = 'Downloading ' + current.quantization; detail = 'Download progress is below. Keyword search remains available.'; tone = '';
+      } else if (current.provider === 'local' && !model?.installed) {
+        title = 'Download a model to get started'; detail = 'Keyword search is available now. Download the model to enable semantic retrieval.'; tone = '';
+        error = model?.download?.error ?? '';
+        if (error === 'Download cancelled.') { title = 'Download cancelled'; error = ''; }
+        else if (error) { title = 'Model download failed'; tone = 'error'; }
+      } else if (current.provider === 'local' && local?.unloaded) {
+        title = 'Model unloaded'; detail = 'Memory has been released. The next search will load the model again.'; tone = '';
+      } else if (indexing) {
+        title = current.provider === 'local' && !local?.ready ? 'Starting the local model' : 'Indexing your knowledge';
+        detail = 'You can search now. Semantic coverage grows as indexing finishes.'; tone = '';
+      } else if (data.index.vectorError || data.index.error || current.provider === 'local' && local?.error) {
+        title = 'Semantic search needs attention'; detail = 'Keyword search is still available.'; tone = 'error';
+        error = data.index.vectorError || data.index.error || local?.error || '';
+      } else if (!chunks) {
+        title = 'Nothing to index yet'; detail = 'Memories, skills, notes and conversations are indexed automatically as you add them.'; tone = '';
+      } else if (embedded < chunks) {
+        title = 'Preparing the search index'; detail = 'Keyword search works while the remaining passages are indexed.'; tone = '';
+      }
+      if (statusError) { title = 'Status unavailable'; detail = 'Could not refresh retrieval status. Retrying automatically.'; error = statusError; tone = 'error'; }
+      element('status').dataset.tone = tone; text('state',title); text('status-detail',detail);
+      text('error',error).hidden = !error;
+      const advisory = current.provider === 'local' ? model?.recommendation ?? '' : '';
+      text('advisory',advisory).hidden = !advisory;
+      const location = current.provider === 'local' ? local?.location ?? 'Desktop app required' : current.provider === 'device' ? device?.name ?? 'No computer selected' : current.provider === 'openai' ? 'OpenAI API' : 'OpenRouter';
+      text('location',location + ' · ' + (current.provider === 'local' || current.provider === 'device' ? current.quantization : current.model));
+      text('index',data.index.chunks == null || data.index.embedded == null ? 'Index status unavailable' : embedded.toLocaleString() + ' of ' + chunks.toLocaleString() + ' passages ready');
+      element('metrics').hidden = false;
+      const indexProgress = element<HTMLProgressElement>('index-progress');
+      indexProgress.hidden = !indexing || !chunks; indexProgress.max = Math.max(1,chunks); indexProgress.value = embedded;
+      const queryMs = data.timing?.queryMs;
+      const timing = [current.provider === 'local' && local?.startupMs != null ? 'Model startup: ' + local.startupMs + ' ms' : '',queryMs != null ? 'Last search embedding: ' + queryMs + ' ms' : ''].filter(Boolean).join(' · ');
+      text('timing',timing).hidden = !timing;
+      button('download').hidden = changed || !!statusError || current.provider !== 'local' || !data.desktop || !!model?.installed || downloading;
+      button('download').textContent = pendingAction === 'download' ? 'Starting download…' : (model?.download?.error && model.download.error !== 'Download cancelled.' ? 'Retry download' : 'Download model') + ' · ' + (current.quantization === 'Q4_K_M' ? '4.68 GB' : '8.05 GB');
+      button('unload').hidden = changed || !!statusError || !local?.ready;
+      button('unload').textContent = pendingAction === 'unload' ? 'Unloading model…' : 'Unload ' + (local?.loaded ?? '') + ' from memory';
+      element('refresh').hidden = !statusError;
+      element('model-actions').hidden = button('download').hidden && button('unload').hidden && element('refresh').hidden;
+      element('maintenance').hidden = changed || !!statusError || !chunks || indexing || !!pendingAction;
+      let activeDownloads = false;
+      for (const row of root.querySelectorAll<HTMLElement>('[data-download]')) {
+        const m = local?.models.find(m => m.quantization === row.dataset.download), download = m?.download;
+        const active = !!download && !download.done; row.hidden = !active;
+        if (!active || !m) continue;
+        activeDownloads = true;
+        row.querySelector('[data-download-label]')!.textContent = m.quantization + ' · ' + (download.received/1e9).toFixed(2) + ' / ' + (m.bytes/1e9).toFixed(2) + ' GB';
+        const progress = row.querySelector('progress')!; progress.max = m.bytes; progress.value = download.received;
+      }
+      element('downloads').hidden = !activeDownloads;
+    };
+    const refresh = ():Promise<void> => {
+      if (refreshing) return refreshing;
+      const version = revision;
+      refreshing = (async () => {
+        try {
+          const response = await fetch('/api/account/embeddings',{ signal:AbortSignal.timeout(15000) });
+          if (!response.ok) throw Error('Retrieval settings could not be loaded (' + response.status + ').');
+          const next:Status = await response.json();
+          if (version !== revision) return;
+          const clean = !dirty();
+          data = next; statusError = '';
+          const selected = initialized ? field('device').value : next.config.device ?? '';
+          const options = [new Option('Select a computer',''),...next.devices.map(d => new Option(d.name + (!d.online ? ' · offline' : d.inference?.ready ? ' · ready' : ' · setup needed'),d.id))];
+          if (selected && !next.devices.some(d => d.id === selected)) options.push(new Option('Unavailable computer',selected));
+          if (JSON.stringify([...field('device').options].map(o => [o.value,o.text])) !== JSON.stringify(options.map(o => [o.value,o.text]))) field('device').replaceChildren(...options);
+          field('device').value = selected;
+          field('provider').querySelector<HTMLOptionElement>('[value="local"]')!.disabled = !next.desktop;
+          if (clean) fill(next.config);
+        } catch (e) {
+          if (version !== revision) return;
+          statusError = e instanceof Error ? e.message : String(e);
+          element('status').dataset.tone = 'error';
+          text('state','Status unavailable'); text('status-detail',statusError);
+          element('refresh').hidden = false;
+        }
+      })().finally(() => { refreshing = undefined; render(); });
+      render(); return refreshing;
+    };
+    const action = async (name:string,quantization = config().quantization) => {
+      if (pendingAction) return;
+      const value = config(); pendingAction = name; revision++; message(''); render();
+      try {
+        const response = await fetch('/api/account/embeddings',{ method:'POST',headers:{ 'content-type':'application/json' },
+          body:JSON.stringify({ action:name,quantization,config:value }),signal:AbortSignal.timeout(15000) });
+        const result = await response.json(); if (!response.ok) throw Error(result.error ?? 'Retrieval action failed.');
+        if (name === 'save') settled = fingerprint(result.config);
+        if (name === 'save') message('Settings saved.');
+        await refreshing; await refresh();
+      } catch (e) { message(e instanceof Error ? e.message : String(e),true); throw e; }
+      finally { pendingAction = ''; render(); }
     };
     form.onsubmit = event => {
-      event.preventDefault(); if (saving) return;
+      event.preventDefault(); if (!initialized || !dirty() || pendingAction) return;
       saving = action('save').finally(() => { saving = undefined; });
-      void saving.catch(e => { status.textContent = e.message; });
+      void saving.catch(() => {});
     };
-    window.addEventListener('fd:before-workspace-navigation', event => {
+    form.addEventListener('change',() => { message(''); render(); });
+    element('discard').onclick = () => { if (data) { fill(data.config); message(''); render(); } };
+    element('refresh').onclick = () => void refresh();
+    for (const control of root.querySelectorAll<HTMLButtonElement>('[data-action]')) control.onclick = () => {
+      if (!initialized || pendingAction) return;
+      void action(control.dataset.action!,control.dataset.quantization as EmbeddingConfig['quantization'] | undefined).catch(() => {});
+    };
+    window.addEventListener('fd:before-workspace-navigation',event => {
       (event as CustomEvent<{ waitUntil(p:Promise<unknown>):void }>).detail.waitUntil((async () => {
         await saving;
-        if (initialized && settled !== JSON.stringify(config())) throw Error('Save or finish editing your retrieval settings before relaunching.');
+        if (dirty()) throw Error('Save or finish editing your retrieval settings before relaunching.');
       })());
     });
-    field('provider').onchange = toggle;
-    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-action]')) button.onclick = () => {
-      button.disabled = true; void action(button.dataset.action!).catch(e => { status.textContent = e.message; }).finally(() => { button.disabled = false; });
-    };
-    void refresh(); const timer = setInterval(() => void refresh(),5000); window.addEventListener('pagehide',() => clearInterval(timer),{ once:true });
+    render(); void refresh();
+    const timer = setInterval(() => { if (!document.hidden) void refresh(); },5000);
+    window.addEventListener('pagehide',() => clearInterval(timer),{ once:true });
   }
 </script>

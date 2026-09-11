@@ -24,6 +24,13 @@ can use the paired server's credentials. Codex sign-in embeddings are unverified
 and are not used. Keyword retrieval remains available with explicit status when
 inference is unavailable or indexing is incomplete.
 
+Settings separate provider selection from the current search status. Save and
+discard appear only for unsaved changes; downloads, cancellation and unloading
+appear only when applicable. Active downloads show their own progress, including
+when selecting another provider. Index rebuilding is under **Index maintenance**.
+The status identifies setup, download, indexing, ready, unloaded and offline
+states. Model files live in application data and survive application updates.
+
 Local setup downloads Qwen3-Embedding-8B Q4_K_M (4.68 GB) or Q8_0 (8.05 GB),
 verifies its pinned SHA-256 and revision, and runs a bundled llama.cpp process.
 Queries use Qwen's instruction format; pooling is last-token, normalization is
