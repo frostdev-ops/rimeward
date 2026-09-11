@@ -104,6 +104,9 @@ export class Pane {
       theme: { background: "#101419", foreground: "#e4e9f0", cursor: "#c5d6e8" },
       disableStdin: true, screenReaderMode: host.screenReader(),
       allowProposedApi: true, rightClickSelectsWord: true,
+      // The kitty keyboard protocol (xterm 6.1 beta): Claude Code and Codex
+      // negotiate it and get Shift+Enter, Ctrl+Enter and a distinct Esc.
+      vtExtensions: { kittyKeyboard: true },
     });
     this.term.loadAddon(this.fit);
     this.term.loadAddon(this.search);
@@ -152,12 +155,6 @@ export class Pane {
   renderer(): "webgl" | "dom" { return this.gpu ? "webgl" : "dom"; }
 
   private key(e: KeyboardEvent): boolean {
-    // Shift+Enter is ESC CR: the newline the agent CLIs read (xterm 6.0 has no
-    // kitty keyboard protocol, so there is no negotiated encoding to send).
-    if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      if (e.type === "keydown" && this.writable()) this.send("\x1b\r");
-      return false;
-    }
     if (mod(e) && e.type === "keydown" && this.host.shortcut(e, this)) { e.preventDefault(); return false; }
     return !mod(e) || !SHORTCUT_KEYS.has(e.key.toLowerCase());
   }

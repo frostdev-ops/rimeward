@@ -336,6 +336,8 @@ export async function startSession(
     rows,
     scrollback: 10000,
     allowProposedApi: true,
+    // Tracks the program's kitty keyboard pushes so a full snapshot can restore them.
+    vtExtensions: { kittyKeyboard: true },
   });
   const serializer = new SerializeAddon();
   term.loadAddon(serializer);
@@ -484,6 +486,24 @@ export async function startSession(
   emitDev(user, "session", id, view(rowOf(user, id)));
   return view(rowOf(user, id));
 }
+/** The kitty keyboard stacks the program pushed, as the sequences that rebuild
+ *  them: the serialize addon does not carry this mode, and a viewer restored
+ *  from a snapshot must keep answering Claude Code / Codex in the encoding they
+ *  asked for. Main-screen pushes go before the snapshot, alt-screen ones after
+ *  it (by then the snapshot has switched the viewer to the alt screen).
+ *  ponytail: pinned private handle; degrades to no prefix if a beta renames it. */
+function kittyStacks(term: Headless): { before: string; after: string } {
+  const k = (term as Headless & { _core?: { coreService?: { kittyKeyboard?: { flags: number; mainFlags: number; altFlags: number; mainStack: number[]; altStack: number[] } } } })._core?.coreService?.kittyKeyboard;
+  if (!k) return { before: "", after: "" };
+  // The stack holds the values a push saved (base first); the live flags sit beside it.
+  const rebuild = (stack: number[], current: number) => {
+    const out = stack.slice(1).map(f => `\x1b[>${f}u`);
+    if (stack.length) out.push(`\x1b[>${current}u`); else if (current) out.push(`\x1b[=${current};1u`);
+    return out.join("");
+  };
+  const alt = term.buffer.active.type === "alternate";
+  return { before: rebuild(k.mainStack, alt ? k.mainFlags : k.flags), after: alt ? rebuild(k.altStack, k.flags) : "" };
+}
 export function readSession(user: number, id: string, after?: number, review = true) {
   const row = rowOf(user, id),
     s = live.get(id);
@@ -512,7 +532,7 @@ export function readSession(user: number, id: string, after?: number, review = t
           .map((c) => c.data)
           .join("")
       : s
-        ? s.serializer.serialize({ scrollback: 10000 })
+        ? kittyStacks(s.term).before + s.serializer.serialize({ scrollback: 10000 }) + kittyStacks(s.term).after
         : row.snapshot,
   };
 }

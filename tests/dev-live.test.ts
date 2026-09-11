@@ -11,7 +11,7 @@ import WebSocket from 'ws';
 import { getDb } from '../src/lib/db.ts';
 import { createSession, SESSION_COOKIE } from '../src/lib/auth.ts';
 import { addProject } from '../src/lib/dev/projects.ts';
-import { startSession } from '../src/lib/dev/terminals.ts';
+import { readSession, startSession } from '../src/lib/dev/terminals.ts';
 import { devUpgrade } from '../src/lib/dev/live.ts';
 
 // The terminal ward's WebSocket (lib/dev/live.ts) over a mocked PTY: hello
@@ -117,6 +117,25 @@ test('input is applied under the lease and acknowledged by serial; a foreign own
   other.send({ t: 'in', id: 'nope', data: 'x', n: 2 });
   assert.equal((await other.next(m => m.t === 'err' && m.n === 2)).message, 'Terminal not found.');
   c.ws.close(); other.ws.close();
+});
+
+test('a full snapshot rebuilds the kitty keyboard stacks the program pushed', async () => {
+  const s = await startSession(user, { project: project.id, kind: 'shell' });
+  const rec = ptys.at(-1)!;
+  const settled = () => new Promise(r => setTimeout(r, 60));
+  rec.emit('\x1b[>1u'); await settled();
+  assert.ok(readSession(user, s.id).data.startsWith('\x1b[>1u'), 'main-screen push precedes the snapshot');
+  rec.emit('\x1b[>5u'); await settled();
+  assert.ok(readSession(user, s.id).data.startsWith('\x1b[>1u\x1b[>5u'), 'the whole stack, in order');
+  rec.emit('\x1b[<u'); await settled();
+  assert.ok(readSession(user, s.id).data.startsWith('\x1b[>1u'));
+  assert.equal(readSession(user, s.id).data.includes('\x1b[>5u'), false, 'a pop leaves the stack');
+  rec.emit('\x1b[?1049h\x1b[>3u'); await settled();
+  const alt = readSession(user, s.id).data;
+  assert.ok(alt.startsWith('\x1b[>1u') && alt.endsWith('\x1b[>3u'), 'alt-screen pushes follow the snapshot');
+  rec.emit('\x1b[<u\x1b[?1049l\x1b[<u'); await settled();
+  assert.equal(readSession(user, s.id).data.includes('\x1b[>'), false, 'both stacks empty again');
+  assert.equal(readSession(user, s.id, 1).reset, false, 'an incremental read replays raw chunks unchanged');
 });
 
 test('bad messages close 1008; a missing cookie, a bad owner and a non-desktop refuse before upgrade', async () => {

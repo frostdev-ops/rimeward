@@ -109,12 +109,25 @@ try {
   page.off('request',count);
   console.log(JSON.stringify({echoMilliseconds:samples,median:samples.sort((a,b)=>a-b)[4],idleRequestsIn3Seconds:requests}));
   }
-  // Shift+Enter reaches the program as ESC CR (what the agent CLIs read as a newline).
+  // The kitty keyboard protocol: a program that pushes it gets Shift+Enter as
+  // CSI u — also after a reload, where the snapshot must carry the mode; a
+  // program that never asked gets the legacy CR.
   if(process.platform!=='win32'){
-    await terminal.focus();await page.keyboard.type('cat -v');await page.keyboard.press('Enter');
+    const csiU=()=>page.waitForFunction(()=>document.querySelector('.xterm')?.textContent?.includes('^[[13;2u'));
+    await terminal.focus();await page.keyboard.type("printf '\\033[>1u'; cat -v");await page.keyboard.press('Enter');
     await new Promise(r=>setTimeout(r,300));
     await page.keyboard.press('Shift+Enter');
-    await page.waitForFunction(()=>document.querySelector('.xterm')?.textContent?.includes('^['));
+    await csiU();
+    await page.reload();
+    await ward.getByText('Shared with Rime',{exact:true}).waitFor();
+    await ward.locator('.xterm-helper-textarea').focus();await page.keyboard.press('Shift+Enter');
+    await page.waitForFunction(()=>(document.querySelector('.xterm')?.textContent?.match(/\^\[\[13;2u/g)??[]).length>=2,null,{timeout:10000}).catch(()=>{throw Error('kitty mode did not survive the snapshot restore');});
+    await page.keyboard.press('Control+c');
+    await page.keyboard.type("printf '\\033[<u'; cat -v");await page.keyboard.press('Enter');
+    await new Promise(r=>setTimeout(r,300));
+    await page.keyboard.press('Shift+Enter');
+    await new Promise(r=>setTimeout(r,300));
+    assert.equal((await ward.locator('.xterm').first().evaluate(el=>el.textContent.match(/\^\[\[13;2u/g)??[])).length,2,'after the pop Shift+Enter is a plain CR again');
     await page.keyboard.press('Control+c');
     await page.keyboard.type('echo done-'+marker);await page.keyboard.press('Enter');
     await page.waitForFunction(marker=>document.querySelector('.xterm')?.textContent?.includes('done-'+marker),marker);
