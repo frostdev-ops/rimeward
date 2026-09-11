@@ -86,7 +86,7 @@ const declared = [...new Set([brand.uiFont, brand.brandFont, ...(Astro.props.fon
 
       {/* The update chip (scripts/app/updates.ts): hidden until something newer is published. */}
       <button id="update-chip" type="button" class="btn min-h-9 px-2 py-1 text-xs" hidden data-admin={me.role === 'admin' ? '1' : undefined} title="Update available"><Icon id="download" /><span></span></button>
-      <span id="instance-status" data-desktop={isDesktop()?'1':'0'} aria-live="polite"></span>
+      <span id="instance-status" data-desktop={isDesktop()?'1':'0'} data-joined={isDesktop() && getSetting(`instance:joined:${me.userId}`) ? '1' : undefined} aria-live="polite"></span>
       <span id="clock" class="hidden text-sm text-ink-muted tabular-nums md:inline"></span>
 
       <button id="theme-toggle" type="button" class="btn min-h-9 px-2 py-1" aria-label="Toggle theme" title="Toggle theme">

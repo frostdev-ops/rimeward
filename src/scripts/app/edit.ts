@@ -1872,6 +1872,19 @@ interface Field {
   def?: unknown;
 }
 
+/** Where this dashboard is shown: the server, the desktop app, or the desktop
+ *  app joined to a server. Options in the add dialog that do not belong here
+ *  (`data-on`) are removed once, so the copy never talks about "this server"
+ *  from inside the app. */
+const SURFACE = (() => {
+  const d = document.getElementById('instance-status')?.dataset;
+  return { desktop: d?.desktop === '1', joined: d?.joined === '1' };
+})();
+for (const o of document.querySelectorAll<HTMLOptionElement>('[data-cfg="browser"] option[data-on]')) {
+  const keep = o.dataset.on === 'server' ? !SURFACE.desktop : o.dataset.on === 'desktop' ? SURFACE.desktop : SURFACE.desktop && SURFACE.joined;
+  if (!keep) o.remove();
+}
+
 /** The secrets the last readConfig saw, then the ones waiting for the next save, per ward. */
 let lastSecrets: Record<string, string> = {};
 const pendingSecrets = new Map<string, Record<string, string>>();
@@ -1893,8 +1906,7 @@ const FIELDS: Record<string, Field[]> = {
   ],
   browser: [
     { sel: '#aw-bw-url', key: 'url' },
-    { sel: '#aw-bw-backend', key: 'backend', def: 'local' },
-    { sel: '#aw-bw-route', key: 'route' },
+    { sel: '#aw-bw-where', key: 'where', def: 'local' }, // one select → backend + route, translated below
   ],
   service: [{ sel: '#aw-sv-id', key: 'service' }],
   mcp: [
@@ -2020,9 +2032,15 @@ function readConfig(dialog: HTMLDialogElement, type: string): Record<string, unk
       }
     }
     // The two url types: a bare host is completed, anything not http(s) is refused here, before the server does.
-    if (type === 'browser' && cfg.url !== undefined) {
-      cfg.url = normalizeUrl(String(cfg.url));
-      if (!httpUrl(cfg.url)) return null;
+    if (type === 'browser') {
+      const where = String(cfg.where ?? 'local');
+      delete cfg.where;
+      cfg.backend = where === 'browserbase' || where === 'app' ? where : 'local';
+      if (where === 'local-home') cfg.route = 'home';
+      if (cfg.url !== undefined) {
+        cfg.url = normalizeUrl(String(cfg.url));
+        if (!httpUrl(cfg.url)) return null;
+      }
     }
     if (type === 'embed' && !httpUrl(cfg.url)) return null;
     return cfg;
@@ -2119,6 +2137,12 @@ function fillConfig(dialog: HTMLDialogElement, w: WardInstance): void {
     if (w.type === 'note') {
       const picker = q<HTMLSelectElement>('#aw-nt-note', dialog);
       if (picker) picker.dataset.want = typeof cfg.note === 'string' ? cfg.note : '';
+    }
+    if (w.type === 'browser') {
+      // On a desktop app with no server to hand off to, `local` and `app` both
+      // mean this computer; the option that survives is `app`.
+      const where = cfg.backend === 'local' ? (cfg.route === 'home' ? 'local-home' : 'local') : cfg.backend;
+      set('#aw-bw-where', where === 'local' && SURFACE.desktop && !SURFACE.joined ? 'app' : where ?? 'local');
     }
     if (w.type === 'spacer') syncFx(dialog);
     if (w.type === 'note' || w.type === 'notebook' || w.type === 'agent') void loadAgentModels(dialog); // selectCard's load ran before this provider was set

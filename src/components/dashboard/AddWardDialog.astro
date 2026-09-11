@@ -83,21 +83,21 @@ const groups = (Object.keys(CATEGORIES) as Category[])
         <input id="aw-bw-url" name="bw-url" type="text" class="input" placeholder="https://…" autocomplete="off" spellcheck="false" />
       </div>
       <div>
-        <label class="label" for="aw-bw-backend">Runs on</label>
-        <select id="aw-bw-backend" name="bw-backend" class="input">
-          <option value="local" selected>This server (headless Chromium)</option>
-          <option value="app">My computer (through the Rimeward app)</option>
+        <label class="label" for="aw-bw-where">Runs on</label>
+        {/* One question, worded for the surface it is asked on: edit.ts keeps the
+            options whose data-on matches (server dashboard | desktop app | desktop
+            app joined to a server) and stores the pair backend + route. */}
+        <select id="aw-bw-where" name="bw-where" class="input">
+          <option value="local" data-on="server" selected>This server</option>
+          <option value="local-home" data-on="server">This server, browsing from my computer's connection (Rimeward app)</option>
+          <option value="app" data-on="server">My computer (Rimeward app)</option>
+          <option value="app" data-on="desktop">This computer</option>
+          <option value="local" data-on="joined">The server</option>
+          <option value="local-home" data-on="joined">The server, browsing from this computer's connection</option>
           <option value="browserbase">Browserbase (key under Account → Agent)</option>
         </select>
       </div>
-      <div>
-        <label class="label" for="aw-bw-route">Egress <span class="text-ink-faint">(this server only)</span></label>
-        <select id="aw-bw-route" name="bw-route" class="input">
-          <option value="" selected>This server's address</option>
-          <option value="home">My computer, through the Rimeward app</option>
-        </select>
-      </div>
-      <p class="mt-1 text-[10px] text-ink-faint">A real browser, not a frame: sites that refuse embedding work, logins persist per ward, and Rime can read and act on the same page you are on.</p>
+      <p class="mt-1 text-[10px] text-ink-faint">A real browser, not a frame: sites that refuse embedding work, logins persist per ward, and Rime can read and act on the same page you are on. Where it runs is where its logins live and whose address websites see.</p>
     </div>
     <div data-cfg="mcp" class="hidden flex-col gap-3">
       <div>
