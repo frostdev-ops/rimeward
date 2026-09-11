@@ -119,6 +119,32 @@ test('commands: the server\'s clamps and vocabulary, translated to CDP', async (
   assert.equal(tr.last('Page.startScreencast').params.maxWidth, 1920);
 });
 
+test('resize with a scale: HiDPI metrics and a cast at device pixels; a scale-only resize still restarts', async () => {
+  const { tr, events, d } = await boot();
+  const casts = tr.calls('Page.startScreencast').length;
+  await d.run([{ t: 'resize', w: 900, h: 600, dsf: 2 }]);
+  assert.deepEqual(tr.last('Emulation.setDeviceMetricsOverride').params, { width: 900, height: 600, deviceScaleFactor: 2, mobile: false });
+  assert.equal(tr.calls('Page.startScreencast').length, casts + 1);
+  assert.deepEqual([tr.last('Page.startScreencast').params.maxWidth, tr.last('Page.startScreencast').params.maxHeight], [1800, 1200]);
+  assert.equal(events.some(e => e.type === 'view'), false, 'the driver never claims a frame scale: browser.ts measures it off the frame');
+  // The same CSS size at a new scale is still a resize (scale-only), and 3 clamps to 2, 1.3 to a quarter step.
+  await d.run([{ t: 'resize', w: 900, h: 600, dsf: 1.3 }]);
+  assert.equal(tr.calls('Page.startScreencast').length, casts + 2);
+  assert.equal(tr.last('Emulation.setDeviceMetricsOverride').params.deviceScaleFactor, 1.25);
+  assert.equal(tr.last('Page.startScreencast').params.maxWidth, 1125);
+  await d.run([{ t: 'resize', w: 900, h: 600, dsf: 3 }]);
+  assert.equal(tr.last('Emulation.setDeviceMetricsOverride').params.deviceScaleFactor, 2);
+  // No scale on the command keeps the current one; nothing changed → no restart.
+  await d.run([{ t: 'resize', w: 900, h: 600 }]);
+  assert.equal(tr.calls('Page.startScreencast').length, casts + 3);
+  // A tab switch applies the same scale to the new page's metrics.
+  await d.run([{ t: 'newtab' }]);
+  tr.event('Target.targetCreated', { targetInfo: { targetId: 'T2', type: 'page', url: 'about:blank', title: '' } });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(tr.last('Emulation.setDeviceMetricsOverride').sessionId, 'ST2');
+  assert.equal(tr.last('Emulation.setDeviceMetricsOverride').params.deviceScaleFactor, 2);
+});
+
 test('tabs, frames and dialogs: a new page takes focus, frames are acked, beforeunload is accepted', async () => {
   const { tr, events, d } = await boot();
   await d.run([{ t: 'newtab' }]);

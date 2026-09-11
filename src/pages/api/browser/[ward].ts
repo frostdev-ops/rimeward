@@ -1,4 +1,5 @@
 import type { APIRoute } from 'astro';
+import { browserScale } from '../../../lib/wards.ts';
 import { browserWard } from '../../../lib/dashboard.ts';
 import { open, runCmds, closeSession, peek, activate } from '../../../lib/browser/session.ts';
 import { EXTENSION_BYTES, extensionRegistry, installExtension, changeExtension, restoreGlaze } from '../../../lib/browser/extensions.ts';
@@ -65,7 +66,9 @@ export const POST: APIRoute = async ({ params, request, locals, url }) => {
             await cdp.send('Browser.close').catch(() => {});
           }
           if (s) await closeSession(s);
-          await open(userId, ward, cfg);
+          // Relaunch at the restarting viewer's display scale (fixed per launch).
+          const body = await request.json().catch(() => null) as { dsf?: unknown } | null;
+          await open(userId, ward, cfg, { dsf: browserScale(body?.dsf) });
         } else {
           const body = await request.json();
           if (extensionAction === 'open') {

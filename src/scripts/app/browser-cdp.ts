@@ -6,7 +6,7 @@
 // the server's lib/browser/session.ts, so browser.ts cannot tell them apart.
 
 import type { BrowserEvent, Cmd } from '../../lib/browser/session.ts';
-import { httpUrl } from '../../lib/wards.ts';
+import { browserScale, httpUrl } from '../../lib/wards.ts';
 
 /** One CDP websocket, abstracted so the test can fake it. */
 export interface Transport {
@@ -75,6 +75,10 @@ export class LocalDriver {
   private active = '';
   private ready = false;
   viewport = { width: 1280, height: 800 };
+  /** This display's scale, emulated for the page (dpr, srcset). The FRAME's
+   *  scale follows the Chromium process (--force-device-scale-factor at the
+   *  app's launch), so browser.ts reads the real one off each frame's size. */
+  dsf = 1;
   private mods = 0;
   private button: (typeof BUTTONS)[number] | 'none' = 'none';
   private buttons = 0;
@@ -202,18 +206,20 @@ export class LocalDriver {
   }
 
   private applyViewport(): Promise<unknown> {
-    return this.page('Emulation.setDeviceMetricsOverride', { ...this.viewport, deviceScaleFactor: 1, mobile: false }).catch(() => {});
+    return this.page('Emulation.setDeviceMetricsOverride', { ...this.viewport, deviceScaleFactor: this.dsf, mobile: false }).catch(() => {});
   }
 
   private startCast(): Promise<unknown> {
-    return this.page('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: this.viewport.width, maxHeight: this.viewport.height, everyNthFrame: 1 }).catch(() => {});
+    return this.page('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: Math.round(this.viewport.width * this.dsf), maxHeight: Math.round(this.viewport.height * this.dsf), everyNthFrame: 1 }).catch(() => {});
   }
 
-  private async resize(width: number, height: number): Promise<void> {
+  private async resize(width: number, height: number, scale: unknown): Promise<void> {
     const w = Math.round(Math.min(MAX_VIEW.width, Math.max(MIN_VIEW.width, width)));
     const h = Math.round(Math.min(MAX_VIEW.height, Math.max(MIN_VIEW.height, height)));
-    if (w === this.viewport.width && h === this.viewport.height) return;
+    const dsf = scale === undefined ? this.dsf : browserScale(scale);
+    if (w === this.viewport.width && h === this.viewport.height && dsf === this.dsf) return;
     this.viewport = { width: w, height: h };
+    this.dsf = dsf;
     await this.applyViewport();
     // The screencast's max size is fixed at start — restart it at the new one.
     await this.page('Page.stopScreencast').catch(() => {});
@@ -290,7 +296,7 @@ export class LocalDriver {
             await this.page('Page.reload');
             break;
           case 'resize':
-            await this.resize(num(c.w, MAX_VIEW.width), num(c.h, MAX_VIEW.height));
+            await this.resize(num(c.w, MAX_VIEW.width), num(c.h, MAX_VIEW.height), c.dsf);
             break;
           case 'tab': {
             const id = [...this.targets.keys()][num(c.i, 99)];

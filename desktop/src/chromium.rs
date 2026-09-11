@@ -272,7 +272,10 @@ async fn fetch(shared: &Shared, spec: &Spec, dir: &Path) -> Result<(), String> {
 
 /// The ward's instance, launched if needed: its DevTools port and browser
 /// websocket path. Counts one more user of it until `release`.
-pub async fn acquire(shared: &Shared, ward: &str) -> Result<(u16, String), String> {
+/// `dsf` is the display scale the ward's page asked for (1–2); it only takes
+/// effect on a launch, because the screencast follows the Chromium process's
+/// scale (`--force-device-scale-factor`), never a per-page emulation.
+pub async fn acquire(shared: &Shared, ward: &str, dsf: f64) -> Result<(u16, String), String> {
     if ward.is_empty()
         || ward.len() > 32
         || !ward
@@ -307,7 +310,7 @@ pub async fn acquire(shared: &Shared, ward: &str) -> Result<(u16, String), Strin
     } else {
         vec![c.bundled_extensions.join("glaze")]
     };
-    let (child, port, ws_path) = launch(&exe, &profile, &c.origin, &extensions).await?;
+    let (child, port, ws_path) = launch(&exe, &profile, &c.origin, &extensions, dsf).await?;
     c.instances.insert(
         ward.to_string(),
         Instance {
@@ -340,6 +343,7 @@ async fn launch(
     profile: &Path,
     origin: &str,
     extensions: &[PathBuf],
+    dsf: f64,
 ) -> Result<(Child, u16, String), String> {
     std::fs::create_dir_all(profile).map_err(|e| e.to_string())?;
     let active = profile.join("DevToolsActivePort");
@@ -365,6 +369,11 @@ async fn launch(
         .arg("--no-default-browser-check")
         .arg(format!("--remote-allow-origins={origin}"))
         .arg("--window-size=1280,800")
+        .args(if dsf > 1.0 {
+            vec![format!("--force-device-scale-factor={dsf}")]
+        } else {
+            vec![]
+        })
         .arg("--disk-cache-size=52428800")
         .stdin(Stdio::null())
         .stdout(Stdio::null())

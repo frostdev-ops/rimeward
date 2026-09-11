@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { browserWard, getDashboard, getPages, saveDashboard } from '../dashboard.ts';
+import type { BrowserConfig } from '../wards.ts';
 import { getSetting } from '../settings.ts';
 import { wardDevice } from '../dev/instance.ts';
 import { isDesktop, DevError } from '../dev/runtime.ts';
@@ -25,21 +26,42 @@ export function browserPresence(user: number, ward: string) {
   return { active: !!peek(user, ward), profile: fs.existsSync(path.join(PROFILES, String(user), ward, 'Default')) };
 }
 
+export interface BrowserPlacement { device?: string; pairId?: string; desktop: boolean }
+
 /** Human input, streams and Rime tools resolve the same stored browser placement. */
 export async function routeBrowser(user: number, ward: string, request: Request): Promise<Response | undefined> {
   browserId(user, ward);
   const desktop = isDesktop();
+  // A request the relay already delivered here: serve it, never re-resolve.
   if (desktop && request.headers.get('x-rimeward-relayed') === '1' &&
       secretEqual(request.headers.get('x-rimeward-native-token'), process.env.RIMEWARD_NATIVE_TOKEN)) return;
   const cfg = browserWard(user, ward);
   if (!cfg) throw Error(`${ward} is not a browser ward`);
+  const { device, pairId } = await resolveBrowserDevice(user, ward, cfg);
+  const url = new URL(request.url), target = url.pathname + url.search;
+  if (device && device !== pairId) return desktop
+    ? instanceRequest(user, `/runtime/${device}${target}`, request)
+    : relayRequest(user, device, target, request);
+  if (desktop && pairId && !device && cfg.backend !== 'app' && getSetting(`instance:joined:${user}`))
+    return instanceRequest(user, target, request);
+}
+
+/** Whether a placement is served by another computer (through the HTTP relay). */
+export function browserIsRelayed(user: number, cfg: BrowserConfig, r: BrowserPlacement): boolean {
+  if (r.device && r.device !== r.pairId) return true;
+  return !!(r.desktop && r.pairId && !r.device && cfg.backend !== 'app' && getSetting(`instance:joined:${user}`));
+}
+
+/** Where the ward's browser lives; pins an `app` ward to its computer once. */
+export async function resolveBrowserDevice(user: number, ward: string, cfg: BrowserConfig): Promise<BrowserPlacement> {
+  const desktop = isDesktop();
   const pair = desktop ? await rimeConnection(user) : undefined;
   let device = wardDevice(user, ward);
   if (!device && cfg.backend === 'app') {
     if (desktop) device = pair?.id;
     else {
       const devices = listDevices(user);
-      if (!devices.length) return; // Compatibility with a legacy app using the CDP tunnel.
+      if (!devices.length) return { desktop }; // Compatibility with a legacy app using the CDP tunnel.
       if (devices.length === 1) device = devices[0]?.id;
       else {
         const states = await Promise.all(devices.filter(d => d.online).map(async d => {
@@ -61,10 +83,5 @@ export async function routeBrowser(user: number, ward: string, request: Request)
     // Pin once: an offline owner must never silently redirect to another computer.
     if (device) saveDashboard(user, getDashboard(user).map(w => w.i === ward ? { ...w, device } : w), getPages(user));
   }
-  const url = new URL(request.url), target = url.pathname + url.search;
-  if (device && device !== pair?.id) return desktop
-    ? instanceRequest(user, `/runtime/${device}${target}`, request)
-    : relayRequest(user, device, target, request);
-  if (desktop && pair && !device && cfg.backend !== 'app' && getSetting(`instance:joined:${user}`))
-    return instanceRequest(user, target, request);
+  return { device, pairId: pair?.id, desktop };
 }

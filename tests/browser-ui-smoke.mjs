@@ -11,7 +11,10 @@ import sharp from 'sharp';
 import { chromium } from 'playwright-core';
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'rimeward-browser-ui-'));
-const frame = (await sharp(Buffer.from('<svg width="640" height="480" xmlns="http://www.w3.org/2000/svg"><rect width="640" height="480" fill="#14354b"/><text x="40" y="100" font-size="28" fill="white">Generated browser fixture</text></svg>')).jpeg().toBuffer()).toString('base64');
+const frameBytes = await sharp(Buffer.from('<svg width="640" height="480" xmlns="http://www.w3.org/2000/svg"><rect width="640" height="480" fill="#14354b"/><text x="40" y="100" font-size="28" fill="white">Generated browser fixture</text></svg>')).jpeg().toBuffer();
+const frame = frameBytes.toString('base64');
+// The ward socket's frame: the same page at 2× (a 1280×960 jpeg of a 640×480 viewport).
+const hidpiFrame = await sharp(frameBytes).resize(1280, 960).jpeg().toBuffer();
 const child = spawn(process.execPath, ['desktop-runtime.mjs'], { env: { PATH: process.env.PATH, HOME: temp }, stdio: ['pipe', 'pipe', 'pipe'] });
 let browser, logs = '';
 child.stderr.on('data', data => { logs += data; });
@@ -43,6 +46,28 @@ try {
       throw Error('This server is not the active browser route');
     } } };
   }, frame);
+  // Registered BEFORE the live-stream fixture, whose class captures window.WebSocket.
+  // The ward WebSocket (lib/browser/live.ts), faked in-page: browser-one gets
+  // the full handshake and records every batch; browser-two is closed before
+  // its `hello`, which is how a relayed ward looks, so it falls back to the
+  // SSE + POST path the assertions below have always covered.
+  const wsBatches = [];
+  let wsSockets = 0, wsTwo = 0, dropOne;
+  await page.routeWebSocket('**/api/browser/ws/*', ws => {
+    const ward = new URL(ws.url()).pathname.split('/').at(-1);
+    if (ward !== 'browser-one') { wsTwo++; ws.close(); return; }
+    wsSockets++;
+    dropOne = () => ws.close({ code: 1000 });
+    ws.send(JSON.stringify({ type: 'hello' }));
+    ws.onMessage(raw => wsBatches.push({ beforeView: false, cmds: JSON.parse(raw).cmds }));
+    // The browser "launches" after a beat — anything sent before `view` would be a protocol error.
+    setTimeout(() => {
+      ws.send(JSON.stringify({ type: 'view', dsf: 2 }));
+      ws.send(hidpiFrame);
+      ws.send(JSON.stringify({ type: 'nav', url: 'https://browser.fixture/one', title: 'Generated fixture' }));
+      ws.send(JSON.stringify({ type: 'tabs', tabs: [{ url: 'https://browser.fixture/one', title: 'One' }, { url: 'https://browser.fixture/two', title: 'Two' }], active: 0 }));
+    }, 150);
+  });
   await page.addInitScript(liveStreamFixture, { browserFrame: frame });
   await page.route('**/api/browser/*', async route => {
     if (route.request().method() !== 'POST') return route.continue();
@@ -65,16 +90,37 @@ try {
     if (!r.ok) throw Error(await r.text());
   });
   await page.reload();
-  await page.waitForFunction(() => [...document.querySelectorAll('.bw canvas')].length === 2 && [...document.querySelectorAll('.bw canvas')].every(c => c.width === 640));
+  try {
+    await page.waitForFunction(() => {
+      const widths = [...document.querySelectorAll('.bw canvas')].map(c => c.width).sort((a, b) => a - b);
+      return widths.length === 2 && widths[0] === 640 && widths[1] === 1280;
+    });
+  } catch (error) {
+    console.error('canvases', await page.evaluate(() => [...document.querySelectorAll('.bw canvas')].map(c => [c.closest('[data-wd]')?.dataset.wd, c.width, c.height])),
+      'toasts', await page.evaluate(() => [...document.querySelectorAll('.bw-toast')].map(t => t.textContent)), 'sockets', wsSockets, wsTwo, 'batches', wsBatches.length, 'errors', errors);
+    throw error;
+  }
   assert.equal(await page.locator('#instance-status').getAttribute('data-desktop'), '1');
   assert.equal(await page.evaluate(() => window.__nativeCalls.some(c => c === 'ward_browser')), false, 'local runtime never uses paired-server native browser routing');
   await page.waitForTimeout(400);
-  assert.equal(new Set(calls.filter(c => c.cmds.some(x => x.t === 'resize')).map(c => c.ward)).size, 2, 'independent browser wards both receive resize');
+  assert.equal(wsSockets, 1, 'the served ward opened one socket');
+  assert.ok(wsTwo >= 1, 'the refused ward tried the socket first');
+  assert.equal(new Set(calls.filter(c => c.cmds.some(x => x.t === 'resize')).map(c => c.ward)).size, 1, 'only the fallback ward resizes over POST');
+  assert.equal(calls.some(c => c.ward === 'browser-one'), false, 'a ward on its socket never POSTs input');
+  assert.ok(wsBatches.some(b => b.cmds.some(x => x.t === 'resize')), 'the socket ward resizes over the socket');
+  assert.ok(wsBatches.every(b => b.cmds.every(x => x.t === 'resize' && x.dsf === undefined)), 'nothing but the resize went before any input, and the server\'s scale is not the client\'s to set');
   const ward = page.locator('[data-wd="browser-one"]');
   const canvas = ward.locator('canvas');
   await canvas.evaluate(c => { c.dataset.sameElement = 'yes'; });
-  await canvas.click({ position: { x: 120, y: 100 } });
-  const beforeShortcut = calls.length;
+  // A click lands in remote CSS px: the 2× frame (1280×960 of a 640×480 page)
+  // is object-fit inside the canvas box, so its centre is the page's centre.
+  const box = await canvas.boundingBox();
+  await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
+  await page.waitForTimeout(100);
+  const down = wsBatches.flatMap(b => b.cmds).find(x => x.t === 'down');
+  assert.ok(down, 'the click reached the socket');
+  assert.ok(Math.abs(down.x - 320) < 2 && Math.abs(down.y - 240) < 2, `click mapped through the 2× frame: ${JSON.stringify(down)}`);
+  const beforeShortcut = wsBatches.length;
   await canvas.evaluate(c => {
     // A native shortcut (or focus gained mid-modifier) can carry the modifier
     // flag without the canvas having received its separate keydown.
@@ -82,7 +128,7 @@ try {
     c.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', metaKey: false, bubbles: true }));
   });
   await page.waitForTimeout(100);
-  assert.deepEqual(calls.slice(beforeShortcut).flatMap(c => c.cmds).filter(c => c.t === 'key').map(c => [c.key, c.type]),
+  assert.deepEqual(wsBatches.slice(beforeShortcut).flatMap(c => c.cmds).filter(c => c.t === 'key').map(c => [c.key, c.type]),
     [['Meta', 'down'], ['a', 'down'], ['Meta', 'up'], ['a', 'up']], 'modifier flags preserve shortcut ordering and release');
   assert.equal(await canvas.evaluate(c => c.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', metaKey: true, cancelable: true, bubbles: true }))), true, 'paste shortcut allows the client paste event');
   await canvas.evaluate(c => {
@@ -90,16 +136,32 @@ try {
     c.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
   });
   await page.waitForTimeout(100);
-  assert.ok(calls.some(c => c.cmds.some(x => x.t === 'text' && x.text === 'generated paste')));
+  assert.ok(wsBatches.some(c => c.cmds.some(x => x.t === 'text' && x.text === 'generated paste')));
   await page.keyboard.down('Shift'); await page.keyboard.press('ArrowRight');
   await ward.getByRole('textbox', { name: 'Address' }).click();
   await page.waitForTimeout(100);
-  assert.ok(calls.some(c => c.cmds.some(x => x.t === 'key' && x.key === 'Shift' && x.type === 'up')), 'blur releases held keys');
+  assert.ok(wsBatches.some(c => c.cmds.some(x => x.t === 'key' && x.key === 'Shift' && x.type === 'up')), 'blur releases held keys');
   await page.keyboard.up('Shift');
   await ward.getByRole('textbox', { name: 'Address' }).fill('example.com');
   await ward.getByRole('textbox', { name: 'Address' }).press('Enter');
   await page.waitForTimeout(100);
-  assert.ok(calls.some(c => c.cmds.some(x => x.t === 'goto' && new URL(x.url).href === 'https://example.com/')));
+  assert.ok(wsBatches.some(c => c.cmds.some(x => x.t === 'goto' && new URL(x.url).href === 'https://example.com/')));
+  assert.equal(calls.some(c => c.ward === 'browser-one'), false, 'still nothing over POST for the socket ward');
+  // The server dropping the socket AFTER hello is a retry, never a fallback: the
+  // queue and held state reset, the next attempt is a socket again, no POST.
+  await canvas.click();
+  await page.keyboard.down('Shift');
+  await page.waitForTimeout(50);
+  const socketsBeforeDrop = wsSockets, postsBeforeDrop = calls.length, batchesBeforeDrop = wsBatches.length;
+  dropOne();
+  await ward.getByText('Browser unavailable — retrying…').waitFor();
+  await page.keyboard.up('Shift');
+  await page.keyboard.press('ArrowDown'); // typed while reconnecting: dropped, never delivered late
+  await page.waitForTimeout(5800); // 5 s retry + the fixture's launch beat + the resize debounce
+  assert.equal(wsSockets, socketsBeforeDrop + 1, 'reconnected over the socket');
+  assert.equal(calls.length, postsBeforeDrop, 'no POST while the socket was down');
+  assert.equal(wsBatches.slice(batchesBeforeDrop).some(b => b.cmds.some(x => x.t === 'key')), false, 'input typed while the socket was down is dropped, never delivered late');
+  assert.ok(wsBatches.slice(batchesBeforeDrop).some(b => b.cmds.some(x => x.t === 'resize')), 'the new socket re-sends the viewport');
   const before = await page.evaluate(() => window.__browserStreams.length);
   await ward.getByRole('button', { name: 'Expand', exact: true }).click();
   const dialog = page.locator('#browser-dialog');
@@ -109,8 +171,12 @@ try {
   assert.equal(await canvas.getAttribute('data-same-element'), 'yes');
   await page.waitForTimeout(200);
   assert.equal(await page.evaluate(() => window.__browserStreams.length), before, 'expand retains the live session');
+  assert.equal(wsSockets, socketsBeforeDrop + 1, 'expand keeps the socket too');
+  // The rest drives the FALLBACK ward (browser-two: SSE + POST), unchanged.
+  const wardTwo = page.locator('[data-wd="browser-two"]');
+  const canvasTwo = wardTwo.locator('canvas');
   delayControl = true;
-  await canvas.click();
+  await canvasTwo.click();
   await page.keyboard.down('Control');
   for (let attempt = 0; !finishControl && attempt < 50; attempt++) await page.waitForTimeout(20);
   assert.ok(finishControl, 'slow input batch is in flight');
@@ -123,22 +189,25 @@ try {
   await page.waitForTimeout(150);
   assert.ok(calls.slice(beforeHide).some(c => c.cmds.some(x => x.t === 'key' && x.key === 'Control' && x.type === 'up')), 'hidden ward releases a submitted key even when physical key-up was queued');
   assert.equal(await page.evaluate(() => window.__browserStreams.filter(s => s.readyState === 1).length), 0, 'hidden wards close streams');
+  const socketsBeforeReturn = wsSockets;
   await page.getByRole('button', { name: 'Browser check', exact: true }).click();
   await page.waitForTimeout(200);
-  assert.equal(await page.evaluate(() => window.__browserStreams.filter(s => s.readyState === 1).length), 2, 'returning reconnects each ward once');
-  await page.evaluate(() => window.__browserStreams.findLast(s => s.url.endsWith('browser-one')).fail());
-  await ward.getByText('Browser unavailable — retrying…').waitFor();
+  assert.equal(await page.evaluate(() => window.__browserStreams.filter(s => s.readyState === 1).length), 1, 'returning reconnects the fallback ward once');
+  assert.equal(wsSockets, socketsBeforeReturn + 1, 'returning reconnects the socket ward once');
+  await page.evaluate(() => window.__browserStreams.findLast(s => s.url.endsWith('browser-two')).fail());
+  await wardTwo.getByText('Browser unavailable — retrying…').waitFor();
   await page.waitForTimeout(5300);
-  assert.equal(await page.evaluate(() => window.__browserStreams.filter(s => s.readyState === 1).length), 2, 'closed stream recovers');
+  assert.equal(await page.evaluate(() => window.__browserStreams.filter(s => s.readyState === 1).length), 1, 'closed stream recovers');
   await page.setViewportSize({ width: 390, height: 844 });
   await ward.screenshot({ path: path.join(process.env.RIMEWARD_GOLDEN_DIR ?? temp, 'rimeward-browser-local-phone.png') });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({ path: path.join(process.env.RIMEWARD_GOLDEN_DIR ?? temp, 'rimeward-browser-local.png') });
+  // Removing the SOCKET ward mid-press: its releases go out on the socket before it closes.
   await canvas.click();
   await page.keyboard.down('Alt');
   await page.mouse.down();
   await page.waitForTimeout(80);
-  const beforeRemove = calls.length;
+  const beforeRemove = wsBatches.length, postsBeforeRemove = calls.length;
   await page.evaluate(async () => {
     const layout = JSON.parse(document.getElementById('layout-data').textContent);
     const r = await fetch('/api/dashboard', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ layout: layout.filter(w => w.i !== 'browser-one') }) });
@@ -146,8 +215,9 @@ try {
   });
   await ward.waitFor({ state: 'detached' });
   await page.waitForTimeout(150);
-  assert.ok(calls.slice(beforeRemove).some(c => c.cmds.some(x => x.t === 'key' && x.key === 'Alt' && x.type === 'up')), 'removing a focused ward releases keys before disposing the transport');
-  assert.ok(calls.slice(beforeRemove).some(c => c.cmds.some(x => x.t === 'up' && x.button === 0)), 'removing a captured pointer releases its button');
+  assert.ok(wsBatches.slice(beforeRemove).some(c => c.cmds.some(x => x.t === 'key' && x.key === 'Alt' && x.type === 'up')), 'removing a focused ward releases keys on its socket before closing it');
+  assert.ok(wsBatches.slice(beforeRemove).some(c => c.cmds.some(x => x.t === 'up' && x.button === 0)), 'removing a captured pointer releases its button');
+  assert.equal(calls.slice(postsBeforeRemove).some(c => c.ward === 'browser-one'), false, 'no POST release for a socket ward');
   await page.keyboard.up('Alt');
   await page.mouse.up();
   const remaining = page.locator('[data-wd="browser-two"] canvas');
@@ -168,7 +238,7 @@ try {
   finishBlackhole(); blackhole = false;
   await page.evaluate(() => { window.__shortBrowserTimeouts = false; });
   assert.deepEqual(errors, []);
-  console.log('browser UI smoke passed: desktop routing, two ward resizing, pointer/keyboard, blur release, address, same-element expansion, hidden pages and reconnect, phone layout');
+  console.log('browser UI smoke passed: socket handshake + 2× click mapping + drop/retry, SSE fallback, pointer/keyboard, blur release, address, same-element expansion, hidden pages and reconnect, phone layout');
 } finally {
   await browser?.close();
   const exited = once(child, 'exit'); child.kill('SIGTERM');

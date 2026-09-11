@@ -8,7 +8,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { getDb } from '../src/lib/db.ts';
 import { saveDashboard } from '../src/lib/dashboard.ts';
-import { closeSession, killByProfile, open, peek, runCmds, subscribe } from '../src/lib/browser/session.ts';
+import { closeSession, killByProfile, normalizeCmds, open, peek, runCmds, subscribe } from '../src/lib/browser/session.ts';
 import { TOOLS } from '../src/lib/agent/tools.ts';
 
 // The one end-to-end check: a real headless Chromium through session.ts, the
@@ -19,6 +19,13 @@ function seedUser(email: string): number {
   getDb().prepare(`INSERT INTO users (email, password_hash, role) VALUES (?, 'x', 'admin')`).run(email);
   return (getDb().prepare('SELECT id FROM users WHERE email = ?').get(email) as { id: number }).id;
 }
+
+test('normalizeCmds keeps the POST route\'s semantics: malformed entries drop, only the batch shape refuses', () => {
+  assert.deepEqual(normalizeCmds([null, 7, { t: 'nope' }, { t: 'reload' }, { key: 'a' }]), [{ t: 'reload' }]);
+  assert.throws(() => normalizeCmds(Array(201).fill({ t: 'reload' })), /bad batch/);
+  assert.throws(() => normalizeCmds({ t: 'reload' }), /bad batch/);
+  assert.throws(() => normalizeCmds(undefined), /bad batch/);
+});
 
 test('orphan cleanup terminates only processes using the selected profile root', async () => {
   const root = path.join(process.env.HOMEPAGE_DATA_DIR!, 'browser profiles');

@@ -6,15 +6,27 @@ import { SESSION_COOKIES, getSession } from './auth.ts';
 const wss = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
 // Only existing, authenticated SSE GETs. The original middleware still decides device and ward access.
 const route = /^(?:\/runtime\/[a-zA-Z0-9_-]+)?\/api\/(?:status\/stream|logic\/stream|instance\/events|dev\/events|browser\/stream\/[a-zA-Z0-9_-]+)$/;
-export function liveUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
-  const refuse = (status: number) => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n\r\n`);
+/** Refuse an upgrade with a status line, so the client sees why, not a bare reset. */
+export const refuseUpgrade = (socket: net.Socket, status: number) => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n\r\n`);
+
+/** The page's origin and session cookie on an upgrade request: the session
+ *  id and user, or the status to refuse it with. */
+export function upgradeSession(req: http.IncomingMessage): { id: string; userId: number; origin: URL } | number {
   let origin: URL;
-  try { origin = new URL(req.headers.origin ?? ''); } catch { refuse(403); return; }
+  try { origin = new URL(req.headers.origin ?? ''); } catch { return 403; }
   const expected = process.env.PUBLIC_BASE_URL;
-  if (expected ? origin.origin !== new URL(expected).origin : origin.host !== req.headers.host) { refuse(403); return; }
+  if (expected ? origin.origin !== new URL(expected).origin : origin.host !== req.headers.host) return 403;
   const cookies = new Map((req.headers.cookie ?? '').split(';').map(s => { const i = s.indexOf('='); return [s.slice(0, i).trim(), s.slice(i + 1)]; }));
-  const session = SESSION_COOKIES.map(name => cookies.get(name)).find(Boolean);
-  if (!getSession(session)) { refuse(401); return; }
+  const id = SESSION_COOKIES.map(name => cookies.get(name)).find(Boolean);
+  const row = id ? getSession(id) : null;
+  return row && id ? { id, userId: row.userId, origin } : 401;
+}
+
+export function liveUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
+  const refuse = (status: number) => refuseUpgrade(socket, status);
+  const auth = upgradeSession(req);
+  if (typeof auth === 'number') { refuse(auth); return; }
+  const { id: session, origin } = auth;
   const port = req.socket.localPort;
   if (!port) { refuse(503); return; }
   wss.handleUpgrade(req, socket, head, ws => {

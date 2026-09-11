@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { chromium, type BrowserContext, type CDPSession, type Page } from 'playwright-core';
 import { DATA_DIR } from '../db.ts';
-import { httpUrl, type BrowserConfig } from '../wards.ts';
+import { browserScale, httpUrl, type BrowserConfig } from '../wards.ts';
 import { guardFor, guardPort, type Dial } from './guard.ts';
 import { connectBrowserbase, dropBrowserbase } from './browserbase.ts';
 import { connectApp } from './app-backend.ts';
@@ -16,7 +16,8 @@ import { captureDownload, listDownloads, moveDownloads, type BrowserDownload } f
 import { extensionPaths, extensionStorage, cleanExtensions, extensionMaintenance } from './extensions.ts';
 
 // One live browser per browser ward, keyed `${userId}:${ward}`. The human
-// (screencast out over SSE, input in over POST) and the agent (tools) share
+// (screencast out + input in over the ward's WebSocket, lib/browser/live.ts;
+// SSE + POST for a viewer the relay serves) and the agent (tools) share
 // it: one page handle, one profile, so a login the human completes is the
 // session the agent picks up — and it survives the browser closing.
 //
@@ -60,7 +61,21 @@ export type BrowserEvent =
   /** A home-routed ward: whether the desktop app's tunnel is up right now. */
   | { type: 'route'; online: boolean; detail?: string }
   | { type: 'download'; file: BrowserDownload }
+  /** The session's device scale: a frame is viewport × dsf pixels. Sent with
+   *  the state on connect; the in-app driver emits it after its own resize. */
+  | { type: 'view'; dsf: number }
   | { type: 'closed' };
+
+/** One connected human viewer on the ward's WebSocket (lib/browser/live.ts). */
+export interface HumanOwner {
+  dead: boolean;
+  /** Keys/buttons whose `down` this owner EXECUTED and whose `up` has not. */
+  heldKeys: Set<string>;
+  heldButtons: Set<number>;
+}
+export type HumanEntry =
+  | { owner: HumanOwner; cmd: Cmd; bytes: number }
+  | { owner: HumanOwner; control: 'release'; bytes: 0 };
 
 export interface Session {
   key: string;
@@ -74,7 +89,15 @@ export interface Session {
   /** The active tab — what the screencast shows and the agent acts on. */
   page: Page;
   viewport: { width: number; height: number };
+  /** Device scale factor, fixed at launch (a Playwright context option). */
+  dsf: number;
   subs: Set<(e: BrowserEvent) => void>;
+  /** The human WebSocket viewers' ordered input, drained by ONE worker
+   *  (lib/browser/live.ts); separate from the agent's `chain`. */
+  humanQueue: HumanEntry[];
+  humanBytes: number;
+  humanWorker?: Promise<void>;
+  owners: Set<HumanOwner>;
   lastUsed: number;
   /** Agent operations serialize here; the human's input never waits on it. */
   chain: Promise<unknown>;
@@ -98,7 +121,7 @@ export const peek = (userId: number, ward: string): Session | undefined => sessi
 /** The session for a ward, launching it if needed. `cfg` is the ward's own
  *  validated config — the caller has already checked the ward exists and is
  *  a browser ward (dashboard.ts browserWard). */
-export function open(userId: number, ward: string, cfg: BrowserConfig): Promise<Session> {
+export function open(userId: number, ward: string, cfg: BrowserConfig, opts: { dsf?: number } = {}): Promise<Session> {
   if (!WARD_RE.test(ward)) return Promise.reject(new Error('bad ward id'));
   const key = `${userId}:${ward}`;
   const live = sessions.get(key);
@@ -109,20 +132,22 @@ export function open(userId: number, ward: string, cfg: BrowserConfig): Promise<
   }
   let p = opening.get(key);
   if (!p) {
-    p = launch(userId, ward, key, cfg).finally(() => opening.delete(key));
+    p = launch(userId, ward, key, cfg, browserScale(opts.dsf)).finally(() => opening.delete(key));
     opening.set(key, p);
   }
   return p;
 }
 
-async function launch(userId: number, ward: string, key: string, cfg: BrowserConfig): Promise<Session> {
+async function launch(userId: number, ward: string, key: string, cfg: BrowserConfig, dsf: number): Promise<Session> {
   if(isDesktop())cfg={...cfg,backend:cfg.backend==='app'?'local':cfg.backend,route:undefined};
   ensureBrowser();
   await makeRoom();
+  // Only a launch takes options; a browser connected over CDP keeps its own scale.
+  if (cfg.backend !== 'local') dsf = 1;
   const backend =
     cfg.backend === 'browserbase' ? await connectBrowserbase(userId, ward)
     : cfg.backend === 'app' ? await connectApp(userId, ward)
-    : await launchLocal(userId, ward, cfg);
+    : await launchLocal(userId, ward, cfg, dsf);
   const { context } = backend;
   try { if (cfg.backend === 'browserbase') await extensionStorage(context, userId, ward, true); }
   catch (error) { await backend.close(); throw error; }
@@ -139,7 +164,11 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
     pageReady: new WeakMap(),
     page,
     viewport: { ...DEFAULT_VIEWPORT },
+    dsf,
     subs: new Set(),
+    humanQueue: [],
+    humanBytes: 0,
+    owners: new Set(),
     lastUsed: Date.now(),
     chain: Promise.resolve(),
     close: backend.close,
@@ -182,7 +211,7 @@ function browserEnv(): Record<string, string> {
   const { SSH_AUTH_SOCK: _agent, SHELL: _shell, ...env } = terminalEnv();
   return env;
 }
-async function launchLocal(userId: number, ward: string, cfg: BrowserConfig): Promise<{ context: BrowserContext; close: () => Promise<void> }> {
+async function launchLocal(userId: number, ward: string, cfg: BrowserConfig, dsf: number): Promise<{ context: BrowserContext; close: () => Promise<void> }> {
   // A home-routed ward gets its own listener; every other one shares the direct proxy.
   const home = cfg.route === 'home' ? await guardFor(homeDial(userId)) : undefined;
   const port = home?.port ?? (await guardPort());
@@ -210,6 +239,12 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig): Pr
     env: browserEnv(),
     proxy: { server: `http://127.0.0.1:${port}`, bypass: '<-loopback>' },
     viewport: DEFAULT_VIEWPORT,
+    // The viewer's display density (HiDPI frames). BOTH halves matter: the
+    // context option keeps Playwright's own metrics (re-sent on every viewport
+    // change and new page) and `scale: 'css'` screenshots right, and the
+    // process flag below is what the screencast actually follows — an
+    // emulated scale alone renders at 2× and casts at 1×.
+    deviceScaleFactor: dsf,
     acceptDownloads: true,
     downloadsPath: downloads,
     // Chromium restores history, scroll positions and form state itself. A
@@ -219,6 +254,7 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig): Pr
       '--enable-unsafe-extension-debugging',
       ...(extensions.length ? [`--load-extension=${extensions.join(',')}`] : []),
       ...(restoreDesktop() ? ['--restore-last-session'] : []),
+      ...(dsf !== 1 ? [`--force-device-scale-factor=${dsf}`] : []),
       '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', // no unproxied UDP out of ICE
       '--disk-cache-size=52428800', // the profile's size cap, in effect
     ],
@@ -344,6 +380,7 @@ async function pushTabs(s: Session): Promise<void> {
 
 /** What a viewer needs on connect: the current page and tab strip. */
 export async function pushState(s: Session): Promise<void> {
+  emit(s, { type: 'view', dsf: s.dsf });
   await pushNav(s);
   await pushTabs(s);
   if (s.route === 'home') emit(s, { type: 'route', online: tunnelOnline(s.userId) });
@@ -411,23 +448,40 @@ export type Cmd =
   | { t: 'back' }
   | { t: 'forward' }
   | { t: 'reload' }
-  | { t: 'resize'; w: number; h: number }
+  /** `dsf` is the in-app driver's (browser-cdp.ts); the server's scale is fixed at launch. */
+  | { t: 'resize'; w: number; h: number; dsf?: number }
   | { t: 'tab'; i: number }
   | { t: 'newtab' }
   | { t: 'closetab'; i: number };
 
 const BUTTONS = ['left', 'middle', 'right'] as const;
 const num = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(max, v)) : 0);
+const CMD_TYPES = new Set(['move', 'down', 'up', 'wheel', 'key', 'text', 'goto', 'back', 'forward', 'reload', 'resize', 'tab', 'newtab', 'closetab']);
+
+/** A batch's shape: an array of at most 200, else `bad batch`; entries that
+ *  are not an object with a known `t` are dropped, never refused (what the
+ *  POST route has always done). Field values are clamped at execution. */
+export function normalizeCmds(cmds: unknown): Cmd[] {
+  if (!Array.isArray(cmds) || cmds.length > 200) throw new Error('bad batch');
+  return cmds.filter((raw): raw is Cmd => !!raw && typeof raw === 'object' && CMD_TYPES.has(String((raw as { t?: unknown }).t)));
+}
+
+/** The remote key a `key` command presses: ⌘ from a Mac becomes Ctrl on the
+ *  (Linux) server's browser and the reverse for a Mac dev box, so ⌘C/V/A/Z do
+ *  the same thing there as at home. '' for a name the batch must drop. */
+export function remoteKey(s: Session, raw: unknown): string {
+  const key = typeof raw === 'string' && raw.length <= 20 ? raw : '';
+  const remoteMac = s.backend === 'app' ? tunnelStatus(s.userId).platform === 'darwin' : s.backend === 'local' && process.platform === 'darwin';
+  return key === 'Meta' && !remoteMac ? 'Control' : key === 'Control' && remoteMac ? 'Meta' : key;
+}
 
 /** The human's input, one batch as the client sent it. Every field is
  *  re-checked here — the body is untrusted. Throws on the first failing
  *  navigation command; pointer/key errors (an unknown key name) are dropped. */
 export async function runCmds(s: Session, cmds: unknown): Promise<void> {
-  if (!Array.isArray(cmds) || cmds.length > 200) throw new Error('bad batch');
+  const batch = normalizeCmds(cmds);
   s.lastUsed = Date.now();
-  const remoteMac = s.backend === 'app' ? tunnelStatus(s.userId).platform === 'darwin' : s.backend === 'local' && process.platform === 'darwin';
-  for (const raw of cmds) {
-    if (!raw || typeof raw !== 'object') continue;
+  for (const raw of batch) {
     const c = raw as Partial<Cmd> & Record<string, unknown>;
     const { mouse, keyboard } = s.page;
     const { width: vw, height: vh } = s.viewport;
@@ -448,12 +502,8 @@ export async function runCmds(s: Session, cmds: unknown): Promise<void> {
           await mouse.wheel(num(Number(c.dx) + 5000, 10_000) - 5000, num(Number(c.dy) + 5000, 10_000) - 5000);
           break;
         case 'key': {
-          const raw = typeof c.key === 'string' && c.key.length <= 20 ? c.key : '';
-          // The client sends its own modifier; the remote OS decides what it
-          // means. ⌘ from a Mac becomes Ctrl on the (Linux) server's browser,
-          // so ⌘C/V/A/Z do the same thing there as at home — and the reverse
-          // for a Mac dev box.
-          const key = raw === 'Meta' && !remoteMac ? 'Control' : raw === 'Control' && remoteMac ? 'Meta' : raw;
+          // The client sends its own modifier; the remote OS decides what it means.
+          const key = remoteKey(s, c.key);
           if (key) await (c.type === 'up' ? keyboard.up(key) : keyboard.down(key));
           break;
         }
@@ -545,8 +595,8 @@ function startCast(s: Session): void {
     try { await cdp.send('Page.startScreencast', {
       format: 'jpeg',
       quality: 60,
-      maxWidth: s.viewport.width,
-      maxHeight: s.viewport.height,
+      maxWidth: Math.round(s.viewport.width * s.dsf),
+      maxHeight: Math.round(s.viewport.height * s.dsf),
       everyNthFrame: 1,
     }); } catch (error) { await cdp.detach().catch(() => {}); throw error; }
     return cdp;

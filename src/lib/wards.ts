@@ -626,6 +626,13 @@ export function pageOf(w: WardInstance, pages: PageDef[], layout: WardInstance[]
   return owner.page ?? pages[0]!.id;
 }
 
+/** A browser ward's device scale: the display's pixel ratio, clamped 1–2 in
+ *  quarter steps so the server, the in-app driver and the client agree. */
+export function browserScale(v: unknown): number {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : 1;
+  return Math.min(2, Math.max(1, Math.round(n * 4) / 4));
+}
+
 export function httpUrl(v: unknown): string | null {
   if (typeof v !== 'string' || v.length > 2048) return null;
   try {

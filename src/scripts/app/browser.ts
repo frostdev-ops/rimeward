@@ -1,10 +1,13 @@
 import { expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
 // The browser ward: a live view of a real Chromium session the server runs for
 // this ward (lib/browser/session.ts), driven from here by the human and from
-// Rime's tools by the agent — one session, two drivers. Frames arrive over SSE
-// as jpeg; input goes back as batched commands. The remote viewport follows
-// the surface it is shown on — the ward, or the shared expand dialog the SAME
-// element moves into — 1:1 CSS pixels, so what you see is what you click.
+// Rime's tools by the agent — one session, two drivers. Frames and input share
+// one WebSocket per ward (lib/browser/live.ts): binary jpeg down, command
+// batches up, ordered by the server. A ward the desktop relay serves cannot
+// upgrade, so a socket closed before its `hello` switches the mount to the
+// SSE + POST path for good. The remote viewport follows the surface it is
+// shown on — the ward, or the shared expand dialog the SAME element moves
+// into — in CSS pixels at the display's scale, so what you see is what you click.
 //
 // Inside the Rimeward app, a "My computer" ward's Chromium is on this very
 // machine: the same UI then drives it directly over CDP (browser-cdp.ts) —
@@ -17,7 +20,7 @@ import { openMenu, menuItem, closeMenu } from './menu.ts';
 import type { BrowserDownload } from '../../lib/browser/downloads.ts';
 import { LocalDriver, type Transport } from './browser-cdp.ts';
 import { LiveEventSource } from './live-stream.ts';
-import type { BrowserConfig, WardInstance } from '../../lib/wards.ts';
+import { browserScale, type BrowserConfig, type WardInstance } from '../../lib/wards.ts';
 import type { BrowserEvent, Cmd } from '../../lib/browser/session.ts';
 import type { BrowserExtension } from '../../lib/browser/extensions.ts';
 
@@ -35,6 +38,16 @@ interface Mount {
   expand: HTMLButtonElement;
   tabs: HTMLElement;
   toast: HTMLElement;
+  /** `ws` until a socket closes before its `hello` (a relayed ward, an old
+   *  runtime, nginx without the block): then `sse` for the mount's life. */
+  mode: 'ws' | 'sse';
+  ws?: WebSocket;
+  wsEpoch: number;
+  hello: boolean;
+  /** The socket's browser is open (`view` arrived): input may be sent. */
+  ready: boolean;
+  /** The remote's device scale: a frame is viewport × dsf pixels. */
+  dsf: number;
   es?: LiveEventSource;
   /** The local path (inside the app): the driver once open, `opening` meanwhile. */
   driver?: LocalDriver;
@@ -57,7 +70,7 @@ interface Mount {
   submittedKeys: Set<string>;
   submittedButtons: Set<number>;
   decoding: boolean;
-  pendingFrame?: string;
+  pendingFrame?: Blob | string;
   toastT?: ReturnType<typeof setTimeout>;
   ro: ResizeObserver;
   io: IntersectionObserver;
@@ -73,15 +86,16 @@ const editing = () => document.getElementById('wd-grid')?.classList.contains('ed
 // ------------------------------------------------------------------ stream
 
 function connect(m: Mount): void {
-  if (m.stopped || m.closing || m.es || m.driver || m.opening || !m.visible || document.hidden) return;
+  if (m.stopped || m.closing || m.es || m.ws || m.driver || m.opening || !m.visible || document.hidden) return;
   if (isLocal(m)) return void connectLocal(m);
+  if (m.mode === 'ws') return connectWs(m);
   const es = new LiveEventSource(`/api/browser/stream/${m.w.i}`);
   m.es = es;
   // (Re)connected: the remote viewport must match THIS surface — the size sent
   // at mount may have landed before the ward was saved, or on a browser since
   // closed and relaunched at the default.
   es.onopen = () => { if (m.es === es) scheduleResize(m); };
-  for (const type of ['frame', 'nav', 'tabs', 'dialog', 'route', 'download'] as const) {
+  for (const type of ['frame', 'nav', 'tabs', 'dialog', 'route', 'download', 'view'] as const) {
     es.addEventListener(type, (e) => { if (m.es === es) onEvent(m, JSON.parse((e as MessageEvent).data) as BrowserEvent); });
   }
   es.onerror = () => {
@@ -97,12 +111,75 @@ function connect(m: Mount): void {
   };
 }
 
+/** The ward's WebSocket. `hello` = the transport is ours; `view` = the browser
+ *  is open. Input waits for `view`; a close after `hello` retries in 5 s. */
+function connectWs(m: Mount): void {
+  const epoch = ++m.wsEpoch;
+  m.hello = false; m.ready = false;
+  let ws: WebSocket;
+  try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/browser/ws/${m.w.i}?dsf=${browserScale(devicePixelRatio)}`); }
+  catch { m.mode = 'sse'; connect(m); return; }
+  ws.binaryType = 'blob';
+  m.ws = ws;
+  const mine = () => m.ws === ws && m.wsEpoch === epoch;
+  ws.onmessage = (e) => {
+    if (!mine()) return;
+    if (e.data instanceof Blob) { stats(m, e.data.size); void onFrame(m, e.data); return; }
+    let ev: BrowserEvent | { type: 'hello' } | { type: 'error'; message: string };
+    try { ev = JSON.parse(String(e.data)); } catch { ws.close(); return; }
+    if (ev.type === 'hello') { m.hello = true; return; }
+    if (ev.type === 'error') { flash(m, ev.message, 5000); return; }
+    if (ev.type === 'view') {
+      m.dsf = ev.dsf;
+      m.ready = true;
+      scheduleResize(m);
+      void flush(m);
+      return;
+    }
+    onEvent(m, ev);
+  };
+  ws.onclose = () => {
+    if (!mine()) return;
+    m.ws = undefined; m.ready = false;
+    // Whatever was queued or held is stale: the server released this socket's
+    // downs itself, and nothing is replayed on the next socket.
+    m.queue = []; m.moveIdx = -1; m.held.clear(); m.buttons.clear();
+    if (m.stopped || m.closing) return;
+    if (!m.hello) { m.mode = 'sse'; connect(m); return; }
+    flash(m, editing() ? 'Press Done to save the layout — the browser starts then.' : 'Browser unavailable — retrying…', 5000);
+    m.retryT = setTimeout(() => connect(m), 5000);
+  };
+}
+
 function disconnect(m: Mount): void {
   if (m.closing) return;
   m.epoch++;
   m.opening = false;
   m.es?.close();
   m.es = undefined;
+  const ws = m.ws;
+  if (ws) {
+    // Ours to end: the callbacks are invalidated first so this close can never
+    // read as "the server refused us" and flip the mount to the SSE path.
+    m.wsEpoch++;
+    m.ws = undefined;
+    if (ws.readyState === WebSocket.OPEN && m.ready) {
+      const releases: Cmd[] = [
+        ...[...m.held].map(key => ({ t: 'key' as const, type: 'up' as const, key })),
+        ...[...m.buttons].map(button => ({ t: 'up' as const, x: 0, y: 0, button })),
+      ];
+      if (releases.length) ws.send(JSON.stringify({ cmds: releases })); // queued before the Close frame
+    }
+    m.ready = false; m.hello = false;
+    m.queue = []; m.moveIdx = -1; m.held.clear(); m.buttons.clear();
+    if (m.flushT) clearTimeout(m.flushT);
+    m.flushT = undefined;
+    if (m.retryT) clearTimeout(m.retryT);
+    m.retryT = undefined;
+    ws.close();
+    connect(m);
+    return;
+  }
   const d = m.driver;
   m.driver = undefined;
   if (m.touchT) clearInterval(m.touchT);
@@ -148,6 +225,9 @@ function onEvent(m: Mount, ev: BrowserEvent): void {
     case 'route':
       if (!ev.online) flash(m, ev.detail ?? 'Home route offline — open Rimeward on your computer', 8000);
       break;
+    case 'view':
+      m.dsf = ev.dsf;
+      break;
     case 'download':
       flash(m, ev.file.status === 'ready' ? `${ev.file.name} saved — open Downloads to save a copy. Rime can inspect it.`
         : ev.file.status === 'failed' ? `${ev.file.name}: ${ev.file.error}` : `Downloading ${ev.file.name}…`, 8000);
@@ -171,7 +251,9 @@ async function connectLocal(m: Mount): Promise<void> {
   const epoch = m.epoch;
   let info: { ws: string; platform: string };
   try {
-    info = (await tauri()!.core.invoke('ward_browser', { ward: m.w.i })) as { ws: string; platform: string };
+    // The display's scale rides the launch: the app's Chromium casts at its
+    // process scale, so only a launch can make HiDPI frames (browser-cdp.ts).
+    info = (await tauri()!.core.invoke('ward_browser', { ward: m.w.i, dsf: browserScale(devicePixelRatio) })) as { ws: string; platform: string };
   } catch (err) {
     if (m.epoch !== epoch) return;
     m.opening = false;
@@ -230,24 +312,30 @@ async function connectLocal(m: Mount): Promise<void> {
   };
 }
 
-async function onFrame(m: Mount, f: Extract<BrowserEvent, { type: 'frame' }>): Promise<void> {
+/** jpeg bytes (the socket; the scale came with `view`) or CDP's base64 with
+ *  its CSS width (the in-app driver; the scale is whatever the frame IS). */
+async function onFrame(m: Mount, f: Blob | Extract<BrowserEvent, { type: 'frame' }>): Promise<void> {
+  const data = f instanceof Blob ? f : f.data;
+  const css = f instanceof Blob ? 0 : f.width;
   if (m.decoding) {
-    m.pendingFrame = f.data; // latest wins — decoding never queues
+    m.pendingFrame = data; // latest wins — decoding never queues
     return;
   }
   m.decoding = true;
   try {
-    let data: string | undefined = f.data;
-    while (data) {
-      const blob = await (await fetch('data:image/jpeg;base64,' + data)).blob();
+    let next: Blob | string | undefined = data;
+    while (next) {
+      const blob = next instanceof Blob ? next : new Blob([Uint8Array.from(atob(next), c => c.charCodeAt(0))], { type: 'image/jpeg' });
       const bmp = await createImageBitmap(blob);
+      if (css) m.dsf = browserScale(bmp.width / css);
       if (m.canvas.width !== bmp.width || m.canvas.height !== bmp.height) {
         m.canvas.width = bmp.width;
         m.canvas.height = bmp.height;
       }
       m.ctx.drawImage(bmp, 0, 0);
       bmp.close();
-      data = m.pendingFrame;
+      stats(m, 0, true);
+      next = m.pendingFrame;
       m.pendingFrame = undefined;
     }
   } catch {
@@ -257,25 +345,59 @@ async function onFrame(m: Mount, f: Extract<BrowserEvent, { type: 'frame' }>): P
   }
 }
 
+// A measurement proxy behind localStorage['fd-bw-debug']: frames painted and
+// bytes per second, and ms from the last local input to the NEXT painted
+// frame — which is the response only on a page that emits no frames by
+// itself (no animation); on any other page it is just the frame cadence.
+let debug: boolean | undefined;
+const debugStats = { frames: 0, bytes: 0, latency: [] as number[], input: 0, t: 0 };
+function stats(m: Mount, bytes: number, painted = false): void {
+  debug ??= (() => { try { return localStorage.getItem('fd-bw-debug') === '1'; } catch { return false; } })();
+  if (!debug) return;
+  const now = performance.now();
+  debugStats.bytes += bytes;
+  if (painted) { debugStats.frames++; if (debugStats.input) { debugStats.latency.push(now - debugStats.input); debugStats.input = 0; } }
+  if (now - debugStats.t < 1000) return;
+  if (debugStats.t) console.log(`[bw ${m.w.i}] ${debugStats.frames} fps, ${(debugStats.bytes / 1024).toFixed(0)} KB/s, input→next frame ${debugStats.latency.length ? debugStats.latency.map(x => x.toFixed(0)).join('/') : '-'} ms, ${m.canvas.width}×${m.canvas.height} @${m.dsf}`);
+  debugStats.t = now; debugStats.frames = 0; debugStats.bytes = 0; debugStats.latency = [];
+}
+
 // ------------------------------------------------------------------- input
+
+/** In socket mode, input exists only for an open, ready socket: what is typed
+ *  while connecting or retrying is dropped, never delivered late. (A lone
+ *  key-up the server never saw the down of is harmless.) */
+const wsReady = (m: Mount): boolean => m.ws?.readyState === WebSocket.OPEN && m.ready;
 
 function push(m: Mount, c: Cmd, urgent = false): void {
   if (m.stopped || m.closing) return;
+  if (m.mode === 'ws' && !m.driver && !isLocal(m) && !wsReady(m)) return;
+  if (debug && (c.t === 'down' || (c.t === 'key' && c.type === 'down'))) debugStats.input = performance.now();
   if (c.t === 'move') {
     // Coalesce: only the latest position matters.
     if (m.moveIdx >= 0) m.queue[m.moveIdx] = c;
     else m.moveIdx = m.queue.push(c) - 1;
   } else m.queue.push(c);
   if (urgent) void flush(m);
-  else if (!m.flushT) m.flushT = setTimeout(() => void flush(m), 40);
+  else if (!m.flushT) m.flushT = setTimeout(() => void flush(m), 16);
 }
 
-/** One batch in flight at a time — ordering is the whole point of a batch. */
+/** The socket takes every batch at once (the server orders them); the driver
+ *  and the POST path take one at a time — ordering is the point of a batch. */
 async function flush(m: Mount): Promise<void> {
   if (m.flushT) clearTimeout(m.flushT);
   m.flushT = undefined;
-  if (m.inflight) return m.inflight;
   if (!m.queue.length || m.closing || m.stopped) return;
+  if (!m.driver && m.mode === 'ws') {
+    const ws = m.ws;
+    if (!ws || !wsReady(m)) return;
+    const cmds = m.queue;
+    m.queue = [];
+    m.moveIdx = -1;
+    ws.send(JSON.stringify({ cmds }));
+    return;
+  }
+  if (m.inflight) return m.inflight;
   const cmds = m.queue;
   m.queue = [];
   m.moveIdx = -1;
@@ -310,12 +432,12 @@ async function send(m: Mount, cmds: Cmd[], driver?: LocalDriver): Promise<void> 
   }
 }
 
-/** Canvas pixel → remote viewport CSS px. The canvas is object-fit:contain,
- *  so the drawn frame may be letterboxed inside it. */
+/** Canvas pixel → remote viewport CSS px: the frame is viewport × dsf pixels
+ *  drawn object-fit:contain, so it may be letterboxed inside the canvas. */
 function toPage(m: Mount, e: { clientX: number; clientY: number }): { x: number; y: number } {
   const r = m.canvas.getBoundingClientRect();
-  const cw = m.canvas.width || 1;
-  const ch = m.canvas.height || 1;
+  const cw = (m.canvas.width || 1) / m.dsf;
+  const ch = (m.canvas.height || 1) / m.dsf;
   const scale = Math.min(r.width / cw, r.height / ch) || 1;
   const ox = (r.width - cw * scale) / 2;
   const oy = (r.height - ch * scale) / 2;
@@ -559,7 +681,7 @@ async function showExtensions(m: Mount): Promise<void> {
     if (selected && selected.size > 10 * 1024 * 1024) status.textContent = 'Extension ZIP must be at most 10 MB';
     else if (selected) void run('install', selected);
   });
-  restart.addEventListener('click', () => void run('restart'));
+  restart.addEventListener('click', () => void run('restart', { dsf: browserScale(devicePixelRatio) }));
   glaze.addEventListener('click', () => void run('glaze'));
   try { await refresh(); } catch (error) { status.textContent = String(error); }
 }
@@ -602,6 +724,11 @@ function build(w: WardInstance): Mount {
     toast,
     visible: false,
     epoch: 0,
+    mode: 'ws',
+    wsEpoch: 0,
+    hello: false,
+    ready: false,
+    dsf: 1,
     queue: [],
     moveIdx: -1,
     held: new Set(),
@@ -659,7 +786,8 @@ function scheduleResize(m: Mount): void {
   m.resizeT = setTimeout(() => {
     const w = Math.round(m.view.clientWidth);
     const h = Math.round(m.view.clientHeight);
-    if (w > 0 && h > 0) push(m, { t: 'resize', w, h });
+    // The server's scale is fixed at launch; the in-app driver follows this display.
+    if (w > 0 && h > 0) push(m, m.driver ? { t: 'resize', w, h, dsf: browserScale(devicePixelRatio) } : { t: 'resize', w, h });
   }, 150);
 }
 

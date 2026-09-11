@@ -20,13 +20,16 @@ pub struct WardBrowser {
 #[tauri::command]
 pub async fn ward_browser(
     ward: String,
+    dsf: Option<f64>,
     window: tauri::WebviewWindow,
     shared: State<'_, Shared>,
 ) -> Result<WardBrowser, String> {
     if !chromium::allows_origin(&shared, &window.url().map_err(|e| e.to_string())?).await {
         return Err("This server is not the active browser route".into());
     }
-    let (port, path) = chromium::acquire(&shared, &ward).await?;
+    // The page's display scale, clamped like wards.ts browserScale (1–2, quarter steps).
+    let dsf = dsf.filter(|v| v.is_finite()).map_or(1.0, |v| (v.clamp(1.0, 2.0) * 4.0).round() / 4.0);
+    let (port, path) = chromium::acquire(&shared, &ward, dsf).await?;
     // The page's own socket is not a counted user (it cannot say goodbye
     // reliably); ward_touch keeps the instance off the reaper's list instead.
     chromium::release(&shared, &ward).await;

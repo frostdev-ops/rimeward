@@ -10,6 +10,7 @@ server.server.on('upgrade', async (req, sock, head) => {
   // The middleware (which publishes __fdUpgrade) loads on the first request;
   // one self-request boots it if the app connects before anyone browses.
   if (!globalThis.__fdUpgrade) await fetch(`http://127.0.0.1:${server.server.address().port}/login`).catch(() => {});
+  if(req.url?.startsWith('/api/browser/ws/')) { (globalThis.__fdBrowserUpgrade ?? ((_,s)=>s.destroy()))(req,sock,head);return; }
   if(req.url==='/api/live/stream') { (globalThis.__fdLiveUpgrade ?? ((_,s)=>s.destroy()))(req,sock,head);return; }
   if(req.url==='/api/devices/connect') { (globalThis.__fdDeviceUpgrade ?? ((_,s)=>s.destroy()))(req,sock,head);return; }
   (globalThis.__fdUpgrade ?? ((_, s) => s.destroy()))(req, sock, head);

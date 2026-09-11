@@ -425,7 +425,7 @@ async fn stream_task(
 /// path. `host:port` resolves here, refuses anything private, connects.
 async fn dial(target: &str, shared: &Shared) -> Result<(TcpStream, String), String> {
     if let Some(ward) = target.strip_prefix("cdp:") {
-        let (port, ws_path) = chromium::acquire(shared, ward).await?;
+        let (port, ws_path) = chromium::acquire(shared, ward, 1.0).await?;
         return match TcpStream::connect(("127.0.0.1", port)).await {
             Ok(tcp) => Ok((tcp, ws_path)),
             Err(e) => {
