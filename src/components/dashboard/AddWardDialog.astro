@@ -97,6 +97,8 @@ const groups = (Object.keys(CATEGORIES) as Category[])
           <option value="browserbase">Browserbase (key under Account → Agent)</option>
         </select>
       </div>
+      {/* Only where a speaker exists: the desktop app, or "My computer" from the server. */}
+      <label data-bw-sound class="flex items-center gap-2 text-sm"><input type="checkbox" id="aw-bw-sound" name="bw-sound" /> Sound <span class="text-ink-faint">— plays through that computer's speakers</span></label>
       <p class="mt-1 text-[10px] text-ink-faint">A real browser, not a frame: sites that refuse embedding work, logins persist per ward, and Rime can read and act on the same page you are on. Where it runs is where its logins live and whose address websites see.</p>
     </div>
     <div data-cfg="mcp" class="hidden flex-col gap-3">

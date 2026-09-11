@@ -254,7 +254,10 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig, dsf
     downloadsPath: downloads,
     // Chromium restores history, scroll positions and form state itself. A
     // forced blank startup tab would take the place of the restored page.
-    ignoreDefaultArgs: ['--disable-extensions', ...(restoreDesktop() ? ['about:blank'] : [])],
+    // Playwright mutes by default; a ward with sound on plays through this
+    // machine's default output (CoreAudio / WASAPI / PulseAudio-PipeWire via
+    // XDG_RUNTIME_DIR, which browserEnv passes through).
+    ignoreDefaultArgs: ['--disable-extensions', ...(restoreDesktop() ? ['about:blank'] : []), ...(cfg.sound ? ['--mute-audio'] : [])],
     args: [
       '--enable-unsafe-extension-debugging',
       ...(extensions.length ? [`--load-extension=${extensions.join(',')}`] : []),
@@ -644,6 +647,14 @@ function stopCast(s: Session): Promise<void> {
 
 export function closeSession(s: Session): Promise<void> {
   return s.closing ??= closeBrowser(s);
+}
+
+/** A launch-time knob changed (sound): close the session so its viewers
+ *  reconnect and relaunch with the saved config — unless the agent is on it,
+ *  in which case the change waits for the next launch. */
+export function relaunchIdle(userId: number, ward: string): void {
+  const s = peek(userId, ward);
+  if (s && !s.operations && !s.closing) void closeSession(s).catch(() => {});
 }
 
 async function closeBrowser(s: Session): Promise<void> {

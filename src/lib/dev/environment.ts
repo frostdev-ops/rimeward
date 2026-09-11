@@ -31,6 +31,7 @@ export function terminalEnv(
     "WAYLAND_DISPLAY",
     "XDG_RUNTIME_DIR",
     "DBUS_SESSION_BUS_ADDRESS",
+    "PULSE_SERVER", // a browser ward with sound on Linux: PulseAudio/PipeWire off the default socket
   ];
   const env = Object.fromEntries([
     ...names.flatMap((key) => {

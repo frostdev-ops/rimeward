@@ -21,6 +21,7 @@ pub struct WardBrowser {
 pub async fn ward_browser(
     ward: String,
     dsf: Option<f64>,
+    sound: Option<bool>,
     window: tauri::WebviewWindow,
     shared: State<'_, Shared>,
 ) -> Result<WardBrowser, String> {
@@ -29,7 +30,7 @@ pub async fn ward_browser(
     }
     // The page's display scale, clamped like wards.ts browserScale (1–2, quarter steps).
     let dsf = dsf.filter(|v| v.is_finite()).map_or(1.0, |v| (v.clamp(1.0, 2.0) * 4.0).round() / 4.0);
-    let (port, path) = chromium::acquire(&shared, &ward, dsf).await?;
+    let (port, path) = chromium::acquire(&shared, &ward, dsf, sound.unwrap_or(false)).await?;
     // The page's own socket is not a counted user (it cannot say goodbye
     // reliably); ward_touch keeps the instance off the reaper's list instead.
     chromium::release(&shared, &ward).await;

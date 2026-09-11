@@ -259,7 +259,7 @@ async function connectLocal(m: Mount): Promise<void> {
   try {
     // The display's scale rides the launch: the app's Chromium casts at its
     // process scale, so only a launch can make HiDPI frames (browser-cdp.ts).
-    info = (await tauri()!.core.invoke('ward_browser', { ward: m.w.i, dsf: browserScale(devicePixelRatio) })) as { ws: string; platform: string };
+    info = (await tauri()!.core.invoke('ward_browser', { ward: m.w.i, dsf: browserScale(devicePixelRatio), sound: (m.w.config as BrowserConfig | undefined)?.sound === true })) as { ws: string; platform: string };
   } catch (err) {
     if (m.epoch !== epoch) return;
     m.opening = false;

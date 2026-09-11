@@ -1884,6 +1884,12 @@ for (const o of document.querySelectorAll<HTMLOptionElement>('[data-cfg="browser
   const keep = o.dataset.on === 'server' ? !SURFACE.desktop : o.dataset.on === 'desktop' ? SURFACE.desktop : SURFACE.desktop && SURFACE.joined;
   if (!keep) o.remove();
 }
+/** Sound plays on the computer that runs the Chromium: offer it where that computer has speakers. */
+function syncBrowserSound(): void {
+  const where = document.querySelector<HTMLSelectElement>('#aw-bw-where'), row = document.querySelector<HTMLElement>('[data-bw-sound]');
+  if (where && row) row.hidden = !(where.value === 'app' || (SURFACE.desktop && where.value !== 'browserbase'));
+}
+document.querySelector('#aw-bw-where')?.addEventListener('change', syncBrowserSound);
 
 /** The secrets the last readConfig saw, then the ones waiting for the next save, per ward. */
 let lastSecrets: Record<string, string> = {};
@@ -1907,6 +1913,7 @@ const FIELDS: Record<string, Field[]> = {
   browser: [
     { sel: '#aw-bw-url', key: 'url' },
     { sel: '#aw-bw-where', key: 'where', def: 'local' }, // one select → backend + route, translated below
+    { sel: '#aw-bw-sound', key: 'sound', kind: 'bool' },
   ],
   service: [{ sel: '#aw-sv-id', key: 'service' }],
   mcp: [
@@ -2035,6 +2042,7 @@ function readConfig(dialog: HTMLDialogElement, type: string): Record<string, unk
     if (type === 'browser') {
       const where = String(cfg.where ?? 'local');
       delete cfg.where;
+      if (!cfg.sound) delete cfg.sound; // absent, never false: the config stays one shape
       cfg.backend = where === 'browserbase' || where === 'app' ? where : 'local';
       if (where === 'local-home') cfg.route = 'home';
       if (cfg.url !== undefined) {
@@ -2143,6 +2151,7 @@ function fillConfig(dialog: HTMLDialogElement, w: WardInstance): void {
       // mean this computer; the option that survives is `app`.
       const where = cfg.backend === 'local' ? (cfg.route === 'home' ? 'local-home' : 'local') : cfg.backend;
       set('#aw-bw-where', where === 'local' && SURFACE.desktop && !SURFACE.joined ? 'app' : where ?? 'local');
+      syncBrowserSound();
     }
     if (w.type === 'spacer') syncFx(dialog);
     if (w.type === 'note' || w.type === 'notebook' || w.type === 'agent') void loadAgentModels(dialog); // selectCard's load ran before this provider was set

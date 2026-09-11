@@ -275,7 +275,7 @@ async fn fetch(shared: &Shared, spec: &Spec, dir: &Path) -> Result<(), String> {
 /// `dsf` is the display scale the ward's page asked for (1–2); it only takes
 /// effect on a launch, because the screencast follows the Chromium process's
 /// scale (`--force-device-scale-factor`), never a per-page emulation.
-pub async fn acquire(shared: &Shared, ward: &str, dsf: f64) -> Result<(u16, String), String> {
+pub async fn acquire(shared: &Shared, ward: &str, dsf: f64, sound: bool) -> Result<(u16, String), String> {
     if ward.is_empty()
         || ward.len() > 32
         || !ward
@@ -310,7 +310,7 @@ pub async fn acquire(shared: &Shared, ward: &str, dsf: f64) -> Result<(u16, Stri
     } else {
         vec![c.bundled_extensions.join("glaze")]
     };
-    let (child, port, ws_path) = launch(&exe, &profile, &c.origin, &extensions, dsf).await?;
+    let (child, port, ws_path) = launch(&exe, &profile, &c.origin, &extensions, dsf, sound).await?;
     c.instances.insert(
         ward.to_string(),
         Instance {
@@ -344,6 +344,7 @@ async fn launch(
     origin: &str,
     extensions: &[PathBuf],
     dsf: f64,
+    sound: bool,
 ) -> Result<(Child, u16, String), String> {
     std::fs::create_dir_all(profile).map_err(|e| e.to_string())?;
     let active = profile.join("DevToolsActivePort");
@@ -374,6 +375,9 @@ async fn launch(
         } else {
             vec![]
         })
+        // Muted unless the ward asks for sound; on, audio goes to this
+        // machine's default output like any Chromium.
+        .args(if sound { vec![] } else { vec!["--mute-audio".to_string()] })
         .arg("--disk-cache-size=52428800")
         .stdin(Stdio::null())
         .stdout(Stdio::null())

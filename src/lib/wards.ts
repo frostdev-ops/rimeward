@@ -339,6 +339,10 @@ export interface BrowserConfig {
   /** Egress for a local backend: absent = this server's address, `home` =
    *  through the desktop app's tunnel, i.e. the user's own IP (lib/tunnel.ts). */
   route?: 'home';
+  /** Play the page's audio through the speakers of the computer that runs the
+   *  Chromium (the desktop app's). Off = Chromium's --mute-audio. Applied at
+   *  launch; an idle session relaunches when it changes. */
+  sound?: boolean;
 }
 
 /** The notepad (type `note`). The document itself lives in the notes table
@@ -803,6 +807,7 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
       const backend = raw.backend === 'browserbase' || raw.backend === 'app' ? raw.backend : 'local';
       const out: Record<string, unknown> = { backend } satisfies BrowserConfig;
       if (raw.route === 'home') out.route = 'home';
+      if (raw.sound === true) out.sound = true;
       if (typeof raw.url === 'string' && raw.url.trim()) {
         const url = httpUrl(raw.url.trim());
         if (!url) return null;

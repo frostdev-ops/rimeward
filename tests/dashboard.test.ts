@@ -395,6 +395,8 @@ test('browser config: backend defaults to local, home URL optional but http(s) o
   assert.deepEqual(mk({}), { backend: 'local' });
   assert.deepEqual(mk({ url: '  ', backend: 'nope' }), { backend: 'local' });
   assert.deepEqual(mk({ url: 'https://app.example.com/x', backend: 'browserbase', evil: 1 }), { backend: 'browserbase', url: 'https://app.example.com/x' });
+  assert.deepEqual(mk({ sound: true }), { backend: 'local', sound: true }, 'sound is a boolean knob');
+  assert.deepEqual(mk({ sound: 'yes' }), { backend: 'local' }, 'anything but true is off, and off is absent');
   assert.equal(mk({ url: 'javascript:alert(1)' }), undefined);
   assert.equal(mk({ url: 'file:///etc/passwd' }), undefined);
   assert.deepEqual(mk({ route: 'home' }), { backend: 'local', route: 'home' });

@@ -1,6 +1,6 @@
 import { getDb } from './db.ts';
 import { DEFAULT_LAYOUT, DEFAULT_PAGES, validateLayout, validatePages, type BrowserConfig, type PageDef, type WardInstance } from './wards.ts';
-import { dropSession } from './browser/session.ts';
+import { dropSession, relaunchIdle } from './browser/session.ts';
 import { isCommsType } from './comms/types.ts';
 
 type Row = { layout_json: string; pages_json: string };
@@ -56,6 +56,12 @@ export function saveDashboard(userId: number, layout: WardInstance[], pages?: Pa
     .run(userId, JSON.stringify(layout));
   if (pages) getDb().prepare('UPDATE dashboards SET pages_json = ? WHERE user_id = ?').run(JSON.stringify(pages), userId);
   for (const w of gone) void dropSession(userId, w.i).catch(() => {});
+  // Sound is a launch flag: a live, idle browser relaunches to pick it up.
+  for (const w of layout) {
+    if (w.type !== 'browser') continue;
+    const was = before.find((x) => x.i === w.i);
+    if (was && (was.config as BrowserConfig | undefined)?.sound !== (w.config as BrowserConfig | undefined)?.sound) relaunchIdle(userId, w.i);
+  }
   if (goneComms.length || layout.some((w) => isCommsType(w.type))) {
     void import('./comms/index.ts')
       .then((m) => {
