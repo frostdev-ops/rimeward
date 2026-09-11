@@ -158,7 +158,13 @@ try {
     0o755,
   );
   fs.rmSync(node);
-  run(process.execPath, [path.join(here, 'media-runtime.mjs')]);
+  // The media SDK is dozens of upstream fetches (a from-source build on
+  // Linux); cerbero resumes from its cache dir, so one retry covers a bad
+  // mirror response without failing the platform.
+  for (let attempt = 1; ; attempt++) {
+    try { run(process.execPath, [path.join(here, 'media-runtime.mjs')]); break; }
+    catch (error) { if (attempt === 2) throw error; console.warn('Media SDK acquisition failed; retrying once'); }
+  }
   run(process.execPath, [path.join(here, 'cua-runtime.mjs')]);
   rustNotices(path.join(here, 'Cargo.toml'), path.join(runtime, 'rust-licenses'), target);
   fs.writeFileSync(
