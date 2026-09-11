@@ -5,7 +5,12 @@ Rime starts each turn with seven tools: `search_tools`, `search_knowledge`,
 `task_cancel`. Tool search loads at most ten callable schemas for later rounds
 of that turn. Existing names, reasons, approvals, routing and sandbox read
 restrictions still apply. MCP definitions and trust are rechecked before calls.
-Search for `agent_help` to read the detailed catalog and operating guidance.
+Search for `agent_help`, then select a topic: `general` (default), `computer`,
+`browser`, `sandbox`, `wards`, `leylines`, `memory`, or `delegation`. Use `all`
+for the full reference; pagination offsets belong to the selected topic. Child
+runs receive their own delegation and approval guidance. Every tool call still
+requires a reason, whose tone should fit the situation. `current_time` supplies
+a fresh UTC clock reading and runtime timezone, not an inferred user timezone.
 
 The authoritative files and records remain where they were. `knowledge.db` is
 a disposable derived index using FTS5 and pinned `sqlite-vec` 0.1.9. A packaged

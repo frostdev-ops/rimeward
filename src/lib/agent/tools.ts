@@ -1,5 +1,5 @@
 import { DEV_TOOLS } from '../dev/tools.ts';
-import { listTasks, readTask, waitTask, cancelTask } from './tasks.ts';
+import { listTasks, readTask, waitTask, cancelTask, childJob } from './tasks.ts';
 import { postUserQuestion } from './questions.ts';
 import { searchKnowledge, readKnowledge } from './knowledge.ts';
 import type { ToolSearch } from './tool-discovery.ts';
@@ -88,6 +88,7 @@ import { COMMS_TYPES, isCommsType } from '../comms/types.ts';
 // pauses for a Confirm click is the ward's approvals policy (core.ts).
 
 export type ToolKind = 'read' | 'write' | 'confirm';
+export const AGENT_HELP_TOPICS = ['general', 'computer', 'browser', 'sandbox', 'wards', 'leylines', 'memory', 'delegation', 'all'] as const;
 
 export interface ToolCtx {
   /** Turn-local discovery, absent in the sandbox and outside the model loop. */
@@ -336,15 +337,24 @@ export const TOOLS: Record<string, ToolDef> = {
     run:(a,ctx) => readKnowledge(ctx.userId,a.source,a.offset ?? 0),
   },
   agent_help: {
-    kind:'read',description:'Detailed Rime tool guidance: ward catalog, Leylines triggers/actions/parameters, connector and computer safety, browser operation, memory and skills, delegation. Search this help before unfamiliar operations.',
-    parameters:obj({ offset:num('Character offset; default 0') }),
+    kind:'read',description:'Read Rime operating guidance by topic: general, computer, browser, sandbox/documents, wards, leylines, memory/skills, or delegation. Defaults to general; use all only for the full reference. Continue the same topic with next as offset when needed.',
+    parameters:obj({ topic:{ type:'string',enum:AGENT_HELP_TOPICS,description:'Help topic; default general. all returns the full reference.' },offset:num('Character offset within this topic; default 0') }),
     run:async (a,ctx) => {
-      const { agentWardConfig,detailedInstructions } = await import('./core.ts');
-      const config = agentWardConfig(ctx.userId,ctx.ward); if (!config) throw Error('Agent ward unavailable.');
+      const { effectiveConfig,detailedInstructions } = await import('./core.ts');
+      const config = effectiveConfig(ctx); if (!config) throw Error('Agent ward unavailable.');
+      const topic = a.topic ?? 'general';
+      if (!AGENT_HELP_TOPICS.includes(topic)) throw Error(`Unknown help topic; use ${AGENT_HELP_TOPICS.join(', ')}.`);
       const offset = a.offset ?? 0; if (!Number.isSafeInteger(offset) || offset < 0) throw Error('offset must be non-negative.');
-      const text = detailedInstructions(config,ctx.userId,ctx.ward,undefined,ctx.conv);
-      return { text:text.slice(offset,offset+8000),next:offset+8000 < text.length ? offset+8000 : null };
+      const child = ctx.task ? childJob(ctx.userId,ctx.task) : null;
+      if (ctx.task && (!child || child.ward !== ctx.ward)) throw Error('Child run unavailable.');
+      const text = detailedInstructions(config,ctx.userId,ctx.ward,child ? { task:child.id,reason:child.reason } : undefined,ctx.conv,topic);
+      return { topic,topics:AGENT_HELP_TOPICS,text:text.slice(offset,offset+8000),next:offset+8000 < text.length ? offset+8000 : null };
     },
+  },
+  current_time: {
+    kind:'read',description:'Read the current UTC time and this runtime’s timezone. The runtime timezone is not necessarily the user’s timezone.',
+    parameters:obj({}),
+    run:() => ({ utc:new Date().toISOString(),runtimeTimezone:Intl.DateTimeFormat().resolvedOptions().timeZone }),
   },
   ask_user_question: {
     kind: 'read',
@@ -1654,7 +1664,7 @@ export function aiTools(allow: 'all' | 'read-only', extra: Record<string, ToolDe
             reason: {
               type: 'string',
               description:
-                'REQUIRED. One short sentence, addressed to the user, saying what you are doing and why — it is shown on their screen the moment this call starts.',
+                'REQUIRED. One short, concrete sentence explaining this action in the activity feed. Read the room: light wit when welcome, calm precision when stakes are high. Never claim success before the result.',
             },
             ...(params.properties ?? {}),
           },
