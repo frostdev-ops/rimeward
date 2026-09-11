@@ -46,6 +46,10 @@ const USAGE = `usage: rimeward <command> [options]
   monitors remove <id>
   monitors import <targets.json>   (the old file's shape: { groups, targets })
 
+  update [--check] [--yes] [--to <version>] [--rollback] [--restart <cmd>]
+         (a prebuilt release from GitHub, staged beside this checkout and swapped in;
+          --restart or RIMEWARD_RESTART_CMD runs your supervisor's reload afterwards)
+
   doctor
   backup <dir>
   restore <dir>
@@ -462,8 +466,55 @@ async function restore(args) {
   }
 }
 
+// ---------------------------------------------------------------- update
+async function update(args) {
+  const { values: v } = parse('update', args, {
+    check: { type: 'boolean' },
+    yes: { type: 'boolean', short: 'y' },
+    to: { type: 'string' },
+    rollback: { type: 'boolean' },
+    restart: { type: 'string' },
+  });
+  const u = await lib('updates.ts');
+  const { spawnSync } = await import('node:child_process');
+  const restart = () => {
+    const cmd = v.restart || process.env.RIMEWARD_RESTART_CMD;
+    if (!cmd) {
+      out('restart the server to run it (e.g. pm2 reload <name>, or pass --restart "<cmd>")');
+      return;
+    }
+    out(`restarting: ${cmd}`);
+    const r = spawnSync(cmd, { shell: true, stdio: 'inherit' });
+    if (r.status) throw new Error(`restart command exited ${r.status}`);
+  };
+  if (v.rollback) {
+    out(`rolled back to v${u.rollbackServer()}`);
+    return restart();
+  }
+  const r = await u.latestReleases({ refresh: true });
+  out(`installed: v${u.SERVER_VERSION}`);
+  out(`latest:    ${r.server ? `v${r.server.version} (${r.server.url})` : 'unknown'}${r.error ? ` — ${r.error}` : ''}`);
+  const kind = u.installKind();
+  if (kind !== 'node') {
+    out(kind === 'docker' ? `Docker install — update with: docker compose pull && docker compose up -d   (${u.IMAGE})` : 'the desktop app updates itself from its tray menu');
+    return;
+  }
+  const target = v.to?.replace(/^v/, '') ?? r.server?.version;
+  if (!target || (!v.to && !u.newer(target, u.SERVER_VERSION))) {
+    out('up to date');
+    return;
+  }
+  if (v.check || !v.yes) {
+    out(`to install v${target}: rimeward update --yes${v.to ? ` --to ${v.to}` : ''}`);
+    return;
+  }
+  const { version, cached } = await u.installServerRelease({ version: v.to, log: (l) => out(`  ${l}`) });
+  out(`installed: v${version}${cached ? ' (archive from cache)' : ''} — the previous tree is kept for: rimeward update --rollback`);
+  restart();
+}
+
 // ----------------------------------------------------------------- main
-const COMMANDS = { users, settings, splash, brand, monitors, doctor, backup, restore };
+const COMMANDS = { users, settings, splash, brand, monitors, update, doctor, backup, restore };
 
 try {
   const [cmd, ...rest] = process.argv.slice(2);

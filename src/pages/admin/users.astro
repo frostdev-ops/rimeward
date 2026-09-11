@@ -5,10 +5,12 @@ import { sessionId } from '../../lib/auth.ts';
 import { takeSetting } from '../../lib/settings.ts';
 import { WORKSPACE_DOMAIN } from '../../lib/google-sso.ts';
 import { cardsToLines, siteInfo } from '../../lib/site.ts';
+import { updateState } from '../../lib/updates.ts';
 
 const me = Astro.locals.user!;
 const users = listUsers();
 const site = siteInfo();
+const updates = await updateState();
 
 const ok = Astro.url.searchParams.get('ok');
 const err = Astro.url.searchParams.get('err');
@@ -22,6 +24,7 @@ const OK_MESSAGES: Record<string, string> = {
   role: 'Role updated.',
   deleted: 'User deleted.',
   site: 'Site saved.',
+  update: 'Update settings saved.',
 };
 ---
 
@@ -152,6 +155,39 @@ const OK_MESSAGES: Record<string, string> = {
           </span>
         </div>
       </form>
+    </div>
+
+    {/* Updates (lib/updates.ts): the policy, what is installed vs published, an install or a rollback. */}
+    <div class="card mt-8 p-4">
+      <h2 class="section-title mb-3">Updates</h2>
+      <p class="text-sm text-ink-muted">
+        Server v{updates.server?.current}{updates.server?.available ? ` — v${updates.server.latest} is available` : ' — up to date'}
+        {updates.error && <span> · last check failed: {updates.error}</span>}
+        {updates.previous && <span> · v{updates.previous} kept for a rollback</span>}
+        {updates.job && !updates.job.done && <span> · installing v{updates.job.version}: {updates.job.log.at(-1)}</span>}
+        {updates.job?.error && <span> · last install failed: {updates.job.error}</span>}
+      </p>
+      <form method="post" action="/api/admin/update" class="mt-3 flex flex-wrap items-end gap-3">
+        <div>
+          <label for="update-policy" class="label">When a newer release is published</label>
+          <select id="update-policy" name="policy" class="input">
+            <option value="notify" selected={updates.policy === 'notify'}>Notify — the header chip and the "Update available" leyline</option>
+            <option value="install" selected={updates.policy === 'install'} disabled={updates.install !== 'node'}>Install it and restart</option>
+            <option value="off" selected={updates.policy === 'off'}>Do nothing</option>
+          </select>
+        </div>
+        <button type="submit" class="btn-primary">Save</button>
+        <button type="submit" name="refresh" value="1" class="btn">Check now</button>
+        {updates.install === 'node' && updates.server?.available && !(updates.job && !updates.job.done) && (
+          <button type="submit" name="install" value="1" class="btn">Install v{updates.server.latest} and restart</button>
+        )}
+        {updates.install === 'node' && updates.previous && <button type="submit" name="rollback" value="1" class="btn">Roll back to v{updates.previous}</button>}
+      </form>
+      <p class="mt-2 text-xs text-ink-faint">
+        {updates.install === 'docker'
+          ? `Docker install: pull ${updates.image} and recreate the container.`
+          : 'An install stages the release beside this checkout, then swaps it in; the previous tree stays for a rollback. The same from a shell: node bin/rimeward.mjs update.'}
+      </p>
     </div>
   </main>
 </BaseLayout>

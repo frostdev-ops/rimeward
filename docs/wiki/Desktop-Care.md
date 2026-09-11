@@ -14,6 +14,12 @@ The application identifier is `io.frostdev.rimeward`. On macOS the profile is un
 4. Preserve OS credential storage through your platform's supported backup/migration process. Copying databases alone does not guarantee encrypted credentials will work on another computer.
 5. Install the newer official release while retaining the existing profile. Reopen and confirm pages, projects, history, and provider access.
 
+### Updates from inside the app
+
+Rimeward checks for a newer published release when it starts and every six hours, and tells you three ways: the tray menu's **Update to Rimeward x.y.z…** line, a system notification, and the dashboard header's update chip. Nothing installs on its own while you work. Installing shuts the local runtime, the tunnel and every ward browser down gracefully first — the same path as Quit — then replaces the app and relaunches it (on Windows the installer takes over).
+
+The tray's **Download updates automatically** switch fetches the release ahead of time; it then installs when you quit, or right away from **Restart to update**. The chip's menu offers the same choices plus the release notes. Updates are signed: the app only installs a bundle whose signature matches the key built into it, so a tampered download is refused. The downloaded bundle is kept beside the profile until it is installed.
+
 Do not delete the profile or reset the credential vault as a first troubleshooting step. Keep a backup before upgrades. If a new version has opened and migrated a database, restoring an old app binary alone is not a complete rollback; use the matching pre-upgrade profile if a rollback is necessary.
 
 The repository CLI's `backup` command is a **web/application database backup**, not a complete desktop migration tool. It does not include `workspaces.db`, project folders, native process state, or your OS credential vault. Avoid treating it as a one-command desktop backup.

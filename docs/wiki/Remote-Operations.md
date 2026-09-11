@@ -62,15 +62,19 @@ Start the matching application revision, check login and decryption of a service
 
 ## Upgrade and roll back
 
+The server checks GitHub for a newer release every six hours. When one is published, the dashboard header shows an update chip for every user, admins see the details under **Users → Updates**, and the **Update available** leyline trigger (anchored on a Services ward) can send it anywhere a leyline reaches: push, chat, mail. The policy under **Updates** is *notify* by default; *install* has a Node install update itself and restart; *off* stops the checks.
+
 1. Read the target release notes and note the existing application revision.
 2. Take a fresh backup and retain the existing app and service/proxy configuration.
 3. Finish or stop important tasks and close browser work gracefully.
-4. Deploy the intended revision with its lockfile. For Node, install with `npm ci` and build with `npm run build`; for Docker, rebuild the image from that revision.
-5. Restart/recreate the service with the correct environment and persistent storage.
+4. Install the release:
+   - **Node**: `node bin/rimeward.mjs update --yes` (or the chip's **Install** as an admin). It downloads the prebuilt release archive, verifies its checksum, installs dependencies in a staging directory beside the checkout, then swaps the directories in — the live tree changes for milliseconds, not for the length of an install. The archive is cached under the data directory; the replaced tree is kept in `.update/prev`.
+   - **Docker**: `docker compose pull && docker compose up -d` (the image is `ghcr.io/frostdev-ops/rimeward`, tagged per version and `latest`), or rebuild from the tagged revision.
+5. Restart the service: pass `--restart "<your reload command>"` or set `RIMEWARD_RESTART_CMD` (for example `pm2 reload rimeward`) so the CLI and the automatic install can run it. Without either, the automatic install exits the process and relies on the supervisor restarting it (pm2 does; systemd needs `Restart=always`).
 6. Verify the public login, a saved page, live updates, and any paired desktop routes you use.
-7. Update desktop installations when protocol/capability changes require matching clients.
+7. Update desktop installations when protocol/capability changes require matching clients. Installed apps offer the new version themselves once its release is published.
 
-Database migrations run on open. An old application binary is not a complete rollback after a schema change: preserve and restore the matching database/files/configuration if necessary. Do not apply undocumented manual schema edits to force a downgrade.
+To go back: `node bin/rimeward.mjs update --rollback` swaps `.update/prev` back, then restart. Database migrations run on open. An old application binary is not a complete rollback after a schema change: preserve and restore the matching database/files/configuration if necessary. Do not apply undocumented manual schema edits to force a downgrade.
 
 ## Check remote access after a deployment
 

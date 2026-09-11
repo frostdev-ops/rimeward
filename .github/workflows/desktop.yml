@@ -9,6 +9,12 @@
 #   APPLE_API_ISSUER             App Store Connect API issuer id
 #   APPLE_API_KEY                App Store Connect API key id
 #   APPLE_API_KEY_B64            base64 of the AuthKey_<id>.p8 file
+#   TAURI_SIGNING_PRIVATE_KEY    the updater's minisign private key (tauri signer generate);
+#                                its public half is plugins.updater.pubkey in tauri.conf.json
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (empty when the key has none)
+#
+# Publishing the draft release is what makes the update visible: the app's
+# updater reads latest.json from the newest PUBLISHED desktop-v* release.
 name: Rimeward desktop
 
 on:
@@ -26,6 +32,11 @@ on:
         default: all
         options: [all, macos-latest, ubuntu-24.04, windows-latest]
 
+# A newer run of the same ref supersedes the one in flight.
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -33,8 +44,16 @@ jobs:
       matrix:
         platform: ${{ fromJSON(inputs.validation_only && inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-latest","ubuntu-24.04","windows-latest"]') }}
     runs-on: ${{ matrix.platform }}
+    # A hung notarization or download fails the job instead of holding a runner for six hours.
+    timeout-minutes: 150
     env:
       TAURI_BUILD_ARGS: ${{ matrix.platform == 'macos-latest' && '--target aarch64-apple-darwin' || '' }}
+      # The updater artifacts are signed at bundle time (validation builds too).
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # The GStreamer SDK (media-runtime.mjs): restored from the cache below, so
+      # a warm run skips the downloads and, on Linux, the from-source build.
+      RIMEWARD_MEDIA_CACHE: ${{ github.workspace }}/.cache/media-sdk
     permissions:
       contents: write
     steps:
@@ -63,7 +82,15 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: desktop
+          workspaces: |
+            desktop
+            desktop/media-helper
+
+      - name: Cache the media SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.RIMEWARD_MEDIA_CACHE }}/sdk
+          key: media-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/media-runtime.mjs') }}
 
       - name: Linux build deps
         if: matrix.platform == 'ubuntu-24.04'
@@ -164,12 +191,16 @@ jobs:
           tauriScript: npx tauri
           tagName: desktop-v__VERSION__
           releaseName: Rimeward desktop-v__VERSION__
-          releaseBody: Download the macOS DMG, Windows installer, or Linux DEB/AppImage for your platform below.
+          releaseBody: Download the macOS DMG, Windows installer, or Linux DEB/AppImage for your platform below. Installed copies offer this version from their tray menu once the release is published.
           # The existing tag was verified above. This avoids workflow-scope
           # restrictions when the default branch advances during a long build.
           releaseCommitish: ${{ github.event.repository.default_branch }}
           releaseDraft: true
           prerelease: false
+          # latest.json + the .sig files: what the in-app updater reads.
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          retryAttempts: 3
           args: --verbose ${{ env.TAURI_BUILD_ARGS }}
 
       - name: Validate packaged Linux runtime

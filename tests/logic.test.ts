@@ -178,6 +178,8 @@ test('service-restarted and deploy-landed anchor on Services wards only', () => 
   assert.ok(on('sv1', 'deploy-landed'));
   assert.equal(on('w1', 'deploy-landed'), null);
   assert.equal(on('t1', 'deploy-landed'), null);
+  assert.ok(on('sv1', 'update-available'));
+  assert.equal(on('t1', 'update-available'), null);
 });
 
 test('service-group anchors the service and host triggers; next-up the event triggers', () => {

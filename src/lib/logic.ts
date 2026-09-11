@@ -239,6 +239,9 @@ export const TRIGGERS: Record<string, TriggerSpec> = {
   // Fires once per user on the first tick after a server (re)start; the
   // watcher's state is a settings row, since memory is empty on every boot.
   'deploy-landed': { label: 'Server restarted', icon: 'send', wardType: 'service-group', params: {} },
+  // A newer release is published (the server's on a server, the app's on a
+  // desktop): fires once per version per user (lib/updates.ts, a settings row).
+  'update-available': { label: 'Update available', icon: 'download', wardType: 'service-group', params: {} },
   'service-down-for': {
     label: 'Service down for N minutes',
     icon: 'incident',
@@ -317,6 +320,9 @@ export const TEMPLATE_VARS: { key: string; label: string; triggers?: string[] }[
   { key: 'service.restarts', label: 'Restart count', triggers: ['service-restarted'] },
   { key: 'service.restartsDelta', label: 'Restarts since last check', triggers: ['service-restarted'] },
   { key: 'build.stamp', label: 'Build', triggers: ['deploy-landed'] },
+  { key: 'update.version', label: 'New version', triggers: ['update-available'] },
+  { key: 'update.url', label: 'Release page', triggers: ['update-available'] },
+  { key: 'update.app', label: 'server / desktop', triggers: ['update-available'] },
   { key: 'service.id', label: 'Service id', triggers: ['group-status'] },
   { key: 'service.latencyMs', label: 'Latency (ms)', triggers: ['service-slow'] },
   { key: 'service.downMinutes', label: 'Down for (min)', triggers: ['service-down-for'] },

@@ -288,7 +288,7 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     });
     let mut stdin = child.stdin.take().ok_or("missing runtime stdin")?;
     let stdout = child.stdout.take().ok_or("missing runtime stdout")?;
-    let initial = serde_json::json!({"port":port,"key":key,"data":data.join("data"),"browsers":resources.join("browsers")});
+    let initial = serde_json::json!({"port":port,"key":key,"data":data.join("data"),"browsers":resources.join("browsers"),"version":app.package_info().version.to_string()});
     stdin.write_all(format!("{}\n", initial).as_bytes()).await?;
     // Keep stdin with the child so explicit exit can request graceful shutdown.
     child.stdin = Some(stdin);
@@ -329,6 +329,8 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                             .permission("allow-save-document-export")
                             .permission("allow-print-document-export")
                             .permission("allow-close-ward-window")
+                            .permission("allow-update-status")
+                            .permission("allow-update-action")
                             .permission("allow-macos-permissions"),
                     )?;
                     *app.state::<Workspace>().0.lock().await = Some((origin, token));

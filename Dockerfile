@@ -14,9 +14,13 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 RUN npx playwright-core install --with-deps chromium && rm -rf /var/lib/apt/lists/*
 
 COPY . .
+# The deploy stamp the dashboard shows (CI passes the release version + sha).
+ARG PUBLIC_APP_BUILD
+ENV PUBLIC_APP_BUILD=$PUBLIC_APP_BUILD
 RUN npm run build
 
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3005 HOMEPAGE_DATA_DIR=/data
+# RIMEWARD_INSTALL=docker: the update chip says "pull the image" instead of installing in place.
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3005 HOMEPAGE_DATA_DIR=/data RIMEWARD_INSTALL=docker
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 3005

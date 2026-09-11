@@ -10,7 +10,9 @@ import { rustNotices } from './rust-notices.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const version = '1.28.6', platform = process.platform, arch = process.arch;
 if (platform === 'darwin' && arch !== 'arm64') throw Error('macOS builds require Apple Silicon (arm64).');
-const cache = path.join(os.tmpdir(), `rimeward-media-sdk-${version}-${platform}-${arch}`);
+// RIMEWARD_MEDIA_CACHE: a stable directory CI restores between runs — its sdk/
+// subtree is the whole acquisition (a complete SDK skips every download and build).
+const cache = process.env.RIMEWARD_MEDIA_CACHE ?? path.join(os.tmpdir(), `rimeward-media-sdk-${version}-${platform}-${arch}`);
 const output = path.resolve(process.argv[2] ?? path.join(here, 'runtime/media'));
 const run = (file, args, options = {}) => execFileSync(file, args, { stdio: 'inherit', ...options });
 const capture = (file, args, options = {}) => execFileSync(file, args, { encoding: 'utf8', ...options });

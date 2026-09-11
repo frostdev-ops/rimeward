@@ -129,7 +129,9 @@ pub async fn start(
             .permission("allow-open-ward-window")
             .permission("allow-save-document-export")
             .permission("allow-print-document-export")
-            .permission("allow-close-ward-window"),
+            .permission("allow-close-ward-window")
+            .permission("allow-update-status")
+            .permission("allow-update-action"),
     )
     .map_err(|_| "Could not enable this server's browser wards")?;
     stop(app).await;

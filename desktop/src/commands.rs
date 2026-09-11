@@ -50,7 +50,7 @@ pub async fn ward_touch(
     Ok(())
 }
 
-async fn workspace_allowed(
+pub(crate) async fn workspace_allowed(
     window: &tauri::WebviewWindow,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {

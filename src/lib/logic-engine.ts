@@ -67,6 +67,7 @@ import { getNoteMeta, readNote, textToHtml, writeNote, plainText, type NoteMeta 
 import { asAccount, mailUnreadCount, sendNow, linkedMailAccounts, mailInboxMerged } from './mail.ts';
 import { BOOT_ID, buildInfo, getHistory, getSnapshot, hostPct, type ServiceStatus } from './status.ts';
 import { getSetting, setSetting } from './settings.ts';
+import { SERVER_VERSION, desktopVersion, installKind, latestReleases, newer } from './updates.ts';
 import { forecastFor, type Forecast } from './weather.ts';
 import type { MailMessage } from './google.ts';
 import { agenda, eventMs, type CalEvent } from './calendar.ts';
@@ -1666,6 +1667,23 @@ export const WATCHERS: Record<string, WatcherSpec> = {
       if (seen === BOOT_ID) return { state: BOOT_ID, fires: [] };
       setSetting(key, BOOT_ID);
       return { state: BOOT_ID, fires: seen ? [{ extra: { 'build.stamp': buildInfo().stamp } }] : [] };
+    },
+  },
+  'update-available': {
+    intervalMs: WATCH_TICK_MS,
+    // The cached release lookup (lib/updates.ts) — no network on the tick. A
+    // version fires once per user, remembered in a settings row so a restart
+    // while an update is pending does not announce it again.
+    probe: async (ctx) => {
+      const key = `update_seen:${ctx.userId}`;
+      const seen = getSetting(key);
+      const desktop = installKind() === 'desktop';
+      const r = await latestReleases();
+      const rel = desktop ? r.desktop : r.server;
+      const current = desktop ? desktopVersion() : SERVER_VERSION;
+      if (!rel || !newer(rel.version, current) || seen === rel.version) return { state: seen, fires: [] };
+      setSetting(key, rel.version);
+      return { state: rel.version, fires: [{ extra: { 'update.version': rel.version, 'update.url': rel.url, 'update.app': desktop ? 'desktop' : 'server' } }] };
     },
   },
   'service-slow': {

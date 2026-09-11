@@ -22,6 +22,8 @@ mod remote_session;
 mod remote_wayland;
 mod runtime;
 mod tunnel;
+#[cfg(desktop)]
+mod updates;
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
@@ -52,6 +54,10 @@ pub fn run() {
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         None,
     ));
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init());
     let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -68,6 +74,10 @@ pub fn run() {
             commands::print_document_export,
             commands::close_ward_window,
             runtime::startup_status,
+            #[cfg(desktop)]
+            updates::update_status,
+            #[cfg(desktop)]
+            updates::update_action,
             #[cfg(target_os = "macos")]
             permissions::macos_permissions
         ])
@@ -79,6 +89,8 @@ pub fn run() {
             remote_media::initialize(runtime::resources(app.handle())?.join("media"));
             #[cfg(desktop)]
             setup_tray(app.handle())?;
+            #[cfg(desktop)]
+            updates::initialize(app.handle())?;
             // The dashboard's origin is the one Chrome will let onto a ward's
             // DevTools socket — the page inside this window drives it directly.
             let origin = app
@@ -141,12 +153,11 @@ pub fn run() {
                 .is_ok()
             {
                 let app = app.clone();
-                computer::disconnect();
                 tauri::async_runtime::spawn(async move {
-                    tunnel::stop(&app).await;
-                    runtime::shutdown(&app).await;
-                    let shared = app.state::<chromium::Shared>().inner().clone();
-                    chromium::shutdown(&shared).await;
+                    teardown(&app).await;
+                    // A bundle downloaded ahead of time installs now, on the way out.
+                    #[cfg(desktop)]
+                    updates::install_on_quit(&app).await;
                     app.state::<Shutdown>().0.store(2, Ordering::Release);
                     app.exit(0);
                 });
@@ -154,6 +165,17 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+/// Stop remote control, the tunnel, the runtime and every Chromium gracefully.
+/// Quit and an update install share it — nothing may replace the bundle while
+/// the runtime still runs from it.
+pub async fn teardown(app: &AppHandle) {
+    computer::disconnect();
+    tunnel::stop(app).await;
+    runtime::shutdown(app).await;
+    let shared = app.state::<chromium::Shared>().inner().clone();
+    chromium::shutdown(&shared).await;
 }
 
 fn show_main(app: &AppHandle) {
@@ -172,6 +194,26 @@ pub fn set_status(app: &AppHandle, text: &str) {
     }
     #[cfg(not(desktop))]
     let _ = (app, text);
+}
+
+/// The tray's update line and the "download automatically" check item.
+#[cfg(desktop)]
+struct UpdateTray {
+    item: MenuItem<tauri::Wry>,
+    auto: tauri::menu::CheckMenuItem<tauri::Wry>,
+}
+#[cfg(desktop)]
+pub fn set_update_item(app: &AppHandle, text: &str, enabled: bool) {
+    if let Some(t) = app.try_state::<UpdateTray>() {
+        let _ = t.item.set_text(text);
+        let _ = t.item.set_enabled(enabled);
+    }
+}
+#[cfg(desktop)]
+pub fn set_update_auto(app: &AppHandle, on: bool) {
+    if let Some(t) = app.try_state::<UpdateTray>() {
+        let _ = t.auto.set_checked(on);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -218,7 +260,31 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
-    let menu = Menu::with_items(app, &[&status, &open, &autostart, &stop_control, &quit])?;
+    let update = MenuItem::with_id(app, "update", "Check for updates…", true, None::<&str>)?;
+    let update_auto = CheckMenuItem::with_id(
+        app,
+        "update-auto",
+        "Download updates automatically",
+        true,
+        false,
+        None::<&str>,
+    )?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &status,
+            &open,
+            &autostart,
+            &update,
+            &update_auto,
+            &stop_control,
+            &quit,
+        ],
+    )?;
+    app.manage(UpdateTray {
+        item: update,
+        auto: update_auto,
+    });
     #[cfg(target_os = "macos")]
     {
         let status = MenuItem::new(app, "No background app session", false, None::<&str>)?;
@@ -264,6 +330,8 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             #[cfg(target_os = "macos")]
             "background-stop" => background_apps::local_action("stop"),
             "stop-control" => computer::stop(),
+            "update" => updates::tray_action(app),
+            "update-auto" => updates::tray_toggle_auto(app),
             "autostart" => {
                 let launch = app.autolaunch();
                 let _ = if launch.is_enabled().unwrap_or(false) {
