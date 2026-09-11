@@ -52,8 +52,8 @@ jobs:
         shell: bash
         run: |
           name=rimeward-server-v${{ steps.v.outputs.version }}
-          tar -czf "$name.tar.gz" dist src public migrations assets bin ops \
-            package.json package-lock.json server.mjs ecosystem.config.cjs astro.config.mjs tsconfig.json compose.yaml Dockerfile
+          tar -czf "$name.tar.gz" dist src public migrations assets bin \
+            package.json package-lock.json server.mjs astro.config.mjs tsconfig.json compose.yaml Dockerfile
           sha256sum "$name.tar.gz" > SHA256SUMS
           cat SHA256SUMS
 

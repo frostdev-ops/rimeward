@@ -207,10 +207,11 @@ export async function updateState(opts: { refresh?: boolean } = {}): Promise<Upd
 // --------------------------------------------------------------- install
 const run = promisify(execFile);
 /** What a release replaces at the checkout root (the tarball's entries plus the
- *  node_modules the stage installs). data/, .env and .update/ are never touched. */
+ *  node_modules the stage installs). data/, .env, .update/ and the operator's
+ *  own files (ecosystem.config.cjs, ops/ with its gitignored scripts) are never touched. */
 export const SHIPPED = [
-  'dist', 'src', 'public', 'migrations', 'assets', 'bin', 'ops', 'node_modules',
-  'package.json', 'package-lock.json', 'server.mjs', 'ecosystem.config.cjs', 'astro.config.mjs', 'tsconfig.json', 'compose.yaml', 'Dockerfile',
+  'dist', 'src', 'public', 'migrations', 'assets', 'bin', 'node_modules',
+  'package.json', 'package-lock.json', 'server.mjs', 'astro.config.mjs', 'tsconfig.json', 'compose.yaml', 'Dockerfile',
 ];
 const WORK = path.join(ROOT, '.update');
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
