@@ -210,7 +210,7 @@ const run = promisify(execFile);
  *  node_modules the stage installs). data/, .env, .update/ and the operator's
  *  own files (ecosystem.config.cjs, ops/ with its gitignored scripts) are never touched. */
 export const SHIPPED = [
-  'dist', 'src', 'public', 'migrations', 'assets', 'bin', 'node_modules',
+  'dist', 'src', 'public', 'migrations', 'assets', 'workers', 'bin', 'node_modules',
   'package.json', 'package-lock.json', 'server.mjs', 'astro.config.mjs', 'tsconfig.json', 'compose.yaml', 'Dockerfile',
 ];
 const WORK = path.join(ROOT, '.update');

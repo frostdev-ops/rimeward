@@ -3,13 +3,15 @@
 // listener set, no db, no engine import: note.ts and notebook.ts emit,
 // the engine subscribes, and neither module has to import the other.
 
-export type NoteEventType = 'created' | 'saved' | 'tagged' | 'moved';
+export type NoteEventType = 'created' | 'saved' | 'tagged' | 'moved' | 'metadata';
 export interface NoteEvent {
   type: NoteEventType;
   userId: number;
   id: string;
   /** The note's home notebook at the time (null = standalone — no notebook ward fires for it). */
   notebook: string | null;
+  /** Metadata moves also notify observers of the previous notebook. */
+  previousNotebook?: string | null;
   title: string;
   /** `tagged`: the tags just added; `moved`: the new section id (null = unfiled). */
   tags?: string[];

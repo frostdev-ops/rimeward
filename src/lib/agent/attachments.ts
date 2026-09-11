@@ -4,6 +4,7 @@ import path from 'node:path';
 import { DATA_DIR, getDb } from '../db.ts';
 import { extractDocxText, extractPdfText, paginateText, searchPages, PAGE_MARK } from './docs.ts';
 import { writeDocText } from './history.ts';
+import { knowledgeChanged } from './observation-events.ts';
 
 // Attachments the user hands the agent. Bytes are content-addressed on disk,
 // metadata and extracted text in SQLite (agent_files, per-user). Stored once,
@@ -129,6 +130,7 @@ export async function storeAttachment(opts: {
   const stored = getAttachment(userId, Number(info.lastInsertRowid))!;
   // A plain .txt next to every document, so the shell can grep across all of them.
   if (text) writeDocText(userId, stored.id, stored.name, text);
+  knowledgeChanged(userId);
   return stored;
 }
 

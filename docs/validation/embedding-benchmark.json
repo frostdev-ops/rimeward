@@ -1,0 +1,4478 @@
+{
+  "corpusSha256": "ad32280f158164247e99c2aaaa731531f0a0daebc22ab398f17422eac4afc174",
+  "platform": "darwin",
+  "arch": "arm64",
+  "totalMemoryBytes": 25769803776,
+  "documents": 32,
+  "queries": 16,
+  "profiles": [
+    {
+      "profile": "Qwen3-Embedding-8B|69d0e58a13e463cd99a9b83e3f5fee7c10265fab:Q4_K_M|4096|last:l2:instruct-v1:Given a web search query, retrieve relevant passages that answer the query",
+      "status": "measured",
+      "availableMemoryBytes": 17008070492.16,
+      "memoryAdvisory": false,
+      "indexingMs": 5610.036166,
+      "documentsPerSecond": 5.7040630493504025,
+      "runtime": {
+        "startupMs": 1806,
+        "queryMs": 119,
+        "peakMemoryBytes": 5950914560,
+        "memoryMeasurement": "Process RSS sampled at 1 Hz; not total unified GPU memory."
+      },
+      "recallAt5": 1,
+      "results": [
+        {
+          "query": "What happens to a watcher when I clear its chat?",
+          "queryMs": 117.66733299999942,
+          "ranking": [
+            {
+              "id": "retire",
+              "score": 0.5691855718490465
+            },
+            {
+              "id": "monitor",
+              "score": 0.4909882343066827
+            },
+            {
+              "id": "children",
+              "score": 0.460503790645981
+            },
+            {
+              "id": "approval",
+              "score": 0.41984658692887356
+            },
+            {
+              "id": "tasks",
+              "score": 0.41562093370793984
+            },
+            {
+              "id": "connectors",
+              "score": 0.38789420606085734
+            },
+            {
+              "id": "browser",
+              "score": 0.3663212384740072
+            },
+            {
+              "id": "offline",
+              "score": 0.34613139088464395
+            },
+            {
+              "id": "replay",
+              "score": 0.3417813652282795
+            },
+            {
+              "id": "terminal",
+              "score": 0.3232071858548004
+            },
+            {
+              "id": "burst",
+              "score": 0.313554890558588
+            },
+            {
+              "id": "standing",
+              "score": 0.31275546025553735
+            },
+            {
+              "id": "files",
+              "score": 0.3085386179637047
+            },
+            {
+              "id": "semantic",
+              "score": 0.3054706467171221
+            },
+            {
+              "id": "notes",
+              "score": 0.30130243893303654
+            },
+            {
+              "id": "http",
+              "score": 0.2868187721002411
+            },
+            {
+              "id": "tools",
+              "score": 0.28395442295392415
+            },
+            {
+              "id": "mcp",
+              "score": 0.28019471231157683
+            },
+            {
+              "id": "keyword",
+              "score": 0.25218633037221094
+            },
+            {
+              "id": "paired",
+              "score": 0.2454394177226493
+            },
+            {
+              "id": "attachments",
+              "score": 0.24321339509574122
+            },
+            {
+              "id": "openrouter",
+              "score": 0.2317361151653709
+            },
+            {
+              "id": "profiles",
+              "score": 0.22975414175519865
+            },
+            {
+              "id": "roots",
+              "score": 0.22248966988897376
+            },
+            {
+              "id": "filters",
+              "score": 0.22057218871933598
+            },
+            {
+              "id": "downloads",
+              "score": 0.21021158059168943
+            },
+            {
+              "id": "openai",
+              "score": 0.20936852287185134
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.20931085566365654
+            },
+            {
+              "id": "qwen",
+              "score": 0.20723899190668862
+            },
+            {
+              "id": "local",
+              "score": 0.20262750949297695
+            },
+            {
+              "id": "memory",
+              "score": 0.19572431300545562
+            },
+            {
+              "id": "skills",
+              "score": 0.19560442615298756
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "How does Rime acquire additional callable capabilities?",
+          "queryMs": 117.61295900000005,
+          "ranking": [
+            {
+              "id": "skills",
+              "score": 0.464517556333838
+            },
+            {
+              "id": "tools",
+              "score": 0.42734551185371805
+            },
+            {
+              "id": "openai",
+              "score": 0.37976283714492887
+            },
+            {
+              "id": "paired",
+              "score": 0.3770780810875956
+            },
+            {
+              "id": "openrouter",
+              "score": 0.37332766815691437
+            },
+            {
+              "id": "replay",
+              "score": 0.368992779004923
+            },
+            {
+              "id": "monitor",
+              "score": 0.36162615344290894
+            },
+            {
+              "id": "local",
+              "score": 0.3608270611251488
+            },
+            {
+              "id": "mcp",
+              "score": 0.34769785236414785
+            },
+            {
+              "id": "approval",
+              "score": 0.3390612785821472
+            },
+            {
+              "id": "standing",
+              "score": 0.3363624594381225
+            },
+            {
+              "id": "offline",
+              "score": 0.32669977890360935
+            },
+            {
+              "id": "connectors",
+              "score": 0.3241761855871277
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.31794829801271285
+            },
+            {
+              "id": "profiles",
+              "score": 0.31267706502054954
+            },
+            {
+              "id": "memory",
+              "score": 0.3126356863933274
+            },
+            {
+              "id": "qwen",
+              "score": 0.30960655227815015
+            },
+            {
+              "id": "children",
+              "score": 0.30676322159927694
+            },
+            {
+              "id": "keyword",
+              "score": 0.30267255308018104
+            },
+            {
+              "id": "attachments",
+              "score": 0.29454217852866327
+            },
+            {
+              "id": "roots",
+              "score": 0.29386827831493373
+            },
+            {
+              "id": "tasks",
+              "score": 0.2842068914744761
+            },
+            {
+              "id": "semantic",
+              "score": 0.2841300245143388
+            },
+            {
+              "id": "filters",
+              "score": 0.2782601557214486
+            },
+            {
+              "id": "terminal",
+              "score": 0.2761610270327363
+            },
+            {
+              "id": "downloads",
+              "score": 0.271444044302442
+            },
+            {
+              "id": "burst",
+              "score": 0.26652377723861814
+            },
+            {
+              "id": "notes",
+              "score": 0.2660761060096622
+            },
+            {
+              "id": "http",
+              "score": 0.2562117465160935
+            },
+            {
+              "id": "files",
+              "score": 0.2551703188385232
+            },
+            {
+              "id": "retire",
+              "score": 0.253256869291838
+            },
+            {
+              "id": "browser",
+              "score": 0.2517191677439785
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 0.5
+        },
+        {
+          "query": "Can a phrase spanning two command-output chunks be detected?",
+          "queryMs": 117.61579200000051,
+          "ranking": [
+            {
+              "id": "terminal",
+              "score": 0.6258677263086689
+            },
+            {
+              "id": "monitor",
+              "score": 0.4459095949274565
+            },
+            {
+              "id": "replay",
+              "score": 0.398193496249712
+            },
+            {
+              "id": "keyword",
+              "score": 0.38778403132501643
+            },
+            {
+              "id": "semantic",
+              "score": 0.3838627047238556
+            },
+            {
+              "id": "paired",
+              "score": 0.37919816804668444
+            },
+            {
+              "id": "attachments",
+              "score": 0.3725052030022279
+            },
+            {
+              "id": "offline",
+              "score": 0.366228327506802
+            },
+            {
+              "id": "standing",
+              "score": 0.3628080561428908
+            },
+            {
+              "id": "filters",
+              "score": 0.3531776923333141
+            },
+            {
+              "id": "connectors",
+              "score": 0.3408815275998196
+            },
+            {
+              "id": "http",
+              "score": 0.3404656431673086
+            },
+            {
+              "id": "tools",
+              "score": 0.34038181938597833
+            },
+            {
+              "id": "browser",
+              "score": 0.3392592763714568
+            },
+            {
+              "id": "children",
+              "score": 0.33416500431515894
+            },
+            {
+              "id": "skills",
+              "score": 0.33249590210118435
+            },
+            {
+              "id": "retire",
+              "score": 0.33212931373744503
+            },
+            {
+              "id": "burst",
+              "score": 0.3313862959225973
+            },
+            {
+              "id": "openai",
+              "score": 0.32039370158398733
+            },
+            {
+              "id": "mcp",
+              "score": 0.31764498726403445
+            },
+            {
+              "id": "memory",
+              "score": 0.31716783888477584
+            },
+            {
+              "id": "qwen",
+              "score": 0.3170931170748982
+            },
+            {
+              "id": "files",
+              "score": 0.31148226580806637
+            },
+            {
+              "id": "notes",
+              "score": 0.3104974394565863
+            },
+            {
+              "id": "approval",
+              "score": 0.3102874733671608
+            },
+            {
+              "id": "profiles",
+              "score": 0.3031688432429211
+            },
+            {
+              "id": "tasks",
+              "score": 0.29480420058632073
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.28891829731499996
+            },
+            {
+              "id": "openrouter",
+              "score": 0.2879595292540536
+            },
+            {
+              "id": "local",
+              "score": 0.27401522775332815
+            },
+            {
+              "id": "roots",
+              "score": 0.2689266236601815
+            },
+            {
+              "id": "downloads",
+              "score": 0.2351052612315448
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Will monitoring survive another application replacing a file during save?",
+          "queryMs": 118.87612500000068,
+          "ranking": [
+            {
+              "id": "files",
+              "score": 0.6817798819812372
+            },
+            {
+              "id": "monitor",
+              "score": 0.4908467890766821
+            },
+            {
+              "id": "retire",
+              "score": 0.48787049971029556
+            },
+            {
+              "id": "tasks",
+              "score": 0.4538916728150166
+            },
+            {
+              "id": "terminal",
+              "score": 0.4370990734065326
+            },
+            {
+              "id": "approval",
+              "score": 0.4370619553954605
+            },
+            {
+              "id": "offline",
+              "score": 0.4343975992444986
+            },
+            {
+              "id": "browser",
+              "score": 0.4208869154090629
+            },
+            {
+              "id": "children",
+              "score": 0.411075071605659
+            },
+            {
+              "id": "semantic",
+              "score": 0.395571766213321
+            },
+            {
+              "id": "notes",
+              "score": 0.3812452297003225
+            },
+            {
+              "id": "memory",
+              "score": 0.37257572743456047
+            },
+            {
+              "id": "mcp",
+              "score": 0.3711451813281859
+            },
+            {
+              "id": "burst",
+              "score": 0.3568256592781312
+            },
+            {
+              "id": "replay",
+              "score": 0.34876673689167825
+            },
+            {
+              "id": "connectors",
+              "score": 0.34299092836332223
+            },
+            {
+              "id": "downloads",
+              "score": 0.33836392763857126
+            },
+            {
+              "id": "http",
+              "score": 0.33390590491723676
+            },
+            {
+              "id": "roots",
+              "score": 0.3293968453688701
+            },
+            {
+              "id": "standing",
+              "score": 0.31998038673895496
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.3169855719050076
+            },
+            {
+              "id": "skills",
+              "score": 0.29792642035935957
+            },
+            {
+              "id": "profiles",
+              "score": 0.29352710761812856
+            },
+            {
+              "id": "attachments",
+              "score": 0.28065728275910423
+            },
+            {
+              "id": "paired",
+              "score": 0.27008428710394056
+            },
+            {
+              "id": "filters",
+              "score": 0.25995872579005536
+            },
+            {
+              "id": "keyword",
+              "score": 0.257650650175419
+            },
+            {
+              "id": "tools",
+              "score": 0.25551465635459675
+            },
+            {
+              "id": "local",
+              "score": 0.2458754246801871
+            },
+            {
+              "id": "openrouter",
+              "score": 0.22468379823783274
+            },
+            {
+              "id": "openai",
+              "score": 0.21798050730924926
+            },
+            {
+              "id": "qwen",
+              "score": 0.208094247119807
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "How do I watch only one element on a web page?",
+          "queryMs": 116.49808399999984,
+          "ranking": [
+            {
+              "id": "browser",
+              "score": 0.6022963068635125
+            },
+            {
+              "id": "monitor",
+              "score": 0.4456034884743397
+            },
+            {
+              "id": "attachments",
+              "score": 0.4123439879208982
+            },
+            {
+              "id": "approval",
+              "score": 0.40310930991596644
+            },
+            {
+              "id": "tasks",
+              "score": 0.40141573685999316
+            },
+            {
+              "id": "http",
+              "score": 0.3562407351244938
+            },
+            {
+              "id": "standing",
+              "score": 0.35515156074597803
+            },
+            {
+              "id": "files",
+              "score": 0.3489065439392727
+            },
+            {
+              "id": "memory",
+              "score": 0.331032992736656
+            },
+            {
+              "id": "notes",
+              "score": 0.3252221534274132
+            },
+            {
+              "id": "tools",
+              "score": 0.32142717023895134
+            },
+            {
+              "id": "terminal",
+              "score": 0.3196941684275722
+            },
+            {
+              "id": "paired",
+              "score": 0.3071918261298286
+            },
+            {
+              "id": "roots",
+              "score": 0.2876887060695095
+            },
+            {
+              "id": "offline",
+              "score": 0.28472000919943347
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.28368476227249995
+            },
+            {
+              "id": "skills",
+              "score": 0.2833712264857671
+            },
+            {
+              "id": "semantic",
+              "score": 0.2777930018573966
+            },
+            {
+              "id": "qwen",
+              "score": 0.2772682946188125
+            },
+            {
+              "id": "children",
+              "score": 0.27263113819723095
+            },
+            {
+              "id": "openai",
+              "score": 0.2679372607275405
+            },
+            {
+              "id": "retire",
+              "score": 0.2655179012435756
+            },
+            {
+              "id": "keyword",
+              "score": 0.26300025270820276
+            },
+            {
+              "id": "openrouter",
+              "score": 0.25562568442305383
+            },
+            {
+              "id": "filters",
+              "score": 0.2542277615555626
+            },
+            {
+              "id": "profiles",
+              "score": 0.2519187642389718
+            },
+            {
+              "id": "connectors",
+              "score": 0.25066506234819075
+            },
+            {
+              "id": "burst",
+              "score": 0.23915609725808576
+            },
+            {
+              "id": "replay",
+              "score": 0.23239894786686902
+            },
+            {
+              "id": "local",
+              "score": 0.2314852448287683
+            },
+            {
+              "id": "mcp",
+              "score": 0.2205159439914649
+            },
+            {
+              "id": "downloads",
+              "score": 0.21134852461647124
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "What happens if semantic inference cannot be reached?",
+          "queryMs": 116.87062500000047,
+          "ranking": [
+            {
+              "id": "keyword",
+              "score": 0.5987185769334021
+            },
+            {
+              "id": "semantic",
+              "score": 0.5929618864784463
+            },
+            {
+              "id": "offline",
+              "score": 0.4995726015689062
+            },
+            {
+              "id": "filters",
+              "score": 0.45278287371708303
+            },
+            {
+              "id": "paired",
+              "score": 0.4196631492795797
+            },
+            {
+              "id": "replay",
+              "score": 0.381988144036326
+            },
+            {
+              "id": "standing",
+              "score": 0.3524910560704981
+            },
+            {
+              "id": "children",
+              "score": 0.3368561493561797
+            },
+            {
+              "id": "tools",
+              "score": 0.3367759833048433
+            },
+            {
+              "id": "monitor",
+              "score": 0.3336963170415112
+            },
+            {
+              "id": "skills",
+              "score": 0.33349898769741043
+            },
+            {
+              "id": "mcp",
+              "score": 0.3308901910739009
+            },
+            {
+              "id": "profiles",
+              "score": 0.3250141961773338
+            },
+            {
+              "id": "approval",
+              "score": 0.32488551660323184
+            },
+            {
+              "id": "qwen",
+              "score": 0.3235381092165157
+            },
+            {
+              "id": "notes",
+              "score": 0.32145802761250303
+            },
+            {
+              "id": "openai",
+              "score": 0.31758972573578576
+            },
+            {
+              "id": "attachments",
+              "score": 0.31747730242620653
+            },
+            {
+              "id": "memory",
+              "score": 0.31422999021730996
+            },
+            {
+              "id": "openrouter",
+              "score": 0.31004940022371363
+            },
+            {
+              "id": "roots",
+              "score": 0.30625287996194006
+            },
+            {
+              "id": "terminal",
+              "score": 0.3052503634621576
+            },
+            {
+              "id": "burst",
+              "score": 0.29649323191094257
+            },
+            {
+              "id": "retire",
+              "score": 0.2841661631875068
+            },
+            {
+              "id": "local",
+              "score": 0.28074980096790086
+            },
+            {
+              "id": "connectors",
+              "score": 0.25595602243788096
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.25213890742741546
+            },
+            {
+              "id": "http",
+              "score": 0.2428803542259915
+            },
+            {
+              "id": "browser",
+              "score": 0.23842021593994764
+            },
+            {
+              "id": "downloads",
+              "score": 0.23841294016546466
+            },
+            {
+              "id": "files",
+              "score": 0.2107164503917203
+            },
+            {
+              "id": "tasks",
+              "score": 0.19098525638241132
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Where are my saved facts kept when I rebuild search?",
+          "queryMs": 117.77645900000061,
+          "ranking": [
+            {
+              "id": "memory",
+              "score": 0.5770528794430191
+            },
+            {
+              "id": "notes",
+              "score": 0.4426775657048852
+            },
+            {
+              "id": "roots",
+              "score": 0.41874627731082165
+            },
+            {
+              "id": "keyword",
+              "score": 0.40670561864125937
+            },
+            {
+              "id": "tools",
+              "score": 0.3959569466990999
+            },
+            {
+              "id": "standing",
+              "score": 0.37248492097646213
+            },
+            {
+              "id": "mcp",
+              "score": 0.3595774568080046
+            },
+            {
+              "id": "replay",
+              "score": 0.35914423494266895
+            },
+            {
+              "id": "retire",
+              "score": 0.35012507685435706
+            },
+            {
+              "id": "attachments",
+              "score": 0.34243497859106714
+            },
+            {
+              "id": "files",
+              "score": 0.3417466063631549
+            },
+            {
+              "id": "burst",
+              "score": 0.33875981380864717
+            },
+            {
+              "id": "skills",
+              "score": 0.3328370918431157
+            },
+            {
+              "id": "paired",
+              "score": 0.3203087762016457
+            },
+            {
+              "id": "offline",
+              "score": 0.3090217334448287
+            },
+            {
+              "id": "monitor",
+              "score": 0.2990608583958525
+            },
+            {
+              "id": "profiles",
+              "score": 0.2842666626549865
+            },
+            {
+              "id": "filters",
+              "score": 0.2839130288822515
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.2820362685857787
+            },
+            {
+              "id": "qwen",
+              "score": 0.26879392672335833
+            },
+            {
+              "id": "browser",
+              "score": 0.26830399932474475
+            },
+            {
+              "id": "downloads",
+              "score": 0.26756119138414924
+            },
+            {
+              "id": "children",
+              "score": 0.26544251578347294
+            },
+            {
+              "id": "tasks",
+              "score": 0.2639340514832763
+            },
+            {
+              "id": "openai",
+              "score": 0.2504461076850249
+            },
+            {
+              "id": "http",
+              "score": 0.24939759912612453
+            },
+            {
+              "id": "approval",
+              "score": 0.24674049798055478
+            },
+            {
+              "id": "openrouter",
+              "score": 0.24346742613989528
+            },
+            {
+              "id": "local",
+              "score": 0.23616422049538574
+            },
+            {
+              "id": "connectors",
+              "score": 0.23089685129873083
+            },
+            {
+              "id": "semantic",
+              "score": 0.2274419271259414
+            },
+            {
+              "id": "terminal",
+              "score": 0.2037349193210448
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Can I run embeddings on another Mac without moving my database?",
+          "queryMs": 114.68224999999984,
+          "ranking": [
+            {
+              "id": "paired",
+              "score": 0.5617072953427815
+            },
+            {
+              "id": "local",
+              "score": 0.5497294057530869
+            },
+            {
+              "id": "roots",
+              "score": 0.48733477439468875
+            },
+            {
+              "id": "openai",
+              "score": 0.4262587170322225
+            },
+            {
+              "id": "openrouter",
+              "score": 0.4238476935364657
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.4087145897473373
+            },
+            {
+              "id": "notes",
+              "score": 0.40198630796144624
+            },
+            {
+              "id": "profiles",
+              "score": 0.39864109960192584
+            },
+            {
+              "id": "skills",
+              "score": 0.39189652612057185
+            },
+            {
+              "id": "qwen",
+              "score": 0.3918267616807024
+            },
+            {
+              "id": "memory",
+              "score": 0.38262369995487044
+            },
+            {
+              "id": "mcp",
+              "score": 0.3799494014830596
+            },
+            {
+              "id": "offline",
+              "score": 0.36897088483036633
+            },
+            {
+              "id": "burst",
+              "score": 0.36296620715451444
+            },
+            {
+              "id": "downloads",
+              "score": 0.3479931736933249
+            },
+            {
+              "id": "standing",
+              "score": 0.3435812183003003
+            },
+            {
+              "id": "attachments",
+              "score": 0.33074977711782727
+            },
+            {
+              "id": "monitor",
+              "score": 0.327751964300695
+            },
+            {
+              "id": "files",
+              "score": 0.32685024661529144
+            },
+            {
+              "id": "tools",
+              "score": 0.3231425007779164
+            },
+            {
+              "id": "replay",
+              "score": 0.31613497188005024
+            },
+            {
+              "id": "semantic",
+              "score": 0.31322239834512616
+            },
+            {
+              "id": "approval",
+              "score": 0.3075559880890461
+            },
+            {
+              "id": "keyword",
+              "score": 0.30314020325709423
+            },
+            {
+              "id": "retire",
+              "score": 0.29828122651366296
+            },
+            {
+              "id": "filters",
+              "score": 0.2945151408754862
+            },
+            {
+              "id": "connectors",
+              "score": 0.2829567872458401
+            },
+            {
+              "id": "children",
+              "score": 0.2711230066129497
+            },
+            {
+              "id": "tasks",
+              "score": 0.2631193638128368
+            },
+            {
+              "id": "browser",
+              "score": 0.25471800183455984
+            },
+            {
+              "id": "terminal",
+              "score": 0.2444596092181573
+            },
+            {
+              "id": "http",
+              "score": 0.21771599591272997
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Does a monitor grant permission to send a message?",
+          "queryMs": 119.67783299999974,
+          "ranking": [
+            {
+              "id": "approval",
+              "score": 0.6517506356223526
+            },
+            {
+              "id": "monitor",
+              "score": 0.565062983285987
+            },
+            {
+              "id": "retire",
+              "score": 0.5127688912625203
+            },
+            {
+              "id": "tasks",
+              "score": 0.4668462564087286
+            },
+            {
+              "id": "semantic",
+              "score": 0.4568558693832454
+            },
+            {
+              "id": "connectors",
+              "score": 0.436591934684105
+            },
+            {
+              "id": "children",
+              "score": 0.4344827167373123
+            },
+            {
+              "id": "terminal",
+              "score": 0.4076491795231208
+            },
+            {
+              "id": "burst",
+              "score": 0.40168829500285885
+            },
+            {
+              "id": "files",
+              "score": 0.3973233067332643
+            },
+            {
+              "id": "browser",
+              "score": 0.37335199067399805
+            },
+            {
+              "id": "mcp",
+              "score": 0.35280717224455815
+            },
+            {
+              "id": "http",
+              "score": 0.35105721938567147
+            },
+            {
+              "id": "paired",
+              "score": 0.3504648286956431
+            },
+            {
+              "id": "offline",
+              "score": 0.3461263265145075
+            },
+            {
+              "id": "replay",
+              "score": 0.3438469927828761
+            },
+            {
+              "id": "standing",
+              "score": 0.33054578152992325
+            },
+            {
+              "id": "notes",
+              "score": 0.28379849387120665
+            },
+            {
+              "id": "openai",
+              "score": 0.2825703520993732
+            },
+            {
+              "id": "openrouter",
+              "score": 0.2817824674444583
+            },
+            {
+              "id": "attachments",
+              "score": 0.27957904335529277
+            },
+            {
+              "id": "tools",
+              "score": 0.268695105250848
+            },
+            {
+              "id": "profiles",
+              "score": 0.2676181692946555
+            },
+            {
+              "id": "skills",
+              "score": 0.26388540570552843
+            },
+            {
+              "id": "downloads",
+              "score": 0.25766388869398765
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.2567023959722481
+            },
+            {
+              "id": "local",
+              "score": 0.25635191212648417
+            },
+            {
+              "id": "filters",
+              "score": 0.25038932920563284
+            },
+            {
+              "id": "roots",
+              "score": 0.24981215942803714
+            },
+            {
+              "id": "qwen",
+              "score": 0.24514735956553865
+            },
+            {
+              "id": "memory",
+              "score": 0.24223759845368378
+            },
+            {
+              "id": "keyword",
+              "score": 0.2386095920205533
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "How are Q4 and Q8 vectors prevented from mixing?",
+          "queryMs": 118.85479200000009,
+          "ranking": [
+            {
+              "id": "profiles",
+              "score": 0.531584555707789
+            },
+            {
+              "id": "qwen",
+              "score": 0.448388801253783
+            },
+            {
+              "id": "openrouter",
+              "score": 0.3683889825349125
+            },
+            {
+              "id": "paired",
+              "score": 0.3344879555508604
+            },
+            {
+              "id": "keyword",
+              "score": 0.3266598950052612
+            },
+            {
+              "id": "semantic",
+              "score": 0.3243689998738604
+            },
+            {
+              "id": "burst",
+              "score": 0.297709840013081
+            },
+            {
+              "id": "connectors",
+              "score": 0.2892333855584849
+            },
+            {
+              "id": "replay",
+              "score": 0.2883318232448719
+            },
+            {
+              "id": "children",
+              "score": 0.28685283719133164
+            },
+            {
+              "id": "openai",
+              "score": 0.2853629460145545
+            },
+            {
+              "id": "monitor",
+              "score": 0.28356152134017604
+            },
+            {
+              "id": "notes",
+              "score": 0.27297166508269155
+            },
+            {
+              "id": "offline",
+              "score": 0.2709879620466624
+            },
+            {
+              "id": "approval",
+              "score": 0.2688884829693696
+            },
+            {
+              "id": "filters",
+              "score": 0.2654721870970789
+            },
+            {
+              "id": "mcp",
+              "score": 0.2629859214691863
+            },
+            {
+              "id": "local",
+              "score": 0.2625664369332566
+            },
+            {
+              "id": "standing",
+              "score": 0.2625390476529488
+            },
+            {
+              "id": "roots",
+              "score": 0.2608386986427724
+            },
+            {
+              "id": "retire",
+              "score": 0.25510229717590094
+            },
+            {
+              "id": "tools",
+              "score": 0.25490697947558216
+            },
+            {
+              "id": "http",
+              "score": 0.2512812726968436
+            },
+            {
+              "id": "terminal",
+              "score": 0.23226072353049318
+            },
+            {
+              "id": "memory",
+              "score": 0.23191179008722707
+            },
+            {
+              "id": "attachments",
+              "score": 0.22559033216762112
+            },
+            {
+              "id": "files",
+              "score": 0.2152186571848475
+            },
+            {
+              "id": "skills",
+              "score": 0.21466597693454978
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.21168857910176866
+            },
+            {
+              "id": "browser",
+              "score": 0.20656241447985788
+            },
+            {
+              "id": "tasks",
+              "score": 0.19532327282025497
+            },
+            {
+              "id": "downloads",
+              "score": 0.17620537515254753
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Which provider accepts text-embedding-3-small?",
+          "queryMs": 115.76850000000013,
+          "ranking": [
+            {
+              "id": "openai",
+              "score": 0.7523177595908781
+            },
+            {
+              "id": "openrouter",
+              "score": 0.7100321281440072
+            },
+            {
+              "id": "qwen",
+              "score": 0.6252281435327351
+            },
+            {
+              "id": "paired",
+              "score": 0.5676177961240254
+            },
+            {
+              "id": "local",
+              "score": 0.5456861437454906
+            },
+            {
+              "id": "tools",
+              "score": 0.4771854521223717
+            },
+            {
+              "id": "attachments",
+              "score": 0.4606033191705988
+            },
+            {
+              "id": "skills",
+              "score": 0.43866066076497573
+            },
+            {
+              "id": "profiles",
+              "score": 0.43755981603333494
+            },
+            {
+              "id": "monitor",
+              "score": 0.4262587799194732
+            },
+            {
+              "id": "standing",
+              "score": 0.39772171079619095
+            },
+            {
+              "id": "connectors",
+              "score": 0.39640822005050036
+            },
+            {
+              "id": "memory",
+              "score": 0.39033957045562234
+            },
+            {
+              "id": "semantic",
+              "score": 0.38856956106273804
+            },
+            {
+              "id": "browser",
+              "score": 0.38541277293674486
+            },
+            {
+              "id": "replay",
+              "score": 0.3848621777092107
+            },
+            {
+              "id": "offline",
+              "score": 0.37259168691695116
+            },
+            {
+              "id": "keyword",
+              "score": 0.3702428989695569
+            },
+            {
+              "id": "downloads",
+              "score": 0.3545863071034786
+            },
+            {
+              "id": "burst",
+              "score": 0.35127545254560333
+            },
+            {
+              "id": "approval",
+              "score": 0.34925793114005693
+            },
+            {
+              "id": "notes",
+              "score": 0.3392679898971989
+            },
+            {
+              "id": "filters",
+              "score": 0.33485316633145795
+            },
+            {
+              "id": "mcp",
+              "score": 0.3297516498424445
+            },
+            {
+              "id": "retire",
+              "score": 0.32522424096916036
+            },
+            {
+              "id": "roots",
+              "score": 0.31627009358690333
+            },
+            {
+              "id": "children",
+              "score": 0.3159150570401372
+            },
+            {
+              "id": "http",
+              "score": 0.301284280651866
+            },
+            {
+              "id": "terminal",
+              "score": 0.29536585637670076
+            },
+            {
+              "id": "tasks",
+              "score": 0.2852032792650592
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.25984737207073455
+            },
+            {
+              "id": "files",
+              "score": 0.25384586750689037
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "How are uploaded PDF pages searchable?",
+          "queryMs": 77.5590000000002,
+          "ranking": [
+            {
+              "id": "attachments",
+              "score": 0.6164191243288414
+            },
+            {
+              "id": "memory",
+              "score": 0.5458169201686379
+            },
+            {
+              "id": "paired",
+              "score": 0.4302320132714717
+            },
+            {
+              "id": "roots",
+              "score": 0.42452263565827053
+            },
+            {
+              "id": "tools",
+              "score": 0.41756289412237346
+            },
+            {
+              "id": "keyword",
+              "score": 0.4085003927199849
+            },
+            {
+              "id": "notes",
+              "score": 0.40336802688602513
+            },
+            {
+              "id": "browser",
+              "score": 0.4029107578061612
+            },
+            {
+              "id": "openai",
+              "score": 0.38313366012865796
+            },
+            {
+              "id": "skills",
+              "score": 0.378422555184779
+            },
+            {
+              "id": "qwen",
+              "score": 0.3633541042579001
+            },
+            {
+              "id": "monitor",
+              "score": 0.3460500691032562
+            },
+            {
+              "id": "openrouter",
+              "score": 0.34152380756161865
+            },
+            {
+              "id": "standing",
+              "score": 0.33763305181564857
+            },
+            {
+              "id": "files",
+              "score": 0.3366715768971315
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.3336315940439479
+            },
+            {
+              "id": "local",
+              "score": 0.3159066650870754
+            },
+            {
+              "id": "downloads",
+              "score": 0.31554895568935587
+            },
+            {
+              "id": "profiles",
+              "score": 0.3120870142411196
+            },
+            {
+              "id": "filters",
+              "score": 0.30593326879908117
+            },
+            {
+              "id": "http",
+              "score": 0.3033485635560308
+            },
+            {
+              "id": "burst",
+              "score": 0.2965343064168757
+            },
+            {
+              "id": "terminal",
+              "score": 0.2851190116610412
+            },
+            {
+              "id": "semantic",
+              "score": 0.278975400211065
+            },
+            {
+              "id": "offline",
+              "score": 0.2777832335205323
+            },
+            {
+              "id": "mcp",
+              "score": 0.2765362510913411
+            },
+            {
+              "id": "retire",
+              "score": 0.2665373541711632
+            },
+            {
+              "id": "tasks",
+              "score": 0.2651963001817982
+            },
+            {
+              "id": "approval",
+              "score": 0.2640283994582588
+            },
+            {
+              "id": "replay",
+              "score": 0.2413237898860118
+            },
+            {
+              "id": "connectors",
+              "score": 0.23047388368454544
+            },
+            {
+              "id": "children",
+              "score": 0.22222102756637876
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "What input formatting is used for Qwen embedding queries?",
+          "queryMs": 116.4442909999998,
+          "ranking": [
+            {
+              "id": "qwen",
+              "score": 0.649077309261221
+            },
+            {
+              "id": "openrouter",
+              "score": 0.629523724092781
+            },
+            {
+              "id": "openai",
+              "score": 0.5910149358161056
+            },
+            {
+              "id": "paired",
+              "score": 0.5586818585025913
+            },
+            {
+              "id": "local",
+              "score": 0.46718655381491964
+            },
+            {
+              "id": "profiles",
+              "score": 0.4590159224672562
+            },
+            {
+              "id": "tools",
+              "score": 0.44081401097599726
+            },
+            {
+              "id": "standing",
+              "score": 0.43158417192305576
+            },
+            {
+              "id": "skills",
+              "score": 0.41818953437599016
+            },
+            {
+              "id": "memory",
+              "score": 0.4145146158725973
+            },
+            {
+              "id": "attachments",
+              "score": 0.402754627638248
+            },
+            {
+              "id": "semantic",
+              "score": 0.4002020930091086
+            },
+            {
+              "id": "monitor",
+              "score": 0.3934024647894881
+            },
+            {
+              "id": "keyword",
+              "score": 0.3895865662737774
+            },
+            {
+              "id": "replay",
+              "score": 0.37915062494584
+            },
+            {
+              "id": "connectors",
+              "score": 0.35230034511904657
+            },
+            {
+              "id": "filters",
+              "score": 0.3410574652648562
+            },
+            {
+              "id": "browser",
+              "score": 0.32200216127224884
+            },
+            {
+              "id": "burst",
+              "score": 0.31366301326240414
+            },
+            {
+              "id": "terminal",
+              "score": 0.3105083979999642
+            },
+            {
+              "id": "offline",
+              "score": 0.3057957133831911
+            },
+            {
+              "id": "notes",
+              "score": 0.2967206122309354
+            },
+            {
+              "id": "downloads",
+              "score": 0.29327447611392193
+            },
+            {
+              "id": "approval",
+              "score": 0.28808497099669583
+            },
+            {
+              "id": "roots",
+              "score": 0.2831275471922683
+            },
+            {
+              "id": "mcp",
+              "score": 0.27762179797880454
+            },
+            {
+              "id": "http",
+              "score": 0.2769134539308707
+            },
+            {
+              "id": "retire",
+              "score": 0.2656219871501391
+            },
+            {
+              "id": "tasks",
+              "score": 0.25793306256519244
+            },
+            {
+              "id": "children",
+              "score": 0.2505413395016874
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.24703262805977633
+            },
+            {
+              "id": "files",
+              "score": 0.2386102199722299
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Do idle watchers occupy running-task slots?",
+          "queryMs": 113.12383399999999,
+          "ranking": [
+            {
+              "id": "tasks",
+              "score": 0.5717503861576541
+            },
+            {
+              "id": "children",
+              "score": 0.4248958366386224
+            },
+            {
+              "id": "monitor",
+              "score": 0.4226933019587835
+            },
+            {
+              "id": "connectors",
+              "score": 0.4076538871339347
+            },
+            {
+              "id": "approval",
+              "score": 0.38189943388205416
+            },
+            {
+              "id": "offline",
+              "score": 0.3669295507825158
+            },
+            {
+              "id": "retire",
+              "score": 0.3495694790104705
+            },
+            {
+              "id": "browser",
+              "score": 0.3454720145423189
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.3437431588247491
+            },
+            {
+              "id": "terminal",
+              "score": 0.3430935339948846
+            },
+            {
+              "id": "http",
+              "score": 0.33168539576478384
+            },
+            {
+              "id": "standing",
+              "score": 0.3109765763345371
+            },
+            {
+              "id": "files",
+              "score": 0.30773479340635446
+            },
+            {
+              "id": "semantic",
+              "score": 0.306333993196781
+            },
+            {
+              "id": "replay",
+              "score": 0.3046562684988321
+            },
+            {
+              "id": "burst",
+              "score": 0.3030421475874946
+            },
+            {
+              "id": "paired",
+              "score": 0.2962711460510433
+            },
+            {
+              "id": "roots",
+              "score": 0.2958873571390521
+            },
+            {
+              "id": "mcp",
+              "score": 0.2953442811286032
+            },
+            {
+              "id": "tools",
+              "score": 0.2917291555380903
+            },
+            {
+              "id": "skills",
+              "score": 0.2870111438531265
+            },
+            {
+              "id": "profiles",
+              "score": 0.28648500799387205
+            },
+            {
+              "id": "local",
+              "score": 0.28222090807319566
+            },
+            {
+              "id": "qwen",
+              "score": 0.2764026742236536
+            },
+            {
+              "id": "openrouter",
+              "score": 0.26323251449175283
+            },
+            {
+              "id": "notes",
+              "score": 0.2578869851181046
+            },
+            {
+              "id": "filters",
+              "score": 0.2538207997821284
+            },
+            {
+              "id": "downloads",
+              "score": 0.253224535620764
+            },
+            {
+              "id": "openai",
+              "score": 0.25257947394354013
+            },
+            {
+              "id": "keyword",
+              "score": 0.2509238256424811
+            },
+            {
+              "id": "memory",
+              "score": 0.23979088672295298
+            },
+            {
+              "id": "attachments",
+              "score": 0.21376651567737
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Why is unused RAM misleading on a Mac?",
+          "queryMs": 113.9058329999998,
+          "ranking": [
+            {
+              "id": "memory-pressure",
+              "score": 0.7117449321267694
+            },
+            {
+              "id": "local",
+              "score": 0.3729325799229215
+            },
+            {
+              "id": "notes",
+              "score": 0.3265171349563587
+            },
+            {
+              "id": "standing",
+              "score": 0.3249968889182186
+            },
+            {
+              "id": "offline",
+              "score": 0.3177408372126437
+            },
+            {
+              "id": "memory",
+              "score": 0.30267590082836116
+            },
+            {
+              "id": "tasks",
+              "score": 0.29106634441110263
+            },
+            {
+              "id": "monitor",
+              "score": 0.2832013067164701
+            },
+            {
+              "id": "roots",
+              "score": 0.27815703841275796
+            },
+            {
+              "id": "browser",
+              "score": 0.2765887239178558
+            },
+            {
+              "id": "keyword",
+              "score": 0.27139494759068983
+            },
+            {
+              "id": "children",
+              "score": 0.26991439504366743
+            },
+            {
+              "id": "semantic",
+              "score": 0.2678271754665911
+            },
+            {
+              "id": "paired",
+              "score": 0.2674189212028082
+            },
+            {
+              "id": "files",
+              "score": 0.25958381444158235
+            },
+            {
+              "id": "mcp",
+              "score": 0.25758020768690687
+            },
+            {
+              "id": "approval",
+              "score": 0.2557610270095502
+            },
+            {
+              "id": "terminal",
+              "score": 0.25327783335918
+            },
+            {
+              "id": "connectors",
+              "score": 0.2510517038468405
+            },
+            {
+              "id": "retire",
+              "score": 0.2485087804747756
+            },
+            {
+              "id": "tools",
+              "score": 0.2466813848546632
+            },
+            {
+              "id": "attachments",
+              "score": 0.24349210183474904
+            },
+            {
+              "id": "openrouter",
+              "score": 0.23681103563613984
+            },
+            {
+              "id": "http",
+              "score": 0.2352296096720153
+            },
+            {
+              "id": "replay",
+              "score": 0.23352087700617932
+            },
+            {
+              "id": "qwen",
+              "score": 0.23216359514646356
+            },
+            {
+              "id": "profiles",
+              "score": 0.23066642900142234
+            },
+            {
+              "id": "burst",
+              "score": 0.22804373990685833
+            },
+            {
+              "id": "skills",
+              "score": 0.22573778911010886
+            },
+            {
+              "id": "openai",
+              "score": 0.2238834049672493
+            },
+            {
+              "id": "filters",
+              "score": 0.2110642890048397
+            },
+            {
+              "id": "downloads",
+              "score": 0.19245719080065513
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "How do repeated events avoid spamming a conversation?",
+          "queryMs": 118.92241700000068,
+          "ranking": [
+            {
+              "id": "monitor",
+              "score": 0.5538704736631856
+            },
+            {
+              "id": "burst",
+              "score": 0.5365502325206226
+            },
+            {
+              "id": "connectors",
+              "score": 0.5030445021456559
+            },
+            {
+              "id": "children",
+              "score": 0.48946872228233457
+            },
+            {
+              "id": "retire",
+              "score": 0.48664993582553867
+            },
+            {
+              "id": "replay",
+              "score": 0.4247136524159661
+            },
+            {
+              "id": "standing",
+              "score": 0.4047201390543955
+            },
+            {
+              "id": "notes",
+              "score": 0.36933072796477995
+            },
+            {
+              "id": "offline",
+              "score": 0.3474332188832656
+            },
+            {
+              "id": "semantic",
+              "score": 0.3428517952220121
+            },
+            {
+              "id": "browser",
+              "score": 0.342426055722208
+            },
+            {
+              "id": "approval",
+              "score": 0.33834388060218784
+            },
+            {
+              "id": "tools",
+              "score": 0.33782398994094787
+            },
+            {
+              "id": "http",
+              "score": 0.33526314610514063
+            },
+            {
+              "id": "paired",
+              "score": 0.3193258663354127
+            },
+            {
+              "id": "terminal",
+              "score": 0.31768587814793664
+            },
+            {
+              "id": "mcp",
+              "score": 0.3130898201785034
+            },
+            {
+              "id": "attachments",
+              "score": 0.3049394973630579
+            },
+            {
+              "id": "profiles",
+              "score": 0.3044254554887488
+            },
+            {
+              "id": "filters",
+              "score": 0.30388003769856403
+            },
+            {
+              "id": "files",
+              "score": 0.30045423836641216
+            },
+            {
+              "id": "tasks",
+              "score": 0.298636447117067
+            },
+            {
+              "id": "keyword",
+              "score": 0.29762502182320116
+            },
+            {
+              "id": "openrouter",
+              "score": 0.29522836342696646
+            },
+            {
+              "id": "memory",
+              "score": 0.292570474784845
+            },
+            {
+              "id": "qwen",
+              "score": 0.28523536269355687
+            },
+            {
+              "id": "openai",
+              "score": 0.2832766487562741
+            },
+            {
+              "id": "skills",
+              "score": 0.28305500922317417
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.25418423148999236
+            },
+            {
+              "id": "roots",
+              "score": 0.24116343910442478
+            },
+            {
+              "id": "local",
+              "score": 0.22811401301530085
+            },
+            {
+              "id": "downloads",
+              "score": 0.22014396393484845
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 0.5
+        }
+      ],
+      "summary": {
+        "p50Ms": 117.61295900000005,
+        "p95Ms": 119.67783299999974,
+        "meanReciprocalRank": 0.9375,
+        "recallAt5": 1
+      }
+    },
+    {
+      "profile": "Qwen3-Embedding-8B|69d0e58a13e463cd99a9b83e3f5fee7c10265fab:Q8_0|4096|last:l2:instruct-v1:Given a web search query, retrieve relevant passages that answer the query",
+      "status": "measured",
+      "availableMemoryBytes": 4896262717.44,
+      "memoryAdvisory": true,
+      "indexingMs": 9124.534291,
+      "documentsPerSecond": 3.507028301878733,
+      "runtime": {
+        "startupMs": 5335,
+        "queryMs": 114,
+        "peakMemoryBytes": 4060479488,
+        "memoryMeasurement": "Process RSS sampled at 1 Hz; not total unified GPU memory."
+      },
+      "recallAt5": 1,
+      "results": [
+        {
+          "query": "What happens to a watcher when I clear its chat?",
+          "queryMs": 117.23516700000255,
+          "ranking": [
+            {
+              "id": "retire",
+              "score": 0.5574585455917819
+            },
+            {
+              "id": "monitor",
+              "score": 0.4504223186246808
+            },
+            {
+              "id": "children",
+              "score": 0.4427438171584818
+            },
+            {
+              "id": "approval",
+              "score": 0.41395567106068365
+            },
+            {
+              "id": "tasks",
+              "score": 0.38994142931985604
+            },
+            {
+              "id": "connectors",
+              "score": 0.38798963098333095
+            },
+            {
+              "id": "browser",
+              "score": 0.3544452797559873
+            },
+            {
+              "id": "offline",
+              "score": 0.3254867970080948
+            },
+            {
+              "id": "replay",
+              "score": 0.3214826038540632
+            },
+            {
+              "id": "semantic",
+              "score": 0.30461873438649756
+            },
+            {
+              "id": "burst",
+              "score": 0.30041984856680387
+            },
+            {
+              "id": "files",
+              "score": 0.2978417744598711
+            },
+            {
+              "id": "terminal",
+              "score": 0.295539826388997
+            },
+            {
+              "id": "notes",
+              "score": 0.2940821098807021
+            },
+            {
+              "id": "standing",
+              "score": 0.2896404668813548
+            },
+            {
+              "id": "tools",
+              "score": 0.27362922226090386
+            },
+            {
+              "id": "mcp",
+              "score": 0.2637938469823421
+            },
+            {
+              "id": "http",
+              "score": 0.2595972565048339
+            },
+            {
+              "id": "keyword",
+              "score": 0.2380750082094198
+            },
+            {
+              "id": "attachments",
+              "score": 0.23802554859181974
+            },
+            {
+              "id": "paired",
+              "score": 0.22909201139355045
+            },
+            {
+              "id": "filters",
+              "score": 0.21391690385735626
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.21351153530886194
+            },
+            {
+              "id": "openrouter",
+              "score": 0.212144793799796
+            },
+            {
+              "id": "roots",
+              "score": 0.21085304053650722
+            },
+            {
+              "id": "profiles",
+              "score": 0.20532860444421994
+            },
+            {
+              "id": "openai",
+              "score": 0.20377313435505365
+            },
+            {
+              "id": "skills",
+              "score": 0.19756889315918597
+            },
+            {
+              "id": "memory",
+              "score": 0.1970385478483385
+            },
+            {
+              "id": "qwen",
+              "score": 0.1960882461693316
+            },
+            {
+              "id": "local",
+              "score": 0.19106281773127018
+            },
+            {
+              "id": "downloads",
+              "score": 0.17592448999502697
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "How does Rime acquire additional callable capabilities?",
+          "queryMs": 114.32404200000019,
+          "ranking": [
+            {
+              "id": "skills",
+              "score": 0.44551147443766415
+            },
+            {
+              "id": "tools",
+              "score": 0.39564873665935707
+            },
+            {
+              "id": "openai",
+              "score": 0.3689844837071036
+            },
+            {
+              "id": "paired",
+              "score": 0.3686916850062693
+            },
+            {
+              "id": "openrouter",
+              "score": 0.3636463482935216
+            },
+            {
+              "id": "approval",
+              "score": 0.3502508695812896
+            },
+            {
+              "id": "local",
+              "score": 0.343851790203637
+            },
+            {
+              "id": "mcp",
+              "score": 0.34292677376447
+            },
+            {
+              "id": "replay",
+              "score": 0.33985294165533
+            },
+            {
+              "id": "offline",
+              "score": 0.3336274591874392
+            },
+            {
+              "id": "monitor",
+              "score": 0.3267531066096978
+            },
+            {
+              "id": "connectors",
+              "score": 0.3153317916315571
+            },
+            {
+              "id": "memory",
+              "score": 0.31268299001668565
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.30691033543775137
+            },
+            {
+              "id": "qwen",
+              "score": 0.30289433235442276
+            },
+            {
+              "id": "keyword",
+              "score": 0.30118464362891606
+            },
+            {
+              "id": "profiles",
+              "score": 0.2965156392903647
+            },
+            {
+              "id": "standing",
+              "score": 0.29615801097194344
+            },
+            {
+              "id": "attachments",
+              "score": 0.2910079002190851
+            },
+            {
+              "id": "children",
+              "score": 0.28978197312860826
+            },
+            {
+              "id": "semantic",
+              "score": 0.28600744243986476
+            },
+            {
+              "id": "burst",
+              "score": 0.2722423368246766
+            },
+            {
+              "id": "roots",
+              "score": 0.2701022121305606
+            },
+            {
+              "id": "tasks",
+              "score": 0.2690321451920038
+            },
+            {
+              "id": "filters",
+              "score": 0.26558090093653985
+            },
+            {
+              "id": "http",
+              "score": 0.2501356501172356
+            },
+            {
+              "id": "browser",
+              "score": 0.24748232915637922
+            },
+            {
+              "id": "retire",
+              "score": 0.24198736617664066
+            },
+            {
+              "id": "notes",
+              "score": 0.2419348840429741
+            },
+            {
+              "id": "terminal",
+              "score": 0.23763525882098804
+            },
+            {
+              "id": "downloads",
+              "score": 0.23761273141668685
+            },
+            {
+              "id": "files",
+              "score": 0.23730761438723663
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 0.5
+        },
+        {
+          "query": "Can a phrase spanning two command-output chunks be detected?",
+          "queryMs": 115.200665999997,
+          "ranking": [
+            {
+              "id": "terminal",
+              "score": 0.5956900424384322
+            },
+            {
+              "id": "monitor",
+              "score": 0.40361114964636763
+            },
+            {
+              "id": "replay",
+              "score": 0.3735122715538632
+            },
+            {
+              "id": "semantic",
+              "score": 0.37218402363437614
+            },
+            {
+              "id": "attachments",
+              "score": 0.3668922196321991
+            },
+            {
+              "id": "keyword",
+              "score": 0.36664889564043934
+            },
+            {
+              "id": "paired",
+              "score": 0.3641013703001044
+            },
+            {
+              "id": "offline",
+              "score": 0.34738990995217656
+            },
+            {
+              "id": "standing",
+              "score": 0.3463673970397913
+            },
+            {
+              "id": "filters",
+              "score": 0.34546247084457715
+            },
+            {
+              "id": "connectors",
+              "score": 0.343948934178699
+            },
+            {
+              "id": "browser",
+              "score": 0.3399717962166459
+            },
+            {
+              "id": "skills",
+              "score": 0.32640256063432843
+            },
+            {
+              "id": "tools",
+              "score": 0.32433271632233174
+            },
+            {
+              "id": "http",
+              "score": 0.32002985583146015
+            },
+            {
+              "id": "memory",
+              "score": 0.3168193813618768
+            },
+            {
+              "id": "burst",
+              "score": 0.31578727545331775
+            },
+            {
+              "id": "retire",
+              "score": 0.31488203656779495
+            },
+            {
+              "id": "approval",
+              "score": 0.3095805501092153
+            },
+            {
+              "id": "children",
+              "score": 0.30911448615373066
+            },
+            {
+              "id": "openai",
+              "score": 0.30885580007890817
+            },
+            {
+              "id": "mcp",
+              "score": 0.30189754261631296
+            },
+            {
+              "id": "qwen",
+              "score": 0.299511630263963
+            },
+            {
+              "id": "files",
+              "score": 0.2982467631238583
+            },
+            {
+              "id": "notes",
+              "score": 0.2948034162827205
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.286596462930075
+            },
+            {
+              "id": "profiles",
+              "score": 0.27747046789690866
+            },
+            {
+              "id": "openrouter",
+              "score": 0.27106745520645414
+            },
+            {
+              "id": "tasks",
+              "score": 0.27076836619155015
+            },
+            {
+              "id": "local",
+              "score": 0.26188312562166177
+            },
+            {
+              "id": "roots",
+              "score": 0.24989946225264992
+            },
+            {
+              "id": "downloads",
+              "score": 0.1909986852050227
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Will monitoring survive another application replacing a file during save?",
+          "queryMs": 114.84679200000028,
+          "ranking": [
+            {
+              "id": "files",
+              "score": 0.6912462287896812
+            },
+            {
+              "id": "retire",
+              "score": 0.4672553564898609
+            },
+            {
+              "id": "approval",
+              "score": 0.4428637151682684
+            },
+            {
+              "id": "monitor",
+              "score": 0.434755157377475
+            },
+            {
+              "id": "tasks",
+              "score": 0.4315933906180808
+            },
+            {
+              "id": "offline",
+              "score": 0.42338614348494685
+            },
+            {
+              "id": "terminal",
+              "score": 0.4228036228566214
+            },
+            {
+              "id": "browser",
+              "score": 0.4028520457224739
+            },
+            {
+              "id": "children",
+              "score": 0.39126511724948837
+            },
+            {
+              "id": "semantic",
+              "score": 0.39072616025909607
+            },
+            {
+              "id": "memory",
+              "score": 0.38133727946983903
+            },
+            {
+              "id": "notes",
+              "score": 0.38058097202761826
+            },
+            {
+              "id": "mcp",
+              "score": 0.36640378386875594
+            },
+            {
+              "id": "connectors",
+              "score": 0.34950144355328755
+            },
+            {
+              "id": "burst",
+              "score": 0.3475372704751745
+            },
+            {
+              "id": "replay",
+              "score": 0.33974272308069103
+            },
+            {
+              "id": "roots",
+              "score": 0.32883634607597195
+            },
+            {
+              "id": "standing",
+              "score": 0.319605651197335
+            },
+            {
+              "id": "http",
+              "score": 0.3140121927415521
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.30870120930735606
+            },
+            {
+              "id": "downloads",
+              "score": 0.3032783083763452
+            },
+            {
+              "id": "profiles",
+              "score": 0.29431888446247856
+            },
+            {
+              "id": "skills",
+              "score": 0.2855354717951008
+            },
+            {
+              "id": "attachments",
+              "score": 0.2762815778259816
+            },
+            {
+              "id": "paired",
+              "score": 0.2640170944048428
+            },
+            {
+              "id": "filters",
+              "score": 0.2594848336197335
+            },
+            {
+              "id": "tools",
+              "score": 0.25026588169094394
+            },
+            {
+              "id": "keyword",
+              "score": 0.24755344630485226
+            },
+            {
+              "id": "local",
+              "score": 0.22948664052519469
+            },
+            {
+              "id": "openrouter",
+              "score": 0.2084486604670607
+            },
+            {
+              "id": "openai",
+              "score": 0.20397731645445924
+            },
+            {
+              "id": "qwen",
+              "score": 0.1994227354763117
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "How do I watch only one element on a web page?",
+          "queryMs": 115.84191700000156,
+          "ranking": [
+            {
+              "id": "browser",
+              "score": 0.5978320831102855
+            },
+            {
+              "id": "monitor",
+              "score": 0.4191294261849912
+            },
+            {
+              "id": "approval",
+              "score": 0.4123642399684826
+            },
+            {
+              "id": "attachments",
+              "score": 0.40389743134122114
+            },
+            {
+              "id": "tasks",
+              "score": 0.3756736396937595
+            },
+            {
+              "id": "http",
+              "score": 0.3581493431383229
+            },
+            {
+              "id": "files",
+              "score": 0.3546968781919267
+            },
+            {
+              "id": "standing",
+              "score": 0.3428401704640009
+            },
+            {
+              "id": "memory",
+              "score": 0.3344924251712514
+            },
+            {
+              "id": "tools",
+              "score": 0.3199180544260678
+            },
+            {
+              "id": "notes",
+              "score": 0.3144095162094022
+            },
+            {
+              "id": "terminal",
+              "score": 0.3019065564495808
+            },
+            {
+              "id": "paired",
+              "score": 0.3013874367608179
+            },
+            {
+              "id": "skills",
+              "score": 0.2912588814736991
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.28655487504741056
+            },
+            {
+              "id": "semantic",
+              "score": 0.2831158939026795
+            },
+            {
+              "id": "offline",
+              "score": 0.28295723513527665
+            },
+            {
+              "id": "roots",
+              "score": 0.27621567575169753
+            },
+            {
+              "id": "qwen",
+              "score": 0.268755385241018
+            },
+            {
+              "id": "connectors",
+              "score": 0.2685839919556787
+            },
+            {
+              "id": "openai",
+              "score": 0.26831826393929636
+            },
+            {
+              "id": "retire",
+              "score": 0.2544537652534304
+            },
+            {
+              "id": "filters",
+              "score": 0.2525007902417319
+            },
+            {
+              "id": "children",
+              "score": 0.25223365447147217
+            },
+            {
+              "id": "keyword",
+              "score": 0.2500480157392241
+            },
+            {
+              "id": "openrouter",
+              "score": 0.24795201195635608
+            },
+            {
+              "id": "profiles",
+              "score": 0.23567259951594347
+            },
+            {
+              "id": "burst",
+              "score": 0.23238800409313032
+            },
+            {
+              "id": "replay",
+              "score": 0.22675421529101225
+            },
+            {
+              "id": "local",
+              "score": 0.2227843990713461
+            },
+            {
+              "id": "mcp",
+              "score": 0.21486941722844566
+            },
+            {
+              "id": "downloads",
+              "score": 0.16712444063398738
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "What happens if semantic inference cannot be reached?",
+          "queryMs": 113.65641699999833,
+          "ranking": [
+            {
+              "id": "semantic",
+              "score": 0.5857763305410243
+            },
+            {
+              "id": "keyword",
+              "score": 0.5785599985513258
+            },
+            {
+              "id": "offline",
+              "score": 0.4909654678715159
+            },
+            {
+              "id": "filters",
+              "score": 0.4464062819280945
+            },
+            {
+              "id": "paired",
+              "score": 0.40504927553618575
+            },
+            {
+              "id": "replay",
+              "score": 0.37125406034829445
+            },
+            {
+              "id": "skills",
+              "score": 0.3325728972821428
+            },
+            {
+              "id": "approval",
+              "score": 0.33136795110608125
+            },
+            {
+              "id": "standing",
+              "score": 0.33024111036816683
+            },
+            {
+              "id": "tools",
+              "score": 0.3244943258263014
+            },
+            {
+              "id": "children",
+              "score": 0.32197022277886383
+            },
+            {
+              "id": "mcp",
+              "score": 0.3172222632893552
+            },
+            {
+              "id": "qwen",
+              "score": 0.31275484483928156
+            },
+            {
+              "id": "memory",
+              "score": 0.30751056098132384
+            },
+            {
+              "id": "attachments",
+              "score": 0.3048607468792603
+            },
+            {
+              "id": "notes",
+              "score": 0.3001115453456256
+            },
+            {
+              "id": "profiles",
+              "score": 0.29950353747119696
+            },
+            {
+              "id": "openai",
+              "score": 0.2991827269838051
+            },
+            {
+              "id": "monitor",
+              "score": 0.2965067576190086
+            },
+            {
+              "id": "openrouter",
+              "score": 0.2946446587953697
+            },
+            {
+              "id": "roots",
+              "score": 0.28921134925626646
+            },
+            {
+              "id": "burst",
+              "score": 0.2820080169944652
+            },
+            {
+              "id": "retire",
+              "score": 0.2776014501455
+            },
+            {
+              "id": "local",
+              "score": 0.27045983481945446
+            },
+            {
+              "id": "terminal",
+              "score": 0.26737575019164506
+            },
+            {
+              "id": "connectors",
+              "score": 0.25749840854189315
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.2573803486074132
+            },
+            {
+              "id": "browser",
+              "score": 0.22952155956406453
+            },
+            {
+              "id": "http",
+              "score": 0.22162350164305494
+            },
+            {
+              "id": "downloads",
+              "score": 0.20347872792494276
+            },
+            {
+              "id": "files",
+              "score": 0.1974114005190059
+            },
+            {
+              "id": "tasks",
+              "score": 0.17201929287186357
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Where are my saved facts kept when I rebuild search?",
+          "queryMs": 113.9452089999977,
+          "ranking": [
+            {
+              "id": "memory",
+              "score": 0.5738816840293023
+            },
+            {
+              "id": "notes",
+              "score": 0.42790332512661133
+            },
+            {
+              "id": "roots",
+              "score": 0.42297538752753255
+            },
+            {
+              "id": "keyword",
+              "score": 0.399667023918923
+            },
+            {
+              "id": "tools",
+              "score": 0.3942883092607336
+            },
+            {
+              "id": "standing",
+              "score": 0.3509234482729116
+            },
+            {
+              "id": "mcp",
+              "score": 0.33699747940569774
+            },
+            {
+              "id": "skills",
+              "score": 0.33576609270774926
+            },
+            {
+              "id": "files",
+              "score": 0.33414433398265203
+            },
+            {
+              "id": "replay",
+              "score": 0.3339539969344739
+            },
+            {
+              "id": "attachments",
+              "score": 0.32916252707973853
+            },
+            {
+              "id": "retire",
+              "score": 0.3278606953888087
+            },
+            {
+              "id": "paired",
+              "score": 0.3261841574636641
+            },
+            {
+              "id": "burst",
+              "score": 0.32221597493320653
+            },
+            {
+              "id": "offline",
+              "score": 0.29874743937394616
+            },
+            {
+              "id": "monitor",
+              "score": 0.2851937453898371
+            },
+            {
+              "id": "profiles",
+              "score": 0.2792443123444357
+            },
+            {
+              "id": "filters",
+              "score": 0.2752148796266464
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.2704893929103705
+            },
+            {
+              "id": "qwen",
+              "score": 0.25818927684277804
+            },
+            {
+              "id": "tasks",
+              "score": 0.2556970930862091
+            },
+            {
+              "id": "browser",
+              "score": 0.25232195947880626
+            },
+            {
+              "id": "openai",
+              "score": 0.24530080912988372
+            },
+            {
+              "id": "approval",
+              "score": 0.24246359158028305
+            },
+            {
+              "id": "downloads",
+              "score": 0.24140908579023304
+            },
+            {
+              "id": "children",
+              "score": 0.24107332766987122
+            },
+            {
+              "id": "local",
+              "score": 0.2386469600051817
+            },
+            {
+              "id": "openrouter",
+              "score": 0.23024273853488017
+            },
+            {
+              "id": "http",
+              "score": 0.22893170119346604
+            },
+            {
+              "id": "connectors",
+              "score": 0.2216355292410804
+            },
+            {
+              "id": "semantic",
+              "score": 0.21783324938276202
+            },
+            {
+              "id": "terminal",
+              "score": 0.1646917885797236
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Can I run embeddings on another Mac without moving my database?",
+          "queryMs": 112.82316699999865,
+          "ranking": [
+            {
+              "id": "paired",
+              "score": 0.5643548829117824
+            },
+            {
+              "id": "local",
+              "score": 0.5411416700761015
+            },
+            {
+              "id": "roots",
+              "score": 0.4856005077432177
+            },
+            {
+              "id": "openrouter",
+              "score": 0.4291863931279417
+            },
+            {
+              "id": "openai",
+              "score": 0.42486607096598356
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.39958146896085034
+            },
+            {
+              "id": "notes",
+              "score": 0.39234841539593773
+            },
+            {
+              "id": "memory",
+              "score": 0.3919885054628442
+            },
+            {
+              "id": "profiles",
+              "score": 0.3901145028270644
+            },
+            {
+              "id": "qwen",
+              "score": 0.38766879739572674
+            },
+            {
+              "id": "skills",
+              "score": 0.37122017808127744
+            },
+            {
+              "id": "mcp",
+              "score": 0.36756357526424555
+            },
+            {
+              "id": "offline",
+              "score": 0.36004659016113366
+            },
+            {
+              "id": "burst",
+              "score": 0.3490298741133993
+            },
+            {
+              "id": "standing",
+              "score": 0.33748344327752006
+            },
+            {
+              "id": "attachments",
+              "score": 0.3299409727737997
+            },
+            {
+              "id": "downloads",
+              "score": 0.31927546147661434
+            },
+            {
+              "id": "tools",
+              "score": 0.3179494108357743
+            },
+            {
+              "id": "files",
+              "score": 0.31759421728804277
+            },
+            {
+              "id": "approval",
+              "score": 0.3063206198331214
+            },
+            {
+              "id": "semantic",
+              "score": 0.3053190030634618
+            },
+            {
+              "id": "keyword",
+              "score": 0.30366343373486143
+            },
+            {
+              "id": "monitor",
+              "score": 0.30293911131601764
+            },
+            {
+              "id": "replay",
+              "score": 0.29870709893277836
+            },
+            {
+              "id": "retire",
+              "score": 0.28872268477983903
+            },
+            {
+              "id": "filters",
+              "score": 0.2866738441134166
+            },
+            {
+              "id": "connectors",
+              "score": 0.28324708180495434
+            },
+            {
+              "id": "children",
+              "score": 0.2514555478903235
+            },
+            {
+              "id": "tasks",
+              "score": 0.251208998272057
+            },
+            {
+              "id": "browser",
+              "score": 0.24451778596863108
+            },
+            {
+              "id": "terminal",
+              "score": 0.20679020736705925
+            },
+            {
+              "id": "http",
+              "score": 0.19829041374947884
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Does a monitor grant permission to send a message?",
+          "queryMs": 114.19066600000224,
+          "ranking": [
+            {
+              "id": "approval",
+              "score": 0.6494107471137169
+            },
+            {
+              "id": "monitor",
+              "score": 0.5336457884648838
+            },
+            {
+              "id": "retire",
+              "score": 0.49504044234734795
+            },
+            {
+              "id": "semantic",
+              "score": 0.45607497271500064
+            },
+            {
+              "id": "connectors",
+              "score": 0.4534647404742408
+            },
+            {
+              "id": "tasks",
+              "score": 0.4523718928559401
+            },
+            {
+              "id": "children",
+              "score": 0.4198813589630377
+            },
+            {
+              "id": "terminal",
+              "score": 0.4032391540528345
+            },
+            {
+              "id": "burst",
+              "score": 0.39701001463066676
+            },
+            {
+              "id": "files",
+              "score": 0.3843626000298045
+            },
+            {
+              "id": "browser",
+              "score": 0.36502410516073347
+            },
+            {
+              "id": "offline",
+              "score": 0.342938103842469
+            },
+            {
+              "id": "mcp",
+              "score": 0.33754550915080367
+            },
+            {
+              "id": "paired",
+              "score": 0.3279256751880202
+            },
+            {
+              "id": "replay",
+              "score": 0.32585027624002966
+            },
+            {
+              "id": "http",
+              "score": 0.32368133343320815
+            },
+            {
+              "id": "standing",
+              "score": 0.3169850081878099
+            },
+            {
+              "id": "openai",
+              "score": 0.2824936859507787
+            },
+            {
+              "id": "openrouter",
+              "score": 0.2769733589808579
+            },
+            {
+              "id": "attachments",
+              "score": 0.2742032315518198
+            },
+            {
+              "id": "tools",
+              "score": 0.26685232432534844
+            },
+            {
+              "id": "skills",
+              "score": 0.2639214387682966
+            },
+            {
+              "id": "notes",
+              "score": 0.2630885043759856
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.2508890136750238
+            },
+            {
+              "id": "local",
+              "score": 0.24704800376161637
+            },
+            {
+              "id": "profiles",
+              "score": 0.24416632657805445
+            },
+            {
+              "id": "filters",
+              "score": 0.24101109057323133
+            },
+            {
+              "id": "qwen",
+              "score": 0.2394287444049285
+            },
+            {
+              "id": "memory",
+              "score": 0.238786175122537
+            },
+            {
+              "id": "roots",
+              "score": 0.2333092556702055
+            },
+            {
+              "id": "keyword",
+              "score": 0.22610016550046322
+            },
+            {
+              "id": "downloads",
+              "score": 0.22089826046880456
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "How are Q4 and Q8 vectors prevented from mixing?",
+          "queryMs": 116.7021249999998,
+          "ranking": [
+            {
+              "id": "profiles",
+              "score": 0.5361458519415978
+            },
+            {
+              "id": "qwen",
+              "score": 0.44473839236876006
+            },
+            {
+              "id": "openrouter",
+              "score": 0.3623736609736892
+            },
+            {
+              "id": "paired",
+              "score": 0.3237807621879792
+            },
+            {
+              "id": "semantic",
+              "score": 0.3198759748776201
+            },
+            {
+              "id": "keyword",
+              "score": 0.3167385588611311
+            },
+            {
+              "id": "openai",
+              "score": 0.303116251055571
+            },
+            {
+              "id": "connectors",
+              "score": 0.29355042137481396
+            },
+            {
+              "id": "burst",
+              "score": 0.2773780988235674
+            },
+            {
+              "id": "offline",
+              "score": 0.2724271884784771
+            },
+            {
+              "id": "approval",
+              "score": 0.2683593990815518
+            },
+            {
+              "id": "children",
+              "score": 0.26432412373197983
+            },
+            {
+              "id": "local",
+              "score": 0.2638515783935367
+            },
+            {
+              "id": "monitor",
+              "score": 0.2591128489199082
+            },
+            {
+              "id": "replay",
+              "score": 0.25811448300911044
+            },
+            {
+              "id": "filters",
+              "score": 0.2558462553214142
+            },
+            {
+              "id": "roots",
+              "score": 0.2539379087278913
+            },
+            {
+              "id": "notes",
+              "score": 0.2534269614493688
+            },
+            {
+              "id": "tools",
+              "score": 0.2531649015014343
+            },
+            {
+              "id": "mcp",
+              "score": 0.25304886606260063
+            },
+            {
+              "id": "standing",
+              "score": 0.24209877905475208
+            },
+            {
+              "id": "http",
+              "score": 0.2390064955863527
+            },
+            {
+              "id": "retire",
+              "score": 0.23417801016704576
+            },
+            {
+              "id": "memory",
+              "score": 0.23227683136503788
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.23013050423949402
+            },
+            {
+              "id": "skills",
+              "score": 0.21698678405161895
+            },
+            {
+              "id": "attachments",
+              "score": 0.2132714146911896
+            },
+            {
+              "id": "files",
+              "score": 0.20938085786618535
+            },
+            {
+              "id": "browser",
+              "score": 0.20185432279978
+            },
+            {
+              "id": "tasks",
+              "score": 0.19074859865423693
+            },
+            {
+              "id": "terminal",
+              "score": 0.18409970755952407
+            },
+            {
+              "id": "downloads",
+              "score": 0.15091776943342997
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Which provider accepts text-embedding-3-small?",
+          "queryMs": 114.72254099999918,
+          "ranking": [
+            {
+              "id": "openai",
+              "score": 0.7369763804458147
+            },
+            {
+              "id": "openrouter",
+              "score": 0.7081406814705992
+            },
+            {
+              "id": "qwen",
+              "score": 0.618757741642789
+            },
+            {
+              "id": "paired",
+              "score": 0.5607993719833329
+            },
+            {
+              "id": "local",
+              "score": 0.5396488119374927
+            },
+            {
+              "id": "attachments",
+              "score": 0.45437439257872986
+            },
+            {
+              "id": "tools",
+              "score": 0.4426233796491899
+            },
+            {
+              "id": "skills",
+              "score": 0.42894292820573865
+            },
+            {
+              "id": "profiles",
+              "score": 0.4002203117323219
+            },
+            {
+              "id": "monitor",
+              "score": 0.3917124719108828
+            },
+            {
+              "id": "memory",
+              "score": 0.38214385158048186
+            },
+            {
+              "id": "browser",
+              "score": 0.37481740870213
+            },
+            {
+              "id": "semantic",
+              "score": 0.36863174603388693
+            },
+            {
+              "id": "connectors",
+              "score": 0.36781789708745066
+            },
+            {
+              "id": "offline",
+              "score": 0.3669288137233048
+            },
+            {
+              "id": "keyword",
+              "score": 0.35899315992802816
+            },
+            {
+              "id": "standing",
+              "score": 0.3561065785059065
+            },
+            {
+              "id": "approval",
+              "score": 0.3511387440477682
+            },
+            {
+              "id": "replay",
+              "score": 0.34911927356903444
+            },
+            {
+              "id": "burst",
+              "score": 0.3235593002716569
+            },
+            {
+              "id": "notes",
+              "score": 0.3212926001131673
+            },
+            {
+              "id": "filters",
+              "score": 0.31169417981782194
+            },
+            {
+              "id": "mcp",
+              "score": 0.3106320936299186
+            },
+            {
+              "id": "downloads",
+              "score": 0.30182926049146946
+            },
+            {
+              "id": "roots",
+              "score": 0.2989613654165163
+            },
+            {
+              "id": "retire",
+              "score": 0.2969564988190715
+            },
+            {
+              "id": "tasks",
+              "score": 0.27657133871945255
+            },
+            {
+              "id": "children",
+              "score": 0.2724011094588843
+            },
+            {
+              "id": "http",
+              "score": 0.27050629000460735
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.259056968777314
+            },
+            {
+              "id": "terminal",
+              "score": 0.24634084512303775
+            },
+            {
+              "id": "files",
+              "score": 0.2383971783449809
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "How are uploaded PDF pages searchable?",
+          "queryMs": 252.86675000000105,
+          "ranking": [
+            {
+              "id": "attachments",
+              "score": 0.5851520056571142
+            },
+            {
+              "id": "memory",
+              "score": 0.5359737257812277
+            },
+            {
+              "id": "paired",
+              "score": 0.41872542166694926
+            },
+            {
+              "id": "roots",
+              "score": 0.40104299280695493
+            },
+            {
+              "id": "tools",
+              "score": 0.4007966061892209
+            },
+            {
+              "id": "keyword",
+              "score": 0.39265679981176144
+            },
+            {
+              "id": "notes",
+              "score": 0.38368833123346036
+            },
+            {
+              "id": "browser",
+              "score": 0.3748008091092185
+            },
+            {
+              "id": "skills",
+              "score": 0.37316835846149166
+            },
+            {
+              "id": "openai",
+              "score": 0.3616128928974553
+            },
+            {
+              "id": "qwen",
+              "score": 0.34098487421348916
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.33033193959845625
+            },
+            {
+              "id": "monitor",
+              "score": 0.320376812238796
+            },
+            {
+              "id": "files",
+              "score": 0.31952206260096355
+            },
+            {
+              "id": "openrouter",
+              "score": 0.31797817104694803
+            },
+            {
+              "id": "standing",
+              "score": 0.30718490513197594
+            },
+            {
+              "id": "local",
+              "score": 0.2979557147162393
+            },
+            {
+              "id": "profiles",
+              "score": 0.28791689783012475
+            },
+            {
+              "id": "http",
+              "score": 0.28000905512756546
+            },
+            {
+              "id": "filters",
+              "score": 0.2755846724390255
+            },
+            {
+              "id": "burst",
+              "score": 0.2699525493403499
+            },
+            {
+              "id": "downloads",
+              "score": 0.26878416431337826
+            },
+            {
+              "id": "approval",
+              "score": 0.2618509460231016
+            },
+            {
+              "id": "offline",
+              "score": 0.26087252252560983
+            },
+            {
+              "id": "semantic",
+              "score": 0.25901389506315836
+            },
+            {
+              "id": "mcp",
+              "score": 0.25427779947788565
+            },
+            {
+              "id": "retire",
+              "score": 0.25271276819938465
+            },
+            {
+              "id": "tasks",
+              "score": 0.24585318270336382
+            },
+            {
+              "id": "terminal",
+              "score": 0.22468571095141995
+            },
+            {
+              "id": "connectors",
+              "score": 0.22206865392038505
+            },
+            {
+              "id": "replay",
+              "score": 0.21477885052333748
+            },
+            {
+              "id": "children",
+              "score": 0.1881424323619511
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "What input formatting is used for Qwen embedding queries?",
+          "queryMs": 116.54620799999975,
+          "ranking": [
+            {
+              "id": "qwen",
+              "score": 0.6567037373518093
+            },
+            {
+              "id": "openrouter",
+              "score": 0.6331181287233487
+            },
+            {
+              "id": "openai",
+              "score": 0.5918151620534332
+            },
+            {
+              "id": "paired",
+              "score": 0.5481517940935228
+            },
+            {
+              "id": "local",
+              "score": 0.46789930671645175
+            },
+            {
+              "id": "tools",
+              "score": 0.4350685111615789
+            },
+            {
+              "id": "profiles",
+              "score": 0.4289753029002675
+            },
+            {
+              "id": "memory",
+              "score": 0.41713922029743483
+            },
+            {
+              "id": "standing",
+              "score": 0.41503536128254837
+            },
+            {
+              "id": "attachments",
+              "score": 0.4137504302134474
+            },
+            {
+              "id": "skills",
+              "score": 0.4127917507897499
+            },
+            {
+              "id": "semantic",
+              "score": 0.3961014315631013
+            },
+            {
+              "id": "monitor",
+              "score": 0.38916213477213646
+            },
+            {
+              "id": "keyword",
+              "score": 0.38571159360673435
+            },
+            {
+              "id": "replay",
+              "score": 0.3683199496796909
+            },
+            {
+              "id": "connectors",
+              "score": 0.3598038913931135
+            },
+            {
+              "id": "browser",
+              "score": 0.3270796294370982
+            },
+            {
+              "id": "filters",
+              "score": 0.3259423601459678
+            },
+            {
+              "id": "offline",
+              "score": 0.3130924977510752
+            },
+            {
+              "id": "burst",
+              "score": 0.30639278421214394
+            },
+            {
+              "id": "approval",
+              "score": 0.30399713102144243
+            },
+            {
+              "id": "notes",
+              "score": 0.291417893422251
+            },
+            {
+              "id": "terminal",
+              "score": 0.2732788467329831
+            },
+            {
+              "id": "mcp",
+              "score": 0.2722353065856682
+            },
+            {
+              "id": "roots",
+              "score": 0.2721024381348566
+            },
+            {
+              "id": "retire",
+              "score": 0.2634993797293516
+            },
+            {
+              "id": "downloads",
+              "score": 0.2618996041738496
+            },
+            {
+              "id": "http",
+              "score": 0.261057935287255
+            },
+            {
+              "id": "tasks",
+              "score": 0.260947587142033
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.25992376864742
+            },
+            {
+              "id": "files",
+              "score": 0.23519841805803723
+            },
+            {
+              "id": "children",
+              "score": 0.23074757269226703
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Do idle watchers occupy running-task slots?",
+          "queryMs": 115.62558299999728,
+          "ranking": [
+            {
+              "id": "tasks",
+              "score": 0.5683670059986412
+            },
+            {
+              "id": "monitor",
+              "score": 0.41926332333182487
+            },
+            {
+              "id": "children",
+              "score": 0.41059900575711644
+            },
+            {
+              "id": "connectors",
+              "score": 0.4081143937583711
+            },
+            {
+              "id": "approval",
+              "score": 0.38934969938376135
+            },
+            {
+              "id": "offline",
+              "score": 0.36041541192714505
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.3495262461781672
+            },
+            {
+              "id": "browser",
+              "score": 0.3483157437399676
+            },
+            {
+              "id": "retire",
+              "score": 0.3293330488608592
+            },
+            {
+              "id": "terminal",
+              "score": 0.3277690311153079
+            },
+            {
+              "id": "http",
+              "score": 0.3209693355251102
+            },
+            {
+              "id": "paired",
+              "score": 0.3030763303158155
+            },
+            {
+              "id": "standing",
+              "score": 0.3025302024991429
+            },
+            {
+              "id": "semantic",
+              "score": 0.30176133334386884
+            },
+            {
+              "id": "files",
+              "score": 0.29979355055169904
+            },
+            {
+              "id": "burst",
+              "score": 0.29787066095913245
+            },
+            {
+              "id": "roots",
+              "score": 0.29578336432381325
+            },
+            {
+              "id": "mcp",
+              "score": 0.29221679325500155
+            },
+            {
+              "id": "replay",
+              "score": 0.29027999026726664
+            },
+            {
+              "id": "tools",
+              "score": 0.28891651875605834
+            },
+            {
+              "id": "skills",
+              "score": 0.28786402808190453
+            },
+            {
+              "id": "local",
+              "score": 0.2802654058091054
+            },
+            {
+              "id": "qwen",
+              "score": 0.2705777607479534
+            },
+            {
+              "id": "profiles",
+              "score": 0.27044781020827185
+            },
+            {
+              "id": "openai",
+              "score": 0.2633515048109729
+            },
+            {
+              "id": "filters",
+              "score": 0.25598995282156906
+            },
+            {
+              "id": "openrouter",
+              "score": 0.25593985366096805
+            },
+            {
+              "id": "notes",
+              "score": 0.24731524034093624
+            },
+            {
+              "id": "memory",
+              "score": 0.24211500574640316
+            },
+            {
+              "id": "keyword",
+              "score": 0.2409553580173071
+            },
+            {
+              "id": "attachments",
+              "score": 0.23015675659516358
+            },
+            {
+              "id": "downloads",
+              "score": 0.22869596819278448
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "Why is unused RAM misleading on a Mac?",
+          "queryMs": 114.33100000000195,
+          "ranking": [
+            {
+              "id": "memory-pressure",
+              "score": 0.7003932671649377
+            },
+            {
+              "id": "local",
+              "score": 0.3575176651891855
+            },
+            {
+              "id": "standing",
+              "score": 0.3190358584211685
+            },
+            {
+              "id": "notes",
+              "score": 0.311484651543791
+            },
+            {
+              "id": "memory",
+              "score": 0.3072439650801354
+            },
+            {
+              "id": "offline",
+              "score": 0.306826826033707
+            },
+            {
+              "id": "roots",
+              "score": 0.2626422582718455
+            },
+            {
+              "id": "keyword",
+              "score": 0.26218143699138624
+            },
+            {
+              "id": "semantic",
+              "score": 0.2600207887532347
+            },
+            {
+              "id": "paired",
+              "score": 0.25912224678789053
+            },
+            {
+              "id": "approval",
+              "score": 0.2564288203010898
+            },
+            {
+              "id": "browser",
+              "score": 0.2549824827848984
+            },
+            {
+              "id": "tasks",
+              "score": 0.2539963688230515
+            },
+            {
+              "id": "monitor",
+              "score": 0.2506844137084379
+            },
+            {
+              "id": "mcp",
+              "score": 0.24257863647714317
+            },
+            {
+              "id": "files",
+              "score": 0.240893057259914
+            },
+            {
+              "id": "tools",
+              "score": 0.23964326355785218
+            },
+            {
+              "id": "connectors",
+              "score": 0.23817239173716523
+            },
+            {
+              "id": "children",
+              "score": 0.23675147715837244
+            },
+            {
+              "id": "attachments",
+              "score": 0.23285907848706783
+            },
+            {
+              "id": "retire",
+              "score": 0.22423876942578438
+            },
+            {
+              "id": "qwen",
+              "score": 0.22350438089497543
+            },
+            {
+              "id": "openrouter",
+              "score": 0.22247320352838199
+            },
+            {
+              "id": "skills",
+              "score": 0.22151957386903987
+            },
+            {
+              "id": "http",
+              "score": 0.22028469875708137
+            },
+            {
+              "id": "terminal",
+              "score": 0.21927598424718464
+            },
+            {
+              "id": "burst",
+              "score": 0.21916098349092408
+            },
+            {
+              "id": "profiles",
+              "score": 0.2177259064858459
+            },
+            {
+              "id": "openai",
+              "score": 0.21658455990183578
+            },
+            {
+              "id": "replay",
+              "score": 0.20895166409006138
+            },
+            {
+              "id": "filters",
+              "score": 0.2038279490966357
+            },
+            {
+              "id": "downloads",
+              "score": 0.15615569294899542
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 1
+        },
+        {
+          "query": "How do repeated events avoid spamming a conversation?",
+          "queryMs": 114.42608400000245,
+          "ranking": [
+            {
+              "id": "monitor",
+              "score": 0.5190691732602928
+            },
+            {
+              "id": "burst",
+              "score": 0.5085957351882873
+            },
+            {
+              "id": "connectors",
+              "score": 0.49674460076303306
+            },
+            {
+              "id": "retire",
+              "score": 0.46923188268968985
+            },
+            {
+              "id": "children",
+              "score": 0.46804337473657864
+            },
+            {
+              "id": "replay",
+              "score": 0.4010152378622038
+            },
+            {
+              "id": "standing",
+              "score": 0.37803262023401196
+            },
+            {
+              "id": "notes",
+              "score": 0.3557949868562012
+            },
+            {
+              "id": "approval",
+              "score": 0.34652865234845637
+            },
+            {
+              "id": "semantic",
+              "score": 0.34643338880304997
+            },
+            {
+              "id": "offline",
+              "score": 0.34594683882937205
+            },
+            {
+              "id": "browser",
+              "score": 0.33947149673247373
+            },
+            {
+              "id": "tools",
+              "score": 0.3328597756365593
+            },
+            {
+              "id": "paired",
+              "score": 0.31581889747625597
+            },
+            {
+              "id": "filters",
+              "score": 0.3060977803365422
+            },
+            {
+              "id": "http",
+              "score": 0.305305166594525
+            },
+            {
+              "id": "attachments",
+              "score": 0.3046234100663632
+            },
+            {
+              "id": "keyword",
+              "score": 0.29876161408617896
+            },
+            {
+              "id": "mcp",
+              "score": 0.2946818162618881
+            },
+            {
+              "id": "memory",
+              "score": 0.29327882222689
+            },
+            {
+              "id": "terminal",
+              "score": 0.2861864465134065
+            },
+            {
+              "id": "profiles",
+              "score": 0.2828139170961217
+            },
+            {
+              "id": "openrouter",
+              "score": 0.2808573825800893
+            },
+            {
+              "id": "openai",
+              "score": 0.2798043689317757
+            },
+            {
+              "id": "files",
+              "score": 0.2791054795891475
+            },
+            {
+              "id": "tasks",
+              "score": 0.2782028995292561
+            },
+            {
+              "id": "qwen",
+              "score": 0.2769772849366071
+            },
+            {
+              "id": "skills",
+              "score": 0.27619974360608845
+            },
+            {
+              "id": "memory-pressure",
+              "score": 0.25984700824325563
+            },
+            {
+              "id": "roots",
+              "score": 0.22659171768191663
+            },
+            {
+              "id": "local",
+              "score": 0.22086068766721684
+            },
+            {
+              "id": "downloads",
+              "score": 0.17916757570707956
+            }
+          ],
+          "recallAt5": 1,
+          "reciprocalRank": 0.5
+        }
+      ],
+      "summary": {
+        "p50Ms": 114.84679200000028,
+        "p95Ms": 252.86675000000105,
+        "meanReciprocalRank": 0.9375,
+        "recallAt5": 1
+      }
+    }
+  ],
+  "rankingDifferences": [
+    {
+      "query": "What happens to a watcher when I clear its chat?",
+      "changed": true
+    },
+    {
+      "query": "How does Rime acquire additional callable capabilities?",
+      "changed": true
+    },
+    {
+      "query": "Can a phrase spanning two command-output chunks be detected?",
+      "changed": true
+    },
+    {
+      "query": "Will monitoring survive another application replacing a file during save?",
+      "changed": true
+    },
+    {
+      "query": "How do I watch only one element on a web page?",
+      "changed": true
+    },
+    {
+      "query": "What happens if semantic inference cannot be reached?",
+      "changed": true
+    },
+    {
+      "query": "Where are my saved facts kept when I rebuild search?",
+      "changed": true
+    },
+    {
+      "query": "Can I run embeddings on another Mac without moving my database?",
+      "changed": true
+    },
+    {
+      "query": "Does a monitor grant permission to send a message?",
+      "changed": true
+    },
+    {
+      "query": "How are Q4 and Q8 vectors prevented from mixing?",
+      "changed": true
+    },
+    {
+      "query": "Which provider accepts text-embedding-3-small?",
+      "changed": true
+    },
+    {
+      "query": "How are uploaded PDF pages searchable?",
+      "changed": true
+    },
+    {
+      "query": "What input formatting is used for Qwen embedding queries?",
+      "changed": true
+    },
+    {
+      "query": "Do idle watchers occupy running-task slots?",
+      "changed": true
+    },
+    {
+      "query": "Why is unused RAM misleading on a Mac?",
+      "changed": true
+    },
+    {
+      "query": "How do repeated events avoid spamming a conversation?",
+      "changed": true
+    }
+  ],
+  "note": "Synthetic acceptance corpus: 32 passages and 16 queries. These measurements do not establish general retrieval accuracy. Model caches were not flushed. The corpus and queries were identical for both profiles. RSS is not full unified GPU memory.",
+  "top1Differences": [
+    "What happens if semantic inference cannot be reached?"
+  ]
+}

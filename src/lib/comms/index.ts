@@ -357,6 +357,8 @@ export async function handleEvent(conn: Conn, ev: CommsEvent): Promise<void> {
   if (ev.type === 'state') {
     conn.status = ev.status;
     conn.error = ev.error;
+    const { observe } = await import('../agent/observation-events.ts');
+    for (const ward of conn.wards) observe({ user:userId,source:'comms-state',target:ward,key:String(Date.now()),data:{ status:ev.status,error:ev.error ?? '' } });
     if (ev.note !== undefined) conn.note = ev.note;
     scheduleRefresh(userId, conn.type);
     return;
@@ -370,7 +372,11 @@ export async function handleEvent(conn: Conn, ev: CommsEvent): Promise<void> {
       if (!watched(cfg, ev.message)) continue;
       const m = { ...ev.message, channelName: ev.message.channelName ?? conn.client.nameOf(ev.message.channel) };
       if (!ingest(userId, wardId, [m]).length) continue;
-      if (!ev.quiet) enqueueFire(userId, messageEvent(wardId, m));
+      if (!ev.quiet) {
+        const { observe } = await import('../agent/observation-events.ts');
+        observe({ user:userId,source:'comms',target:wardId,key:m.id,data:{ eventType:'message',provider:conn.type,sender:m.from.id,senderName:m.from.name,channel:m.channel,text:m.text,at:m.at } });
+        enqueueFire(userId, messageEvent(wardId, m));
+      }
       scheduleRefresh(userId, conn.type);
     } else if (ev.type === 'reaction') {
       if (!watched(cfg, { channel: ev.channel, guild: ev.guild })) continue;

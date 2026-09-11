@@ -5,12 +5,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { DATA_DIR, getDb } from "../db.ts";
 import { getSetting, setSetting } from "../settings.ts";
 import { getDashboard } from "../dashboard.ts";
+import { knowledgeChanged } from './observation-events.ts';
 import { attachmentPath, storeAttachment } from "./attachments.ts";
 import {
   activeConversation,
   retireConversation,
   appendItems,
   addMessage,
+  userItemFor,
   type AgentStep,
   type TurnSource,
 } from "./conversations.ts";
@@ -454,6 +456,7 @@ function replaceFile(target: string, data: string | Buffer) {
 /** The caller checks its base immediately before installing. Atomic file replacement. */
 export function installRecord(user: number, record: SyncRecord) {
   validateRecord(record);
+  knowledgeChanged(user);
   if (record.key === INSTANCE_KEY) installInstance(user, JSON.parse(record.payload));
   if (NOTE_KEY.test(record.key) || NOTEBOOK_KEY.test(record.key)) {
     const value: unknown = JSON.parse(record.payload);
@@ -631,5 +634,8 @@ export async function continueSharedChat(
     chat.items.map((i) => remap(i)),
   );
   // No pending approvals, scheduled wakes, or commands are imported or executed.
+  const monitorNotice = '[Stopped monitors] Monitor subscriptions and pending deliveries from the earlier conversation are not continued or imported. Create a new monitor only if the user requests observation again.';
+  appendItems(conv.id,[userItemFor(conv.dialect,monitorNotice)]);
+  addMessage(conv,{ role:'user',text:monitorNotice,source:'automation' });
   return conv;
 }

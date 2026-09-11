@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { deleteDoc, docIndex, docPath, importSkill, listDocs, parseDoc, parseMcpNeeds, readDoc, storeDir, storeKind, writeDoc, STORES } from '../src/lib/agent/store.ts';
-import { buildInstructions } from '../src/lib/agent/core.ts';
+import { buildInstructions, detailedInstructions } from '../src/lib/agent/core.ts';
 import { validateGraph } from '../src/lib/logic.ts';
 import type { WardInstance } from '../src/lib/wards.ts';
 
@@ -77,7 +77,7 @@ test('store: the indexes are generated from the files, ride the prompt before th
   assert.equal(docIndex(u, 'memory'), '- a-fact — first\n- b-fact — second');
   assert.equal(docIndex(u, 'skill'), '- weekly-review — Every monday');
   const cfg = { provider: 'codex' as const, model: 'm', persona: '', tools: 'all' as const, approvals: 'outbound' as const, effort: 'medium' as const, headlessCap: 6 };
-  const prompt = buildInstructions(cfg, u, 'agent-x');
+  const prompt = detailedInstructions(cfg, u, 'agent-x');
   assert.match(prompt, /Memory index:\n- a-fact — first\n- b-fact — second/);
   assert.match(prompt, /Skills index:\n- weekly-review — Every monday/);
   const [skills, memory, notes] = [prompt.indexOf('Skills index:'), prompt.indexOf('Memory index:'), prompt.indexOf('Your notes')];

@@ -5,6 +5,8 @@ import { getAttachment, attachmentDataUrl } from './attachments.ts';
 import { appendTurn, historyDir } from './history.ts';
 import { dialectOf, providerDialect, type AgentProvider, type AgentProviderId, type Dialect } from './provider.ts';
 import { estimateTokens, type ContextUsage } from './context.ts';
+import { retireMonitors } from './monitors.ts';
+import { knowledgeChanged } from './observation-events.ts';
 
 // The agent's memory, per (user, ward). Two views of one conversation:
 //   agent_messages — what the ward renders
@@ -82,7 +84,7 @@ export function activeConversation(userId: number, ward: string, provider: Agent
     .get(userId, ward) as ConvRow | undefined;
   const ep = provider === 'compat' ? endpoint ?? null : null;
   if (row && row.provider === provider && (row.endpoint ?? null) === ep) return row;
-  if (row) db.prepare('UPDATE agent_conversations SET active = 0 WHERE id = ?').run(row.id);
+  if (row) retireConversation(userId,ward);
   const id = Number(
     db
       .prepare('INSERT INTO agent_conversations (user_id, ward, dialect, provider, endpoint) VALUES (?, ?, ?, ?, ?)')
@@ -120,7 +122,10 @@ export const userItemFor = (dialect: Dialect, text: string): unknown =>
 
 /** "Clear" retires the thread — nothing is destroyed. */
 export function retireConversation(userId: number, ward: string): void {
-  getDb().prepare('UPDATE agent_conversations SET active = 0 WHERE user_id = ? AND ward = ?').run(userId, ward);
+  getDb().transaction(() => {
+    for (const row of getDb().prepare('SELECT id FROM agent_conversations WHERE user_id=? AND ward=?').all(userId,ward) as { id:number }[]) retireMonitors(row.id);
+    getDb().prepare('UPDATE agent_conversations SET active = 0 WHERE user_id = ? AND ward = ?').run(userId, ward);
+  })();
 }
 
 export function setPendingConfirm(conversationId: number, confirmId: string | null): void {
@@ -143,6 +148,7 @@ export function addMessage(
   // Disk mirror so the bash sandbox can rg its own past (/history mount).
   appendTurn(conv.user_id, conv.id, msg.role, msg.text, { steps: msg.steps });
   touch(conv.id);
+  knowledgeChanged(conv.user_id);
 }
 
 export function transcript(conversationId: number, limit = 60): TranscriptMsg[] {

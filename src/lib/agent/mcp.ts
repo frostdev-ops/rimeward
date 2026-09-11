@@ -1,4 +1,5 @@
 import { getDashboard } from '../dashboard.ts';
+import { createHash } from 'node:crypto';
 import { deleteSetting, getSetting, setSetting } from '../settings.ts';
 import { openToken, sealToken } from '../crypto.ts';
 import { MCP_TRUST, type McpTrust, type WardInstance } from '../wards.ts';
@@ -52,6 +53,7 @@ export interface McpStatus {
 type Fetch = typeof vettedFetch;
 
 interface Session {
+  signature:string;
   id?: string;
   tools: McpTool[];
   server?: { name?: string; version?: string };
@@ -204,13 +206,14 @@ export async function connect(userId: number, ward: string, fetchImpl: Fetch = v
   const k = key(userId, ward);
   const cur = sessions.get(k);
   const now = Date.now();
-  if (cur && now - cur.at < (cur.error ? FAILURE_TTL : SESSION_TTL)) return cur;
   const w = mcpWard(userId, ward);
   if (!w) throw new Error('not an mcp ward');
   const cfg = mcpConfig(w);
+  const signature = sessionSignature(userId,w);
+  if (cur?.signature === signature && now - cur.at < (cur.error ? FAILURE_TTL : SESSION_TTL)) return cur;
   if (!cfg.url) throw new Error('no server url configured');
   const headers = authHeaders(userId, ward, cfg);
-  const session: Session = { tools: [], at: now };
+  const session: Session = { tools: [], at: now,signature };
   try {
     const init = (await rpc(fetchImpl, cfg, headers, session, 'initialize', {
       protocolVersion: MCP_PROTOCOL,
@@ -232,13 +235,23 @@ export function dropSession(userId: number, ward: string): void {
 }
 
 /** tools/call. An expired session reconnects once. */
-export async function callTool(userId: number, ward: string, tool: string, args: Record<string, unknown>, fetchImpl: Fetch = vettedFetch): Promise<unknown> {
+export async function callTool(userId: number, ward: string, tool: string, args: Record<string, unknown>, fetchImpl: Fetch = vettedFetch, expected?:string): Promise<unknown> {
+  let revision = expected;
   for (let attempt = 0; attempt < 2; attempt++) {
     const session = await connect(userId, ward, fetchImpl);
     if (session.error) throw new Error(`MCP server not connected: ${session.error}`);
-    const w = mcpWard(userId, ward)!;
+    const w = mcpWard(userId, ward);
+    if (!w || session.signature !== sessionSignature(userId,w)) throw Error('MCP credentials or trust changed; search and propose the call again.');
     const cfg = mcpConfig(w);
+    const definition = session.tools.find(t => t.name === tool);
+    if (!definition) throw Error('MCP tool definition is no longer available; search again.');
+    revision ??= definitionRevision(session.signature,definition);
     try {
+      session.tools = readTools(await rpc(fetchImpl,cfg,authHeaders(userId,ward,cfg),session,'tools/list',{}));
+      const current = mcpWard(userId,ward), fresh = session.tools.find(t => t.name === tool);
+      if (!current || session.signature !== sessionSignature(userId,current) || !fresh || revision !== definitionRevision(session.signature,fresh)) {
+        throw Error('MCP schema, credentials or trust changed since discovery; search and propose the call again.');
+      }
       return await rpc(fetchImpl, cfg, authHeaders(userId, ward, cfg), session, 'tools/call', { name: tool, arguments: args });
     } catch (err) {
       if ((err as { expired?: boolean }).expired && attempt === 0) {
@@ -282,6 +295,8 @@ export async function mcpStatus(userId: number, ward: string, fresh = false, fet
 
 /** Provider tool names are [A-Za-z0-9_-]{1,64}; MCP names are anything. */
 export const safeToolName = (s: string): string => s.replace(/[^A-Za-z0-9_-]/g, '_');
+const sessionSignature = (user:number,w:WardInstance) => JSON.stringify([w.i,mcpConfig(w),getSetting(`mcp_token:${user}:${w.i}`)]);
+const definitionRevision = (signature:string,t:McpTool) => createHash('sha256').update(JSON.stringify([signature,t])).digest('hex');
 
 /** Every configured MCP server's tools as registry entries, keyed
  *  mcp__<server>__<tool>. Servers that fail to connect contribute nothing
@@ -301,17 +316,22 @@ export function mcpToolDefsSync(userId: number, fetchImpl: Fetch = vettedFetch):
     if (w.type !== 'mcp') continue;
     const cfg = mcpConfig(w);
     const session = sessions.get(key(userId, w.i));
-    if (!cfg.url || !session || session.error) continue;
+    if (!cfg.url || !session || session.error || session.signature !== sessionSignature(userId,w)) continue;
     for (const t of session.tools) {
       const name = `mcp__${cfg.name}__${safeToolName(t.name)}`.slice(0, 64);
       if (out[name]) continue;
+      const revision = definitionRevision(session.signature,t);
       out[name] = {
+        revision,
         kind: cfg.trust,
         description: `[${cfg.name} MCP server] ${t.description || t.name}`,
         parameters: t.inputSchema,
         run: async (args: Record<string, unknown>, ctx: ToolCtx) => {
+          await connect(ctx.userId,w.i,fetchImpl);
+          const current = mcpToolDefsSync(ctx.userId,fetchImpl)[name];
+          if (!current || current.revision !== revision) throw Error('MCP definition or permissions changed since discovery; search and propose the call again.');
           const { reason: _reason, ...rest } = args;
-          const result = await callTool(ctx.userId, w.i, t.name, rest, fetchImpl);
+          const result = await callTool(ctx.userId, w.i, t.name, rest, fetchImpl,current.revision);
           return { text: toolText(result) };
         },
       };

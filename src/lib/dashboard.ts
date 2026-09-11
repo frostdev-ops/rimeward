@@ -2,6 +2,7 @@ import { getDb } from './db.ts';
 import { DEFAULT_LAYOUT, DEFAULT_PAGES, validateLayout, validatePages, type BrowserConfig, type PageDef, type WardInstance } from './wards.ts';
 import { dropSession, relaunchIdle } from './browser/session.ts';
 import { isCommsType } from './comms/types.ts';
+import { observe } from './agent/observation-events.ts';
 
 type Row = { layout_json: string; pages_json: string };
 const row = (userId: number) => getDb().prepare('SELECT layout_json, pages_json FROM dashboards WHERE user_id = ?').get(userId) as Row | undefined;
@@ -70,4 +71,5 @@ export function saveDashboard(userId: number, layout: WardInstance[], pages?: Pa
       })
       .catch((err) => console.error('[comms] sync after save failed:', err));
   }
+  observe({ user:userId,source:'dashboard',target:'',key:'saved',data:{} });
 }

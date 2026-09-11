@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { workDir } from './history.ts';
+import { knowledgeChanged } from './observation-events.ts';
 
 // Rime's document stores: memory (one file per durable fact) and skills (one
 // SKILL.md per procedure), both under the per-user work dir the sandbox mounts
@@ -160,6 +161,7 @@ export function writeDoc(userId: number, kind: StoreKind, name: string, descript
   const file = fileOf(userId, kind, name);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, serializeDoc(description, body), { mode: 0o600 });
+  knowledgeChanged(userId);
   return { name, description, chars: body.length, updatedAt: Date.now() };
 }
 
@@ -167,6 +169,7 @@ export function deleteDoc(userId: number, kind: StoreKind, name: string): boolea
   if (!DOC_NAME_RE.test(name)) return false;
   try {
     fs.rmSync(path.join(storeDir(userId, kind), STORES[kind].unit(name)), { recursive: true });
+    knowledgeChanged(userId);
     return true;
   } catch {
     return false;

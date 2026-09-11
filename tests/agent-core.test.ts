@@ -22,6 +22,7 @@ import {
   specSheet,
   agentWardConfig,
   buildInstructions,
+  detailedInstructions,
   claimConfirm,
   parkConfirm,
   resolveConfirmTurn,
@@ -56,7 +57,12 @@ function seedUser(email: string, approvals: 'outbound' | 'all' | 'off' = 'outbou
 function fakeProvider(script: ProviderResult[]): AgentProvider {
   return {
     id: 'codex',
-    run: async () => {
+    run: async request => {
+      const missing = script[0]?.calls.filter(c => TOOLS[c.name] && !request.tools.some(t => t.name === c.name)) ?? [];
+      if (missing.length) {
+        const calls = [...new Set(missing.map(c => c.name))].map(name => call(`discover-${name}`,'search_tools',{ query:name,limit:10,reason:'Load the capability used by this fixture' }));
+        return { text:'',calls,items:calls.map(c => ({ type:'function_call',...c })) };
+      }
       const next = script.shift();
       if (!next) throw new Error('script exhausted');
       return next;
@@ -89,6 +95,12 @@ test('computer observations follow every tool reply in both dialects, including 
       let runs = 0;
       provider.context = async () => undefined;
       provider.run = async request => {
+        const missing = calls.filter(c => !request.tools.some(t => t.name === c.name));
+        if (!runs && missing.length) {
+          const searches = missing.map(c => call(`discover-${c.name}`,'search_tools',{ query:c.name,reason:'Load fixture capability' }));
+          return { text:'',calls:searches,items:id === 'codex' ? searches.map(c => ({ type:'function_call',...c }))
+            : [{ role:'assistant',content:'',toolCalls:searches.map(c => ({ id:c.call_id,type:'function',function:{ name:c.name,arguments:c.arguments } })) }] };
+        }
         if (runs++ === 0) return { text: '', calls, items: id === 'codex'
           ? calls.map(c => ({ type: 'function_call', ...c }))
           : [{ role: 'assistant', content: '', toolCalls: calls.map(c => ({ id: c.call_id, type: 'function', function: { name: c.name, arguments: c.arguments } })) }] };
@@ -245,12 +257,12 @@ test("runLoop runs a round's calls concurrently, streams every start first, and 
     ]);
     assert.equal(turn.reply, 'fin');
     // Both starts stream before either finish, and the finishes stream as they land.
-    const flow = events.filter((e) => e.type === 'step_start' || e.type === 'step');
+    const flow = events.filter((e) => e.type === 'step_start' && e.tool !== 'search_tools' || e.type === 'step' && e.step.tool !== 'search_tools');
     assert.deepEqual(flow.map((e) => e.type), ['step_start', 'step_start', 'step', 'step']);
     assert.equal((flow[2] as { step: { tool: string } }).step.tool, 'fast_probe');
     // The record and the replay are in CALL order, tagged with the round.
-    assert.deepEqual(turn.steps.map((s) => [s.id, s.round, s.tool]), [['c1', 0, 'slow_probe'], ['c2', 0, 'fast_probe']]);
-    const outs = items.filter((it: any) => it.type === 'function_call_output').map((it: any) => it.call_id);
+    assert.deepEqual(turn.steps.filter(s => s.tool !== 'search_tools').map((s) => [s.id, s.round, s.tool]), [['c1', 1, 'slow_probe'], ['c2', 1, 'fast_probe']]);
+    const outs = items.filter((it: any) => it.type === 'function_call_output' && !it.call_id.startsWith('discover-')).map((it: any) => it.call_id);
     assert.deepEqual(outs, ['c1', 'c2']);
   } finally {
     delete TOOLS.slow_probe;
@@ -394,14 +406,14 @@ test('runLoop emits full-request token estimates anchored to usage, without inve
   ]);
   const usage: Extract<AgentEvent, { type: 'usage' }>[] = [];
   await runLoop(cfgFor(u, provider), [], (e) => { if (e.type === 'usage') usage.push(e); });
-  assert.equal(usage.length, 2, 'one per model round');
-  assert.equal(usage[0]!.input, 50_000);
-  assert.equal(usage[0]!.cached, 40_000);
+  assert.equal(usage.length, 3, 'one per model round, including discovery');
+  assert.equal(usage[1]!.input, 50_000);
+  assert.equal(usage[1]!.cached, 40_000);
   assert.equal(usage[0]!.compactAt, null);
   assert.equal(usage[0]!.source, 'unknown');
-  assert.ok(usage[0]!.tokens > 50_000, 'includes measured instructions/tools and the new reply');
-  assert.ok(usage[1]!.tokens > usage[0]!.tokens, 'grows with the tool result');
-  assert.equal(usage[1]!.input, 50_000, 'keeps the last measured input when billing is absent');
+  assert.ok(usage[1]!.tokens > 50_000, 'includes measured instructions/tools and the new reply');
+  assert.ok(usage[2]!.tokens > usage[1]!.tokens, 'grows with the tool result');
+  assert.equal(usage[2]!.input, 50_000, 'keeps the last measured input when billing is absent');
 });
 
 test('runLoop banks work every round, not only at the end of the turn', async () => {
@@ -415,7 +427,7 @@ test('runLoop banks work every round, not only at the end of the turn', async ()
   // Without the per-round flush a pm2 reload mid-turn loses the outputs of
   // tools that already ran, and the next load tells the model "nothing was done".
   await runLoop(cfgFor(u, provider), [], undefined, () => void flushes++);
-  assert.equal(flushes, 2, 'one bank per round that executed tools');
+  assert.equal(flushes, 3, 'one bank per round that executed tools, including discovery');
 });
 
 // A turn that threw (the relay dropped mid-request) used to leave nothing in the
@@ -525,11 +537,9 @@ test('the instructions are a stable, cacheable prefix: no clock, static bulk fir
   // Byte-identical across calls — a timestamp in here would miss the cache every turn.
   assert.equal(a, b);
   assert.doesNotMatch(a, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
-  // The parts that change (ward list, notes) sit after the spec sheet.
-  const spec = a.indexOf('Logic system spec');
-  assert.ok(spec > 0);
-  assert.ok(a.indexOf('Current wards:') > spec);
-  assert.ok(a.indexOf('Your notes, verbatim:') > a.indexOf('Current wards:'));
+  // Detailed catalogs are discovered; standing notes remain after stable rules.
+  assert.doesNotMatch(a,/Logic system spec|Current wards:/);
+  assert.ok(a.indexOf('Your notes, verbatim:') > a.indexOf('search_tools'));
 });
 
 test('Rime inherits its own desktop project, including when nested, without adding desktop context on the server', () => {
@@ -652,8 +662,8 @@ test('peerAgents is the discovery registry: every OTHER agent ward, from the sto
   // The list_agents tool is that registry; ag2 sees ag1 and not itself.
   const seen = (await TOOLS.list_agents!.run({}, { userId: u, ward: 'ag2', conv: 0 })) as { agents: { ward: string }[] };
   assert.deepEqual(seen.agents.map((a) => a.ward), ['ag1']);
-  // The prompt names the peer by title and the first persona line only.
-  const prompt = buildInstructions(agentWardConfig(u, 'ag1')!, u, 'ag1');
+  // Discoverable guidance names the peer by title and first persona line.
+  const prompt = detailedInstructions(agentWardConfig(u, 'ag1')!, u, 'ag1');
   assert.match(prompt, /ag2 \("Researcher": You dig up sources\.\)/);
   assert.ok(prompt.indexOf('Other Rime agents') > prompt.indexOf('Current wards:'));
 

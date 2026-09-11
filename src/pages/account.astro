@@ -14,6 +14,7 @@ import { listBackgrounds, MAX_PER_USER } from '../lib/backgrounds.ts';
 import { getSetting } from '../lib/settings.ts';
 import { ALERT_MODES } from './api/account/prefs.ts';
 import { getAgentAccount, listEndpoints } from '../lib/agent/accounts.ts';
+import EmbeddingSettings from '../components/EmbeddingSettings.astro';
 import { browserbaseKey } from '../lib/browser/browserbase.ts';
 import { codexOauthPending } from '../lib/agent/codex.ts';
 import { agentLastError, agentRounds } from '../lib/agent/provider.ts';
@@ -1014,6 +1015,7 @@ const TABS = [
           </div>
         )}
 
+        <EmbeddingSettings />
         {/* A key saves when the field loses focus (or on Enter). `action` is a
             hidden INPUT, not a button — there is no submitter to carry it. */}
         {agentKeys.map((k) => (

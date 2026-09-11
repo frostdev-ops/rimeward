@@ -8,6 +8,7 @@ import {
 } from './note.ts';
 import { plainText } from './note-text.ts';
 import { emitNoteEvent } from './note-events.ts';
+import { knowledgeChanged, observe } from './agent/observation-events.ts';
 import { readPageDocument } from './notebook-pages.ts';
 import { readProp } from './notion-props.ts';
 import { isDesktop } from './dev/runtime.ts';
@@ -126,7 +127,7 @@ export function getNotebook(userId: number, id: string): Notebook | null {
 export function ensureNotebook(userId: number, id: string, title = ''): Notebook {
   if (!NOTE_ID_RE.test(id)) throw bad('bad notebook id');
   getDb().prepare('INSERT OR IGNORE INTO notebooks (user_id, id, title) VALUES (?, ?, ?)').run(userId, id, title.slice(0, NOTEBOOK_TITLE_MAX));
-  return getNotebook(userId, id)!;
+  return getNotebook(userId,id)!;
 }
 
 /** Every notebook of this user's with its live note count (templates not counted). */
@@ -306,7 +307,10 @@ export function updateNotebook(userId: number, id: string, patch: { title?: unkn
       for (const p of cur.props) if (!next.props.some((x) => x.id === p.id)) db.prepare("UPDATE notes SET props = json_remove(props, ?), updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE user_id = ? AND notebook = ?").run(`$.${p.id}`, userId, id);
     }
   })();
-  return getNotebook(userId, id)!;
+  const result = getNotebook(userId,id)!;
+  knowledgeChanged(userId);
+  observe({ user:userId,source:'notebook',target:id,key:crypto.randomUUID(),data:{ eventType:'metadata',title:result.title,text:JSON.stringify({ sections:result.sections,views:result.views,props:result.props }) } });
+  return result;
 }
 
 // ------------------------------------------------------------------ notes
@@ -584,6 +588,8 @@ export function updateNoteMeta(userId: number, id: string, patch: MetaPatch): No
     if (patch.title !== undefined || patch.tags !== undefined) indexNote(userId, id, title, plainText(readNote(userId, id).html), tags);
   })();
   const meta = getMeta(userId, id);
+  knowledgeChanged(userId);
+  emitNoteEvent({ type:'metadata',userId,id,notebook:meta.notebook,title:titleOf(meta),tags:meta.tags,section:meta.section });
   if (!meta.template && !meta.trashed) {
     const added = meta.tags.filter((t) => !cur.tags.some((x) => x.toLowerCase() === t.toLowerCase()));
     if (added.length) emitNoteEvent({ type: 'tagged', userId, id, notebook: meta.notebook, title: titleOf(meta), tags: added, section: meta.section });
@@ -609,14 +615,20 @@ export function linkNote(userId: number, notebook: string, id: string, opts: { s
   const book = getNotebook(userId, notebook)!;
   const section = opts.section && book.sections.some((s) => s.id === opts.section) ? opts.section : null;
   getDb().prepare("UPDATE notes SET notebook = ?, section = ?, ord = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE user_id = ? AND ward = ?").run(notebook, section, nextOrd(userId, notebook), userId, id);
-  return getMeta(userId, id);
+  const meta = getMeta(userId,id);
+  knowledgeChanged(userId);
+  emitNoteEvent({ type:'metadata',userId,id,notebook:meta.notebook,previousNotebook:cur.notebook,title:titleOf(meta),tags:meta.tags,section:meta.section });
+  return meta;
 }
 
 /** Take a note out of its notebook: it becomes standalone, every byte kept. */
 export function unlinkNote(userId: number, id: string): NoteMeta {
-  getMeta(userId, id);
+  const cur = getMeta(userId, id);
   getDb().prepare("UPDATE notes SET notebook = NULL, section = NULL, ord = 0, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE user_id = ? AND ward = ?").run(userId, id);
-  return getMeta(userId, id);
+  const meta = getMeta(userId,id);
+  knowledgeChanged(userId);
+  emitNoteEvent({ type:'metadata',userId,id,notebook:null,previousNotebook:cur.notebook,title:titleOf(meta),tags:meta.tags,section:meta.section });
+  return meta;
 }
 
 /** Manual order: the ids, in order, take positions 0..n within the notebook;

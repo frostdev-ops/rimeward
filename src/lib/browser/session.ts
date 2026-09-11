@@ -742,7 +742,10 @@ export function ensureBrowser(): void {
     process.once(sig, () => {
       const terminals = isDesktop() ? import('../dev/terminals.ts').then(m => m.shutdownTerminals()) : Promise.resolve();
       const voice = import('../agent/voice.ts').then(m => m.shutdownVoice());
-      void Promise.race([Promise.all([shutdown(), terminals, voice]), sleep(CLOSE_MS + 1_000)]).finally(() => process.exit(0));
+      const embeddings = import('../agent/embedding-local.ts').then(m => m.shutdownEmbeddings());
+      const knowledge = import('../agent/knowledge.ts').then(m => m.shutdownKnowledge());
+      const monitors = import('../agent/monitors.ts').then(m => m.shutdownAgentMonitors());
+      void Promise.race([Promise.all([shutdown(), terminals, voice, embeddings, knowledge, monitors]), sleep(CLOSE_MS + 1_000)]).finally(() => process.exit(0));
     });
   }
 }

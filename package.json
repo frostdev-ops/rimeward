@@ -69,6 +69,7 @@
     "pdfjs-dist": "^6.3.289",
     "playwright-core": "1.62.1",
     "sharp": "^0.35.4",
+    "sqlite-vec": "0.1.9",
     "tailwindcss": "^4.3.3",
     "tar-stream": "2.2.0",
     "three": "^0.180.0",

@@ -4,6 +4,7 @@ import { getDashboard } from './dashboard.ts';
 import type { WardInstance } from './wards.ts';
 import { excerpt, noteLinks, plainText, sanitizeHtml } from './note-text.ts';
 import { emitNoteEvent } from './note-events.ts';
+import { knowledgeChanged } from './agent/observation-events.ts';
 import { readPageDocument } from './notebook-pages.ts';
 
 export { excerpt, plainText, sanitizeHtml, textToHtml, noteLinks } from './note-text.ts';
@@ -294,6 +295,7 @@ export function writeNote(userId: number, w: WardInstance | string, patch: NoteP
   const out = writeNoteRaw(userId, w, patch);
   const meta = getNoteMeta(userId, typeof w === 'string' ? w : noteIdOf(w));
   if (meta && !meta.template && !meta.trashed && (patch.html !== undefined || patch.ink !== undefined)) emitNoteEvent({ type: 'saved', userId, id: meta.id, notebook: meta.notebook, title: meta.title || meta.excerpt.slice(0, 60), tags: meta.tags, section: meta.section });
+  else if (meta && patch.title !== undefined) emitNoteEvent({ type:'metadata',userId,id:meta.id,notebook:meta.notebook,title:meta.title,tags:meta.tags,section:meta.section });
   return out;
 }
 
@@ -319,6 +321,7 @@ export function backlinks(userId: number, id: string): { id: string; title: stri
  *  Only a trashed note may go (the UI's "Delete forever"); links INTO it from
  *  other notes are left as dangling <a data-note> text in their documents. */
 export function purgeNote(userId: number, id: string): void {
+  knowledgeChanged(userId);
   const db = getDb();
   const row = db.prepare('SELECT trashed_at FROM notes WHERE user_id = ? AND ward = ?').get(userId, id) as { trashed_at: string | null } | undefined;
   if (!row) throw Object.assign(new Error('no such note'), { status: 404 });
@@ -343,6 +346,7 @@ export function saveNote(userId: number, w: WardInstance | string, patch: NotePa
  *  ponytail: the delete scans the unindexed id column — fine for a personal
  *  notebook; map notes to an INTEGER key if it ever shows up in a profile. */
 export function indexNote(userId: number, id: string, title: string, text: string, tags?: string[]): void {
+  knowledgeChanged(userId);
   const db = getDb();
   const tagList = tags ?? parseTags((db.prepare('SELECT tags FROM notes WHERE user_id = ? AND ward = ?').get(userId, id) as { tags: string } | undefined)?.tags ?? '[]');
   db.prepare('DELETE FROM notes_fts WHERE user_id = ? AND id = ?').run(userId, id);

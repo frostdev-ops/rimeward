@@ -1,4 +1,6 @@
 import { isDesktop, emitDev } from './dev/runtime.ts';
+import { observe } from './agent/observation-events.ts';
+import { randomUUID } from 'node:crypto';
 // The logic engine: server-side heart of the automation system. Schedules
 // timers (own setTimeout wheel — the 60s status tick is too coarse), fires
 // the per-user logic graph when triggers occur, executes actions through
@@ -107,6 +109,11 @@ export function subscribeLogic(userId: number, fn: Listener): () => void {
 
 /** Returns whether anyone was listening; undelivered 'act' events queue 60s. */
 export function broadcast(userId: number, event: string, data: unknown): boolean {
+  if ((event === 'agent-live' || event === 'agent') && data && typeof data === 'object') {
+    const d = data as { ward?:string; summary?:string; event?:Record<string,unknown> };
+    if (d.ward && (d.event?.task as { tool?:string })?.tool !== 'monitor' && (!d.event || ['task','reply','user','pending','question','start','end'].includes(String(d.event.type))))
+      observe({ user:userId,source:'agent',target:d.ward,key:randomUUID(),data:{ ...d.event,eventType:d.event?.type ?? event,text:d.event?.text ?? d.summary ?? '',status:(d.event?.task as { state?:string })?.state ?? (d.event?.type === 'end' ? 'failed' : undefined) } });
+  }
   if(isDesktop())emitDev(userId,'ward',event,data);
   const set = subs.get(userId);
   if (!set || set.size === 0) {
@@ -951,6 +958,7 @@ function fireNoteEvent(e: NoteEvent): void {
   }
 }
 onNoteEvent((e) => {
+  if (e.type === 'metadata') return;
   if (!e.notebook) return;
   if (e.type !== 'saved') return fireNoteEvent(e);
   const key = `${e.userId}:${e.id}`;
@@ -985,6 +993,7 @@ export interface FireEvent extends TriggerEvent {
 const queues = new Map<number, Promise<void>>();
 
 export function enqueueFire(userId: number, event: FireEvent): void {
+  observe({ user:userId,source:'event',target:event.ward,key:randomUUID(),data:{ ...event.extra,eventType:event.type,channel:event.channel,packet:event.packet,match:event.match } });
   const prev = queues.get(userId) ?? Promise.resolve();
   const next = prev.then(() => fire(userId, event)).catch((err) => console.error('[logic] fire failed:', err));
   queues.set(userId, next);

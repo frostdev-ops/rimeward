@@ -84,7 +84,7 @@ test('mcp ward: the config normalizes, the tools splice in under the trust level
   assert.deepEqual(await search.run({ reason: 'r', q: 'bug' }, { userId: u, ward: 'ag', conv: 1 }), { text: 'found bug' });
   assert.equal(calls.at(-1)!.body.params.name, 'search.issues'); // the wire name is the server's, reason stripped
   assert.deepEqual(calls.at(-1)!.body.params.arguments, { q: 'bug' });
-  assert.equal(calls.length, 4); // the session was reused for the call
+  assert.equal(calls.length, 5); // session reused; tools/list revalidates the loaded definition before execution
   assert.deepEqual(Object.keys(mcpToolDefsSync(u)), Object.keys(defs));
 
   const st = await mcpStatus(u, 'gh', false, fake);

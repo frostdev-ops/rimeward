@@ -1246,8 +1246,8 @@ function openTasks(st: State): void {
             open.onclick = () => openChildSession(st, task, d);
             rowActions.append(open);
           }
-          for (const final of [false, true]) {
-            const button = el('button', 'btn', final ? 'Result' : 'Output'); button.type = 'button';
+          for (const final of task.tool === 'monitor' ? [true] : [false, true]) {
+            const button = el('button', 'btn', task.tool === 'monitor' ? 'Filters and matches' : final ? 'Result' : 'Output'); button.type = 'button';
             button.onclick = () => {
               selected = task.id; cursor = 0; result = final;
               output ??= el('pre', 'ag-task-output');
@@ -1272,7 +1272,17 @@ function openTasks(st: State): void {
             rowActions.append(detach);
           }
           if (task.cancellable) {
-            const stop = el('button', 'btn', 'Stop'); stop.type = 'button'; stop.title = 'Stop this task; partial changes remain';
+            if (task.tool === 'monitor') {
+              const pause = el('button','btn',task.state === 'paused' ? 'Resume' : 'Pause'); pause.type = 'button';
+              pause.onclick = async () => {
+                pause.disabled = true;
+                const { status,data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`,{ action:'monitor',task:task.id,operation:task.state === 'paused' ? 'resume' : 'pause' });
+                if (status !== 200) toast(data?.error ?? 'Could not update monitor.');
+                void refresh();
+              };
+              rowActions.append(pause);
+            }
+            const stop = el('button', 'btn', task.tool === 'monitor' ? 'Delete monitor' : 'Stop'); stop.type = 'button'; stop.title = task.tool === 'monitor' ? 'Delete this monitor and its pending deliveries' : 'Stop this task; partial changes remain';
             stop.onclick = async () => {
               stop.disabled = true;
               const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'cancel-task', task: task.id });

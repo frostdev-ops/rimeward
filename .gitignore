@@ -31,3 +31,6 @@ ops/nginx-frostdev.conf
 # Generated standalone desktop payload
 desktop/runtime/
 desktop/binaries/
+
+# Worker bundle is rebuilt from authoritative source on every build.
+workers/knowledge.bundle.mjs

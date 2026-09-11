@@ -1,0 +1,231 @@
+{
+  "documents": [
+    {
+      "id": "monitor",
+      "text": "A durable monitor observes terminal, file, browser, note, API, connector or agent events. It delivers only matches into its originating conversation, never an unrelated chat."
+    },
+    {
+      "id": "retire",
+      "text": "Clearing or archiving a conversation deletes monitors and pending deliveries. The old transcript retains a stopped-monitor notice. Continuing it does not restore subscriptions."
+    },
+    {
+      "id": "tools",
+      "text": "Tool search loads callable tool schemas in the next model round and retains them only for this turn. Discovery is conversation local and conveys no approval."
+    },
+    {
+      "id": "memory",
+      "text": "Memory documents are authoritative Markdown files storing durable facts. The search index is derived and can be rebuilt without changing or deleting the originals."
+    },
+    {
+      "id": "skills",
+      "text": "Skills describe reusable procedures, with a SKILL.md file and optional supporting files. An explicitly named skill is read even when embeddings are offline."
+    },
+    {
+      "id": "standing",
+      "text": "Standing notes are read into every prompt. They hold the user’s preferences and ongoing instructions, not a diary of completed actions."
+    },
+    {
+      "id": "keyword",
+      "text": "When vector inference is unavailable, knowledge search returns keyword results with explicit fallback status. Empty search results are never exhaustive proof."
+    },
+    {
+      "id": "qwen",
+      "text": "Qwen3-Embedding-8B uses last-token pooling, normalized 4096-dimensional vectors and query instruction prefixes. Documents are embedded without query instructions."
+    },
+    {
+      "id": "profiles",
+      "text": "Vectors from different models, revisions, quantizations, dimensions or encoding settings stay in separate profiles. Switching profiles cannot mix incompatible vectors."
+    },
+    {
+      "id": "local",
+      "text": "The bundled llama.cpp embedding server runs locally on a desktop, using Metal on Apple Silicon and supported CPU or GPU backends on other platforms."
+    },
+    {
+      "id": "openai",
+      "text": "The OpenAI API embedding provider supports text-embedding-3-small and text-embedding-3-large using a sealed API key. Codex sign-in embeddings are unverified."
+    },
+    {
+      "id": "openrouter",
+      "text": "The OpenRouter embedding provider supports qwen/qwen3-embedding-8b and requires an explicitly selected provider with its own sealed API key."
+    },
+    {
+      "id": "paired",
+      "text": "Another paired desktop can share embedding inference over authenticated routing. Only bounded text inputs and vectors travel; the search database remains on its own runtime."
+    },
+    {
+      "id": "offline",
+      "text": "An unavailable selected inference device does not cause automatic provider switching. Offline monitor sources reconnect with a new silent baseline."
+    },
+    {
+      "id": "terminal",
+      "text": "Terminal monitoring combines incremental output across chunk boundaries and observes process state and exit codes. A phrase split between chunks can still match."
+    },
+    {
+      "id": "files",
+      "text": "File monitoring uses an approved project scope, filesystem notifications and reconciliation. It detects external edits, renamed files and atomic save replacements."
+    },
+    {
+      "id": "browser",
+      "text": "Browser monitors observe the current live session and debounced DOM text, optionally limited to a CSS selector. Page content remains untrusted data."
+    },
+    {
+      "id": "http",
+      "text": "HTTP probes are read-only and default to a thirty-second interval. They inspect response status, selected headers, text and JSON fields under existing network guards."
+    },
+    {
+      "id": "connectors",
+      "text": "Discord, Slack, Telegram, Matrix, Teams, Twilio and mail monitors reuse existing ingestion or polling. Initial quiet batches establish a baseline without historical notification floods."
+    },
+    {
+      "id": "filters",
+      "text": "Exact all, any and not filters support equality, substring containment, bounded wildcards, numeric comparison and changed fields. Exact rejection occurs before any semantic inference."
+    },
+    {
+      "id": "semantic",
+      "text": "An optional semantic monitor gate compares an observation with a query using cosine similarity. Inference failure visibly blocks delivery and never bypasses the gate."
+    },
+    {
+      "id": "tasks",
+      "text": "The Tasks interface displays monitors, filters, recent matches, errors, pause, resume and deletion. Watching monitors do not consume ordinary running task capacity."
+    },
+    {
+      "id": "approval",
+      "text": "Monitor creation authorizes observation only. It does not authorize replies, purchases, deletion or other external actions, and tool discovery never grants permission."
+    },
+    {
+      "id": "mcp",
+      "text": "MCP definitions, credentials and trust are revalidated before execution. A changed tool schema must be rediscovered and proposed again before it can run."
+    },
+    {
+      "id": "replay",
+      "text": "Every model dialect repairs tool-call and tool-output pairs before replay. A stopped or rejected tool still receives an output so later rounds stay valid."
+    },
+    {
+      "id": "notes",
+      "text": "Notepad and notebook documents share an authoritative store. Trashed or deleted notes are excluded from ordinary retrieval, and shared references are deduplicated."
+    },
+    {
+      "id": "attachments",
+      "text": "Extracted attachment text retains page references for retrieval. Images and handwriting without transcription are not treated as extracted text."
+    },
+    {
+      "id": "roots",
+      "text": "Project roots and workspaces.db remain local to their desktop. Native execution is not enabled on the ordinary server, and project files are excluded from this search index."
+    },
+    {
+      "id": "downloads",
+      "text": "Local model setup downloads verified model files with progress and cancellation. The pinned file size and SHA-256 are checked before installation."
+    },
+    {
+      "id": "memory-pressure",
+      "text": "On macOS entirely unused pages do not describe all available headroom. The operating-system memory pressure estimate includes reclaimable capacity more appropriately."
+    },
+    {
+      "id": "children",
+      "text": "Child agents have their own conversations and inherit their parent’s tool policy. Finished child conversations receive monitor cleanup, and stale notifications cannot wake new threads."
+    },
+    {
+      "id": "burst",
+      "text": "Matching-event receipts and deduplication keys persist in SQLite. Bursts are coalesced and deliveries revalidate ownership, monitor revision, cancellation and conversation lifecycle."
+    }
+  ],
+  "queries": [
+    {
+      "text": "What happens to a watcher when I clear its chat?",
+      "relevant": [
+        "retire"
+      ]
+    },
+    {
+      "text": "How does Rime acquire additional callable capabilities?",
+      "relevant": [
+        "tools"
+      ]
+    },
+    {
+      "text": "Can a phrase spanning two command-output chunks be detected?",
+      "relevant": [
+        "terminal"
+      ]
+    },
+    {
+      "text": "Will monitoring survive another application replacing a file during save?",
+      "relevant": [
+        "files"
+      ]
+    },
+    {
+      "text": "How do I watch only one element on a web page?",
+      "relevant": [
+        "browser"
+      ]
+    },
+    {
+      "text": "What happens if semantic inference cannot be reached?",
+      "relevant": [
+        "semantic",
+        "keyword"
+      ]
+    },
+    {
+      "text": "Where are my saved facts kept when I rebuild search?",
+      "relevant": [
+        "memory"
+      ]
+    },
+    {
+      "text": "Can I run embeddings on another Mac without moving my database?",
+      "relevant": [
+        "paired"
+      ]
+    },
+    {
+      "text": "Does a monitor grant permission to send a message?",
+      "relevant": [
+        "approval"
+      ]
+    },
+    {
+      "text": "How are Q4 and Q8 vectors prevented from mixing?",
+      "relevant": [
+        "profiles"
+      ]
+    },
+    {
+      "text": "Which provider accepts text-embedding-3-small?",
+      "relevant": [
+        "openai"
+      ]
+    },
+    {
+      "text": "How are uploaded PDF pages searchable?",
+      "relevant": [
+        "attachments"
+      ]
+    },
+    {
+      "text": "What input formatting is used for Qwen embedding queries?",
+      "relevant": [
+        "qwen"
+      ]
+    },
+    {
+      "text": "Do idle watchers occupy running-task slots?",
+      "relevant": [
+        "tasks"
+      ]
+    },
+    {
+      "text": "Why is unused RAM misleading on a Mac?",
+      "relevant": [
+        "memory-pressure"
+      ]
+    },
+    {
+      "text": "How do repeated events avoid spamming a conversation?",
+      "relevant": [
+        "burst"
+      ]
+    }
+  ]
+}

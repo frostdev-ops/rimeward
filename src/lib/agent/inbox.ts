@@ -90,6 +90,7 @@ function finish(id: number, status: 'done' | 'failed', result: string): void {
   // asker. Never for a reply itself, or two agents ping-pong until the cap —
   // and never within a family (parent ↔ child), where every reply is explicit.
   const row = getDb().prepare('SELECT * FROM agent_inbox WHERE id = ?').get(id) as InboxRow;
+  void import('./observation-events.ts').then(({ observe }) => observe({ user:row.user_id,source:'agent',target:row.ward,key:`inbox:${id}:${status}`,data:{ eventType:'reply',sender:row.ward,recipient:row.sender,status,text:result.slice(0,8000) } }));
   if (status === 'done' && !row.wait && row.reply_to === null && row.conversation_id === null && result.trim() && !childJob(row.user_id, row.ward) && !childJob(row.user_id, row.sender)) {
     void sendMessage(row.user_id, { to: row.sender, from: row.ward, text: result, replyTo: row.id }).catch((err) =>
       console.error('[inbox] reply-back failed:', err)
@@ -194,6 +195,7 @@ export async function sendMessage(userId: number, m: Outgoing, fromUser = false)
   const id = db
     .prepare('INSERT INTO agent_inbox (user_id, ward, sender, mode, text, reply_to, wait, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
     .run(userId, m.to, fromUser ? 'user' : m.from, mode, text, m.replyTo ?? null, m.wait ? 1 : 0, conversation).lastInsertRowid as number;
+  void import('./observation-events.ts').then(({ observe }) => observe({ user:userId,source:'agent',target:m.to,key:`inbox:${id}:queued`,data:{ eventType:'inbox',sender:fromUser ? 'user' : m.from,status:'queued',text:text.slice(0,8000) } }));
   void pump(userId, m.to, m.via).catch((err) => console.error('[inbox] pump failed:', err));
   return getMessage(userId, id)!;
 }

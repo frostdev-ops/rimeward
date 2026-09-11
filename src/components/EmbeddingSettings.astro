@@ -1,0 +1,85 @@
+<section class="border-b border-line py-4" data-embedding-settings>
+  <h3 class="text-sm font-medium">Semantic retrieval</h3>
+  <p class="mt-1 text-xs text-ink-muted">Search existing memories, skills, notes, conversations and extracted attachments. Originals stay intact. Keyword search remains available while embeddings are unavailable or rebuilding.</p>
+  <form class="mt-3 grid gap-3" aria-busy="true">
+    <label class="text-xs">Inference location
+      <select name="provider" class="input mt-1 w-full">
+        <option value="local">This desktop · Qwen3-Embedding-8B</option><option value="device">Another paired desktop</option>
+        <option value="openai">OpenAI API · API key</option><option value="openrouter">OpenRouter · API key</option>
+      </select>
+    </label>
+    <label class="text-xs" data-show="local device">Local model
+      <select name="quantization" class="input mt-1 w-full">
+        <option value="Q4_K_M">Q4_K_M · 4.68 GB download · about 7 GiB memory</option>
+        <option value="Q8_0">Q8_0 · 8.05 GB download · about 11 GiB memory</option>
+      </select>
+    </label>
+    <label class="text-xs" data-show="device" hidden>Paired desktop
+      <select name="device" class="input mt-1 w-full"><option value="">Select a computer</option></select>
+    </label>
+    <label class="text-xs" data-show="openai" hidden>OpenAI embedding model
+      <select name="model" class="input mt-1 w-full"><option value="text-embedding-3-small">text-embedding-3-small</option><option value="text-embedding-3-large">text-embedding-3-large</option></select>
+    </label>
+    <p class="text-xs text-ink-muted" data-show="openai openrouter" hidden>Uses your saved API key. Selected text is sent to this provider for embedding. OpenRouter uses qwen/qwen3-embedding-8b. ChatGPT/Codex sign-in embedding support is unverified and is not used.</p>
+    <label class="text-xs" data-local><input type="checkbox" name="sharing" /> Share this desktop’s local inference with my paired runtimes</label>
+    <div class="flex flex-wrap gap-2">
+      <button class="btn" type="submit">Save retrieval settings</button><button class="btn" type="button" data-action="rebuild">Rebuild index</button>
+      <button class="btn" type="button" data-action="download" data-local>Download local model</button>
+      <button class="btn" type="button" data-action="cancel" data-local>Cancel download</button><button class="btn" type="button" data-action="unload" data-local>Unload local model</button>
+    </div>
+  </form>
+  <p class="mt-2 text-xs text-ink-muted" data-status role="status" aria-live="polite">Loading retrieval status…</p>
+  <progress class="mt-2 w-full" hidden aria-label="Model download progress"></progress>
+  <p class="mt-2 text-xs text-ink-muted">The selected provider stays selected when offline. Only bounded text inputs and vectors travel to another computer; the search database and project folders stay here. Memory estimates vary with runtime and input size.</p>
+</section>
+<script>
+  const root = document.querySelector<HTMLElement>('[data-embedding-settings]');
+  if (root) {
+    const form = root.querySelector<HTMLFormElement>('form')!, status = root.querySelector<HTMLElement>('[data-status]')!, progress = root.querySelector<HTMLProgressElement>('progress')!;
+    const field = (name:string) => form.elements.namedItem(name) as HTMLSelectElement;
+    const sharing = form.elements.namedItem('sharing') as HTMLInputElement;
+    for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button')) control.disabled = true;
+    let initialized = false,busy = false;
+    const toggle = () => { for (const el of root.querySelectorAll<HTMLElement>('[data-show]')) el.hidden = !el.dataset.show!.split(' ').includes(field('provider').value); };
+    const refresh = async () => {
+      if (busy || document.hidden) return; busy = true;
+      try {
+        const response = await fetch('/api/account/embeddings'); if (!response.ok) throw Error('Retrieval settings unavailable.');
+        const data = await response.json();
+        if (!initialized) {
+          for (const name of ['provider','quantization','model']) field(name).value = data.config[name];
+          if (!field('model').value) field('model').value = 'text-embedding-3-small';
+          sharing.checked = data.config.sharing;
+          for (const device of data.devices ?? []) field('device').add(new Option(`${device.name} · ${device.inference?.ready ? 'ready' : device.online ? 'model unavailable or not sharing' : 'offline'}`,device.id));
+          field('device').value = data.config.device ?? '';
+          for (const el of root.querySelectorAll<HTMLElement>('[data-local]')) el.hidden = !data.desktop;
+          for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button')) control.disabled = false;
+          field('provider').querySelector<HTMLOptionElement>('[value="local"]')!.disabled = !data.desktop;
+          form.setAttribute('aria-busy','false');
+          initialized = true; toggle();
+        }
+        const model = data.local?.models.find((m:{ quantization:string }) => m.quantization === field('quantization').value), download = model?.download;
+        progress.hidden = !download || download.done; progress.max = model?.bytes ?? 1; progress.value = download?.received ?? 0;
+        const location = data.config.provider === 'local' ? data.local?.location ?? 'desktop unavailable' : data.config.provider === 'device' ? data.devices.find((d:{ id:string }) => d.id === data.config.device)?.name ?? 'selected desktop unavailable' : data.config.provider === 'openai' ? 'OpenAI API' : 'OpenRouter';
+        const inference = data.config.provider === 'device' ? data.devices.find((d:{ id:string }) => d.id === data.config.device)?.inference : data.config.provider === 'local' ? data.local : data.timing;
+        const queryMs = data.timing?.queryMs ?? inference?.queryMs;
+        status.textContent = [`Inference: ${location}.`,`${data.index.embedded ?? 0}/${data.index.chunks ?? 0} passages indexed${data.index.indexing ? ' · indexing' : ''}.`,
+          inference?.startupMs != null ? `Startup ${inference.startupMs} ms.` : '',queryMs != null ? `Last query ${queryMs} ms.` : '',
+          download && !download.done ? `Downloading ${(download.received/1e9).toFixed(2)}/${(model.bytes/1e9).toFixed(2)} GB.` : '',
+          data.index.error || data.index.vectorError || '',download?.error || '',model?.recommendation || ''].filter(Boolean).join(' ');
+      } catch (e) { status.textContent = e instanceof Error ? e.message : String(e); } finally { busy = false; }
+    };
+    const action = async (action:string) => {
+      const response = await fetch('/api/account/embeddings',{ method:'POST',headers:{ 'content-type':'application/json' },body:JSON.stringify({ action,quantization:field('quantization').value,
+        config:{ provider:field('provider').value,quantization:field('quantization').value,device:field('device').value,model:field('model').value,sharing:sharing.checked } }) });
+      const data = await response.json(); if (!response.ok) throw Error(data.error ?? 'Retrieval action failed.');
+      status.textContent = action === 'save' ? 'Retrieval settings saved.' : 'Retrieval status updated.'; void refresh();
+    };
+    form.onsubmit = event => { event.preventDefault(); void action('save').catch(e => { status.textContent = e.message; }); };
+    field('provider').onchange = toggle;
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-action]')) button.onclick = () => {
+      button.disabled = true; void action(button.dataset.action!).catch(e => { status.textContent = e.message; }).finally(() => { button.disabled = false; });
+    };
+    void refresh(); const timer = setInterval(() => void refresh(),5000); window.addEventListener('pagehide',() => clearInterval(timer),{ once:true });
+  }
+</script>

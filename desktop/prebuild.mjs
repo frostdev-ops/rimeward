@@ -76,6 +76,7 @@ try {
     "public",
     "migrations",
     "assets",
+    "workers",
     "package.json",
     "package-lock.json",
     "server.mjs",
@@ -103,6 +104,7 @@ try {
     cwd: app,
     env,
   });
+  run(process.execPath,[path.join(here,'embedding-runtime.mjs'),path.join(app,'assets/embedding')]);
   for (const dir of fs.readdirSync(
     path.join(app, "node_modules/node-pty/prebuilds"),
   )) {

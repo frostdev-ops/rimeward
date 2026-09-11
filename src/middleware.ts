@@ -15,6 +15,8 @@ import { nativeRequest } from './lib/dev/native.ts';
 import { routeInstance } from './lib/dev/instance-routing.ts';
 import { validUserCode, CONNECT_COOKIE } from './lib/dev/device-auth.ts';
 import { ensureUpdateChecks } from './lib/updates.ts';
+import { ensureAgentMonitors } from './lib/agent/monitors.ts';
+import { ensureKnowledge } from './lib/agent/knowledge.ts';
 
 // The status + logic engines live in-process; middleware load is the one place
 // that runs exactly once per server boot (guarded against dev-HMR double-starts).
@@ -30,6 +32,8 @@ ensureDevLive(); // the terminal wards' output + input WebSocket (desktop runtim
 ensureRemote();
 ensureTunnel(); // publishes the desktop app's upgrade handler for server.mjs / the dev hook
 ensureUpdateChecks(); // the release lookup every 6 h; installs under the `install` policy
+ensureAgentMonitors();
+ensureKnowledge();
 
 // Public: the splash (exact match — everything else under / is gated), login,
 // the SSO endpoints, the OAuth connect callbacks (public so the provider can

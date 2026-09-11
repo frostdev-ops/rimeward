@@ -5,13 +5,15 @@ import { activeConversationRow, addMessage, appendItems, getConversation, transc
 import type { Dialect } from './provider.ts';
 import type { ToolCtx, ToolDef } from './tools.ts';
 import { CHILD_ANSWER_MAX, openQuestion } from './inbox.ts';
+import { listMonitors, readMonitor, deleteMonitor, retireMonitors } from './monitors.ts';
+import { observe } from './observation-events.ts';
 
 /** Runtime-local receipts survive reloads; executable promises never cross a runtime. */
 export interface AgentTask {
   id: string;
   tool: string;
   reason: string;
-  state: 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  state: 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'watching' | 'paused' | 'blocked' | 'offline';
   background: boolean;
   startedAt: number;
   finishedAt: number | null;
@@ -85,6 +87,7 @@ function view(r: Row): AgentTask {
     ...(r.provider ? { provider: r.provider } : {}), ...(r.model ? { model: r.model } : {}), ...(r.endpoint ? { endpoint: r.endpoint } : {}) };
 }
 function publish(r: Row) {
+  observe({ user:r.user_id,source:'agent',target:r.id,key:`${r.id}:${r.state}`,data:{ eventType:'task',status:r.state,text:r.result?.slice(0,8000) ?? '',tool:r.tool } });
   broadcast(r.user_id, 'agent-live', { ward: r.ward, event: { type: 'task', task: view(r) } });
 }
 function cleanTaskLogs(userId: number) {
@@ -100,11 +103,15 @@ export function listTasks(ctx: Pick<ToolCtx, 'userId' | 'ward'> & Partial<Pick<T
   const conversation = ctx.conv ?? activeConversationRow(ctx.userId, ctx.ward)?.id ?? 0;
   return (db().prepare(`SELECT id,tool,reason,state,background,started_at,finished_at,error,provider,model,endpoint FROM agent_jobs WHERE user_id=? AND ward=?
     AND (? OR state IN ('running','stopping') OR (background=1 AND notified=0 AND conversation_id=?))
-    ORDER BY state IN ('running','stopping') DESC, started_at DESC LIMIT 100`).all(ctx.userId, ctx.ward, Number(history), conversation) as Row[]).map(view);
+    ORDER BY state IN ('running','stopping') DESC, started_at DESC LIMIT 100`).all(ctx.userId, ctx.ward, Number(history), conversation) as Row[]).map(view).concat(listMonitors({ ...ctx,conv:conversation }));
 }
 /** Output offsets are absolute, so a rolling log can report an explicit gap. */
 export function readTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string, cursor = 0, result = false) {
   if (!Number.isSafeInteger(cursor) || cursor < 0) throw Error('cursor must be a non-negative integer.');
+  if (id.startsWith('monitor:')) {
+    const value = readMonitor(ctx,id), all = JSON.stringify(value,null,2), text = all.slice(cursor,cursor+8000);
+    return { task:value.monitor,text,next:cursor+text.length,truncated:false,complete:cursor+text.length >= all.length };
+  }
   const r = row(ctx, id), start = result ? 0 : r.output_offset;
   const all = result ? r.result : r.output;
   const from = Math.max(cursor, start);
@@ -144,6 +151,7 @@ export function backgroundTasks(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id?: stri
   return changed;
 }
 export function cancelTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string, by = 'the user'): AgentTask {
+  if (id.startsWith('monitor:')) { const { monitor } = readMonitor(ctx,id); deleteMonitor(ctx,id); return { ...monitor,state:'cancelled',finishedAt:Date.now(),cancellable:false }; }
   const r = row(ctx, id), run = live.get(id);
   if (!run || !['running', 'stopping'].includes(r.state)) return view(r);
   if (!run.cancellable) throw Error('This tool cannot be stopped safely. It will retain its result when it finishes.');
@@ -302,6 +310,7 @@ export async function runTask(name: string, args: Record<string, unknown>, ctx: 
     live.delete(id);
     publish(row(ctx, id));
     if (def.spawn) {
+      for (const c of store.prepare('SELECT id FROM agent_conversations WHERE user_id=? AND task_id=?').all(ctx.userId,id) as { id:number }[]) retireMonitors(c.id);
       // A question the child was still waiting on closes with the run — an explicit
       // receipt, never a row left open — BEFORE the completion wake is sent, which is
       // a note (wait = 0) and stays one.

@@ -1,0 +1,19 @@
+{
+  "baseline": "96fd0dc",
+  "measurement": "Estimated UTF-8 token counts; identical empty account fixture, no MCP; excludes automatic retrieval and named skill content.",
+  "before": {
+    "mode": "before",
+    "tools": 122,
+    "instructionTokens": 5637,
+    "toolTokens": 27434,
+    "totalTokens": 33077
+  },
+  "after": {
+    "mode": "after",
+    "tools": 7,
+    "instructionTokens": 987,
+    "toolTokens": 1436,
+    "totalTokens": 2429
+  },
+  "reductionPercent": 92.65652870574719
+}

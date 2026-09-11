@@ -86,6 +86,9 @@ The [server guide](https://github.com/frostdev-ops/rimeward/wiki/Remote-Web-Setu
 
 ## A closer look
 
+Rime supports persistent background monitors, tools loaded through search, and
+semantic retrieval over existing knowledge. See [retrieval setup and operation](docs/semantic-retrieval.md).
+
 <p align="center">
   <img src="docs/goldens/editor.png" alt="The desktop editor with a project explorer, file tabs, and inline diagnostics" width="960">
 </p>

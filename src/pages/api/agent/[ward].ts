@@ -7,6 +7,8 @@ import { parseCommand } from '../../../lib/agent/commands.ts';
 import { syncRime, syncStatus } from '../../../lib/agent/sync.ts';
 import { listTasks, readTask, readChildTask, backgroundTasks, cancelTask } from '../../../lib/agent/tasks.ts';
 import { broadcast } from '../../../lib/logic-engine.ts';
+import { manageMonitor } from '../../../lib/agent/monitors.ts';
+import { activeConversationRow } from '../../../lib/agent/conversations.ts';
 
 export const prerender = false;
 
@@ -44,7 +46,8 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     file_ids?: unknown;
     ward_ids?: unknown;
     ward_mentions?: unknown;
-    action?: 'clear' | 'confirm' | 'decline' | 'interrupt' | 'background' | 'cancel-task' | 'message-child' | 'answer-question';
+    action?: 'clear' | 'confirm' | 'decline' | 'interrupt' | 'background' | 'cancel-task' | 'message-child' | 'answer-question' | 'monitor';
+    operation?:string;
     answer?: unknown;
     task?: string;
     questionId?: unknown;
@@ -64,6 +67,13 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       const { messageChild } = await import('../../../lib/agent/inbox.ts');
       return Response.json(await messageChild(userId, ward, String(body.task ?? ''), body.message, body.questionId));
     } catch (err) { return Response.json({ error: err instanceof Error ? err.message : 'Could not message child agent' }, { status: 400 }); }
+  }
+  if (body.action === 'monitor') {
+    try {
+      const conv = activeConversationRow(userId,ward); if (!conv) throw Error('No active conversation.');
+      if (!['pause','resume','delete'].includes(body.operation ?? '')) throw Error('Unsupported monitor action.');
+      return Response.json({ monitor:manageMonitor({ userId,ward,conv:conv.id },{ action:body.operation,id:body.task }) });
+    } catch (e) { return Response.json({ error:e instanceof Error ? e.message : String(e) },{ status:400 }); }
   }
   if (body.action === 'background' || body.action === 'cancel-task') {
     try {

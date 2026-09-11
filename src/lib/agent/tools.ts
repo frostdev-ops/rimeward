@@ -1,6 +1,9 @@
 import { DEV_TOOLS } from '../dev/tools.ts';
 import { listTasks, readTask, waitTask, cancelTask } from './tasks.ts';
 import { postUserQuestion } from './questions.ts';
+import { searchKnowledge, readKnowledge } from './knowledge.ts';
+import type { ToolSearch } from './tool-discovery.ts';
+import { manageMonitor } from './monitors.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { sharedTool, serverTool } from './sync.ts';
 import { randomBytes } from 'node:crypto';
@@ -87,6 +90,8 @@ import { COMMS_TYPES, isCommsType } from '../comms/types.ts';
 export type ToolKind = 'read' | 'write' | 'confirm';
 
 export interface ToolCtx {
+  /** Turn-local discovery, absent in the sandbox and outside the model loop. */
+  searchTools?: (args:ToolSearch) => Promise<unknown>;
   userId: number;
   ward: string;
   /** The conversation this call belongs to. Rides on the ctx, never a module
@@ -110,6 +115,8 @@ export interface ToolCtx {
 }
 
 export interface ToolDef {
+  /** A loaded external definition's immutable identity, including trust and endpoint. */
+  revision?:string;
   kind: ToolKind;
   backgroundable?: boolean;
   cancellable?: boolean;
@@ -305,6 +312,40 @@ const dropDoc = (kind: StoreKind, a: Record<string, any>, ctx: ToolCtx) => {
 const docName = str('a slug, [a-z0-9-] ≤48 chars, e.g. "user-timezone" or "deploy-check"');
 
 export const TOOLS: Record<string, ToolDef> = {
+  monitor: {
+    kind:'write',description:'Create, update, pause, resume, delete, or inspect a persistent background monitor in this conversation. Observation only: never authorizes replies or external actions. Sources: terminal, file, browser, agent, note, notebook, http, comms, event (Leylines). Initial observations are baselines; matching events wake this conversation or arrive between rounds. Clearing/archiving deletes monitors. HTTP defaults to 30 seconds. Watching does not occupy running-task slots. Exact filters run before an optional semantic gate; unavailable semantic inference visibly blocks delivery.',
+    parameters:obj({ action:{ type:'string',enum:['create','update','pause','resume','delete','status'] },id:str('Monitor id for an existing monitor'),name:str('Short description'),
+      source:{ type:'object',properties:{ type:{ type:'string',enum:['terminal','file','browser','agent','note','notebook','http','comms','event'] },target:str('Terminal, ward, note, notebook or child task id'),project:str('Owned local project id for files'),path:str('Project-relative file or scoped folder'),url:str('Read-only HTTP(S) probe'),selector:str('Optional browser CSS selector'),event:str('Leyline trigger type'),intervalSeconds:num('5–86400 seconds, default 30; connector minimums still apply'),headers:{ type:'array',items:{ type:'string' } },fields:{ type:'array',items:{ type:'string' },description:'Selected JSON field paths' } },required:['type'],additionalProperties:false },
+      filter:{ type:'object',description:'Exact filter: {all:[filters]}, {any:[filters]}, {not:filter}, or {field,op,value}; op eq, contains, glob (* and ?), gt, gte, lt, lte, changed. Maximum depth 8 and 64 nodes. Source fields include path, sender, channel, eventType, status, exitCode, text, and json fields.',additionalProperties:true },
+      semantic:{ type:['object','null'],properties:{ field:str('Text field to compare'),query:str('Meaning to match'),threshold:num('Minimum cosine similarity, -1 to 1') },required:['field','query','threshold'],additionalProperties:false } },['action']),
+    run:(a,ctx) => manageMonitor(ctx,a),
+  },
+  search_tools: {
+    kind:'read', description:'Search available capabilities or exact tool names. Loads up to five callable schemas for the next round (maximum ten). Search before calling tools outside the bootstrap set. Discovery grants no authority.',
+    parameters:obj({ query:str('Capability to find, or exact tool name'), filters:{ type:'object',properties:{ kind:{ type:'string',enum:['read','write','confirm'] },server:str('MCP server name') },additionalProperties:false },limit:num('Default 5; maximum 10') },['query']),
+    run:(a,ctx) => { if (!ctx.searchTools) throw Error('Tool discovery requires an agent turn.'); return ctx.searchTools(a as ToolSearch); },
+  },
+  search_knowledge: {
+    kind:'read',description:'Search existing memories, skills, notes, notebooks, conversation transcripts and extracted attachments. Returns bounded excerpts, page/line locators and authoritative source identities. Explicit keyword fallback when embeddings are unavailable. Project files are excluded.',
+    parameters:obj({ query:str('Question, keyword or exact source name'),scope:{ type:'array',items:{ type:'string',enum:['memory','skill','standing','note','notebook','conversation','attachment'] } },limit:num('Default 5; maximum 10') },['query']),
+    run:(a,ctx) => searchKnowledge(ctx.userId,a.query,a.scope,a.limit ?? 5),
+  },
+  read_knowledge: {
+    kind:'read',description:'Read a current authoritative knowledge source using its source identity and character offset. Deleted, trashed and inaccessible sources are excluded.',
+    parameters:obj({ source:str('Source identity, for example skill:deploy or note:abc'),offset:num('Character offset returned by an earlier read; default 0') },['source']),
+    run:(a,ctx) => readKnowledge(ctx.userId,a.source,a.offset ?? 0),
+  },
+  agent_help: {
+    kind:'read',description:'Detailed Rime tool guidance: ward catalog, Leylines triggers/actions/parameters, connector and computer safety, browser operation, memory and skills, delegation. Search this help before unfamiliar operations.',
+    parameters:obj({ offset:num('Character offset; default 0') }),
+    run:async (a,ctx) => {
+      const { agentWardConfig,detailedInstructions } = await import('./core.ts');
+      const config = agentWardConfig(ctx.userId,ctx.ward); if (!config) throw Error('Agent ward unavailable.');
+      const offset = a.offset ?? 0; if (!Number.isSafeInteger(offset) || offset < 0) throw Error('offset must be non-negative.');
+      const text = detailedInstructions(config,ctx.userId,ctx.ward,undefined,ctx.conv);
+      return { text:text.slice(offset,offset+8000),next:offset+8000 < text.length ? offset+8000 : null };
+    },
+  },
   ask_user_question: {
     kind: 'read',
     description: 'Ask the user a concise question inline in this conversation. input: single for one choice, multiple for multiple selections, or text for free text. Provide 2–12 options for choice questions. wait defaults true: pause this conversation until the user answers, without assuming any choice. wait:false lets you continue independent work and delivers the answer later. Ask only one unanswered question at a time. Child runs should ask their parent instead.',
@@ -1579,7 +1620,8 @@ for (const [name, definition] of Object.entries(TOOLS)) {
 export async function invokeReadTool(path: string, argsJson: string, ctx: ToolCtx): Promise<string> {
   const def = TOOLS[path];
   if (!def || def.kind !== 'read') throw new Error(`tools.${path}: not a read-only tool`);
-  const out = await def.run(argsJson ? (JSON.parse(argsJson) as Record<string, unknown>) : {}, ctx);
+  const { searchTools: _searchTools,...sandboxCtx } = ctx;
+  const out = await def.run(argsJson ? (JSON.parse(argsJson) as Record<string, unknown>) : {}, sandboxCtx);
   return JSON.stringify(out ?? null);
 }
 
@@ -1596,8 +1638,9 @@ export function dirtiesNotion(name: string): boolean {
  * Tool specs for the provider call, with `reason` injected once for all tools
  * (the reason line IS the streaming UI — enforced in core.ts, not just asked).
  */
-export function aiTools(allow: 'all' | 'read-only', extra: Record<string, ToolDef> = {}): AgentToolSpec[] {
+export function aiTools(allow: 'all' | 'read-only', extra: Record<string, ToolDef> = {}, loaded?:ReadonlySet<string>): AgentToolSpec[] {
   return Object.entries({ ...TOOLS, ...extra })
+    .filter(([name]) => !loaded || loaded.has(name))
     .filter(([, t]) => allow === 'all' || t.kind === 'read')
     .map(([name, t]) => {
       const params = t.parameters as { properties?: Record<string, unknown>; required?: string[] };
