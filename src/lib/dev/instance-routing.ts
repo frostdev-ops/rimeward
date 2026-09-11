@@ -23,6 +23,8 @@ export async function routeInstance(context: APIContext): Promise<Response | und
   if (!user) return;
   const { request, url } = context;
   const path = url.pathname + url.search;
+  // Update discovery belongs to this runtime, even when the desktop is paired.
+  if (url.pathname === '/api/update' || url.pathname === '/api/update/desktop') return;
   // Replicated documents belong to this account on every runtime, including offline.
   if (/^\/api\/(?:notes$|(?:note|notebook)\/)/.test(url.pathname)) return;
   // These operations authorize their explicit target, never page placement.
