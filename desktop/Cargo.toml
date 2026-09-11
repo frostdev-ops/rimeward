@@ -1,6 +1,6 @@
 [package]
 name = "rimeward"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 rust-version = "1.88"
 description = "Rimeward — standalone development workspaces with live remote access"
@@ -38,6 +38,10 @@ getrandom = "0.3"
 base64 = "0.22"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# Self-update (src/updates.rs): signed manifests from the desktop-v* releases,
+# discovered through the bundled runtime; the OS notification says one is there.
+tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
 enigo = { version = "=0.6.1", features = ["serde"] }
 xcap = "=0.9.8"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
@@ -63,7 +67,9 @@ reis = "=0.7.1"
 libc = "0.2"
 
 [profile.release]
-codegen-units = 1
-lto = true
+# Thin LTO, default codegen units: a few percent larger binary than fat LTO at
+# one unit, minutes less link time on every CI release build. The installer is
+# Node + Chromium + GStreamer; the Rust binary's size is noise in it.
+lto = "thin"
 opt-level = "s"
 strip = true
