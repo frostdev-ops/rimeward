@@ -450,8 +450,10 @@ export async function startSession(
     s.pendingBytes += bytes;
     s.queuedBytes += bytes;
     if (!s.paused && s.queuedBytes >= 256 * 1024) { s.paused = true; pty.pause(); }
+    // Leading edge: the first chunk after a quiet gap (a typed echo) goes out
+    // at once; whatever follows within 4 ms batches behind it.
     if (s.pendingBytes >= 64 * 1024) flushOutput(s);
-    else s.outputTimer ??= setTimeout(() => flushOutput(s), 8);
+    else if (!s.outputTimer) { flushOutput(s); s.outputTimer = setTimeout(() => flushOutput(s), 4); }
   });
   pty.onExit(({ exitCode, signal }) => {
     const exitSignal = typeof signal === 'number' && signal > 0 ? signal : null;

@@ -1,5 +1,5 @@
 import { expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
-import type { terminalCapabilities, readSession } from "../../lib/dev/terminals.ts";
+import type { terminalCapabilities } from "../../lib/dev/terminals.ts";
 import type { gitView } from "../../lib/dev/projects.ts";
 import { icon } from "./icon.ts";
 import { chooseProject, askText, confirmAction, dialog as workspaceDialog } from "./workspace-dialogs.ts";
@@ -10,24 +10,17 @@ import { CATALOG, type WardInstance } from "../../lib/wards.ts";
 import {
   DEV_WARDS,
   terminalExitLabel,
-  terminalNeedsRestore,
   type Project,
   type SessionView,
   type SessionResourceView,
   type TerminalKind,
 } from "../../lib/dev/types.ts";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { SearchAddon } from "@xterm/addon-search";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { terminalEvents } from "./terminal-stream.ts";
-import { TerminalInput } from "./terminal-input.ts";
+import { owner, terminalEvents } from "./terminal-stream.ts";
+import { DEFAULT_PREFS, Pane, isMac, readPrefs, savePrefs, type PaneHost, type Prefs } from "./terminal-pane.ts";
+import { MAX_PANES, has, insert, leaves, parseNode, reconcile, remove, swap, type Node, type Side } from "../../lib/dev/terminal-layout.ts";
 import "@xterm/xterm/css/xterm.css";
 import "../../styles/development.css";
 
-const owner = sessionStorage.getItem("rimeward-input-owner") ?? `client:${crypto.randomUUID()}`;
-sessionStorage.setItem("rimeward-input-owner", owner);
 async function request<T = unknown>(
   action: string,
   data: Record<string, unknown> = {},
@@ -113,6 +106,8 @@ interface State {
   closedSessions?: string[];
   tabs?: string[];
   active?: string;
+  /** The terminal's pane tree per tab (lib/dev/terminal-layout.ts); presentation only. */
+  groups?: Node[];
 }
 async function mount(w: WardInstance) {
   const api = <T = unknown>(action: string, data: Record<string, unknown> = {}, method = 'GET') => request<T>(action, data, method, w.i);
@@ -198,9 +193,8 @@ async function mount(w: WardInstance) {
       sessions.setAttribute("role", "tablist");
       sessions.setAttribute("aria-label", "Terminal sessions");
       const surface = el("div", "term-surface");
-      const screen = el("div", "dev-terminal");
-      screen.id = `terminal-screen-${w.i}`;
-      screen.setAttribute("role", "tabpanel");
+      const panesHost = el("div", "term-panes");
+      panesHost.id = `terminal-screen-${w.i}`;
       const empty = el("div", "dev-empty term-empty");
       const footer = el("div", "term-footer");
       const status = el("span", "term-status", "Loading sessions…");
@@ -224,55 +218,124 @@ async function mount(w: WardInstance) {
       bar.classList.add("term-toolbar");
       bar.replaceChildren(sessions, newButton, more, expandButton);
       footer.append(projectButton, status);
-      surface.append(screen, empty);
+      surface.append(panesHost, empty);
       content.replaceChildren(surface, footer);
-      const term = new Terminal({
-        scrollback: 10000, fontSize: 13, lineHeight: 1.2,
-        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-        theme: { background: "#101419", foreground: "#e4e9f0", cursor: "#c5d6e8" },
-        disableStdin: true, screenReaderMode: localStorage.getItem("rimeward-terminal-accessibility") === "true",
-        allowProposedApi: true, cursorBlink: true, rightClickSelectsWord: true,
-      });
-      const fit = new FitAddon(), search = new SearchAddon();
-      term.loadAddon(fit);
-      term.loadAddon(search);
-      term.loadAddon(new Unicode11Addon());
-      term.unicode.activeVersion = "11";
-      term.loadAddon(new WebLinksAddon((event, url) => {
-        if ((event.ctrlKey || event.metaKey) && /^https?:\/\//i.test(url)) window.open(url, "_blank", "noopener,noreferrer");
-      }));
-      term.open(screen);
-      void import("@xterm/addon-webgl").then(({ WebglAddon }) => {
-        if (stopped) return;
-        let gpu: InstanceType<typeof WebglAddon> | undefined;
-        try { gpu = new WebglAddon(); gpu.onContextLoss(() => gpu?.dispose()); term.loadAddon(gpu); }
-        catch { gpu?.dispose(); } // DOM renderer remains available without a GPU.
-      }).catch(() => {});
-      let session: SessionView | undefined, list: SessionView[] = [];
-      let sequence: number | undefined, updating: Promise<void> | undefined;
-      let connected = false, streamReady = false, launching = false, failure = "";
-      let retrySnapshot: ReturnType<typeof setTimeout> | undefined;
-      let painting: Promise<void> | undefined, outputs: { sequence: number; data: string }[] = [];
-      let outputSize = 0, resync = false, changingControl = false;
-      let sessionOptions = "", autoAttach = !state.session && !state.closedSessions?.length;
+
+      // The ward owns the session LIST and the groups; every pane owns its session.
+      let list: SessionView[] = [], launching = false, changingControl = false, listOk = false, streamReady = false, failure = "";
+      let zoomed: string | undefined, treeSig = "", sessionOptions = "";
+      let groups: Node[] = (Array.isArray(state.groups) ? state.groups : []).map(parseNode).filter((n): n is Node => n !== null);
+      let prefs = readPrefs();
+      let autoAttach = !state.session && !state.closedSessions?.length;
       let attaching = Promise.resolve();
+      let retryList: ReturnType<typeof setTimeout> | undefined, refreshing: Promise<void> | undefined;
+      const panes = new Map<string, Pane>();
       const tabVisible = (s: SessionView) => (!s.command || state.tabs?.includes(s.id)) && !state.closedSessions?.includes(s.id);
-      const uncertain = new Set<string>();
-      const restored = new Set<string>();
-      const canType = () => !stopped && !!session && connected && streamReady && session.state === "running" &&
-        session.owner === owner && !uncertain.has(session.id);
+      const visibleIds = () => list.filter(tabVisible).map(s => s.id);
+      const focused = () => (state.session ? panes.get(state.session) : undefined);
+      const groupOf = (id: string) => groups.find(g => has(g, id));
+      const activeGroup = () => (state.session && groupOf(state.session)) || groups[0];
+      const titleOf = (id: string) => { const s = list.find(x => x.id === id); return s ? (s.title === s.kind ? names[s.kind] : s.title) : id; };
+      const save = () => { state.groups = groups; return remember(); };
+      function syncGroups() {
+        const next = reconcile(groups, visibleIds());
+        if (JSON.stringify(next) !== JSON.stringify(groups)) { groups = next; void save(); }
+      }
+      function refreshList(): Promise<void> {
+        if (refreshing) return refreshing;
+        if (stopped) return Promise.resolve();
+        clearTimeout(retryList);
+        refreshing = (async () => {
+          try {
+            const next: SessionView[] = await api("sessions", { project: state.project });
+            if (stopped) return;
+            list = next;
+            const ids = new Set(list.map(s => s.id));
+            if (state.tabs?.some(id => !ids.has(id)) || state.closedSessions?.some(id => !ids.has(id))) {
+              state.tabs = state.tabs?.filter(id => ids.has(id)); state.closedSessions = state.closedSessions?.filter(id => ids.has(id));
+              await save();
+            }
+            listOk = true;
+            if (state.session && !list.some(s => s.id === state.session && tabVisible(s))) { state.session = undefined; autoAttach = true; }
+            syncGroups();
+            if (!state.session) {
+              const visible = list.filter(tabVisible);
+              const g = groups[0];
+              const pick = autoAttach ? (visible.find(s => s.state === "running") ?? visible[0])?.id : g ? leaves(g)[0] : undefined;
+              if (pick) { autoAttach = false; state.session = pick; await save(); }
+            }
+            failure = "";
+          } catch (e) {
+            listOk = false;
+            failure = [401, 403, 404].includes((e as { status?: number }).status ?? 0) ? (e as Error).message : "";
+            if (!stopped) retryList = setTimeout(() => void refreshList(), failure ? 30000 : 3000);
+          } finally {
+            if (!stopped) render();
+          }
+        })().finally(() => { refreshing = undefined; });
+        return refreshing;
+      }
+      function render() { sessionList(); renderPanes(); draw(); }
+      function renderPanes() {
+        const g = activeGroup();
+        const want = g ? leaves(g) : [];
+        for (const [id, p] of panes) if (!want.includes(id)) { p.dispose(); panes.delete(id); }
+        for (const id of want) if (!panes.has(id)) {
+          const p = new Pane(id, paneHost);
+          p.session = list.find(s => s.id === id);
+          panes.set(id, p);
+          if (streamReady) { p.streamReady = true; void p.update(); }
+        }
+        if (zoomed && !panes.has(zoomed)) zoomed = undefined;
+        const sig = JSON.stringify([g ?? null, zoomed ?? null]);
+        if (sig !== treeSig) {
+          treeSig = sig;
+          const hadFocus = panesHost.contains(document.activeElement);
+          const zoom = zoomed ? panes.get(zoomed) : undefined;
+          panesHost.replaceChildren(...(g ? [zoom ? zoom.el : build(g)] : []));
+          if (hadFocus) focused()?.focus();
+        }
+        panesHost.classList.toggle("term-zoomed", !!zoomed);
+        for (const p of panes.values()) { p.showBar(want.length > 1 && !zoomed); p.setActive(want.length > 1 && p.id === state.session); p.resize(); }
+        panesHost.hidden = !want.length;
+      }
+      function build(n: Node): HTMLElement {
+        if (typeof n === "string") return panes.get(n)?.el ?? el("div", "term-pane");
+        const box = el("div", "term-split");
+        box.dataset.dir = n.dir;
+        const a = build(n.a), b = build(n.b), divider = el("div", "term-divider");
+        divider.setAttribute("role", "separator");
+        divider.setAttribute("aria-orientation", n.dir === "row" ? "vertical" : "horizontal");
+        const apply = () => { a.style.flex = `${n.ratio} 1 0px`; b.style.flex = `${1 - n.ratio} 1 0px`; };
+        apply();
+        divider.onpointerdown = e => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          divider.setPointerCapture(e.pointerId);
+          const move = (ev: PointerEvent) => {
+            const r = box.getBoundingClientRect();
+            n.ratio = Math.max(0.1, Math.min(0.9, n.dir === "row" ? (ev.clientX - r.left) / r.width : (ev.clientY - r.top) / r.height));
+            apply();
+          };
+          const up = () => { divider.removeEventListener("pointermove", move); divider.removeEventListener("pointerup", up); void save(); for (const p of panes.values()) p.resize(); };
+          divider.addEventListener("pointermove", move);
+          divider.addEventListener("pointerup", up, { once: true });
+        };
+        box.append(a, divider, b);
+        return box;
+      }
       async function setRimeControl(enabled: boolean) {
-        const id = state.session;
-        if (!id || changingControl) return;
+        const p = focused();
+        if (!p || changingControl) return;
         changingControl = true;
         rimeToggle.checked = enabled;
         draw();
         try {
-          await inputBuffer.flush();
-          if (!connected || !streamReady || state.session !== id) return;
-          await api("configure", { id, agentInput: enabled }, "POST");
-          await update();
-        } finally { changingControl = false; draw(); resize(); if (!enabled && canType()) term.focus(); }
+          await p.flush();
+          if (!p.connected || !streamReady || state.session !== p.id) return;
+          await api("configure", { id: p.id, agentInput: enabled }, "POST");
+          await p.update();
+        } finally { changingControl = false; draw(); p.resize(); if (!enabled && p.canType()) p.focus(); }
       }
       const rimeControl = el("label", "switch term-rime-control", "Let Rime control");
       const rimeToggle = el("input");
@@ -280,18 +343,18 @@ async function mount(w: WardInstance) {
       rimeToggle.onchange = () => { void setRimeControl(rimeToggle.checked).catch(e => toast(e.message, undefined, true)); };
       rimeControl.prepend(rimeToggle);
       const take = button("Take control", async () => {
-        const id = state.session;
-        if (!id) return;
-        await update();
-        if (!connected || !streamReady || state.session !== id) return;
-        await api("control", { id, takeover: true }, "POST");
-        uncertain.delete(id);
-        await update(); resize(); term.focus();
+        const p = focused();
+        if (!p) return;
+        await p.update();
+        if (!p.connected || !streamReady || state.session !== p.id) return;
+        await api("control", { id: p.id, takeover: true }, "POST");
+        p.reclaim();
+        await p.update(); p.resize(); p.focus();
       });
       take.className = "term-control";
       const restart = button("Resume session", async () => {
-        const id = state.session;
-        if (id) await launch(undefined, id);
+        const p = focused();
+        if (p) await launch(undefined, p.id);
       });
       restart.className = "term-control";
       footer.append(rimeControl, take, restart);
@@ -299,7 +362,7 @@ async function mount(w: WardInstance) {
       let showKeys = matchMedia("(pointer: coarse)").matches;
       for (const [label, data, direction] of [["Esc", "\x1b"], ["Tab", "\t"], ["Left", "\x1b[D", "180deg"],
         ["Down", "\x1b[B", "90deg"], ["Up", "\x1b[A", "-90deg"], ["Right", "\x1b[C", "0deg"], ["Ctrl-C", "\x03"], ["Enter", "\r"]] as const) {
-        const key = button(label, () => send(data));
+        const key = button(label, () => focused()?.send(data));
         if (direction) {
           const arrow = el("span"); arrow.style.display = "inline-flex"; arrow.style.rotate = direction;
           arrow.append(icon("right")); key.replaceChildren(arrow); key.setAttribute("aria-label", label); key.title = label;
@@ -310,84 +373,69 @@ async function mount(w: WardInstance) {
       }
       surface.after(keys);
       function draw() {
-        const writable = canType() && !changingControl;
-        term.options.disableStdin = !writable;
-        empty.hidden = !!session || !connected;
-        screen.hidden = !session;
-
+        const p = focused(), session = p?.session;
+        const writable = !!p && p.writable();
+        empty.hidden = !!p || !listOk;
         newButton.disabled = launching;
         empty.querySelectorAll<HTMLButtonElement>("button").forEach(b => { b.disabled = launching; });
         rimeControl.hidden = session?.state !== "running";
         if (!changingControl) rimeToggle.checked = !!session?.agentInput;
-        rimeToggle.disabled = !connected || !streamReady || changingControl;
-        take.hidden = session?.state !== "running" || canType();
-        take.disabled = !connected || !streamReady || changingControl;
-        take.textContent = session && uncertain.has(session.id) ? "Review & take control" : "Take control";
+        rimeToggle.disabled = !p?.connected || !streamReady || changingControl;
+        take.hidden = session?.state !== "running" || !!p?.canType();
+        take.disabled = !p?.connected || !streamReady || changingControl;
+        take.textContent = p?.uncertain ? "Review & take control" : "Take control";
         restart.hidden = !session || !!session.command || session.state === "running";
-        restart.disabled = !connected || launching;
+        restart.disabled = !p?.connected || launching;
         keys.hidden = !showKeys || !session || session.state !== "running";
         keys.querySelectorAll<HTMLButtonElement>("button").forEach(b => { b.disabled = !writable; });
-        const text = failure ? failure : !connected || !streamReady ? "Reconnecting…" : !session ? "Ready" :
+        const why = failure || p?.failure || "";
+        const text = why ? why : !listOk || !streamReady || (p && !p.connected) ? "Reconnecting…" : !session ? "Ready" :
           session.state !== "running" ? terminalExitLabel(session) : changingControl ? "Saving…" :
-          uncertain.has(session.id) ? "Input unconfirmed · review the screen" :
+          p?.uncertain ? "Input unconfirmed · review the screen" :
           writable ? session.agentInput ? "Shared with Rime" : "You’re in control" : session.owner ? "Viewing · controlled elsewhere" : "Viewing only";
         if (status.textContent !== text) status.textContent = text;
-        status.dataset.state = !connected || !streamReady || (session && uncertain.has(session.id)) ? "attention" : writable ? "active" : "idle";
+        status.dataset.state = !listOk || !streamReady || (p && (!p.connected || p.uncertain)) ? "attention" : writable ? "active" : "idle";
         status.title = session ? `${names[session.kind]} · ${session.agentInput ? "You and Rime can both type in this session" : "Rime input is off; you can keep typing"}` : "";
       }
-      let resizeTimer: ReturnType<typeof setTimeout> | undefined, resizing = false, lastSize = "";
-      const resize = () => {
-        if (!canType() || !screen.clientWidth || !screen.clientHeight) return;
-        const size = fit.proposeDimensions();
-        if (size) term.resize(Math.max(20, Math.min(400, size.cols)), Math.max(5, Math.min(150, size.rows)));
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => void sendSize(), 60);
-      };
-      async function sendSize() {
-        if (resizing || !canType()) return;
-        const id = state.session, cols = term.cols, rows = term.rows, size = `${id}:${cols}:${rows}`;
-        if (lastSize === size) return;
-        resizing = true;
-        try { await api("resize", { id, cols, rows }, "POST"); lastSize = size; }
-        catch { lastSize = ""; }
-        finally { resizing = false; }
-        if (canType() && (term.cols !== cols || term.rows !== rows)) resize();
-      }
       function sessionList() {
-        const visible = list.filter(tabVisible);
-        const signature = JSON.stringify(visible.map(s => [s.id, s.title, s.state]));
+        const active = activeGroup();
+        const signature = JSON.stringify(groups.map(g => leaves(g).map(id => [id, titleOf(id), list.find(s => s.id === id)?.state])));
         if (signature !== sessionOptions) {
           sessionOptions = signature;
           sessions.replaceChildren();
-          for (const s of visible) {
+          groups.forEach((g, index) => {
+            const ids = leaves(g), first = ids[0] ?? "";
             const row = el("div", "term-tab");
             row.setAttribute("role", "presentation");
-            const tab = button(s.title === s.kind ? names[s.kind] : s.title, () => attach(s.id));
+            row.dataset.group = String(index);
+            const tab = button(titleOf(first), () => attach(first));
             tab.className = "term-tab-label";
-            tab.dataset.session = s.id;
-            tab.id = `terminal-tab-${w.i}-${s.id}`;
+            tab.dataset.session = first;
+            tab.id = `terminal-tab-${w.i}-${first}`;
             tab.setAttribute("role", "tab");
-            tab.setAttribute("aria-controls", screen.id);
+            tab.setAttribute("aria-controls", panesHost.id);
             tab.setAttribute("aria-keyshortcuts", "Delete");
-            tab.title = tab.textContent ?? "";
-            const close = toolButton("close", `Close ${tab.textContent} tab`, () => attach(s.id, true));
+            tab.title = ids.map(titleOf).join(" · ");
+            if (ids.length > 1) { row.dataset.split = "true"; tab.append(el("span", "term-tab-badge", `+${ids.length - 1}`)); }
+            tab.onpointerdown = e => startDrag(e, { kind: "tab", group: g });
+            const close = toolButton("close", `Close ${titleOf(first)} tab`, () => closeSessions(ids, "tab"));
             close.classList.add("term-tab-close");
-            close.title = s.state === "running" ? "Close tab · session keeps running" : "Close tab";
+            close.title = ids.some(id => list.find(s => s.id === id)?.state === "running") ? "Close tab · session keeps running" : "Close tab";
             row.append(tab, close);
             sessions.append(row);
-          }
+          });
         }
-        screen.removeAttribute("aria-labelledby");
+        panesHost.removeAttribute("aria-labelledby");
         const tabs = [...sessions.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
         for (const tab of tabs) {
-          const selected = tab.dataset.session === state.session;
-          tab.setAttribute("aria-selected", String(selected));
           const row = tab.parentElement;
           if (!row) continue;
+          const selected = groups[Number(row.dataset.group)] === active && !!state.session;
+          tab.setAttribute("aria-selected", String(selected));
           row.dataset.active = String(selected);
           tab.tabIndex = selected || (!state.session && tab === tabs[0]) ? 0 : -1;
           if (selected) {
-            screen.setAttribute("aria-labelledby", tab.id);
+            panesHost.setAttribute("aria-labelledby", tab.id);
             if (row.offsetLeft < sessions.scrollLeft || row.offsetLeft + row.offsetWidth > sessions.scrollLeft + sessions.clientWidth)
               sessions.scrollLeft = row.offsetLeft;
           }
@@ -397,7 +445,8 @@ async function mount(w: WardInstance) {
         if (!(e.target instanceof HTMLElement) || e.target.getAttribute("role") !== "tab" || !e.target.dataset.session) return;
         if (e.key === "Delete") {
           e.preventDefault();
-          void attach(e.target.dataset.session, true).catch(error => toast(error.message, undefined, true));
+          const g = groupOf(e.target.dataset.session);
+          if (g) void closeSessions(leaves(g), "tab").catch(error => toast(error.message, undefined, true));
           return;
         }
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
@@ -408,146 +457,186 @@ async function mount(w: WardInstance) {
           (at + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
         tab?.focus(); tab?.click();
       };
-      function drainOutput() {
-        if (stopped || updating || painting) return;
-        if (resync) { void update(); return; }
-        const chunks = outputs;
-        outputs = []; outputSize = 0;
-        let next = sequence;
-        const text: string[] = [];
-        for (const chunk of chunks) {
-          if (next !== undefined && chunk.sequence <= next) continue;
-          if (next === undefined || chunk.sequence !== next + 1) { resync = true; void update(); return; }
-          next = chunk.sequence;
-          text.push(chunk.data);
-        }
-        if (!text.length) return;
-        painting = new Promise<void>(resolve => term.write(text.join(""), resolve)).then(() => {
-          sequence = next;
-        }).finally(() => { painting = undefined; drainOutput(); });
-      }
-      function update(): Promise<void> {
-        if (updating) return updating;
-        if (stopped) return Promise.resolve();
-        clearTimeout(retrySnapshot);
-        updating = (async () => {
-          try {
-            await painting;
-            resync = false;
-            const next: SessionView[] = await api("sessions", { project: state.project });
-            if (stopped) return;
-            list = next;
-            const ids = new Set(list.map(s => s.id));
-            const stale = state.tabs?.some(id => !ids.has(id)) || state.closedSessions?.some(id => !ids.has(id));
-            if (stale) {
-              state.tabs = state.tabs?.filter(id => ids.has(id)); state.closedSessions = state.closedSessions?.filter(id => ids.has(id));
-              await remember();
-            }
-            if (state.session && !list.some(s => s.id === state.session && tabVisible(s))) {
-              state.session = undefined; session = undefined; sequence = undefined;
-              outputs = []; outputSize = 0; term.reset(); autoAttach = true;
-              await remember();
-            }
-            const visible = list.filter(tabVisible);
-            if (autoAttach && visible.length) {
-              autoAttach = false;
-              state.session = (visible.find(s => s.state === "running") ?? visible[0])?.id;
-              await remember();
-            }
-            sessionList();
-            if (state.session) {
-              const id = state.session;
-              const saved = list.find(s => s.id === id);
-              if (saved && terminalNeedsRestore(saved) && !restored.has(id)) {
-                restored.add(id);
-                await api("restart", { id }, "POST").catch(e => toast(e.message, undefined, true));
-              }
-              const result = await api<ReturnType<typeof readSession>>("sessions", { id, ...(sequence === undefined ? {} : { after: sequence }) });
-              if (stopped || state.session !== id) return;
-              session = result.session;
-              screen.hidden = false;
-              if (result.session.cols !== term.cols || result.session.rows !== term.rows) term.resize(result.session.cols, result.session.rows);
-              if (result.reset) term.reset();
-              if (result.data) await new Promise<void>(resolve => term.write(result.data, resolve));
-              sequence = result.session.sequence;
-              if (session.state === "running" && !session.owner && !uncertain.has(id))
-                session = await api<SessionView>("control", { id }, "POST").catch(e => { if (e.status === 409) return session as SessionView; throw e; });
-            }
-            connected = true;
-            failure = "";
-          } catch (e) {
-            connected = false;
-            // A dead session, a refused route or a vanished desktop will not fix itself in 3 s: say why, retry slowly.
-            failure = [401, 403, 404].includes((e as { status?: number }).status ?? 0) ? (e as Error).message : "";
-            if (!stopped) retrySnapshot = setTimeout(() => void update(), failure ? 30000 : 3000);
-          } finally {
-            if (!stopped) { draw(); resize(); }
-          }
-        })().finally(() => { updating = undefined; if (connected) drainOutput(); });
-        return updating;
-      }
-      function attach(id: string, close = false): Promise<void> {
+      /** Show `id`: its group becomes the active tab (a new tab when it is in none). */
+      function attach(id: string): Promise<void> {
         attaching = attaching.catch(() => {}).then(async () => {
-          await inputBuffer.flush();
-          await updating;
-          await painting;
-          if (stopped || (!close && state.session === id && session)) return;
-          const visible = list.filter(tabVisible);
-          const at = visible.findIndex(s => s.id === id);
-          const next = close ? (state.session === id ? (visible[at + 1] ?? visible[at - 1])?.id : state.session) : id;
-          const closed = new Set(state.closedSessions);
-          if (close) closed.add(id); else closed.delete(id);
-          const tabs = new Set(state.tabs);
-          if (close) tabs.delete(id); else tabs.add(id);
-          const value = { ...state, session: next, tabs: [...tabs], closedSessions: [...closed] };
-          await api("view", { id: w.i, value }, "POST");
+          if (stopped) return;
+          const shown = state.session === id ? panes.get(id) : undefined;
+          if (shown) { shown.focus(); return; }
+          const closed = new Set(state.closedSessions); closed.delete(id);
+          const tabs = new Set(state.tabs); tabs.add(id);
+          state = { ...state, session: id, tabs: [...tabs], closedSessions: [...closed] };
           autoAttach = false;
-          const switched = state.session !== next || !session;
-          state = value;
-          if (switched) {
-            session = undefined;
-            sequence = undefined;
-            outputs = []; outputSize = 0; lastSize = "";
-            term.reset();
-          }
-          await update();
-          if (close) {
-            (sessions.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? newButton).focus();
-            if (list.find(s => s.id === id)?.state === "running")
-              toast("Tab closed. Session keeps running.", { label: "Reopen", fn: () => { void attach(id).catch(error => toast(error.message, undefined, true)); } });
-          }
+          if (!groupOf(id)) groups = [...groups, id];
+          zoomed = undefined;
+          await save();
+          render();
+          panes.get(id)?.focus();
         });
         return attaching;
       }
-      async function launch(options?: Record<string, unknown>, previous?: string) {
+      /** Hide sessions (a tab's every pane, or one pane); their processes keep running. */
+      function closeSessions(ids: string[], what: "tab" | "pane"): Promise<void> {
+        attaching = attaching.catch(() => {}).then(async () => {
+          if (stopped) return;
+          const closed = new Set(state.closedSessions), tabs = new Set(state.tabs);
+          for (const id of ids) { closed.add(id); tabs.delete(id); }
+          let next = state.session;
+          if (next && ids.includes(next)) {
+            const g = groupOf(next), at = g ? groups.indexOf(g) : -1;
+            const rest = g ? leaves(g).filter(x => !ids.includes(x)) : [];
+            const neighbour = groups[at + 1] ?? groups[at - 1];
+            next = rest[0] ?? (neighbour ? leaves(neighbour)[0] : undefined);
+          }
+          groups = groups.flatMap(g => { let n: Node | null = g; for (const id of ids) n = n === null ? null : remove(n, id); return n === null ? [] : [n]; });
+          state = { ...state, session: next, tabs: [...tabs], closedSessions: [...closed] };
+          zoomed = undefined;
+          await save();
+          render();
+          (focused()?.el.contains(document.activeElement) ? undefined : sessions.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? newButton)?.focus();
+          const running = ids.find(id => list.find(s => s.id === id)?.state === "running");
+          if (running) toast(`${what === "tab" ? "Tab" : "Pane"} closed. Session keeps running.`, { label: "Reopen", fn: () => { void attach(running).catch(error => toast(error.message, undefined, true)); } });
+        });
+        return attaching;
+      }
+      async function launch(options?: Record<string, unknown>, previous?: string, place?: { target: string; side: Side }) {
         if (launching) return;
         launching = true;
         draw();
         try {
+          const size = focused()?.term;
           const s: SessionView = previous ? await api("restart", { id: previous }, "POST") :
-            await api("sessions", { project: state.project, kind: "shell", mode: "human", cols: term.cols, rows: term.rows, ...options }, "POST");
+            await api("sessions", { project: state.project, kind: "shell", mode: "human", cols: size?.cols ?? 100, rows: size?.rows ?? 30, ...options }, "POST");
+          if (!list.some(x => x.id === s.id)) list.unshift(s);
+          if (place && groupOf(place.target) && !groupOf(s.id)) groups = groups.map(g => has(g, place.target) ? insert(g, place.target, s.id, place.side) : g);
           await attach(s.id);
           await api("control", { id: s.id, takeover: true }, "POST");
-          await update();
-          resize();
-          term.focus();
+          const p = panes.get(s.id);
+          if (p) { p.reclaim(); await p.update(); p.resize(); p.focus(); }
         } finally {
           launching = false;
           if (!stopped) draw();
         }
       }
-      const inputBuffer = new TerminalInput(async (id, data, binary) => {
-        if (stopped || state.session !== id || !canType()) return;
-        await api("input", { id, data, binary }, "POST");
-      }, (id, error) => {
-        uncertain.add(id);
-        if (!stopped) { draw(); toast((error as Error).message, undefined, true); }
-      });
-      const send = (data: string, binary = false) => {
-        if (state.session && !changingControl && canType()) inputBuffer.send(state.session, data, binary);
-      };
-      const listener = term.onData(data => void send(data));
-      const binaryListener = term.onBinary(data => send(data, true));
+      /** A new shell beside `target`. Existing sessions are tiled by dragging their tab in. */
+      async function split(side: Side, target = state.session) {
+        const g = target && groupOf(target);
+        if (!g || !target) { toast("Open a terminal first.", undefined, true); return; }
+        if (leaves(g).length >= MAX_PANES) { toast(`Up to ${MAX_PANES} panes in one tab.`, undefined, true); return; }
+        await launch({ title: `${names.shell} ${list.filter(s => s.kind === "shell" && !s.command).length + 1}` }, undefined, { target, side });
+      }
+      function cycleTab(delta: number) {
+        const g = activeGroup();
+        const next = g ? groups[(groups.indexOf(g) + delta + groups.length) % groups.length] : undefined;
+        const first = next ? leaves(next)[0] : undefined;
+        if (first) void attach(first).catch(e => toast(e.message, undefined, true));
+      }
+      function focusNeighbour(p: Pane, dir: string) {
+        const r = p.el.getBoundingClientRect(), cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+        let best: Pane | undefined, score = Infinity;
+        for (const q of panes.values()) {
+          if (q === p || !q.el.isConnected) continue;
+          const b = q.el.getBoundingClientRect(), dx = (b.left + b.right) / 2 - cx, dy = (b.top + b.bottom) / 2 - cy;
+          if (dir === "left" ? dx >= -1 : dir === "right" ? dx <= 1 : dir === "up" ? dy >= -1 : dy <= 1) continue;
+          const s = dir === "left" || dir === "right" ? Math.abs(dx) + 2 * Math.abs(dy) : Math.abs(dy) + 2 * Math.abs(dx);
+          if (s < score) { score = s; best = q; }
+        }
+        best?.focus();
+      }
+      function setPrefs(next: Prefs) {
+        prefs = next; savePrefs(next);
+        for (const p of panes.values()) p.applyPrefs(next);
+      }
+      function shortcut(e: KeyboardEvent, p: Pane): boolean {
+        const k = e.key.toLowerCase();
+        if (k === "f") { openFind(); return true; }
+        if (k === "c") {
+          if (!p.term.hasSelection()) return false;
+          void navigator.clipboard.writeText(p.term.getSelection()).catch(err => toast(err.message, undefined, true));
+          return true;
+        }
+        if (k === "v") { void navigator.clipboard.readText().then(text => { if (p.writable()) p.term.paste(text); }).catch(err => toast(err.message, undefined, true)); return true; }
+        if (k === "k") { p.term.clear(); return true; }
+        if (k === "d" || k === "e") { void split(k === "d" ? "right" : "bottom", p.id); return true; }
+        if (["+", "=", "-", "0"].includes(e.key)) {
+          setPrefs({ ...prefs, size: e.key === "0" ? DEFAULT_PREFS.size : Math.max(9, Math.min(28, prefs.size + (e.key === "-" ? -1 : 1))) });
+          return true;
+        }
+        if (k === "[" || k === "]") { cycleTab(k === "]" ? 1 : -1); return true; }
+        if (/^[1-9]$/.test(k)) { const first = leaves(groups[Number(k) - 1] ?? "")[0]; if (first) void attach(first); return true; }
+        if (k === "enter" && e.shiftKey) { zoomed = zoomed === p.id ? undefined : p.id; renderPanes(); p.focus(); return true; }
+        if (k.startsWith("arrow") && e.altKey) { focusNeighbour(p, k.slice(5)); return true; }
+        return false;
+      }
+      type DragSource = { kind: "tab"; group: Node } | { kind: "pane"; id: string };
+      type DropTarget = { kind: "strip"; index: number } | { kind: "pane"; id: string; side: Side | "center" };
+      function startDrag(e: PointerEvent, source: DragSource) {
+        if (e.button !== 0 || e.pointerType === "touch") return;
+        const sx = e.clientX, sy = e.clientY;
+        let active = false, ghost: HTMLElement | undefined, target: DropTarget | undefined, marked: HTMLElement | undefined;
+        const label = source.kind === "tab" ? leaves(source.group).map(titleOf).join(" · ") : titleOf(source.id);
+        const clearMark = () => { marked?.removeAttribute("data-drop"); marked = undefined; };
+        const move = (ev: PointerEvent) => {
+          if (!active) {
+            if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
+            active = true;
+            ghost = el("div", "term-ghost", label);
+            document.body.append(ghost);
+            host.dataset.dragging = source.kind;
+          }
+          if (ghost) ghost.style.translate = `${ev.clientX + 12}px ${ev.clientY + 12}px`;
+          clearMark(); target = undefined;
+          const under = document.elementFromPoint(ev.clientX, ev.clientY);
+          if (!under) return;
+          if (sessions.contains(under)) {
+            const rows = [...sessions.querySelectorAll<HTMLElement>(".term-tab")];
+            let index = rows.length;
+            rows.forEach((row, i) => { const r = row.getBoundingClientRect(); if (index === rows.length && ev.clientX < r.left + r.width / 2) index = i; });
+            target = { kind: "strip", index };
+            marked = rows[index] ?? rows.at(-1);
+            marked?.setAttribute("data-drop", rows[index] ? "before" : "after");
+            return;
+          }
+          const paneEl = under.closest<HTMLElement>(".term-pane");
+          if (!paneEl || !panesHost.contains(paneEl)) return;
+          const id = paneEl.dataset.session ?? "";
+          if ((source.kind === "pane" && source.id === id) || (source.kind === "tab" && has(source.group, id))) return;
+          const r = paneEl.getBoundingClientRect(), fx = (ev.clientX - r.left) / r.width, fy = (ev.clientY - r.top) / r.height;
+          const side: Side | "center" = fx < 0.25 ? "left" : fx > 0.75 ? "right" : fy < 0.25 ? "top" : fy > 0.75 ? "bottom" : "center";
+          target = { kind: "pane", id, side };
+          marked = paneEl; paneEl.dataset.drop = side;
+        };
+        const up = () => {
+          window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", up);
+          ghost?.remove(); clearMark(); delete host.dataset.dragging;
+          if (active && target) drop(source, target);
+        };
+        window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
+      }
+      function drop(source: DragSource, target: DropTarget) {
+        const node: Node = source.kind === "tab" ? source.group : source.id;
+        const focusId = leaves(node)[0] ?? "";
+        if (source.kind === "pane" && target.kind === "pane" && target.side === "center" && groupOf(source.id) === groupOf(target.id))
+          groups = groups.map(g => swap(g, source.id, target.id));
+        else {
+          let index = target.kind === "strip" ? target.index : -1;
+          if (source.kind === "tab") { const from = groups.indexOf(source.group); if (from >= 0 && from < index) index--; groups = groups.filter(g => g !== source.group); }
+          else groups = groups.flatMap(g => { const n = remove(g, source.id); return n === null ? [] : [n]; });
+          if (target.kind === "strip") groups = [...groups.slice(0, index), node, ...groups.slice(index)];
+          else {
+            const gi = groups.findIndex(g => has(g, target.id));
+            const into = groups[gi];
+            if (!into || leaves(into).length + leaves(node).length > MAX_PANES) {
+              if (gi >= 0) toast(`Up to ${MAX_PANES} panes in one tab.`, undefined, true);
+              groups = [...groups, node];
+            } else groups = groups.map((g, i) => i === gi ? insert(g, target.id, node, target.side === "center" ? "right" : target.side) : g);
+          }
+        }
+        state.session = focusId; zoomed = undefined;
+        void save();
+        render();
+        panes.get(focusId)?.focus();
+      }
       const start = button("Open terminal", () => launch());
       start.className = "btn-primary";
       const agentChoices = el("div", "term-agent-choices");
@@ -615,7 +704,52 @@ async function mount(w: WardInstance) {
             error.hidden = false;
           } finally { submit.disabled = false; }
         };
-        d.onclose = () => { d.remove(); if (canType()) term.focus(); };
+        d.onclose = () => { d.remove(); focused()?.focus(); };
+      }
+      function settingsDialog() {
+        const { d, form, actions, error, submit } = workspaceDialog("Terminal settings");
+        d.classList.add("term-settings");
+        const field = (label: string, control: HTMLElement) => { const row = el("label", undefined, label); row.append(control); return row; };
+        const check = (label: string, on: boolean) => { const c = el("input"); c.type = "checkbox"; c.checked = on; const row = el("label", "term-settings-check", label); row.prepend(c); return { c, row }; };
+        const number = (label: string, value: number, min: number, max: number, step = 1) => {
+          const i = el("input", "input"); i.type = "number"; i.min = String(min); i.max = String(max); i.step = String(step); i.value = String(value); i.setAttribute("aria-label", label);
+          return i;
+        };
+        const font = el("input", "input"); font.value = prefs.font; font.setAttribute("aria-label", "Font family");
+        const fonts = el("datalist"); fonts.id = `term-fonts-${w.i}`;
+        for (const f of [DEFAULT_PREFS.font, "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", "Menlo", "Monaco", "Consolas", "Source Code Pro", "IBM Plex Mono", "Hack", "Ubuntu Mono", "DejaVu Sans Mono"]) fonts.append(new Option(f));
+        font.setAttribute("list", fonts.id);
+        const size = number("Font size", prefs.size, 9, 28), lineHeight = number("Line height", prefs.lineHeight, 1, 1.6, 0.05);
+        const weight = select("Weight", ["300", "400", "500", "600"]); weight.value = String(prefs.weight);
+        const boldWeight = select("Bold weight", ["600", "700", "800"]); boldWeight.value = String(prefs.boldWeight);
+        const cursor = select("Cursor", ["block", "underline", "bar"]); cursor.value = prefs.cursor;
+        const blink = check("Blink cursor", prefs.blink), optionMeta = check("Option key sends Meta (Alt)", prefs.optionMeta), webgl = check("GPU rendering (WebGL)", prefs.webgl);
+        const contrast = number("Minimum contrast", prefs.contrast, 1, 21, 0.5), scrollback = number("Scrollback lines", prefs.scrollback, 1000, 50000, 1000);
+        const renderer = el("p", "term-help");
+        const p = focused() ?? panes.values().next().value;
+        renderer.textContent = `Renderer now: ${!p ? "no pane open" : p.renderer() === "webgl" ? "WebGL (GPU)" : prefs.webgl ? "DOM — WebGL unavailable here" : "DOM"}`;
+        const grid = el("div", "term-settings-grid");
+        grid.append(field("Font family", font), fonts, field("Size", size), field("Line height", lineHeight), field("Weight", weight), field("Bold weight", boldWeight),
+          field("Cursor", cursor), field("Minimum contrast", contrast), field("Scrollback", scrollback));
+        const checks = el("div", "term-settings-checks");
+        checks.append(blink.row, webgl.row);
+        if (isMac) checks.append(optionMeta.row);
+        const reset = button("Reset to defaults", () => { setPrefs({ ...DEFAULT_PREFS }); d.close(); });
+        actions.prepend(reset);
+        actions.before(grid, checks, renderer, el("p", "term-help", `Shortcuts: ${isMac ? "⌘" : "Ctrl+Shift"} D split right · E split down · K clear · F find · [ ] switch tab · 1–9 tab · ${isMac ? "⌘⌥" : "Ctrl+Shift+Alt"} arrows focus pane · ${isMac ? "⌘⇧" : "Ctrl+Shift"}+Enter zoom · Shift+Enter newline in agents.`));
+        submit.textContent = "Save";
+        form.onsubmit = e => {
+          e.preventDefault();
+          error.hidden = true;
+          const read = (i: HTMLInputElement, lo: number, hi: number, fallback: number) => { const v = Number(i.value); return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback; };
+          setPrefs({
+            font: font.value.trim().slice(0, 200) || DEFAULT_PREFS.font, size: read(size, 9, 28, 13), lineHeight: read(lineHeight, 1, 1.6, 1.2),
+            weight: Number(weight.value), boldWeight: Number(boldWeight.value), cursor: cursor.value as Prefs["cursor"],
+            blink: blink.c.checked, optionMeta: optionMeta.c.checked, contrast: read(contrast, 1, 21, 1), scrollback: read(scrollback, 1000, 50000, 10000), webgl: webgl.c.checked,
+          });
+          d.close();
+        };
+        d.onclose = () => { d.remove(); focused()?.focus(); };
       }
 
       const findBar = el("div", "term-find");
@@ -623,10 +757,11 @@ async function mount(w: WardInstance) {
       const query = input("Find in terminal"), result = el("span", "term-find-result");
       result.setAttribute("role", "status");
       const find = (previous = false) => {
-        const found = !query.value || (previous ? search.findPrevious(query.value) : search.findNext(query.value));
+        const search = focused()?.search;
+        const found = !search || !query.value || (previous ? search.findPrevious(query.value) : search.findNext(query.value));
         result.textContent = found ? "" : "No match";
       };
-      const closeFind = () => { findBar.hidden = true; search.clearDecorations(); term.focus(); };
+      const closeFind = () => { findBar.hidden = true; focused()?.search.clearDecorations(); focused()?.focus(); };
       findBar.append(query, result, toolButton("left", "Previous match", () => find(true)),
         toolButton("right", "Next match", () => find()), toolButton("close", "Close search", closeFind));
       surface.prepend(findBar);
@@ -637,26 +772,6 @@ async function mount(w: WardInstance) {
         if (e.key === "Enter") { e.preventDefault(); find(e.shiftKey); }
         if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeFind(); }
       };
-      term.attachCustomKeyEventHandler(e => {
-        // Keep Ctrl+F available to shells and interactive terminal applications.
-        if ((e.metaKey || (e.ctrlKey && e.shiftKey)) && e.key.toLowerCase() === "f") {
-          if (e.type === "keydown") { e.preventDefault(); openFind(); }
-          return false;
-        }
-        if ((e.metaKey || (e.ctrlKey && e.shiftKey)) && e.key.toLowerCase() === "c" && term.hasSelection()) {
-          if (e.type === "keydown") { e.preventDefault(); void navigator.clipboard.writeText(term.getSelection()).catch(err => toast(err.message, undefined, true)); }
-          return false;
-        }
-        if ((e.metaKey || (e.ctrlKey && e.shiftKey)) && ["+", "=", "-", "0"].includes(e.key)) {
-          if (e.type === "keydown") {
-            e.preventDefault();
-            term.options.fontSize = e.key === "0" ? 13 : Math.max(9, Math.min(28, (term.options.fontSize ?? 13) + (e.key === "-" ? -1 : 1)));
-            resize();
-          }
-          return false;
-        }
-        return true;
-      });
       // Native popovers stay above ward clipping and the expanded dialog, and
       // provide outside-click/Escape dismissal without document listeners.
       const menu = el("div", "term-menu");
@@ -678,13 +793,22 @@ async function mount(w: WardInstance) {
           if (danger) b.dataset.danger = "true";
           menu.append(b);
         };
-        action("Find in terminal…", openFind, !session);
-        action("Copy selection", () => navigator.clipboard.writeText(term.getSelection()), !term.hasSelection());
-        action("Paste", async () => { term.paste(await navigator.clipboard.readText()); term.focus(); }, !canType());
-        action("Clear scrollback", () => term.clear(), !session);
-        action(term.options.screenReaderMode ? "Disable screen reader support" : "Enable screen reader support", () => {
-          term.options.screenReaderMode = !term.options.screenReaderMode;
-          localStorage.setItem("rimeward-terminal-accessibility", String(term.options.screenReaderMode));
+        const p = focused(), session = p?.session, g = activeGroup();
+        const many = !!g && leaves(g).length > 1;
+        action("Split right", () => split("right"), !p || launching);
+        action("Split down", () => split("bottom"), !p || launching);
+        action("Close pane", () => p && closeSessions([p.id], "pane"), !many);
+        action(zoomed ? "Unzoom pane" : "Zoom pane", () => { zoomed = zoomed ? undefined : p?.id; renderPanes(); p?.focus(); }, !many && !zoomed);
+        menu.append(el("hr"));
+        action("Find in terminal…", openFind, !p);
+        action("Copy selection", () => p && navigator.clipboard.writeText(p.term.getSelection()), !p?.term.hasSelection());
+        action("Paste", async () => { if (p) { p.term.paste(await navigator.clipboard.readText()); p.focus(); } }, !p?.writable());
+        action("Clear scrollback", () => p?.term.clear(), !p);
+        action("Terminal settings…", settingsDialog);
+        action(paneHost.screenReader() ? "Disable screen reader support" : "Enable screen reader support", () => {
+          const on = !paneHost.screenReader();
+          localStorage.setItem("rimeward-terminal-accessibility", String(on));
+          for (const q of panes.values()) q.term.options.screenReaderMode = on;
         });
         action(showKeys ? "Hide extra keys" : "Show extra keys", () => { showKeys = !showKeys; draw(); });
         action("Task manager…", taskManager);
@@ -693,18 +817,18 @@ async function mount(w: WardInstance) {
           menu.append(el("hr"));
           action("Rename session…", async () => {
             const title = await askText("Session name");
-            if (title?.trim()) { await api("configure", { id: target.id, title }, "POST"); await update(); }
+            if (title?.trim()) { await api("configure", { id: target.id, title }, "POST"); await refreshList(); }
           });
           if (target.state === "running") {
-            action("Interrupt process", () => api("interrupt", { id: target.id }, "POST"), !canType());
+            action("Interrupt process", () => p?.interrupt(), !p?.canType());
             menu.append(el("hr"));
             action("End session…", async () => {
               if (await confirmAction(`End ${target.title}? The process will stop. Its saved screen stays available.`)) {
                 await api("sessions", { id: target.id }, "DELETE");
-                await update();
+                await refreshList();
               }
-            }, !connected, true);
-          } else if (!target.command) action("Delete session…", () => deleteSaved(target), !connected, true);
+            }, !listOk, true);
+          } else if (!target.command) action("Delete session…", () => deleteSaved(target), !listOk, true);
         }
       });
       let taskDialog: HTMLDialogElement | undefined;
@@ -797,7 +921,7 @@ async function mount(w: WardInstance) {
                 if (!await confirmAction(`End ${target.title}? The process will stop. Its saved screen stays available.`)) return;
                 await api("sessions", { id: target.id }, "DELETE");
               } else if (!await deleteSaved(target)) return;
-              await refresh(); await update();
+              await refresh(); await refreshList();
             } finally { delete remove.dataset.busy; if (remove.isConnected) remove.disabled = applying; }
           });
           buttons.append(open, remove); controls.append(buttons);
@@ -822,9 +946,9 @@ async function mount(w: WardInstance) {
             if (deleted.size) {
               state.closedSessions = state.closedSessions?.filter(id => !deleted.has(id));
               state.tabs = state.tabs?.filter(id => !deleted.has(id));
-              await remember();
+              await save();
             }
-            await refresh(); await update();
+            await refresh(); await refreshList();
             if (failures.length) { error.textContent = failures.join("\n"); error.hidden = false; }
           } finally { applying = false; drawTasks(); }
         }
@@ -920,7 +1044,7 @@ async function mount(w: WardInstance) {
         await api("session-history", { id: target.id }, "DELETE");
         state.closedSessions = state.closedSessions?.filter(id => id !== target.id);
         state.tabs = state.tabs?.filter(id => id !== target.id);
-        await remember(); await update();
+        await save(); await refreshList();
         return true;
       }
       menu.addEventListener("toggle", e => {
@@ -940,48 +1064,49 @@ async function mount(w: WardInstance) {
         items[e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 :
           (at + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
       };
-      const ro = new ResizeObserver(resize);
-      ro.observe(screen);
-      cleanup.push(
-        terminalEvents(w.device ?? readPages().find(p => p.id === pageOfCard(w.i))?.device ?? "local", w.i, event => {
-          if (stopped) return;
-          if (!event) { streamReady = false; inputBuffer.clear(); draw(); return; }
-          if (event.type === "reset") { streamReady = true; resync = true; void update(); return; }
-          if (event.type === "session") {
-            if (!event.data) { resync = true; void update(); return; }
-            const next = event.data as SessionView;
-            if (next.project !== state.project) return;
-            const at = list.findIndex(s => s.id === next.id);
-            if (at < 0) list.unshift(next); else list[at] = next;
-            sessionList();
-            if (autoAttach && !launching && !state.session && next.state === "running" && tabVisible(next))
-              void attach(next.id).catch(error => toast(error.message, undefined, true));
-            if (state.session === next.id) {
-              session = next;
-              if (!canType()) {
-                inputBuffer.clear();
-                term.resize(next.cols, next.rows);
-              }
-              draw();
-            }
-            if (updating) resync = true;
-            return;
-          }
-          if (event.type !== "output" || event.id !== state.session) return;
-          const chunk = event.data as { sequence: number; data: string };
-          if (outputSize + chunk.data.length > 1024 * 1024) {
-            outputs = []; outputSize = 0; resync = true;
-          } else { outputs.push(chunk); outputSize += chunk.data.length; }
-          drainOutput();
-        }),
-        () => {
-          taskDialog?.close();
-          if (menu.matches(":popover-open")) menu.hidePopover();
-          clearTimeout(resizeTimer); clearTimeout(retrySnapshot); inputBuffer.clear();
-          ro.disconnect(); listener.dispose(); binaryListener.dispose(); term.dispose();
+      // Declared last: the stream notifies its listener synchronously (a `null` on connect).
+      const stream = terminalEvents(w.device ?? readPages().find(p => p.id === pageOfCard(w.i))?.device ?? "local", w.i, event => {
+        if (stopped) return;
+        if (!event) { streamReady = false; for (const p of panes.values()) p.event(null); draw(); return; }
+        if (event.type === "reset") { streamReady = true; void refreshList(); for (const p of panes.values()) p.event(event); return; }
+        if (event.type === "session") {
+          if (!event.data) { void refreshList(); return; }
+          const next = event.data as SessionView;
+          if (next.project !== state.project) return;
+          const at = list.findIndex(s => s.id === next.id);
+          if (at < 0) list.unshift(next); else list[at] = next;
+          if (listOk) syncGroups();
+          sessionList();
+          if (autoAttach && !launching && !state.session && next.state === "running" && tabVisible(next))
+            void attach(next.id).catch(error => toast(error.message, undefined, true));
+          panes.get(next.id)?.event(event);
+          return;
+        }
+        if (event.type === "output") panes.get(event.id)?.event(event);
+      }, ack => { for (const p of panes.values()) p.ack(ack); });
+      const paneHost: PaneHost = {
+        api, stream, prefs: () => prefs,
+        screenReader: () => localStorage.getItem("rimeward-terminal-accessibility") === "true",
+        busy: p => changingControl && p.id === state.session,
+        changed: p => { if (p.id === state.session) draw(); },
+        focused: p => {
+          if (state.session === p.id) return;
+          state.session = p.id; void save();
+          for (const q of panes.values()) q.setActive(panes.size > 1 && q === p);
+          sessionList(); draw();
         },
-      );
-      await update();
+        shortcut, close: p => void closeSessions([p.id], "pane").catch(e => toast(e.message, undefined, true)),
+        drag: (e, p) => startDrag(e, { kind: "pane", id: p.id }),
+      };
+      cleanup.push(() => {
+        taskDialog?.close();
+        if (menu.matches(":popover-open")) menu.hidePopover();
+        clearTimeout(retryList);
+        for (const p of panes.values()) p.dispose();
+        panes.clear();
+        stream.stop();
+      });
+      await refreshList();
     } else {
       const output = el("pre", "dev-diff");
       content.append(output);
