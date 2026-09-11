@@ -3329,6 +3329,37 @@ body:has(#splash-canvas.live) .splash-ground::after {
 .np[data-empty] .np-page {
   opacity: 0.4;
 }
+/* A document is paper, not chrome. The page a document, sheet or deck is
+   written on shows the page its export produces, whatever theme the dashboard
+   wears: white in light mode, and in dark mode a neutral dark page (a Word /
+   Docs dark canvas) so the sheet still reads as a document without glaring.
+   Neutral greys on purpose — a saved theme rewrites the tokens on :root, so
+   they are restated here. The print preview is always the white printed page.
+   Body text is the export's default (Calibri 11pt in the .docx); runs the
+   editor's font picker styled keep their own. */
+.np-page,
+.nb-sheet,
+.nb-slides,
+.document-export-content {
+  --color-surface: light-dark(#ffffff, #1e1e1e);
+  --color-surface-2: light-dark(#f3f7fb, #2a2a2a);
+  --color-ink: light-dark(#0c1a2b, #e6e6e6);
+  --color-ink-muted: light-dark(#5c7189, #a8a8a8);
+  --color-ink-faint: light-dark(#94a9bd, #7a7a7a);
+  --color-line: light-dark(#dbe6f0, #3c3c3c);
+  --color-line-strong: light-dark(#c3d4e4, #555555);
+  --color-accent: light-dark(#0284c7, #8ab4f8);
+  --color-accent-soft: light-dark(#e6f4fb, #1f2a3a);
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+.np-page,
+.document-export-content {
+  font-family: Calibri, Carlito, 'Segoe UI', Arial, sans-serif;
+}
+.document-export-content {
+  color-scheme: light;
+}
 
 /* ---- notebook ward: the card (search, New, pinned + recent) and the expanded
    dialog — nav | list | editor, one pane at a time on phones ---- */

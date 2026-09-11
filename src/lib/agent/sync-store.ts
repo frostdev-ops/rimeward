@@ -470,7 +470,7 @@ export function installRecord(user: number, record: SyncRecord) {
     const rec = isNote && value ? (value as { notebook: string | null; rev: number }) : null;
     void import('../logic-engine.ts').then((m) => {
       if (isNote) {
-        m.broadcast(user, 'note', value === null ? { note: id, gone: true } : { note: id, synced: true });
+        m.broadcast(user, 'note', value === null ? { note: id, gone: true } : { note: id, synced: true, rev: rec?.rev }); // rev: an editor already at it (its own save, synced back) keeps its caret
         if (previousNotebook && previousNotebook !== rec?.notebook) m.broadcast(user, 'notebook', { notebook: previousNotebook });
         if (rec?.notebook) m.broadcast(user, 'notebook', { notebook: rec.notebook });
       } else m.broadcast(user, 'notebook', { notebook: id });

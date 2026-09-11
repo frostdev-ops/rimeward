@@ -629,6 +629,12 @@ async function load(st: State, discard = false): Promise<boolean> {
     return false;
   }
   st.rev = d.rev ?? 0;
+  // The same content the editor holds (its own save echoed back by the stream
+  // or the sync): take the rev, leave the DOM — a rewrite drops the caret.
+  if (st.loaded && !discard && st.etag && d.etag === st.etag) {
+    setStatus(st, d.updated ? `Saved ${fmtTime(d.updated)}` : '');
+    return true;
+  }
   st.etag = d.etag;
   st.loaded = true;
   if (discard) st.docDirty = st.inkDirty = st.conflict = false;
@@ -1166,7 +1172,7 @@ function exportContent(st: State): string {
 }
 function exportHtml(st: State): string {
   const title = st.target?.title ?? 'Note';
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>body{max-width:60rem;margin:2rem auto;padding:0 1rem;font:16px/1.7 system-ui,sans-serif}blockquote{border-left:3px solid #999;margin:0;padding-left:.75em;color:#555}pre{background:#f3f3f3;padding:.5em .65em;white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #999;padding:6px}img{max-width:100%}[data-word-page]{break-after:page}[data-word-page]:last-child{break-after:auto}</style></head><body>${exportContent(st)}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>body{max-width:60rem;margin:2rem auto;padding:0 1rem;font:16px/1.7 Calibri,Carlito,'Segoe UI',Arial,sans-serif}blockquote{border-left:3px solid #999;margin:0;padding-left:.75em;color:#555}pre{background:#f3f3f3;padding:.5em .65em;white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #999;padding:6px}img{max-width:100%}[data-word-page]{break-after:page}[data-word-page]:last-child{break-after:auto}</style></head><body>${exportContent(st)}</body></html>`;
 }
 function exportMenu(st: State): void {
   if (!st.target || !st.loaded) { st.exportStatus.textContent = 'Load a document before exporting.'; return; }
