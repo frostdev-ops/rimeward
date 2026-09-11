@@ -91,7 +91,9 @@ export const ALL: APIRoute = async ({
           ?.config ?? { provider: providers.codex ? "codex" : "openrouter" };
         // Provider credentials and integration tokens never enter sync payloads
         // (an endpoint's NAME is not a credential; its url and key stay here).
-        const { model, effort, persona, endpoint } = config;
+        // A persona is per ward, never an account default: the first ward's
+        // would otherwise reach every desktop ward without one of its own.
+        const { model, effort, endpoint } = config;
         const provider =
           isAgentProvider(config.provider)
             ? config.provider
@@ -102,7 +104,7 @@ export const ALL: APIRoute = async ({
           profile: profileId(user),
           providers,
           endpoints,
-          config: { provider, model, effort, persona, ...(provider === 'compat' && typeof endpoint === 'string' ? { endpoint } : {}) },
+          config: { provider, model, effort, ...(provider === 'compat' && typeof endpoint === 'string' ? { endpoint } : {}) },
           manifest: syncManifest(user),
           noteFormat: NOTE_FORMAT,
         };
