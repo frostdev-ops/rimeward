@@ -43,6 +43,9 @@ interface Mount {
   mode: 'ws' | 'sse';
   ws?: WebSocket;
   wsEpoch: number;
+  /** Consecutive sockets closed before `hello`: the second one latches `sse`,
+   *  so one hiccup (a reload mid-deploy) does not cost the tab its socket. */
+  wsRefused: number;
   hello: boolean;
   /** The socket's browser is open (`view` arrived): input may be sent. */
   ready: boolean;
@@ -116,6 +119,9 @@ function connect(m: Mount): void {
 function connectWs(m: Mount): void {
   const epoch = ++m.wsEpoch;
   m.hello = false; m.ready = false;
+  // A document served through the desktop relay: the socket cannot cross it
+  // (and would reach the wrong server's ward). Straight to the SSE path.
+  if (document.querySelector('meta[name="rimeward-runtime-base"]')) { m.mode = 'sse'; connect(m); return; }
   let ws: WebSocket;
   try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/browser/ws/${m.w.i}?dsf=${browserScale(devicePixelRatio)}`); }
   catch { m.mode = 'sse'; connect(m); return; }
@@ -127,13 +133,13 @@ function connectWs(m: Mount): void {
     if (e.data instanceof Blob) { stats(m, e.data.size); void onFrame(m, e.data); return; }
     let ev: BrowserEvent | { type: 'hello' } | { type: 'error'; message: string };
     try { ev = JSON.parse(String(e.data)); } catch { ws.close(); return; }
-    if (ev.type === 'hello') { m.hello = true; return; }
+    if (ev.type === 'hello') { m.hello = true; m.wsRefused = 0; return; }
     if (ev.type === 'error') { flash(m, ev.message, 5000); return; }
     if (ev.type === 'view') {
       m.dsf = ev.dsf;
-      m.ready = true;
-      scheduleResize(m);
-      void flush(m);
+      // `view` also rides every tab switch's state push: the viewport is
+      // negotiated once per socket, not once per tab click.
+      if (!m.ready) { m.ready = true; scheduleResize(m); void flush(m); }
       return;
     }
     onEvent(m, ev);
@@ -145,9 +151,9 @@ function connectWs(m: Mount): void {
     // downs itself, and nothing is replayed on the next socket.
     m.queue = []; m.moveIdx = -1; m.held.clear(); m.buttons.clear();
     if (m.stopped || m.closing) return;
-    if (!m.hello) { m.mode = 'sse'; connect(m); return; }
+    if (!m.hello && ++m.wsRefused >= 2) { m.mode = 'sse'; connect(m); return; }
     flash(m, editing() ? 'Press Done to save the layout — the browser starts then.' : 'Browser unavailable — retrying…', 5000);
-    m.retryT = setTimeout(() => connect(m), 5000);
+    m.retryT = setTimeout(() => connect(m), m.hello ? 5000 : 1500);
   };
 }
 
@@ -371,12 +377,20 @@ const wsReady = (m: Mount): boolean => m.ws?.readyState === WebSocket.OPEN && m.
 
 function push(m: Mount, c: Cmd, urgent = false): void {
   if (m.stopped || m.closing) return;
-  if (m.mode === 'ws' && !m.driver && !isLocal(m) && !wsReady(m)) return;
+  if (m.mode === 'ws' && !m.driver && !isLocal(m) && !wsReady(m)) {
+    // Silent for the pointer; a click, key or navigation that goes nowhere says so.
+    if (c.t !== 'move' && c.t !== 'wheel' && c.t !== 'resize') flash(m, 'Reconnecting to the browser…', 2000);
+    return;
+  }
   if (debug && (c.t === 'down' || (c.t === 'key' && c.type === 'down'))) debugStats.input = performance.now();
+  const tail = m.queue.at(-1);
   if (c.t === 'move') {
     // Coalesce: only the latest position matters.
     if (m.moveIdx >= 0) m.queue[m.moveIdx] = c;
     else m.moveIdx = m.queue.push(c) - 1;
+  } else if (c.t === 'wheel' && tail?.t === 'wheel') {
+    // A trackpad fling is dozens of small deltas: one summed wheel per flush.
+    m.queue[m.queue.length - 1] = { t: 'wheel', x: c.x, y: c.y, dx: tail.dx + c.dx, dy: tail.dy + c.dy };
   } else m.queue.push(c);
   if (urgent) void flush(m);
   else if (!m.flushT) m.flushT = setTimeout(() => void flush(m), 16);
@@ -391,10 +405,11 @@ async function flush(m: Mount): Promise<void> {
   if (!m.driver && m.mode === 'ws') {
     const ws = m.ws;
     if (!ws || !wsReady(m)) return;
-    const cmds = m.queue;
-    m.queue = [];
-    m.moveIdx = -1;
+    // The server refuses a batch over 200; the rest goes on the next tick.
+    const cmds = m.queue.splice(0, 200);
+    m.moveIdx = m.queue.findIndex(c => c.t === 'move');
     ws.send(JSON.stringify({ cmds }));
+    if (m.queue.length && !m.flushT) m.flushT = setTimeout(() => void flush(m), 0);
     return;
   }
   if (m.inflight) return m.inflight;
@@ -717,7 +732,8 @@ function build(w: WardInstance): Mount {
     root,
     view,
     canvas,
-    ctx: canvas.getContext('2d')!,
+    // Opaque, and free to skip a vsync of compositor sync: the frame is the whole picture.
+    ctx: canvas.getContext('2d', { alpha: false, desynchronized: true })!,
     url,
     expand,
     tabs,
@@ -726,6 +742,7 @@ function build(w: WardInstance): Mount {
     epoch: 0,
     mode: 'ws',
     wsEpoch: 0,
+    wsRefused: 0,
     hello: false,
     ready: false,
     dsf: 1,

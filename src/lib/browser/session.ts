@@ -105,7 +105,12 @@ export interface Session {
   close: () => Promise<void>;
   closing?: Promise<void>;
   cast?: Promise<CDPSession>;
+  /** The running cast's max frame size (device px). Chromium only ever scales
+   *  frames DOWN to it, so a smaller viewport needs no restart — only a larger one. */
+  castMax?: { width: number; height: number };
   castStop?: Promise<void>;
+  /** Where the human's pointer last went, so a click at the same spot skips the move. */
+  pointer?: { x: number; y: number };
   unsubRoute?: () => void;
 }
 
@@ -126,7 +131,7 @@ export function open(userId: number, ward: string, cfg: BrowserConfig, opts: { d
   const key = `${userId}:${ward}`;
   const live = sessions.get(key);
   if (live) {
-    if (live.closing) return live.closing.then(() => open(userId, ward, cfg));
+    if (live.closing) return live.closing.then(() => open(userId, ward, cfg, opts));
     live.lastUsed = Date.now();
     return Promise.resolve(live);
   }
@@ -391,6 +396,7 @@ export async function pushState(s: Session): Promise<void> {
 export async function activate(s: Session, page: Page): Promise<void> {
   if (s.page !== page) {
     s.page = page;
+    s.pointer = undefined; // a new page has its own mouse state
     await stopCast(s);
     if (s.page !== page || s.closing) return; // A newer tab selection owns the cast.
     await page.setViewportSize(s.viewport).catch(() => {});
@@ -429,8 +435,10 @@ export async function resize(s: Session, width: number, height: number): Promise
   if (w === s.viewport.width && h === s.viewport.height) return;
   s.viewport = { width: w, height: h };
   await s.page.setViewportSize(s.viewport).catch(() => {});
-  // The screencast's max size is fixed at start — restart it at the new one.
-  if (s.cast) {
+  // The screencast's max size is fixed at start, and frames only shrink to
+  // fit it: restart only when the viewport outgrows it (the expand dialog),
+  // never on the way back down — that restart was a visible frame gap.
+  if (s.cast && s.castMax && (w * s.dsf > s.castMax.width || h * s.dsf > s.castMax.height)) {
     await stopCast(s);
     startCast(s);
   }
@@ -485,20 +493,29 @@ export async function runCmds(s: Session, cmds: unknown): Promise<void> {
     const c = raw as Partial<Cmd> & Record<string, unknown>;
     const { mouse, keyboard } = s.page;
     const { width: vw, height: vh } = s.viewport;
+    // Through Playwright's mouse, never raw CDP: the agent's page.mouse/click
+    // share its position and button state. A move to where the pointer
+    // already is (a click after the move that got it there) is skipped —
+    // one CDP round trip per click instead of two.
+    const moveTo = async (x: number, y: number) => {
+      if (s.pointer && s.pointer.x === x && s.pointer.y === y) return;
+      await mouse.move(x, y);
+      s.pointer = { x, y };
+    };
     try {
       switch (c.t) {
         case 'move':
-          await mouse.move(num(c.x, vw), num(c.y, vh));
+          await moveTo(num(c.x, vw), num(c.y, vh));
           break;
         case 'down':
         case 'up': {
-          await mouse.move(num(c.x, vw), num(c.y, vh));
+          await moveTo(num(c.x, vw), num(c.y, vh));
           const opts = { button: BUTTONS[num(c.button, 2)], clickCount: Math.max(1, num(c.clicks, 3)) };
           await (c.t === 'down' ? mouse.down(opts) : mouse.up(opts));
           break;
         }
         case 'wheel':
-          await mouse.move(num(c.x, vw), num(c.y, vh));
+          await moveTo(num(c.x, vw), num(c.y, vh));
           await mouse.wheel(num(Number(c.dx) + 5000, 10_000) - 5000, num(Number(c.dy) + 5000, 10_000) - 5000);
           break;
         case 'key': {
@@ -555,6 +572,7 @@ export async function runCmds(s: Session, cmds: unknown): Promise<void> {
  *  this on purpose: a person mid-click must never queue behind a 30s goto. */
 export function withSession<T>(s: Session, fn: () => Promise<T>): Promise<T> {
   if (s.closing) return Promise.reject(new Error('Browser is closing — retry after it reconnects.'));
+  s.pointer = undefined; // the agent moves the mouse on its own: the human's next click moves first
   s.operations = (s.operations ?? 0) + 1;
   const run = s.chain.then(fn, fn).finally(() => {
     s.operations!--;
@@ -584,6 +602,8 @@ function startCast(s: Session): void {
   if (s.cast || !s.subs.size || s.closing) return;
   const page = s.page;
   const stopped = s.castStop;
+  const max = { width: Math.round(s.viewport.width * s.dsf), height: Math.round(s.viewport.height * s.dsf) };
+  s.castMax = max;
   const cast = (async () => {
     await stopped;
     const cdp = await s.context.newCDPSession(page);
@@ -595,8 +615,8 @@ function startCast(s: Session): void {
     try { await cdp.send('Page.startScreencast', {
       format: 'jpeg',
       quality: 60,
-      maxWidth: Math.round(s.viewport.width * s.dsf),
-      maxHeight: Math.round(s.viewport.height * s.dsf),
+      maxWidth: max.width,
+      maxHeight: max.height,
       everyNthFrame: 1,
     }); } catch (error) { await cdp.detach().catch(() => {}); throw error; }
     return cdp;

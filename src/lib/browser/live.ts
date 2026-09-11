@@ -24,10 +24,13 @@ import { normalizeCmds, open, pushState, remoteKey, runCmds, subscribe, type Bro
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024, perMessageDeflate: false });
 const ROUTE = /^\/api\/browser\/ws\/([a-z0-9-]{1,32})(?:\?|$)/;
-/** Queued commands / bytes across every viewer of one session. */
+/** Queued commands / bytes ONE viewer may hold on a session. */
 const MAX_QUEUED = 4000;
 const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
 const TEXT_BACKLOG = 4 * 1024 * 1024;
+/** A command the renderer never acknowledges (a page stuck in a busy loop)
+ *  must not wedge every viewer's input for the session's life. */
+const CMD_MS = 10_000;
 
 interface Owner extends HumanOwner {
   sock: WebSocket;
@@ -37,6 +40,10 @@ interface Owner extends HumanOwner {
 }
 
 export function browserUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
+  // Node drops its own error handler before emitting `upgrade`; until `ws`
+  // installs one in handleUpgrade, a reset during the async resolution below
+  // would be an uncaught exception.
+  socket.on('error', () => {});
   const auth = upgradeSession(req);
   if (typeof auth === 'number') { refuseUpgrade(socket, auth); return; }
   const m = ROUTE.exec(req.url ?? '');
@@ -96,7 +103,8 @@ function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<Re
     } catch { fail(1008, 'Bad batch'); return; }
     if (!getSession(session)) { fail(4401, 'Signed out'); return; }
     // Admission: bytes are the whole message's, charged to its first surviving
-    // entry — a coalesced move never hides a large text command's cost.
+    // entry — a coalesced move never hides a large text command's cost. A
+    // message that coalesced away entirely costs nothing: it kept no data.
     let bytes = Buffer.byteLength(message);
     for (const cmd of cmds) {
       const tail = s.humanQueue.at(-1);
@@ -105,8 +113,11 @@ function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<Re
       s.humanBytes += bytes;
       bytes = 0;
     }
-    if (bytes) { const tail = s.humanQueue.at(-1); if (tail) { tail.bytes += bytes; s.humanBytes += bytes; } }
-    if (s.humanQueue.length > MAX_QUEUED || s.humanBytes > MAX_QUEUED_BYTES) { fail(1008, 'Input backlog'); return; }
+    // The bound is per viewer: a stalled viewer's backlog closes that viewer,
+    // never the one who happened to send next.
+    let mine = 0, myBytes = 0;
+    for (const e of s.humanQueue) if (e.owner === owner) { mine++; myBytes += e.bytes; }
+    if (mine > MAX_QUEUED || myBytes > MAX_QUEUED_BYTES) { fail(1008, 'Input backlog'); return; }
     startWorker(s);
   });
   text({ type: 'hello' });
@@ -159,8 +170,12 @@ function startWorker(s: Session): void {
       // cheaper than the CDP round trip it precedes): a sign-out is terminal
       // for whatever this viewer still has queued.
       if (!getSession(owner.session)) { owner.dispose(); owner.sock.close(4401, 'Signed out'); continue; }
-      try { await runCmds(s, [e.cmd]); }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('the page did not take the input')), CMD_MS); });
+      late.catch(() => {});
+      try { await Promise.race([runCmds(s, [e.cmd]), late]); }
       catch (err) { if (owner.sock.readyState === WebSocket.OPEN) owner.sock.send(JSON.stringify({ type: 'error', message: err instanceof Error ? err.message.split('\n')[0] : 'failed' })); }
+      finally { clearTimeout(timer); }
       // Held reflects execution — recorded after the await settles, thrown or not.
       const c = e.cmd;
       if (c.t === 'key') { const key = remoteKey(s, c.key); if (key) (c.type === 'up' ? owner.heldKeys.delete(key) : owner.heldKeys.add(key)); }

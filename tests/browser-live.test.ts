@@ -176,8 +176,9 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     const view = await a.next(m => m.type === 'view');
     assert.equal(view.dsf, 2, 'the session\'s scale, fixed at launch, not this viewer\'s');
     await a.next(m => m.type === 'tabs');
-    const frame = await a.frame();
-    assert.deepEqual(jpegSize(frame), { width: s.viewport.width * 2, height: s.viewport.height * 2 });
+    // The first frame of a cold launch can still carry the window's settling size.
+    await until(() => a.frames.length > 0 && jpegSize(a.frames.at(-1)!).height === s!.viewport.height * 2, 5000, '2× frame');
+    assert.deepEqual(jpegSize(a.frames.at(-1)!), { width: s.viewport.width * 2, height: s.viewport.height * 2 });
 
     // The page records what actually reaches it; `mousedown` can be slow on demand.
     await s.page.setContent(`<input id="i"><script>
