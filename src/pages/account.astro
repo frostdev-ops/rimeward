@@ -1444,7 +1444,7 @@ const TABS = [
      *  real error path opt into following it, and read ?err= off the final URL. */
     const formState = (form: HTMLFormElement) => JSON.stringify([...new FormData(form)].map(([key, value]) =>
       [key, typeof value === 'string' ? value : value.name || value.size ? [value.name, value.size, value.lastModified] : null]));
-    const settled = new Map([...document.forms].map(form => [form, formState(form)]));
+    const settled = new Map([...document.forms].filter(form => !form.hasAttribute('data-workspace-checkpoint')).map(form => [form, formState(form)]));
     const saving = new Map<HTMLFormElement, Promise<boolean>>();
     const failed = new Set<HTMLFormElement>();
     function post(form: HTMLFormElement): Promise<boolean> {

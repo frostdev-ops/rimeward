@@ -1,7 +1,7 @@
 <section class="border-b border-line py-4" data-embedding-settings>
   <h3 class="text-sm font-medium">Semantic retrieval</h3>
   <p class="mt-1 text-xs text-ink-muted">Search existing memories, skills, notes, conversations and extracted attachments. Originals stay intact. Keyword search remains available while embeddings are unavailable or rebuilding.</p>
-  <form class="mt-3 grid gap-3" aria-busy="true">
+  <form class="mt-3 grid gap-3" aria-busy="true" data-workspace-checkpoint>
     <label class="text-xs">Inference location
       <select name="provider" class="input mt-1 w-full">
         <option value="local">This desktop · Qwen3-Embedding-8B</option><option value="device">Another paired desktop</option>
@@ -38,6 +38,8 @@
     const form = root.querySelector<HTMLFormElement>('form')!, status = root.querySelector<HTMLElement>('[data-status]')!, progress = root.querySelector<HTMLProgressElement>('progress')!;
     const field = (name:string) => form.elements.namedItem(name) as HTMLSelectElement;
     const sharing = form.elements.namedItem('sharing') as HTMLInputElement;
+    const config = () => ({ provider:field('provider').value,quantization:field('quantization').value,device:field('device').value,model:field('model').value,sharing:sharing.checked });
+    let settled = '', saving:Promise<void> | undefined;
     for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button')) control.disabled = true;
     let initialized = false,busy = false;
     const toggle = () => { for (const el of root.querySelectorAll<HTMLElement>('[data-show]')) el.hidden = !el.dataset.show!.split(' ').includes(field('provider').value); };
@@ -56,7 +58,7 @@
           for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button')) control.disabled = false;
           field('provider').querySelector<HTMLOptionElement>('[value="local"]')!.disabled = !data.desktop;
           form.setAttribute('aria-busy','false');
-          initialized = true; toggle();
+          initialized = true; settled = JSON.stringify(config()); toggle();
         }
         const model = data.local?.models.find((m:{ quantization:string }) => m.quantization === field('quantization').value), download = model?.download;
         progress.hidden = !download || download.done; progress.max = model?.bytes ?? 1; progress.value = download?.received ?? 0;
@@ -70,12 +72,24 @@
       } catch (e) { status.textContent = e instanceof Error ? e.message : String(e); } finally { busy = false; }
     };
     const action = async (action:string) => {
+      const value = config(), state = JSON.stringify(value);
       const response = await fetch('/api/account/embeddings',{ method:'POST',headers:{ 'content-type':'application/json' },body:JSON.stringify({ action,quantization:field('quantization').value,
-        config:{ provider:field('provider').value,quantization:field('quantization').value,device:field('device').value,model:field('model').value,sharing:sharing.checked } }) });
+        config:value }) });
       const data = await response.json(); if (!response.ok) throw Error(data.error ?? 'Retrieval action failed.');
+      if (action === 'save') settled = state;
       status.textContent = action === 'save' ? 'Retrieval settings saved.' : 'Retrieval status updated.'; void refresh();
     };
-    form.onsubmit = event => { event.preventDefault(); void action('save').catch(e => { status.textContent = e.message; }); };
+    form.onsubmit = event => {
+      event.preventDefault(); if (saving) return;
+      saving = action('save').finally(() => { saving = undefined; });
+      void saving.catch(e => { status.textContent = e.message; });
+    };
+    window.addEventListener('fd:before-workspace-navigation', event => {
+      (event as CustomEvent<{ waitUntil(p:Promise<unknown>):void }>).detail.waitUntil((async () => {
+        await saving;
+        if (initialized && settled !== JSON.stringify(config())) throw Error('Save or finish editing your retrieval settings before relaunching.');
+      })());
+    });
     field('provider').onchange = toggle;
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-action]')) button.onclick = () => {
       button.disabled = true; void action(button.dataset.action!).catch(e => { status.textContent = e.message; }).finally(() => { button.disabled = false; });

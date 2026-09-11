@@ -29,7 +29,9 @@ pub async fn ward_browser(
         return Err("This server is not the active browser route".into());
     }
     // The page's display scale, clamped like wards.ts browserScale (1–2, quarter steps).
-    let dsf = dsf.filter(|v| v.is_finite()).map_or(1.0, |v| (v.clamp(1.0, 2.0) * 4.0).round() / 4.0);
+    let dsf = dsf
+        .filter(|v| v.is_finite())
+        .map_or(1.0, |v| (v.clamp(1.0, 2.0) * 4.0).round() / 4.0);
     let (port, path) = chromium::acquire(&shared, &ward, dsf, sound.unwrap_or(false)).await?;
     // The page's own socket is not a counted user (it cannot say goodbye
     // reliably); ward_touch keeps the instance off the reaper's list instead.

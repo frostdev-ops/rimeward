@@ -275,7 +275,12 @@ async fn fetch(shared: &Shared, spec: &Spec, dir: &Path) -> Result<(), String> {
 /// `dsf` is the display scale the ward's page asked for (1–2); it only takes
 /// effect on a launch, because the screencast follows the Chromium process's
 /// scale (`--force-device-scale-factor`), never a per-page emulation.
-pub async fn acquire(shared: &Shared, ward: &str, dsf: f64, sound: bool) -> Result<(u16, String), String> {
+pub async fn acquire(
+    shared: &Shared,
+    ward: &str,
+    dsf: f64,
+    sound: bool,
+) -> Result<(u16, String), String> {
     if ward.is_empty()
         || ward.len() > 32
         || !ward
@@ -377,7 +382,11 @@ async fn launch(
         })
         // Muted unless the ward asks for sound; on, audio goes to this
         // machine's default output like any Chromium.
-        .args(if sound { vec![] } else { vec!["--mute-audio".to_string()] })
+        .args(if sound {
+            vec![]
+        } else {
+            vec!["--mute-audio".to_string()]
+        })
         .arg("--disk-cache-size=52428800")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
