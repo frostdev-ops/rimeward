@@ -5,8 +5,13 @@
 FROM node:22-bookworm-slim
 
 WORKDIR /app
+# node-pty has no Linux prebuild — it compiles under node-gyp on every Linux
+# install, so the slim image needs a toolchain. The postinstall (prepare-pty)
+# must be in this layer too.
 COPY package.json package-lock.json ./
-RUN npm ci
+COPY bin/prepare-pty.mjs bin/
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/* \
+  && npm ci
 
 # playwright-core's pinned Chromium plus its system libraries, in a path the
 # runtime user can read (the default cache lives under root's home).
