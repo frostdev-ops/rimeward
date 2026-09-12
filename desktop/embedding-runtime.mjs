@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
-const manifest = JSON.parse(fs.readFileSync(path.join(here,'embedding-runtime.json'),'utf8'));
+const manifest = JSON.parse(fs.readFileSync(path.join(here,'../src/lib/agent/embedding-runtime.json'),'utf8'));
 const target = manifest.targets[`${process.platform}-${process.arch}`];
 if (!target) throw Error('No pinned llama.cpp build for this platform.');
 const destination = process.argv[2] ?? path.join(here,'runtime/app/assets/embedding');

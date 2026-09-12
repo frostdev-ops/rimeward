@@ -5,17 +5,14 @@
     <div class="grid min-w-0 gap-4 sm:grid-cols-2">
       <label class="min-w-0 text-sm">Run embeddings on
         <select name="provider" class="input mt-1 w-full">
-          <option value="local">This desktop</option><option value="device">Another paired desktop</option>
+          <option value="local">My computers · Qwen3-Embedding-8B</option>
           <option value="openai">OpenAI API</option><option value="openrouter">OpenRouter</option>
         </select>
       </label>
-      <label class="min-w-0 text-sm" data-quantization>Qwen3-Embedding-8B model
+      <label class="min-w-0 text-sm" data-quantization>Model variant
         <select name="quantization" class="input mt-1 w-full">
           <option value="Q4_K_M">Q4_K_M · 4.68 GB</option><option value="Q8_0">Q8_0 · 8.05 GB</option>
         </select>
-      </label>
-      <label class="min-w-0 text-sm" data-device hidden>Paired desktop
-        <select name="device" class="input mt-1 w-full"><option value="">Select a computer</option></select>
       </label>
       <label class="min-w-0 text-sm" data-openai hidden>Embedding model
         <select name="model" class="input mt-1 w-full">
@@ -23,10 +20,15 @@
         </select>
       </label>
     </div>
+    <fieldset class="min-w-0 rounded-xl border border-line p-3" data-runtimes hidden>
+      <legend class="px-1 text-sm">Priority</legend>
+      <p class="text-xs text-ink-muted">The first computer that answers is used; when it goes offline the next one takes over. Every computer serves the same model variant.</p>
+      <ol class="mt-2 grid gap-1" data-runtime-list></ol>
+    </fieldset>
     <p class="text-xs text-ink-muted" data-selection-help></p>
     <label class="flex items-start gap-2 text-sm" data-sharing hidden>
       <input class="mt-1" type="checkbox" name="sharing" />
-      <span>Let my paired devices use this desktop’s model</span>
+      <span>Let my other computers use this one’s model</span>
     </label>
     <div class="flex flex-wrap items-center gap-2" data-unsaved hidden>
       <button class="btn-primary" type="submit">Save changes</button>
@@ -54,6 +56,10 @@
   </div>
 
   <div class="mt-3 grid gap-3" data-downloads hidden>
+    <div class="rounded-xl border border-line p-3" data-download="runtime" hidden>
+      <p class="text-sm" data-download-label></p>
+      <progress class="mt-2 w-full" aria-label="Runtime download progress"></progress>
+    </div>
     <div class="rounded-xl border border-line p-3" data-download="Q4_K_M" hidden>
       <div class="flex flex-wrap items-center justify-between gap-2">
         <p class="text-sm" data-download-label></p>
@@ -82,6 +88,13 @@
   [data-embedding-settings] dd, [data-error] { overflow-wrap: anywhere; }
   [data-status][data-tone="ready"] [data-state] { color: var(--color-ok); }
   [data-status][data-tone="error"] [data-state] { color: var(--color-err); }
+  [data-runtime-list] li { display: flex; align-items: center; gap: .5rem; min-width: 0; padding: .35rem .25rem; border-radius: .5rem; }
+  [data-runtime-list] li:hover { background: var(--color-surface-2); }
+  [data-runtime-list] label { display: flex; flex: 1; min-width: 0; align-items: center; gap: .5rem; font-size: .85rem; cursor: pointer; }
+  [data-runtime-list] label > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  [data-runtime-list] small { color: var(--color-ink-muted); }
+  [data-runtime-list] li[data-ready="true"] small { color: var(--color-ok); }
+  [data-runtime-list] .btn { padding: .15rem .5rem; font-size: .7rem; }
   progress { display: block; height: .45rem; appearance: none; border: 0; border-radius: 1rem; overflow: hidden; background: var(--color-line); }
   progress::-webkit-progress-bar { background: var(--color-line); }
   progress::-webkit-progress-value { background: var(--color-accent); }
@@ -93,8 +106,11 @@
   import type { localEmbeddingStatus } from '../lib/agent/embedding-local.ts';
   import type { KnowledgeStatus } from '../lib/agent/knowledge.ts';
   type Device = { id:string; name:string; online:boolean; inference?:{ sharing:boolean; ready:boolean; quantization:string; queryMs?:number } | null };
-  type Status = { config:EmbeddingConfig; desktop:boolean; local:ReturnType<typeof localEmbeddingStatus> | null;
-    index:Partial<KnowledgeStatus>; devices:Device[]; timing?:{ queryMs:number } | null };
+  type ServerHost = { hosting:boolean; ready:boolean; quantization:string; location?:string; models:{ quantization:string; installed:boolean }[] } | null;
+  type Status = { config:EmbeddingConfig; desktop:boolean; local:ReturnType<typeof localEmbeddingStatus>; server:ServerHost;
+    holds:Record<string,string>; index:Partial<KnowledgeStatus>; devices:Device[]; timing?:{ queryMs:number; runtime?:string } | null };
+  /** One selectable runtime, as the priority list and the status card both read it. */
+  type Candidate = { id:string; name:string; ready:boolean; note:string; blocker:string };
   const root = document.querySelector<HTMLElement>('[data-embedding-settings]');
   if (root) {
     const form = root.querySelector<HTMLFormElement>('form')!;
@@ -107,70 +123,130 @@
     const button = (name:string) => root.querySelector<HTMLButtonElement>('[data-action="' + name + '"]')!;
     let data:Status | undefined, settled = '', initialized = false, revision = 0, pendingAction = '', statusError = '';
     let saving:Promise<void> | undefined, refreshing:Promise<void> | undefined;
+    // The draft priority list: every candidate in display order, the checked ones being the selection.
+    let order:string[] = [], chosen = new Set<string>(), listSignature = '';
+    const candidates = (s:Status,quantization:string):Candidate[] => {
+      const out:Candidate[] = [];
+      const local = s.local, model = local.models.find(m => m.quantization === quantization);
+      const here = s.desktop ? 'This desktop' : 'This server';
+      out.push(!local.runtime.binary ? { id:'local',name:here,ready:false,note:'not set up',blocker:here + ': no model set up' }
+        : !model?.installed ? { id:'local',name:here,ready:false,note:'model not downloaded',blocker:here + ': model not downloaded' }
+        : { id:'local',name:here,ready:true,note:'ready',blocker:'' });
+      if (s.desktop) {
+        const server = s.server, name = 'Paired server' + (server?.location ? ' · ' + server.location : '');
+        out.push(!server ? { id:'server',name,ready:false,note:'not connected',blocker:'paired server: not connected' }
+          : !server.hosting ? { id:'server',name,ready:false,note:'no model on the server',blocker:'paired server: no model set up' }
+          : !server.models.some(m => m.quantization === quantization && m.installed) ? { id:'server',name,ready:false,note:quantization + ' not downloaded there',blocker:'paired server: ' + quantization + ' not downloaded' }
+          : { id:'server',name,ready:true,note:'ready',blocker:'' });
+      }
+      for (const d of s.devices) {
+        const i = d.inference;
+        out.push(!d.online ? { id:d.id,name:d.name,ready:false,note:'offline',blocker:d.name + ': offline' }
+          : !i ? { id:d.id,name:d.name,ready:false,note:'unreachable',blocker:d.name + ': unreachable' }
+          : !i.sharing ? { id:d.id,name:d.name,ready:false,note:'not sharing',blocker:d.name + ': enable sharing in its retrieval settings' }
+          : i.quantization !== quantization ? { id:d.id,name:d.name,ready:false,note:'shares ' + i.quantization,blocker:d.name + ': shares ' + i.quantization }
+          : !i.ready ? { id:d.id,name:d.name,ready:false,note:'setup needed',blocker:d.name + ': download the model there' }
+          : { id:d.id,name:d.name,ready:true,note:'ready',blocker:'' });
+      }
+      for (const [id,reason] of Object.entries(s.holds)) { const c = out.find(c => c.id === id); if (c && c.ready) { c.ready = false; c.note = 'retrying soon'; c.blocker = c.name + ': ' + reason; } }
+      return out;
+    };
     const config = ():EmbeddingConfig => {
       const provider = field('provider').value as EmbeddingConfig['provider'];
-      return { provider,quantization:provider === 'local' || provider === 'device' ? field('quantization').value as EmbeddingConfig['quantization'] : data!.config.quantization,
+      return { provider,quantization:provider === 'local' ? field('quantization').value as EmbeddingConfig['quantization'] : data!.config.quantization,
         model:provider === 'openai' ? field('model').value : provider === 'openrouter' ? 'qwen/qwen3-embedding-8b' : 'Qwen3-Embedding-8B',
-        ...(provider === 'device' ? { device:field('device').value } : {}),sharing:sharing.checked };
+        runtimes:provider === 'local' ? order.filter(id => chosen.has(id)) : [],sharing:sharing.checked };
     };
-    const fingerprint = (c:EmbeddingConfig) => JSON.stringify([c.provider,c.quantization,c.model,c.device ?? '',c.sharing]);
+    const fingerprint = (c:EmbeddingConfig) => JSON.stringify([c.provider,c.quantization,c.model,c.runtimes,c.sharing]);
     const dirty = () => initialized && fingerprint(config()) !== settled;
     const fill = (c:EmbeddingConfig) => {
       field('provider').value = c.provider; field('quantization').value = c.quantization;
       field('model').value = c.provider === 'openai' ? c.model : 'text-embedding-3-small';
-      field('device').value = c.device ?? ''; sharing.checked = c.sharing;
+      const known = data ? candidates(data,c.quantization).map(x => x.id) : [];
+      order = [...c.runtimes,...known.filter(id => !c.runtimes.includes(id))]; chosen = new Set(c.runtimes);
+      sharing.checked = c.sharing;
       settled = fingerprint(c); initialized = true;
     };
     const message = (text:string,error = false) => {
       const node = element('action-message'); node.textContent = text; node.hidden = !text;
       node.classList.toggle('text-err',error);
     };
+    const renderRuntimes = (draft:EmbeddingConfig) => {
+      if (!data) return;
+      const known = candidates(data,draft.quantization);
+      for (const c of known) if (!order.includes(c.id)) order.push(c.id);
+      const rows = order.map(id => known.find(c => c.id === id) ?? { id,name:'Unpaired desktop',ready:false,note:'no longer paired',blocker:'' });
+      const signature = JSON.stringify([rows,[...chosen],!initialized || !!pendingAction]);
+      if (signature === listSignature) return;
+      listSignature = signature;
+      const list = element<HTMLOListElement>('runtime-list'); list.replaceChildren();
+      rows.forEach((c,i) => {
+        const li = document.createElement('li'); li.dataset.ready = String(c.ready);
+        const label = document.createElement('label'), box = document.createElement('input');
+        box.type = 'checkbox'; box.checked = chosen.has(c.id); box.disabled = !initialized || !!pendingAction;
+        box.title = box.checked ? 'Remove from the list' : 'Add to the list';
+        box.onchange = () => { if (box.checked) chosen.add(c.id); else chosen.delete(c.id); message(''); render(); };
+        const name = document.createElement('span'); name.textContent = c.name;
+        const note = document.createElement('small'); note.textContent = c.note;
+        label.append(box,name,note);
+        const up = document.createElement('button'), down = document.createElement('button');
+        up.type = down.type = 'button'; up.className = down.className = 'btn';
+        up.textContent = 'Up'; down.textContent = 'Down';
+        up.title = 'Try this computer earlier'; down.title = 'Try this computer later';
+        up.disabled = i === 0 || !initialized || !!pendingAction; down.disabled = i === rows.length-1 || !initialized || !!pendingAction;
+        up.onclick = () => { [order[i-1],order[i]] = [order[i]!,order[i-1]!]; message(''); render(); };
+        down.onclick = () => { [order[i+1],order[i]] = [order[i]!,order[i+1]!]; message(''); render(); };
+        li.append(label,up,down); list.append(li);
+      });
+    };
     const render = () => {
-      for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input,select')) control.disabled = !initialized;
+      for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('select,input[name]')) control.disabled = !initialized;
       for (const control of root.querySelectorAll<HTMLButtonElement>('button[data-action],button[data-discard],button[data-refresh],button[type="submit"]')) control.disabled = !initialized || !!pendingAction;
       element<HTMLButtonElement>('refresh').disabled = !!refreshing;
       form.setAttribute('aria-busy',String(!initialized || pendingAction === 'save'));
       if (!data) return;
       const draft = config(), changed = dirty(), current = data.config;
-      element('quantization').hidden = !(draft.provider === 'device' || draft.provider === 'local' && data.desktop);
-      element('device').hidden = draft.provider !== 'device'; element('openai').hidden = draft.provider !== 'openai';
-      element('sharing').hidden = !data.desktop || draft.provider !== 'local';
+      const local = data.local, runtime = local.runtime, model = local.models.find(m => m.quantization === current.quantization);
+      element('quantization').hidden = draft.provider !== 'local';
+      element('runtimes').hidden = draft.provider !== 'local'; element('openai').hidden = draft.provider !== 'openai';
+      element('sharing').hidden = draft.provider !== 'local' || !runtime.binary && !runtime.installable;
+      if (draft.provider === 'local') renderRuntimes(draft);
       element('selection-help').textContent = draft.provider === 'local'
-        ? data.desktop ? 'Runs on this computer. ' + (draft.quantization === 'Q4_K_M' ? 'About 7 GiB memory; Q4 is the default.' : 'About 11 GiB memory.') : 'Local inference requires the desktop app. Choose a paired computer or an API provider here.'
-        : draft.provider === 'device' ? 'Choose a computer sharing this model. It must stay online. Only text and vectors travel; your search index stays here.'
+        ? (draft.quantization === 'Q4_K_M' ? 'About 7 GiB of memory on each computer that hosts it; Q4 is the default.' : 'About 11 GiB of memory on each computer that hosts it.') + ' Only text and vectors travel between computers; the search index stays here.'
         : (draft.provider === 'openai' ? 'Uses the saved OpenAI API key.' : 'Uses the saved OpenRouter API key and qwen/qwen3-embedding-8b.') + ' Text is sent to this provider. ChatGPT sign-in does not supply embeddings.';
       element('unsaved').hidden = !changed && pendingAction !== 'save';
-      form.querySelector<HTMLButtonElement>('[type="submit"]')!.textContent = pendingAction === 'save' ? 'Saving…' : 'Save changes';
-      field('device').required = draft.provider === 'device';
-      if (draft.provider === 'device' && !draft.device) form.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled = true;
-      const local = data.local, model = local?.models.find(m => m.quantization === current.quantization);
-      const device = data.devices.find(d => d.id === current.device);
-      const downloading = !!model?.download && !model.download.done;
+      const submit = form.querySelector<HTMLButtonElement>('[type="submit"]')!;
+      submit.textContent = pendingAction === 'save' ? 'Saving…' : 'Save changes';
+      if (draft.provider === 'local' && !draft.runtimes.length) submit.disabled = true;
+      const list = current.provider === 'local' ? candidates(data,current.quantization) : [];
+      const picked = current.runtimes.map(id => list.find(c => c.id === id) ?? { id,name:'Unpaired desktop',ready:false,note:'',blocker:'an unpaired desktop' });
+      const active = picked.find(c => c.ready);
+      const hostsHere = current.provider === 'local' && current.runtimes.includes('local');
+      const downloading = !!model?.download && !model.download.done, installing = !!runtime.install && !runtime.install.done;
       const { chunks = 0,embedded = 0,indexing = false } = data.index;
       let title = 'Semantic search ready', detail = 'Your knowledge is ready to search.', tone = 'ready', error = '';
-      if (current.provider === 'local' && !data.desktop) {
-        title = 'Choose where embeddings run'; detail = 'Select a paired desktop or an API provider above. Keyword search is available.'; tone = '';
-      } else if (current.provider === 'device' && (!device?.online || !device.inference?.ready || device.inference.quantization !== current.quantization)) {
-        title = !device ? 'Choose a paired desktop' : !device.online ? 'Selected desktop is offline' : 'Set up the selected desktop';
-        detail = !device ? 'Select a paired desktop above. Keyword search is available.' : !device.online ? 'Semantic search will resume when the selected computer is available. Keyword search still works.'
-          : !device.inference?.sharing ? 'Enable inference sharing in that desktop’s retrieval settings.'
-          : device.inference.quantization !== current.quantization ? 'Select the model variant shared by that desktop: ' + device.inference.quantization + '.'
-          : 'Download the selected model on that desktop. Keyword search still works.'; tone = '';
-      } else if (current.provider === 'local' && downloading) {
+      if (current.provider === 'local' && !current.runtimes.length) {
+        title = 'Choose where embeddings run'; detail = 'Add at least one computer to the priority list. Keyword search is available.'; tone = '';
+      } else if (hostsHere && installing) {
+        title = 'Installing the inference runtime'; detail = 'llama.cpp is downloading. The model follows. Keyword search remains available.'; tone = '';
+      } else if (hostsHere && downloading) {
         title = 'Downloading ' + current.quantization; detail = 'Download progress is below. Keyword search remains available.'; tone = '';
-      } else if (current.provider === 'local' && !model?.installed) {
-        title = 'Download a model to get started'; detail = 'Keyword search is available now. Download the model to enable semantic retrieval.'; tone = '';
-        error = model?.download?.error ?? '';
+      } else if (hostsHere && (!runtime.binary || !model?.installed) && !active) {
+        title = runtime.binary ? 'Download a model to get started' : (data.desktop ? 'Set up this desktop' : 'Set up this server');
+        detail = 'Keyword search is available now. ' + (runtime.binary ? 'Download the model to enable semantic retrieval.' : 'Install the runtime and model here, or put another computer first.'); tone = '';
+        error = runtime.install?.error ?? model?.download?.error ?? '';
         if (error === 'Download cancelled.') { title = 'Download cancelled'; error = ''; }
-        else if (error) { title = 'Model download failed'; tone = 'error'; }
-      } else if (current.provider === 'local' && local?.unloaded) {
+        else if (error) { title = 'Setup failed'; tone = 'error'; }
+      } else if (current.provider === 'local' && !active) {
+        title = 'No computer is available'; detail = picked.map(c => c.blocker).filter(Boolean).join(' · ') + '. Keyword search still works.'; tone = '';
+      } else if (hostsHere && active?.id === 'local' && local.unloaded) {
         title = 'Model unloaded'; detail = 'Memory has been released. The next search will load the model again.'; tone = '';
       } else if (indexing) {
-        title = current.provider === 'local' && !local?.ready ? 'Starting the local model' : 'Indexing your knowledge';
+        title = active?.id === 'local' && !local.ready ? 'Starting the local model' : 'Indexing your knowledge';
         detail = 'You can search now. Semantic coverage grows as indexing finishes.'; tone = '';
-      } else if (data.index.vectorError || data.index.error || current.provider === 'local' && local?.error) {
+      } else if (data.index.vectorError || data.index.error || active?.id === 'local' && local.error) {
         title = 'Semantic search needs attention'; detail = 'Keyword search is still available.'; tone = 'error';
-        error = data.index.vectorError || data.index.error || local?.error || '';
+        error = data.index.vectorError || data.index.error || local.error || '';
       } else if (!chunks) {
         title = 'Nothing to index yet'; detail = 'Memories, skills, notes and conversations are indexed automatically as you add them.'; tone = '';
       } else if (embedded < chunks) {
@@ -179,27 +255,38 @@
       if (statusError) { title = 'Status unavailable'; detail = 'Could not refresh retrieval status. Retrying automatically.'; error = statusError; tone = 'error'; }
       element('status').dataset.tone = tone; text('state',title); text('status-detail',detail);
       text('error',error).hidden = !error;
-      const advisory = current.provider === 'local' ? model?.recommendation ?? '' : '';
+      const advisory = active?.id === 'local' ? model?.recommendation ?? '' : '';
       text('advisory',advisory).hidden = !advisory;
-      const location = current.provider === 'local' ? local?.location ?? 'Desktop app required' : current.provider === 'device' ? device?.name ?? 'No computer selected' : current.provider === 'openai' ? 'OpenAI API' : 'OpenRouter';
-      text('location',location + ' · ' + (current.provider === 'local' || current.provider === 'device' ? current.quantization : current.model));
+      const standby = picked.filter(c => c !== active).map(c => c.name + ' (' + (c.note || 'unpaired') + ')');
+      const location = current.provider === 'local' ? (active ? active.name : 'No computer available') + (standby.length ? ' · then ' + standby.join(', ') : '')
+        : current.provider === 'openai' ? 'OpenAI API' : 'OpenRouter';
+      text('location',location + ' · ' + (current.provider === 'local' ? current.quantization : current.model));
       text('index',data.index.chunks == null || data.index.embedded == null ? 'Index status unavailable' : embedded.toLocaleString() + ' of ' + chunks.toLocaleString() + ' passages ready');
       element('metrics').hidden = false;
       const indexProgress = element<HTMLProgressElement>('index-progress');
       indexProgress.hidden = !indexing || !chunks; indexProgress.max = Math.max(1,chunks); indexProgress.value = embedded;
       const queryMs = data.timing?.queryMs;
-      const timing = [current.provider === 'local' && local?.startupMs != null ? 'Model startup: ' + local.startupMs + ' ms' : '',queryMs != null ? 'Last search embedding: ' + queryMs + ' ms' : ''].filter(Boolean).join(' · ');
+      const timing = [active?.id === 'local' && local.startupMs != null ? 'Model startup: ' + local.startupMs + ' ms' : '',queryMs != null ? 'Last search embedding: ' + queryMs + ' ms' : ''].filter(Boolean).join(' · ');
       text('timing',timing).hidden = !timing;
-      button('download').hidden = changed || !!statusError || current.provider !== 'local' || !data.desktop || !!model?.installed || downloading;
-      button('download').textContent = pendingAction === 'download' ? 'Starting download…' : (model?.download?.error && model.download.error !== 'Download cancelled.' ? 'Retry download' : 'Download model') + ' · ' + (current.quantization === 'Q4_K_M' ? '4.68 GB' : '8.05 GB');
-      button('unload').hidden = changed || !!statusError || !local?.ready;
-      button('unload').textContent = pendingAction === 'unload' ? 'Unloading model…' : 'Unload ' + (local?.loaded ?? '') + ' from memory';
+      const size = current.quantization === 'Q4_K_M' ? '4.68 GB' : '8.05 GB';
+      button('download').hidden = changed || !!statusError || !hostsHere || !!model?.installed || downloading || installing || !runtime.binary && !runtime.installable;
+      button('download').textContent = pendingAction === 'download' ? 'Starting download…'
+        : ((runtime.install?.error || model?.download?.error) && model?.download?.error !== 'Download cancelled.' ? 'Retry setup' : runtime.binary ? 'Download model' : 'Install runtime and model') + ' · ' + size;
+      button('unload').hidden = changed || !!statusError || !local.ready;
+      button('unload').textContent = pendingAction === 'unload' ? 'Unloading model…' : 'Unload ' + (local.loaded ?? '') + ' from memory';
       element('refresh').hidden = !statusError;
       element('model-actions').hidden = button('download').hidden && button('unload').hidden && element('refresh').hidden;
       element('maintenance').hidden = changed || !!statusError || !chunks || indexing || !!pendingAction;
       let activeDownloads = false;
       for (const row of root.querySelectorAll<HTMLElement>('[data-download]')) {
-        const m = local?.models.find(m => m.quantization === row.dataset.download), download = m?.download;
+        if (row.dataset.download === 'runtime') {
+          row.hidden = !installing; if (!installing) continue;
+          activeDownloads = true;
+          row.querySelector('[data-download-label]')!.textContent = 'llama.cpp ' + runtime.version + ' · ' + (runtime.install!.received/1e6).toFixed(0) + ' MB';
+          row.querySelector('progress')!.removeAttribute('value');
+          continue;
+        }
+        const m = local.models.find(m => m.quantization === row.dataset.download), download = m?.download;
         const active = !!download && !download.done; row.hidden = !active;
         if (!active || !m) continue;
         activeDownloads = true;
@@ -219,12 +306,6 @@
           if (version !== revision) return;
           const clean = !dirty();
           data = next; statusError = '';
-          const selected = initialized ? field('device').value : next.config.device ?? '';
-          const options = [new Option('Select a computer',''),...next.devices.map(d => new Option(d.name + (!d.online ? ' · offline' : d.inference?.ready ? ' · ready' : ' · setup needed'),d.id))];
-          if (selected && !next.devices.some(d => d.id === selected)) options.push(new Option('Unavailable computer',selected));
-          if (JSON.stringify([...field('device').options].map(o => [o.value,o.text])) !== JSON.stringify(options.map(o => [o.value,o.text]))) field('device').replaceChildren(...options);
-          field('device').value = selected;
-          field('provider').querySelector<HTMLOptionElement>('[value="local"]')!.disabled = !next.desktop;
           if (clean) fill(next.config);
         } catch (e) {
           if (version !== revision) return;

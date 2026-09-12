@@ -40,12 +40,22 @@ excerpts. Rebuilding deletes derived data only. Standing notes remain in every
 prompt, with up to five memory/skill excerpts within an estimated 2,000 tokens;
 named skills are looked up independently of embeddings.
 
-Account → Agent → Semantic retrieval selects this desktop, an explicit paired
-desktop, OpenAI API, or OpenRouter. No provider switches automatically. Cloud
-providers use the existing sealed API-key account store; desktop cloud calls
-can use the paired server's credentials. Codex sign-in embeddings are unverified
-and are not used. Keyword retrieval remains available with explicit status when
-inference is unavailable or indexing is incomplete.
+Account → Agent → Semantic retrieval selects either the self-hosted
+Qwen3-Embedding-8B model or a cloud provider (OpenAI API, OpenRouter). The
+self-hosted choice carries a priority list of runtimes — this computer, the
+paired server (from a desktop), and paired desktops that share their model —
+and each query uses the first one that answers, so a laptop going offline hands
+over to the next computer without any change of settings. Every runtime in the
+list serves the same model variant; a runtime that fails is skipped for thirty
+seconds, an offline desktop costs nothing. The selection is stored per runtime:
+a server has its own list, and a server can host the model itself (Account →
+Semantic retrieval installs the pinned llama.cpp build into its data directory
+and downloads the weights). Cloud providers are never switched to automatically;
+they are a different vector profile. Cloud providers use the existing sealed
+API-key account store; desktop cloud calls can use the paired server's
+credentials. Codex sign-in embeddings are unverified and are not used. Keyword
+retrieval remains available with explicit status when no runtime is available or
+indexing is incomplete.
 
 Settings separate provider selection from the current search status. Save and
 discard appear only for unsaved changes; downloads, cancellation and unloading

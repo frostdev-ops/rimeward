@@ -4,6 +4,7 @@ import { DATA_DIR, getDb, repoDir } from '../db.ts';
 import { embed, embeddingConfig } from './embeddings.ts';
 import { embeddingProfile } from './embedding-profiles.ts';
 import { localEmbeddingStatus } from './embedding-local.ts';
+import { isDesktop } from '../dev/runtime.ts';
 import { parseDoc, docPath } from './store.ts';
 import { estimateTokens } from './context.ts';
 import type { ToolDef } from './tools.ts';
@@ -54,8 +55,10 @@ export function indexKnowledge(user:number): void {
       if (JSON.stringify(embeddingConfig(user)) !== JSON.stringify(config)) { reindex.add(user); break; }
       const batch = await request<KnowledgeHit[]>(user,'pending',{ profile:profile.id });
       if (!batch.length) { errors.delete(user); break; }
-      if (config.provider === 'local' && localEmbeddingStatus().unloaded) throw Error('Local model is unloaded. Keyword indexing continues; the next retrieval request can load it again.');
-      const vectors = await embed(user,batch.map(c => c.text),false,undefined,config);
+      const backgroundConfig = config.provider === 'local' && localEmbeddingStatus().unloaded
+        ? { ...config, runtimes: config.runtimes.filter(runtime => runtime !== 'local' && (isDesktop() || runtime !== 'server')) } : config;
+      if (backgroundConfig.provider === 'local' && !backgroundConfig.runtimes.length) throw Error('Local model is unloaded. Keyword indexing continues; the next retrieval request can load it again.');
+      const vectors = await embed(user,batch.map(c => c.text),false,undefined,backgroundConfig);
       await request(user,'vectors',{ profile:profile.id,values:batch.map((c,i) => ({ id:c.id,revision:c.revision,vector:vectors[i] })) });
     }
   })().catch(e => errors.set(user,e instanceof Error ? e.message : String(e))).finally(() => {
