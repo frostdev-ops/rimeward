@@ -276,8 +276,17 @@ test('routes: /api/me and /api/notes inside a share, the share CRUD as owner, gr
   const me = await (await meGet(ctx(owner, 'https://x.invalid/api/me', undefined, shareLocals(book)))).json();
   assert.equal(me.id, viewer);
   assert.equal(me.displayName, 'Vera Viewer');
-  assert.deepEqual(Object.values(me.links), [false, false, false, false, false, false]);
+  assert.deepEqual(Object.values(me.links), [false, false, false, false, false, false], 'a notebook draws from no account');
   assert.equal(me.share.role, 'edit');
+  // A shared Notion ward: the owner's link shows as connected (never its label), nothing else of theirs does.
+  getDb().prepare("INSERT INTO linked_accounts (user_id, provider, account_label, refresh_token_enc, scopes) VALUES (?, 'notion', 'Owner Workspace', 'sealed', '')").run(owner);
+  getDb().prepare("INSERT INTO linked_accounts (user_id, provider, account_label, refresh_token_enc, scopes) VALUES (?, 'google', 'owner@gmail.example', 'sealed', '')").run(owner);
+  const ctlShare = createShare(owner, { kind: 'page', target: 'ctl', email: 'viewer@example.com' }).share;
+  const meCtl = await (await meGet(ctx(owner, 'https://x.invalid/api/me', undefined, shareLocals(scopeOf(ctlShare.id))))).json();
+  assert.equal(meCtl.links.notion, true);
+  assert.equal(meCtl.links.google, false, 'no shared ward draws from it');
+  revokeShare(owner, ctlShare.id);
+  getDb().prepare('DELETE FROM linked_accounts WHERE user_id = ?').run(owner);
   const notes = await (await notesGet(ctx(owner, 'https://x.invalid/api/notes', undefined, shareLocals(book)))).json();
   assert.deepEqual(notes.notes.map((n: { id: string }) => n.id), [inBook]);
   const all = await (await notesGet(ctx(owner, 'https://x.invalid/api/notes'))).json();

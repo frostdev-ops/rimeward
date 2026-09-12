@@ -618,10 +618,12 @@ export function bootInstance(w: WardInstance): void {
     note(w.i, 'Unavailable.');
     return;
   }
-  // The catalog names the account a type needs; no link → the Connect chip.
+  // The catalog names the account a type needs; no link → the Connect chip (a share's viewer
+  // cannot connect the owner's account: they only learn it is not there).
   const link = CATALOG[w.type]?.link;
   if (link && !ME.links[link]) {
-    connectChip(w.i, link);
+    if (shareView) note(w.i, 'Unavailable right now.');
+    else connectChip(w.i, link);
     return;
   }
   const stop = r.intervalMs ? poll(() => r.render(w), r.intervalMs, () => popoutWard ? !inWardView(w.i) : pageOfCard(w.i) !== currentPage()) : () => {};
