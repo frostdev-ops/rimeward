@@ -12,7 +12,8 @@ server.server.on('upgrade', async (req, sock, head) => {
   if (!globalThis.__fdUpgrade) await fetch(`http://127.0.0.1:${server.server.address().port}/login`).catch(() => {});
   if(req.url?.startsWith('/api/browser/ws/')) { (globalThis.__fdBrowserUpgrade ?? ((_,s)=>s.destroy()))(req,sock,head);return; }
   if(req.url?.startsWith('/api/dev/ws?')) { (globalThis.__fdDevUpgrade ?? ((_,s)=>s.destroy()))(req,sock,head);return; }
-  if(req.url==='/api/live/stream') { (globalThis.__fdLiveUpgrade ?? ((_,s)=>s.destroy()))(req,sock,head);return; }
+  // A share view opens the live stream with ?share=<id> (public/runtime-bridge.js).
+  if(req.url==='/api/live/stream'||req.url?.startsWith('/api/live/stream?')) { (globalThis.__fdLiveUpgrade ?? ((_,s)=>s.destroy()))(req,sock,head);return; }
   if(req.url==='/api/devices/connect') { (globalThis.__fdDeviceUpgrade ?? ((_,s)=>s.destroy()))(req,sock,head);return; }
   (globalThis.__fdUpgrade ?? ((_, s) => s.destroy()))(req, sock, head);
 });

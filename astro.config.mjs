@@ -66,7 +66,7 @@ export default defineConfig({
           server.httpServer?.on('upgrade', (req, sock, head) => {
             if(req.url?.startsWith('/api/browser/ws/')){const h=/** @type {any} */ (globalThis).__fdBrowserUpgrade; if(h)h(req,sock,head);else sock.destroy();return;}
             if(req.url?.startsWith('/api/dev/ws?')){const h=/** @type {any} */ (globalThis).__fdDevUpgrade; if(h)h(req,sock,head);else sock.destroy();return;}
-            if(req.url==='/api/live/stream'){const h=/** @type {any} */ (globalThis).__fdLiveUpgrade; if(h)h(req,sock,head);else sock.destroy();return;}
+            if(req.url==='/api/live/stream'||req.url?.startsWith('/api/live/stream?')){const h=/** @type {any} */ (globalThis).__fdLiveUpgrade; if(h)h(req,sock,head);else sock.destroy();return;}
             if(req.url==='/api/devices/connect'){const h=/** @type {any} */ (globalThis).__fdDeviceUpgrade; if(h)h(req,sock,head);else sock.destroy();return;}
             if (!req.url?.startsWith('/api/tunnel')) return;
             const h = /** @type {any} */ (globalThis).__fdUpgrade;
