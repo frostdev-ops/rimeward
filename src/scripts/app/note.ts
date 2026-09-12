@@ -24,6 +24,7 @@ import { expandedDesktopWard, restoreExpandedWard, readDesktopCheckpoint, saveDe
 import { noteConfig, wardTitle, type NoteConfig, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body } from './wards.ts';
 import { el, postJson, toast } from './dom.ts';
+import { shareReadOnly } from './share-view.ts';
 import { icon, relabel } from './icon.ts';
 import { askText, confirmAction } from './workspace-dialogs.ts';
 import { pageDocument, readPageDocument, type NotebookPageType } from '../../lib/notebook-pages.ts';
@@ -363,8 +364,10 @@ function apply(st: State): void {
   st.color.hidden = !ink;
   st.width.hidden = !ink;
   st.btn.transcribe!.hidden = !ink || cfg.transcribe === 'off';
-  if (!ink) setTool(st, 'text');
-  st.doc.contentEditable = st.target && st.loaded && !st.pageEngine ? 'true' : 'false';
+  if (!ink || shareReadOnly) setTool(st, 'text');
+  // A share's viewer reads: no caret, no pen, no toolbar (frost.css [data-readonly]).
+  st.root.toggleAttribute('data-readonly', shareReadOnly);
+  st.doc.contentEditable = st.target && st.loaded && !st.pageEngine && !shareReadOnly ? 'true' : 'false';
   st.format.disabled = !st.target || !st.loaded;
   st.root.toggleAttribute('data-empty', !st.target);
   // The pen defaults to the text colour of THIS card — its theme, not the page's.

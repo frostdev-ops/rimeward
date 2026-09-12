@@ -1,0 +1,59 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+import Ward from '../../components/dashboard/Ward.astro';
+import BrowserDialog from '../../components/dashboard/BrowserDialog.astro';
+import NoteDialog from '../../components/dashboard/NoteDialog.astro';
+import NotebookDialog from '../../components/dashboard/NotebookDialog.astro';
+import { getPages } from '../../lib/dashboard.ts';
+import { SHARE_TOKEN_RE, findShareByToken, shareCookie, shareStatusScope, shareTitle } from '../../lib/shares.ts';
+import { GROUP_TITLES, TARGETS } from '../../lib/targets.ts';
+import type { WardInstance } from '../../lib/wards.ts';
+
+export const prerender = false;
+
+// The share view (lib/shares.ts): the owner's shared ward or page, rendered by the
+// same components and scripts as /dash, as its visitor. The middleware already
+// resolved the share and set locals.user to the OWNER and locals.share to the
+// scope; a raw link token in the URL lands here first and becomes a cookie.
+const seg = Astro.params.id ?? '';
+if (SHARE_TOKEN_RE.test(seg)) {
+  const share = findShareByToken(seg);
+  if (!share) return new Response('This link is no longer valid.', { status: 404, headers: { 'content-type': 'text/plain' } });
+  const maxAge = share.expiresAt ? Math.max(60, Math.floor((Date.parse(share.expiresAt) - Date.now()) / 1000)) : 30 * 86400;
+  Astro.cookies.set(shareCookie(share.id), seg, { path: '/', httpOnly: true, sameSite: 'lax', secure: (process.env.PUBLIC_BASE_URL ?? '').startsWith('https:'), maxAge });
+  return Astro.redirect(`/s/${share.id}`, 303);
+}
+const share = Astro.locals.share;
+if (!share) return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain' } });
+const owner = Astro.locals.user!.userId;
+const embed = Astro.url.searchParams.get('embed') === '1';
+// One page, whatever was shared; groups open nowhere here, so their wards sit flat.
+const pageId = share.kind === 'page' ? share.target : 'shared';
+const title = shareTitle({ owner, kind: share.kind, target: share.target }, share.wards, getPages(owner));
+const layout: WardInstance[] = share.wards.filter((w) => w.type !== 'container').map(({ in: _in, page: _page, ...w }) => ({ ...w, page: pageId }));
+const scope = shareStatusScope(share.wards);
+const monitors = { targets: TARGETS.filter((t) => scope.services.has(t.id)).map((t) => ({ id: t.id, label: t.label, group: t.group, kind: t.kind })), titles: GROUP_TITLES };
+const escape = (v: unknown) => JSON.stringify(v).replaceAll('<', '\\u003c');
+---
+
+<AppLayout title={`${title} — shared by ${share.owner}`} search={false} fonts={layout.map((w) => w.theme?.font)} share={{ id: share.id, owner: share.owner, viewer: share.viewer !== null, embed, monitors }}>
+  <main class={embed ? 'px-2 py-2' : 'mx-auto max-w-7xl px-4 py-6'} data-share={share.id} data-share-role={share.role} data-ward-window-scope={`share:${share.id}`} data-popout-ward={share.kind === 'ward' ? share.target : undefined}>
+    <div id="alerts" data-mode="off"></div>
+    <div id="sse-banner" class="banner banner-warn hidden">Live feed lost — retrying…</div>
+    <div class="wd-grid mb-8" id="wd-grid">
+      {layout.map((w, i) => <Ward w={w} layout={layout} page={pageId} enterDelay={80 + i * 30} />)}
+    </div>
+  </main>
+
+  <BrowserDialog />
+  <NoteDialog />
+  <NotebookDialog />
+
+  <script type="application/json" id="layout-data" set:html={escape(layout)} />
+  <script type="application/json" id="pages-data" set:html={escape([{ id: pageId, title }])} />
+  <script type="application/json" id="logic-data" set:html={escape({ graph: { nodes: [], edges: [] }, runs: [], isAdmin: false })} />
+
+  <script>
+    import '../../scripts/app/index.ts';
+  </script>
+</AppLayout>

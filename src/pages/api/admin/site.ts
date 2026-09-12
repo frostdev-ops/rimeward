@@ -8,7 +8,7 @@ export const POST: APIRoute = async ({ request, redirect }) => {
   const form = await request.formData();
   const field = (k: string) => String(form.get(k) ?? '');
   try {
-    saveSite({ name: field('name'), tagline: field('tagline'), footer: field('footer'), cards: cardsFromLines(field('cards')) });
+    saveSite({ name: field('name'), tagline: field('tagline'), footer: field('footer'), cards: cardsFromLines(field('cards')), links: form.has('links') });
   } catch (err) {
     return redirect(`/admin/users?err=${encodeURIComponent((err as Error).message)}`, 303);
   }

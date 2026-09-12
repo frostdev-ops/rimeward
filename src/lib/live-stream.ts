@@ -2,16 +2,20 @@ import http from 'node:http';
 import type net from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { SESSION_COOKIES, getSession } from './auth.ts';
+import { resolveShare, shareAllows, shareCookie, sharePrincipalId, shareScope, type ShareScope } from './shares.ts';
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
 // Only existing, authenticated SSE GETs. The original middleware still decides device and ward access.
-const route = /^(?:\/runtime\/[a-zA-Z0-9_-]+)?\/api\/(?:status\/stream|logic\/stream|instance\/events|dev\/events|browser\/stream\/[a-zA-Z0-9_-]+)$/;
+const route = /^(?:\/runtime\/[a-zA-Z0-9_-]+)?\/api\/(?:status\/stream|logic\/stream|instance\/events|dev\/events|browser\/stream\/[a-zA-Z0-9_-]+|share\/[a-z0-9]{12}\/stream)$/;
 /** Refuse an upgrade with a status line, so the client sees why, not a bare reset. */
 export const refuseUpgrade = (socket: net.Socket, status: number) => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n\r\n`);
 
 /** The page's origin and session cookie on an upgrade request: the session
- *  id and user, or the status to refuse it with. */
-export function upgradeSession(req: http.IncomingMessage): { id: string; userId: number; origin: URL } | number {
+ *  id and user, or the status to refuse it with. A `?share=<id>` upgrade is a
+ *  share's viewer: the principal is the OWNER, `share` says what they may do,
+ *  and `id` is what principalAlive re-checks (the share, plus the grantee's
+ *  session when there is one). */
+export function upgradeSession(req: http.IncomingMessage): { id: string; userId: number; origin: URL; share?: ShareScope } | number {
   let origin: URL;
   try { origin = new URL(req.headers.origin ?? ''); } catch { return 403; }
   const expected = process.env.PUBLIC_BASE_URL;
@@ -19,7 +23,22 @@ export function upgradeSession(req: http.IncomingMessage): { id: string; userId:
   const cookies = new Map((req.headers.cookie ?? '').split(';').map(s => { const i = s.indexOf('='); return [s.slice(0, i).trim(), s.slice(i + 1)]; }));
   const id = SESSION_COOKIES.map(name => cookies.get(name)).find(Boolean);
   const row = id ? getSession(id) : null;
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const shareId = url.searchParams.get('share');
+  if (shareId) {
+    const scope = shareScope(shareId, row, cookies.get(shareCookie(shareId)));
+    if (typeof scope === 'number') return scope;
+    if (!shareAllows(scope, 'GET', url)) return 403;
+    return { id: sharePrincipalId(scope, row && id ? id : undefined), userId: scope.share.owner, origin, share: scope };
+  }
   return row && id ? { id, userId: row.userId, origin } : 401;
+}
+/** Whether the principal a live connection was opened with still stands: a
+ *  session, or a share (and its grantee's session) — checked on every heartbeat. */
+export function principalAlive(id: string): boolean {
+  if (!id.startsWith('share:')) return !!getSession(id);
+  const [, share, session] = id.split(':');
+  return !!resolveShare(share) && (!session || !!getSession(session));
 }
 
 export function liveUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
@@ -27,6 +46,8 @@ export function liveUpgrade(req: http.IncomingMessage, socket: net.Socket, head:
   const auth = upgradeSession(req);
   if (typeof auth === 'number') { refuse(auth); return; }
   const { id: session, origin } = auth;
+  // Inside a share every subscription stays inside it: the upstream GET carries the share id.
+  const share = auth.share?.share.id;
   const port = req.socket.localPort;
   if (!port) { refuse(503); return; }
   wss.handleUpgrade(req, socket, head, ws => {
@@ -38,7 +59,7 @@ export function liveUpgrade(req: http.IncomingMessage, socket: net.Socket, head:
     };
     let alive = true;
     const heartbeat = setInterval(() => {
-      if (!alive || !getSession(session)) { ws.terminate(); return; }
+      if (!alive || !principalAlive(session)) { ws.terminate(); return; }
       alive = false; ws.ping();
     }, 25000);
     ws.on('pong', () => { alive = true; });
@@ -54,6 +75,7 @@ export function liveUpgrade(req: http.IncomingMessage, socket: net.Socket, head:
       let url: URL;
       try { url = new URL(message.path, 'http://localhost'); } catch { send({ id, error: 400 }); return; }
       if (!message.path.startsWith('/') || url.origin !== 'http://localhost' || !route.test(url.pathname) || url.hash) { send({ id, error: 403 }); return; }
+      if (share && !url.searchParams.has('share')) url.searchParams.set('share', share);
       const upstream = http.get({ hostname: '127.0.0.1', port, path: url.pathname + url.search, agent: false,
         headers: { cookie: req.headers.cookie ?? '', host: req.headers.host ?? origin.host, origin: origin.origin, accept: 'text/event-stream' } });
       streams.set(id, upstream);

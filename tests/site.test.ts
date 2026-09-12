@@ -17,7 +17,12 @@ test('siteInfo: defaults until set, empty clears back to them', () => {
     tagline: 'Power · Maintenance · Automation',
     footer: '© Frostdev',
     cards: [{ title: 'Loothing', blurb: 'Guild tooling' }],
+    links: true,
   });
+  saveSite({ links: false });
+  assert.equal(siteInfo().links, false, 'the admin turned public share links off');
+  saveSite({ links: true });
+  assert.equal(siteInfo().links, true);
   saveSite({ name: '', footer: '', cards: [] });
   assert.equal(siteInfo().name, SITE_DEFAULTS.name);
   assert.equal(siteInfo().footer, '');

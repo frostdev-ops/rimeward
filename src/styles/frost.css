@@ -519,6 +519,39 @@ summary {
   font-size: 0.8125rem;
 }
 
+/* A share view (/s/<id>, scripts/app/share-view.ts): the owner's wards as a
+   visitor sees them — no edit chrome, no grips, no leyline ports; a viewer's
+   notepad has no toolbar or pen, a viewer's timer no controls. */
+main[data-share] :is([data-edit-controls], [data-resize], [data-wd-port], .wd-chevron) {
+  display: none;
+}
+main[data-share-role='view'] [data-wd-type='timer'] button {
+  display: none;
+}
+.np[data-readonly] .np-tools {
+  display: none;
+}
+.np[data-readonly] .np-ink {
+  pointer-events: none;
+}
+/* Who is looking at a shared ward (scripts/app/presence.ts). */
+.wd-presence {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.wd-presence-chip {
+  display: inline-grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 9999px;
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
+  font-size: 0.625rem;
+  font-weight: 600;
+}
+
 /* Toolbar buttons are icon + label; under 640px the label goes and the icon
    (with its aria-label) carries the button at a full 44px target. */
 #wd-toolbar .btn {

@@ -1,0 +1,236 @@
+import './_setup.ts';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import type { APIContext } from 'astro';
+import { getDb } from '../src/lib/db.ts';
+import { createUser } from '../src/lib/users.ts';
+import { saveDashboard, getDashboard } from '../src/lib/dashboard.ts';
+import { deleteSetting, setSetting } from '../src/lib/settings.ts';
+import { createNote, ensureNotebook } from '../src/lib/notebook.ts';
+import { writeNote } from '../src/lib/note.ts';
+import type { Session } from '../src/lib/auth.ts';
+import {
+  SHARE_NOTEBOOK_OPS, SHARE_TOKEN_RE, createShare, findShareByToken, listShares, resolveShare, revokeShare, setShareRole, shareAllows, shareEvent,
+  shareScope, shareSnapshot, shareStatusScope, shareWards, sharedWithMe, verifyShareToken, shareLocals, sharePrincipal, type ShareScope,
+} from '../src/lib/shares.ts';
+import { GET as meGet } from '../src/pages/api/me.ts';
+import { GET as notesGet } from '../src/pages/api/notes.ts';
+import { GET as sharesGet, POST as sharesPost } from '../src/pages/api/share/index.ts';
+import { DELETE as shareDelete, GET as shareGet } from '../src/pages/api/share/[id].ts';
+
+const owner = createUser('owner@example.com', 'pw-owner-1');
+const viewer = createUser('viewer@example.com', 'pw-viewer-1');
+const stranger = createUser('stranger@example.com', 'pw-stranger-1');
+const session = (userId: number, displayName: string): Session => ({ userId, email: '', role: 'member', displayName, theme: null });
+const viewerS = session(viewer, 'Vera Viewer'), strangerS = session(stranger, 'Sam'), ownerS = session(owner, 'Olive Owner');
+
+saveDashboard(owner, [
+  { i: 'pad', type: 'note', size: '2x2' },
+  { i: 'book', type: 'notebook', size: '2x2' },
+  { i: 'web', type: 'browser', size: '2x2', config: { url: 'https://example.com' } },
+  { i: 'svc', type: 'service-group', size: '2x2', config: { services: ['site'] } },
+  { i: 'mail', type: 'mail', size: '1x1' },
+  { i: 'grp', type: 'container', size: '2x2' },
+  { i: 'w2', type: 'weather', size: '1x1', in: 'grp' },
+  { i: 'flow1', type: 'flow', size: '2x1', page: 'ops' },
+  { i: 'inc', type: 'incidents', size: '2x1', page: 'ops' },
+], [{ id: 'home', title: 'Home' }, { id: 'ops', title: 'Ops' }]);
+assert.ok(getDashboard(owner).some((w) => w.i === 'web'), 'the browser ward survived validation');
+ensureNotebook(owner, 'book', 'Book');
+const inBook = createNote(owner, { notebook: 'book', title: 'Filed' }).id;
+writeNote(owner, 'loose', { html: '<p>unfiled</p>' });
+
+const ctx = (userId: number, url: string, init?: RequestInit, share?: ReturnType<typeof shareLocals>) =>
+  ({ locals: { user: session(userId, 'x'), ...(share ? { share } : {}) }, url: new URL(url), request: new Request(url, init), params: { id: url.split('/api/share/')[1]?.split(/[/?]/)[0] } }) as unknown as APIContext;
+const scopeOf = (id: string, s: Session | null = viewerS, token?: string): ShareScope => {
+  const scope = shareScope(id, s, token);
+  assert.equal(typeof scope, 'object', `scope for ${id}`);
+  return scope as ShareScope;
+};
+const allows = (scope: ShareScope, method: string, path: string) => shareAllows(scope, method, new URL(path, 'https://x.invalid'));
+
+test('shareWards: the ceiling per type, groups carry their children, pages carry their wards', () => {
+  assert.throws(() => createShare(owner, { kind: 'ward', target: 'mail', email: 'viewer@example.com' }), /nothing there/);
+  assert.deepEqual(shareWards({ owner, kind: 'ward', target: 'grp' }).map((w) => w.i), ['grp', 'w2']);
+  assert.deepEqual(shareWards({ owner, kind: 'page', target: 'ops' }).map((w) => w.i), ['flow1', 'inc']);
+  assert.deepEqual(shareWards({ owner, kind: 'page', target: 'home' }).map((w) => w.i), ['pad', 'book', 'web', 'svc', 'grp', 'w2']);
+  assert.deepEqual(shareWards({ owner, kind: 'ward', target: 'nope' }), []);
+});
+
+test('a person share: by exact email, re-shared = re-roled, never yourself, edit only where the type allows', () => {
+  const { share, token } = createShare(owner, { kind: 'ward', target: 'pad', email: 'viewer@example.com', role: 'edit' });
+  assert.equal(token, undefined);
+  assert.equal(share.grantee, viewer);
+  assert.equal(share.role, 'edit');
+  const mine = sharedWithMe(viewer);
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0]!.type, 'note');
+  assert.equal(mine[0]!.owner, 'owner');
+  assert.equal(listShares(owner)[0]!.grantee?.email, 'viewer@example.com');
+  const again = createShare(owner, { kind: 'ward', target: 'pad', email: 'VIEWER@example.com', role: 'view' });
+  assert.equal(again.share.id, share.id, 'one row per (target, person)');
+  assert.equal(resolveShare(share.id)!.role, 'view');
+  assert.throws(() => createShare(owner, { kind: 'ward', target: 'pad', email: 'nobody@example.com' }), /no account/);
+  assert.throws(() => createShare(owner, { kind: 'ward', target: 'pad', email: 'owner@example.com' }), /that is you/);
+  assert.throws(() => createShare(owner, { kind: 'ward', target: 'svc', email: 'viewer@example.com', role: 'edit' }), /view-only/);
+  assert.equal(setShareRole(owner, share.id, 'edit').role, 'edit');
+  assert.throws(() => setShareRole(viewer, share.id, 'view'), /no such share/);
+});
+
+test('shareScope: the grantee, the owner previewing, nobody else', () => {
+  const id = listShares(owner)[0]!.id;
+  assert.equal(typeof shareScope(id, viewerS, undefined), 'object');
+  assert.equal(typeof shareScope(id, ownerS, undefined), 'object');
+  assert.equal(shareScope(id, strangerS, undefined), 403);
+  assert.equal(shareScope(id, null, undefined), 403);
+  assert.equal(shareScope('nope00000000', viewerS, undefined), 404);
+  assert.equal(shareScope('../etc', viewerS, undefined), 404);
+  const p = sharePrincipal(scopeOf(id), 'owner');
+  assert.equal(p.userId, owner);
+  assert.equal(p.role, 'member');
+  assert.equal(p.email, '');
+  const l = shareLocals(scopeOf(id));
+  assert.equal(l.viewer, viewer);
+  assert.equal(l.viewerName, 'Vera Viewer');
+});
+
+test('shareAllows: only the shared documents and browser, only what the role permits', () => {
+  const pad = scopeOf(listShares(owner)[0]!.id); // pad, edit
+  assert.ok(allows(pad, 'GET', '/api/note/pad?ward=pad'));
+  assert.ok(allows(pad, 'PUT', '/api/note/pad?ward=pad'));
+  assert.ok(allows(pad, 'POST', '/api/note/pad?ward=pad'));
+  assert.ok(!allows(pad, 'GET', '/api/note/loose?ward=pad'), 'another document through the shared notepad');
+  assert.ok(!allows(pad, 'GET', '/api/note/pad'), 'no host ward = no scope');
+  assert.ok(!allows(pad, 'GET', '/api/dashboard'));
+  assert.ok(!allows(pad, 'PUT', '/api/dashboard'));
+  assert.ok(!allows(pad, 'GET', '/api/logic/stream'));
+  assert.ok(!allows(pad, 'GET', '/api/agent/pad'));
+  assert.ok(!allows(pad, 'GET', '/api/notes'), 'no notebook in this share');
+  assert.ok(!allows(pad, 'POST', '/api/browser/web'), 'not in this share');
+  assert.ok(allows(pad, 'GET', '/api/me'));
+  assert.ok(allows(pad, 'GET', `/api/share/${pad.share.id}/stream`));
+  assert.ok(!allows(pad, 'GET', '/api/share/other0000000/stream'));
+  setShareRole(owner, pad.share.id, 'view');
+  const padView = scopeOf(pad.share.id);
+  assert.ok(allows(padView, 'GET', '/api/note/pad?ward=pad'));
+  assert.ok(!allows(padView, 'PUT', '/api/note/pad?ward=pad'));
+  assert.ok(!allows(padView, 'POST', '/api/note/pad?ward=pad'));
+
+  const book = scopeOf(createShare(owner, { kind: 'ward', target: 'book', email: 'viewer@example.com', role: 'edit' }).share.id);
+  assert.ok(allows(book, 'GET', `/api/note/${inBook}?ward=book`));
+  assert.ok(allows(book, 'PUT', `/api/note/${inBook}?ward=book`));
+  assert.ok(!allows(book, 'GET', '/api/note/loose?ward=book'), 'a document outside the notebook');
+  assert.ok(allows(book, 'GET', '/api/notebook/book'));
+  assert.ok(allows(book, 'POST', '/api/notebook/book'));
+  assert.ok(allows(book, 'GET', '/api/notes'));
+  assert.ok(!SHARE_NOTEBOOK_OPS.has('link') && !SHARE_NOTEBOOK_OPS.has('purge') && SHARE_NOTEBOOK_OPS.has('create'));
+
+  const web = scopeOf(createShare(owner, { kind: 'ward', target: 'web', email: 'viewer@example.com', role: 'edit' }).share.id);
+  assert.ok(allows(web, 'POST', '/api/browser/web'));
+  assert.ok(allows(web, 'POST', '/api/browser/web?share=' + web.share.id));
+  assert.ok(!allows(web, 'POST', '/api/browser/web?extension=restart'));
+  assert.ok(!allows(web, 'GET', '/api/browser/web?download=abc'));
+  assert.ok(allows(web, 'GET', '/api/browser/stream/web'));
+  assert.ok(allows(web, 'GET', '/api/browser/ws/web'));
+  assert.ok(!allows(web, 'GET', '/api/status'), 'no status ward in this share');
+
+  const home = scopeOf(createShare(owner, { kind: 'page', target: 'home', email: 'viewer@example.com' }).share.id);
+  assert.ok(allows(home, 'GET', '/api/status'));
+  assert.ok(allows(home, 'GET', '/api/weather?ward=w2'));
+  assert.ok(!allows(home, 'GET', '/api/weather?ward=flow1'));
+  assert.ok(allows(home, 'GET', '/api/bg/1-photo.webp'));
+  assert.ok(!allows(home, 'POST', '/api/browser/web'), 'a view share never drives');
+});
+
+test('links: view-only, token verified by hash, expiry ends them, off on the desktop or by the admin', () => {
+  assert.throws(() => createShare(owner, { kind: 'ward', target: 'svc', role: 'edit' }), /view-only/);
+  const { share, token } = createShare(owner, { kind: 'ward', target: 'svc', expiresIn: 3600 });
+  assert.ok(token && SHARE_TOKEN_RE.test(token));
+  assert.equal(share.grantee, null);
+  assert.ok(share.expiresAt);
+  assert.equal(findShareByToken(token)?.id, share.id);
+  assert.equal(findShareByToken('x'.repeat(43)), null);
+  assert.ok(verifyShareToken(share, token));
+  assert.ok(!verifyShareToken(share, token!.slice(0, 42) + (token!.endsWith('A') ? 'B' : 'A')));
+  assert.equal(typeof shareScope(share.id, null, token), 'object');
+  assert.equal(shareScope(share.id, null, undefined), 403);
+  assert.equal(shareScope(share.id, viewerS, undefined), 403, 'a signed-in stranger still needs the token');
+  assert.equal(typeof shareScope(share.id, ownerS, undefined), 'object', 'the owner previews');
+  assert.equal(sharedWithMe(viewer).some((s) => s.id === share.id), false, 'links are nobody’s');
+  assert.ok(listShares(owner).find((s) => s.id === share.id)?.link);
+  getDb().prepare('UPDATE shares SET expires_at = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', share.id);
+  assert.equal(resolveShare(share.id), null, 'expired on first look');
+  assert.equal(findShareByToken(token), null);
+
+  setSetting('share_links', '0');
+  try { assert.throws(() => createShare(owner, { kind: 'ward', target: 'svc' }), /turned off/); } finally { deleteSetting('share_links'); }
+  const env = { desktop: process.env.RIMEWARD_DESKTOP, token: process.env.RIMEWARD_NATIVE_TOKEN };
+  process.env.RIMEWARD_DESKTOP = '1'; process.env.RIMEWARD_NATIVE_TOKEN = 'test';
+  try { assert.throws(() => createShare(owner, { kind: 'ward', target: 'svc' }), /need a server/); } finally {
+    if (env.desktop === undefined) delete process.env.RIMEWARD_DESKTOP; else process.env.RIMEWARD_DESKTOP = env.desktop;
+    if (env.token === undefined) delete process.env.RIMEWARD_NATIVE_TOKEN; else process.env.RIMEWARD_NATIVE_TOKEN = env.token;
+  }
+  assert.ok(createShare(owner, { kind: 'ward', target: 'svc' }).token, 'a person share and a link share on one target coexist');
+});
+
+test('status inside a share: only the services its wards show, host and incidents only when asked for', () => {
+  const svc = shareWards({ owner, kind: 'ward', target: 'svc' });
+  const scope = shareStatusScope(svc);
+  assert.deepEqual([...scope.services], ['site']);
+  assert.equal(scope.host, false);
+  assert.equal(scope.incidents, false);
+  assert.equal(shareStatusScope(shareWards({ owner, kind: 'page', target: 'ops' })).incidents, true);
+  const snap = { at: 'now', baselineAt: 'now', alerts: ['site is down'], host: { disk: { usedPct: 40, freeGb: 10 }, mem: { usedPct: 50 }, load: [1], cores: 4 },
+    services: [{ id: 'site', label: 'a', group: 'g', kind: 'http' as const, ok: true, latencyMs: 1, detail: '', since: null }, { id: 'self', label: 'b', group: 'g', kind: 'http' as const, ok: false, latencyMs: 1, detail: '', since: null }] };
+  const out = shareSnapshot(snap, svc);
+  assert.deepEqual(out.services.map((s) => s.id), ['site']);
+  assert.deepEqual(out.alerts, []);
+  assert.equal(out.host.cores, 0);
+});
+
+test('shareEvent: the share’s wards and documents only; a layout change is a reload', () => {
+  const pad = scopeOf(listShares(owner).find((s) => s.target === 'pad')!.id);
+  const book = scopeOf(listShares(owner).find((s) => s.target === 'book')!.id);
+  assert.ok(shareEvent(pad, 'note', { ward: 'pad', note: 'pad', rev: 2 }));
+  assert.equal(shareEvent(pad, 'note', { ward: 'other', note: 'other' }), undefined);
+  assert.ok(shareEvent(book, 'note', { note: inBook }));
+  assert.equal(shareEvent(book, 'note', { note: 'loose' }), undefined);
+  assert.ok(shareEvent(book, 'notebook', { notebook: 'book' }));
+  assert.equal(shareEvent(pad, 'notebook', { notebook: 'book' }), undefined);
+  assert.deepEqual(shareEvent(pad, 'refresh', { type: 'note', link: 'google' }), { event: 'refresh', data: { type: 'note' } });
+  assert.equal(shareEvent(pad, 'refresh', { link: 'google' }), undefined);
+  assert.deepEqual(shareEvent(pad, 'layout', { layout: [] }), { event: 'reload', data: {} });
+  for (const ev of ['agent', 'agent-live', 'act', 'packets', 'runs', 'theme']) assert.equal(shareEvent(pad, ev, { ward: 'pad' }), undefined, ev);
+});
+
+test('routes: /api/me and /api/notes inside a share, the share CRUD as owner, grantee and stranger', async () => {
+  const book = scopeOf(listShares(owner).find((s) => s.target === 'book')!.id);
+  const me = await (await meGet(ctx(owner, 'https://x.invalid/api/me', undefined, shareLocals(book)))).json();
+  assert.equal(me.id, viewer);
+  assert.equal(me.displayName, 'Vera Viewer');
+  assert.deepEqual(Object.values(me.links), [false, false, false, false, false, false]);
+  assert.equal(me.share.role, 'edit');
+  const notes = await (await notesGet(ctx(owner, 'https://x.invalid/api/notes', undefined, shareLocals(book)))).json();
+  assert.deepEqual(notes.notes.map((n: { id: string }) => n.id), [inBook]);
+  const all = await (await notesGet(ctx(owner, 'https://x.invalid/api/notes'))).json();
+  assert.ok(all.notes.some((n: { id: string }) => n.id === 'loose'), 'the owner still sees everything');
+
+  const created = await (await sharesPost(ctx(owner, 'https://x.invalid/api/share', { method: 'POST', body: JSON.stringify({ kind: 'ward', target: 'grp', email: 'viewer@example.com' }) }))).json();
+  assert.equal(created.share.kind, 'ward');
+  assert.equal(created.token, undefined);
+  const incoming = await (await sharesGet(ctx(viewer, 'https://x.invalid/api/share?incoming=1'))).json();
+  assert.ok(incoming.shares.some((s: { id: string }) => s.id === created.share.id));
+  const listed = await (await sharesGet(ctx(owner, 'https://x.invalid/api/share'))).json();
+  assert.equal(typeof listed.links, 'boolean');
+  assert.equal((await shareGet(ctx(stranger, `https://x.invalid/api/share/${created.share.id}`))).status, 404);
+  const info = await (await shareGet(ctx(viewer, `https://x.invalid/api/share/${created.share.id}`))).json();
+  assert.equal(info.type, 'container');
+  assert.equal(info.owner, 'owner');
+  assert.equal((await shareDelete(ctx(stranger, `https://x.invalid/api/share/${created.share.id}`, { method: 'DELETE' }))).status, 404);
+  assert.equal((await shareDelete(ctx(owner, `https://x.invalid/api/share/${created.share.id}`, { method: 'DELETE' }))).status, 200);
+  assert.equal(resolveShare(created.share.id), null);
+  assert.equal((await sharesPost(ctx(owner, 'https://x.invalid/api/share', { method: 'POST', body: '{"kind":"ward","target":"mail"}' }))).status, 400);
+  assert.equal((await sharesGet(ctx(owner, 'https://x.invalid/api/share', undefined, shareLocals(book)))).status, 403, 'never from inside a share');
+  assert.ok(revokeShare(owner, book.share.id));
+  assert.equal(shareScope(book.share.id, viewerS, undefined), 404);
+});

@@ -15,12 +15,16 @@ interface Props {
   /** Faces this page paints beyond the theme's own two — the dashboard passes
    *  its wards' overrides. Anything else is fetched on demand (fonts.ts). */
   fonts?: (FontId | undefined)[];
+  /** A share view (/s/<id>): the owner's name in a minimal header (none at all when
+   *  embedded in a recipient's card), the bridge that scopes every /api call to the share,
+   *  and the monitor rows the shared wards may know about — never the whole registry. */
+  share?: { id: string; owner: string; viewer: boolean; embed: boolean; monitors: { targets: unknown[]; titles: Record<string, string> } };
 }
 
-const { search = true } = Astro.props;
+const { search = true, share } = Astro.props;
 const me = Astro.locals.user!;
 const sharedCatalog = isDesktop() ? getSetting(`instance:catalog:${me.userId}`) : null;
-const monitorCatalog = sharedCatalog ? JSON.parse(sharedCatalog) : { targets: TARGETS, titles: GROUP_TITLES };
+const monitorCatalog = share ? share.monitors : sharedCatalog ? JSON.parse(sharedCatalog) : { targets: TARGETS, titles: GROUP_TITLES };
 
 // The brand block is per-user: everything about it but the words and the
 // picture is a CSS var (lib/theme.ts brand* knobs, derived in frost.css).
@@ -51,8 +55,24 @@ const declared = [...new Set([brand.uiFont, brand.brandFont, ...(Astro.props.fon
     {isDesktop() && process.platform === 'darwin' && <meta name="fd-mac-user" content={String(me.userId)} data-restore={restoring ? '1' : undefined} />}
     {/* The monitor registry for the client's pure helpers: lib/targets.ts reads it as it loads. */}
     <script is:inline type="application/json" id="fd-monitors" set:html={JSON.stringify(monitorCatalog).replace(/</g, '\\u003c')} />
+    {share && <meta name="rimeward-share" content={share.id} />}
+    {share && <script is:inline src="/runtime-bridge.js"></script>}
   </Fragment>
 
+  {share ? (!share.embed && (
+    <header class="app-header">
+      <div class="mx-auto flex max-w-7xl items-center gap-3 px-4">
+        <a href={share.viewer ? '/dash' : '/'} class="app-brand" data-server-link>
+          <img src={brand.brandLogo ? `/api/bg/${brand.brandLogo}` : defaultLogo} alt="" width="56" height="56" class="app-brand-logo" />
+          <span class="app-brand-text hidden sm:inline">{brand.brandText}</span>
+        </a>
+        <span class="app-hdr-mid mx-auto truncate text-sm text-ink-muted">Shared by {share.owner}</span>
+        {share.viewer
+          ? <a href="/dash" class="btn min-h-9 px-2 py-1 text-xs" data-server-link>Dashboard</a>
+          : <a href="/login" class="btn min-h-9 px-2 py-1 text-xs" data-server-link>Sign in</a>}
+      </div>
+    </header>
+  )) : (
   <header class="app-header">
     <div class="mx-auto flex max-w-7xl items-center gap-3 px-4">
       <a href="/dash" class="app-brand">
@@ -113,6 +133,7 @@ const declared = [...new Set([brand.uiFont, brand.brandFont, ...(Astro.props.fon
       </details>
     </div>
   </header>
+  )}
 
   <slot />
 

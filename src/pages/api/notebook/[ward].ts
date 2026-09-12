@@ -7,6 +7,7 @@ import {
 } from '../../../lib/notebook.ts';
 import { isNotebookPageType, pageDocument } from '../../../lib/notebook-pages.ts';
 import { wardTitle } from '../../../lib/wards.ts';
+import { SHARE_NOTEBOOK_OPS } from '../../../lib/shares.ts';
 
 export const prerender = false;
 
@@ -98,6 +99,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     return meta.id;
   };
   const changed = () => broadcast(userId, 'notebook', { notebook: id });
+  if (locals.share && !SHARE_NOTEBOOK_OPS.has(String(body.op))) return Response.json({ error: 'not in a shared notebook' }, { status: 403 });
   try {
     switch (body.op) {
       case 'create': {

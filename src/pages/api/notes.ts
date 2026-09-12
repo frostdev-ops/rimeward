@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { listDocuments } from '../../lib/notebook.ts';
+import { listDocuments, notebookIdOf } from '../../lib/notebook.ts';
 
 export const prerender = false;
 
@@ -11,5 +11,11 @@ export const GET: APIRoute = ({ url, locals }) => {
   const userId = locals.user!.userId;
   const q = url.searchParams.get('q')?.trim().slice(0, 200) || undefined;
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 50, 1), 100);
-  return Response.json({ notes: listDocuments(userId, q, limit) }, { headers: { 'cache-control': 'no-store' } });
+  let notes = listDocuments(userId, q, limit);
+  // Inside a share, only what is filed in a shared notebook may be linked.
+  if (locals.share) {
+    const books = new Set(locals.share.wards.filter((w) => w.type === 'notebook').map(notebookIdOf));
+    notes = notes.filter((n) => n.notebook !== null && books.has(n.notebook));
+  }
+  return Response.json({ notes }, { headers: { 'cache-control': 'no-store' } });
 };

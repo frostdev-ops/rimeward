@@ -21,7 +21,9 @@ document.getElementById('dev-open-project')?.addEventListener('click',()=>{void 
 import { bootEdit } from './edit.ts';
 import { bootLogicEdit } from './logic-edit.ts';
 import './ward-window.ts';
+import './presence.ts';
 import { popoutWard } from './ward-view.ts';
+import { shareView } from './share-view.ts';
 
 // The entrance cascade is pure CSS (.wd-enter in frost.css, staggered via an
 // inline animation-delay per shell). Never animate cards with WAAPI here: a
@@ -32,5 +34,8 @@ bootStatus();
 bootPages(); // stages the current page before any ward boots
 ensureStream(); // layout and theme updates also reach pages with only development wards
 bootWards();
-bootEdit();
-if (!popoutWard) bootLogicEdit();
+// A share view is the owner's wards as a visitor sees them: nothing to arrange or wire.
+if (!shareView) {
+  bootEdit();
+  if (!popoutWard) bootLogicEdit();
+}

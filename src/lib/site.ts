@@ -13,9 +13,11 @@ export interface SiteInfo {
   tagline: string;
   footer: string;
   cards: SiteCard[];
+  /** Anyone-with-the-link sharing (lib/shares.ts): on unless an admin turned it off. */
+  links: boolean;
 }
 
-export const SITE_DEFAULTS: SiteInfo = { name: 'Rimeward', tagline: 'The rime remembers', footer: '', cards: [] };
+export const SITE_DEFAULTS: SiteInfo = { name: 'Rimeward', tagline: 'The rime remembers', footer: '', cards: [], links: true };
 export const MAX_CARDS = 6;
 const MAX = { name: 60, tagline: 120, footer: 200, title: 60, blurb: 200 };
 
@@ -25,6 +27,7 @@ export function siteInfo(): SiteInfo {
     tagline: (getSetting('site_tagline') ?? '').trim() || SITE_DEFAULTS.tagline,
     footer: (getSetting('site_footer') ?? '').trim(),
     cards: storedCards(getSetting('splash_cards')),
+    links: getSetting('share_links') !== '0',
   };
 }
 
@@ -66,7 +69,7 @@ export function cardsToLines(cards: SiteCard[]): string {
 }
 
 /** Absent field = leave the row alone; empty = clear it. */
-export function saveSite(input: { name?: string; tagline?: string; footer?: string; cards?: SiteCard[] }): void {
+export function saveSite(input: { name?: string; tagline?: string; footer?: string; cards?: SiteCard[]; links?: boolean }): void {
   const put = (key: string, value: string | undefined, max: number) => {
     if (value === undefined) return;
     const v = value.trim().slice(0, max);
@@ -79,5 +82,9 @@ export function saveSite(input: { name?: string; tagline?: string; footer?: stri
   if (input.cards) {
     if (input.cards.length) setSetting('splash_cards', JSON.stringify(validateCards(input.cards)));
     else deleteSetting('splash_cards');
+  }
+  if (input.links !== undefined) {
+    if (input.links) deleteSetting('share_links');
+    else setSetting('share_links', '0');
   }
 }

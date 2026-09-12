@@ -1,10 +1,13 @@
-// Installed before any desktop application script, only inside a relayed document.
-// Every same-origin application request stays on the selected runtime.
+// Installed before any application script, in two documents only: a relayed
+// desktop document (every same-origin request stays on the selected runtime,
+// under /runtime/<device>) and a share view (every same-origin /api request
+// carries ?share=<id>, so the server runs it inside the share — lib/shares.ts).
 (() => {
   const base = document.querySelector(
     'meta[name="rimeward-runtime-base"]',
   )?.content;
-  if (!base) return;
+  const share = document.querySelector('meta[name="rimeward-share"]')?.content;
+  if (!base && !share) return;
   const map = (value) => {
     if (typeof value !== "string") value = String(value);
     if (
@@ -16,8 +19,23 @@
     const u = new URL(value, location.href);
     if (u.origin !== location.origin || u.pathname.startsWith("/runtime/") || u.pathname.startsWith("/api/remote-desktop/"))
       return value;
+    if (!base) {
+      if (!u.pathname.startsWith("/api/")) return value;
+      if (!u.searchParams.has("share")) u.searchParams.set("share", share);
+      return u.pathname + u.search + u.hash;
+    }
     return base + u.pathname + u.search + u.hash;
   };
+  if (!base) {
+    // The browser ward and the live stream open sockets straight to /api.
+    const OriginalSocket = window.WebSocket;
+    window.WebSocket = class extends OriginalSocket {
+      constructor(url, protocols) {
+        const u = new URL(String(url), location.href);
+        super(u.origin === location.origin || u.host === location.host ? `${u.protocol}//${u.host}${map(u.pathname + u.search + u.hash)}` : url, protocols);
+      }
+    };
+  }
   const srcset = (value) =>
     String(value)
       .split(",")

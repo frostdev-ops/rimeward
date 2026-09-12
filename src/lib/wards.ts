@@ -112,6 +112,9 @@ export interface CatalogEntry {
    *  synonyms, tasks, moods. Searched with title + blurb (catalog-search.ts). */
   concepts: string[];
   /** FUNCTIONAL vocabulary — what the ward DOES: data read/written, verbs, the
+  /** The most this type may be shared as (lib/shares.ts): `edit` = a collaborator may
+   *  write (a document) or drive (a browser); `view` = watch only; absent = never shared. */
+  share?: 'view' | 'edit';
    *  logic it offers. The trigger/action labels anchored on the type and its
    *  link provider are appended by the caller (registryDoes): never hand-write
    *  a registry label such as "reset" here — the test proves the wiring with it. */
@@ -144,6 +147,7 @@ export const CATALOG: Record<string, CatalogEntry> = {
   },
   mail: {
     title: 'Inbox', defaultSize: '1x1', icon: 'mail', blurb: 'Every linked mailbox in one ward — 1x1 is the unread count, taller is the inbox with reader and compose.', multi: true, configurable: true, category: 'mail',
+    share: 'view',
     concepts: ['inbox', 'email', 'e-mail', 'messages', 'unread', 'gmail', 'google mail', 'outlook', 'microsoft', 'zoho', 'imap', 'pop3', 'smtp', 'mailbox', 'compose', 'reply', 'archive', 'sender', 'subject', 'badge', 'count', 'unified', 'all accounts'],
     does: ['reads every linked mailbox in one list', 'counts unread mail', 'opens and reads a message', 'composes replies and sends mail', 'archives a message', 'fires logic when new mail arrives', 'filters by account'],
   },
@@ -184,11 +188,13 @@ export const CATALOG: Record<string, CatalogEntry> = {
   },
   browser: {
     title: 'Browser', defaultSize: '3x3', icon: 'globe', blurb: 'A real browser you and Rime both drive — logins stick.', multi: true, configurable: true, category: 'rime',
+    share: 'view',
     concepts: ['browser', 'chromium', 'chrome', 'web', 'website', 'page', 'tab', 'tabs', 'login', 'session', 'cookies', 'remote', 'headless', 'browse', 'surf', 'url', 'address bar', 'rime drives it'],
     does: ['drives a real headless chromium', 'keeps logins per ward', 'rime reads and acts on the same page', 'opens tabs and navigates', 'types clicks and scrolls', 'expands to a desktop-sized page', 'runs on this server or browserbase', 'runs on your computer through the rimeward app', 'egresses from your home ip'],
   },
   embed: {
     title: 'Embed', defaultSize: '2x2', icon: 'image', blurb: 'Any http(s) page in a sandboxed frame.', multi: true, legacy: true, configurable: true, category: 'rime',
+    share: 'edit',
     concepts: ['embed', 'iframe', 'frame', 'web page', 'website', 'url', 'external', 'ward', 'view'],
     does: ['shows any http page in a sandboxed frame', 'no login persistence', 'sites that refuse embedding stay blank'],
   },
@@ -199,21 +205,25 @@ export const CATALOG: Record<string, CatalogEntry> = {
   },
   incidents: {
     title: 'Incidents', defaultSize: '1x1', icon: 'incident', blurb: 'What went down and came back — live changes and the last 24h of outages.', category: 'glance',
+    share: 'view',
     concepts: ['incidents', 'outages', 'downtime', 'went down', 'came back', 'flapping', 'history', 'last 24 hours', 'status', 'uptime', 'reliability', 'postmortem', 'alerts', 'what broke', 'sla'],
     does: ['lists what went down and came back', 'shows live status changes', 'sums downtime over the last 24 hours', 'reads status history'],
   },
   chart: {
     title: 'Chart', defaultSize: '2x2', icon: 'chart', blurb: 'Plot any data source over time.', multi: true, configurable: true, category: 'glance',
+    share: 'view',
     concepts: ['chart', 'graph', 'plot', 'line', 'area', 'bars', 'history', 'trend', 'over time', 'latency', 'uptime', 'cpu', 'memory', 'disk', 'temperature', 'rain', 'sparkline', 'analytics', 'metrics'],
     does: ['plots service latency or uptime history', 'plots host cpu memory or disk', 'plots the weather forecast', 'line area or bar chart', 'picks a lookback window'],
   },
   timer: {
     title: 'Timer', defaultSize: '1x1', icon: 'timer', blurb: 'Server-side countdown — fires logic when done.', multi: true, configurable: true, category: 'logic',
+    share: 'view',
     concepts: ['timer', 'countdown', 'stopwatch', 'alarm', 'pomodoro', 'focus', 'break', 'minutes', 'seconds', 'remind', 'reminder', 'routine', 'interval', 'schedule', 'every', 'clock', 'delay', 'wait'],
     does: ['counts down on the server', 'fires logic when it finishes', 'starts pauses and restarts from logic', 'runs every n minutes', 'runs at a time of day', 'keeps going with the tab closed'],
   },
   button: {
     title: 'Button', defaultSize: '1x1', icon: 'button', blurb: 'One tap fires your logic — wire it up in Logic mode.', multi: true, configurable: true, category: 'logic',
+    share: 'view',
     concepts: ['button', 'switch', 'trigger', 'tap', 'press', 'click', 'manual', 'start', 'go', 'run', 'panel', 'remote', 'hotkey', 'launch', 'kick off', 'one tap'],
     does: ['fires logic when pressed', 'one tap fires your automations', 'press and hold on touch', 'shows the wired rules and the last run'],
   },
@@ -224,11 +234,13 @@ export const CATALOG: Record<string, CatalogEntry> = {
   },
   notebook: {
     title: 'Notebook', defaultSize: '2x2', icon: 'notebook', blurb: 'Notes in sections with tags, pins, saved views and search — the notepad, organized.', multi: true, configurable: true, category: 'write',
+    share: 'edit',
     concepts: ['notebook', 'notes', 'journal', 'diary', 'wiki', 'knowledge base', 'zettelkasten', 'second brain', 'sections', 'chapters', 'tags', 'pinned', 'archive', 'trash', 'search', 'writing', 'documents', 'binder', 'collection', 'organize', 'outline', 'index'],
     does: ['organizes notes into sections and tags', 'searches titles text and tags', 'pins and orders notes by hand', 'saves filtered sorted views as list table or cards', 'archives and trashes notes with restore and delete forever', 'links an existing notepad document', 'generates an index of the notebook', 'opens a full editor for each note', 'links notes to each other and lists backlinks', 'defines typed properties per notebook', 'starts notes from templates', 'answers questions from the notes', 'syncs notes between the server and paired desktops'],
   },
   checklist: {
     title: 'Checklist', defaultSize: '2x2', icon: 'check', blurb: 'Same list, compact — a second view of any database.', link: 'notion', multi: true, legacy: true, configurable: true, category: 'notion',
+    share: 'edit',
     concepts: ['checklist', 'tasks', 'todo', 'tick', 'done', 'list'],
     does: ['reads a notion database as a checklist', 'checks off items', 'fires logic when an item is checked'],
   },
@@ -239,6 +251,7 @@ export const CATALOG: Record<string, CatalogEntry> = {
   },
   agent: {
     title: 'Rime', defaultSize: '2x2', icon: 'bot', blurb: 'Rime — an AI with real tools over your wards, logic and Notion.', multi: true, configurable: true, category: 'rime',
+    share: 'view',
     concepts: ['rime', 'ai', 'assistant', 'agent', 'chat', 'bot', 'llm', 'gpt', 'model', 'openrouter', 'codex', 'ask', 'talk', 'help', 'automation', 'tools', 'shell', 'web search', 'browse'],
     does: ['chats with a model that has real tools', 'reads and edits your wards and logic', 'reads and writes notion', 'runs shell commands in a sandbox', 'searches the web', 'drives the browser ward', 'wakes on a schedule or a trigger', 'answers a question from logic', 'confirms before sending mail'],
   },
@@ -299,11 +312,13 @@ export const CATALOG: Record<string, CatalogEntry> = {
   },
   container: {
     // configurable with no knobs: the ⚙ is how a group is renamed (the title field).
+    share: 'view',
     title: 'Group', defaultSize: '2x1', icon: 'folder', blurb: 'A folder of wards — tap to open it over the board.', multi: true, configurable: true, category: 'layout',
     concepts: ['group', 'folder', 'container', 'nest', 'bundle', 'collection', 'stack', 'collapse', 'fold', 'tidy', 'organise', 'organize', 'popover', 'drawer', 'category'],
     does: ['holds other wards', 'opens as a popover over the board', 'drag wards in and out', 'logic wires reach the wards inside', 'keeps its own size'],
   },
 };
+    share: 'view',
 
 /** The looks a spacer can wear. none = no chrome at all; the rest
  *  give it a surface (glass), a lens over the page background (magnify), the

@@ -104,6 +104,8 @@ export const POST: APIRoute = async ({ params, request, url, locals }) => {
     text?: unknown;
   } | null;
   if (!body) return Response.json({ error: 'bad body' }, { status: 400 });
+  // A collaborator's ink is read on the owner's model; the ✨ and grammar calls stay the owner's.
+  if (locals.share && body.action !== 'transcribe') return Response.json({ error: 'not in a shared note' }, { status: 403 });
   const cfg = noteConfig(w);
   try {
     if (body.action === 'proofread') {

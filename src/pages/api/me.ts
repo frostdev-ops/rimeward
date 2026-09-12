@@ -5,6 +5,13 @@ export const prerender = false;
 
 export const GET: APIRoute = async ({ locals }) => {
   const user = locals.user!;
+  // Inside a share the principal is the owner: say who is looking and what they may do, never the owner's accounts.
+  if (locals.share) {
+    const s = locals.share;
+    return Response.json({ id: s.viewer ?? 0, email: '', role: 'member', displayName: s.viewerName ?? 'Guest',
+      links: { google: false, microsoft: false, notion: false, zoho: false, mailbox: false, icloud: false },
+      share: { id: s.id, role: s.role, kind: s.kind, target: s.target, owner: s.owner } });
+  }
   const rows = getDb()
     .prepare('SELECT provider, account_label FROM linked_accounts WHERE user_id = ?')
     .all(user.userId) as { provider: string; account_label: string }[];

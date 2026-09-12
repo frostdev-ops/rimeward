@@ -15,10 +15,9 @@
 import http from 'node:http';
 import type net from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
-import { getSession } from '../auth.ts';
 import { browserWard } from '../dashboard.ts';
 import { browserScale } from '../wards.ts';
-import { refuseUpgrade, upgradeSession } from '../live-stream.ts';
+import { principalAlive, refuseUpgrade, upgradeSession } from '../live-stream.ts';
 import { browserIsRelayed, resolveBrowserDevice } from './routing.ts';
 import { normalizeCmds, open, pushState, remoteKey, runCmds, subscribe, type BrowserEvent, type Cmd, type HumanOwner, type Session } from './session.ts';
 
@@ -52,18 +51,20 @@ export function browserUpgrade(req: http.IncomingMessage, socket: net.Socket, he
   const cfg = browserWard(userId, ward);
   if (!cfg) { refuseUpgrade(socket, 400); return; }
   const dsf = browserScale(Number(new URL(req.url!, 'http://localhost').searchParams.get('dsf')));
+  // A share's viewer watches the owner's session; only an edit share drives it.
+  const readOnly = !!auth.share && auth.share.share.role !== 'edit';
   void resolveBrowserDevice(userId, ward, cfg).then(placement => {
     if (browserIsRelayed(userId, cfg, placement)) { refuseUpgrade(socket, 409); return; }
-    wss.handleUpgrade(req, socket, head, ws => attach(ws, userId, ward, cfg, auth.id, dsf));
+    wss.handleUpgrade(req, socket, head, ws => attach(ws, userId, ward, cfg, auth.id, dsf, readOnly));
   }, () => refuseUpgrade(socket, 503));
 }
 
-function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<ReturnType<typeof browserWard>>, session: string, dsf: number): void {
+function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<ReturnType<typeof browserWard>>, session: string, dsf: number, readOnly = false): void {
   let s: Session | undefined;
   let unsub: (() => void) | undefined;
   let alive = true;
   const heartbeat = setInterval(() => {
-    if (!alive || !getSession(session)) { owner.dispose(); ws.terminate(); return; }
+    if (!alive || !principalAlive(session)) { owner.dispose(); ws.terminate(); return; }
     alive = false; ws.ping();
   }, 25_000);
   const owner: Owner = {
@@ -95,13 +96,14 @@ function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<Re
   ws.on('message', (raw, isBinary) => {
     if (owner.dead) return;
     if (isBinary || !s || !owner.ready) { fail(1008, 'Not ready'); return; }
+    if (readOnly) return; // a viewer's input never reaches the page (the client sends none)
     let cmds: Cmd[];
     const message = raw.toString();
     try {
       const body = JSON.parse(message) as { cmds?: unknown };
       cmds = normalizeCmds(body?.cmds);
     } catch { fail(1008, 'Bad batch'); return; }
-    if (!getSession(session)) { fail(4401, 'Signed out'); return; }
+    if (!principalAlive(session)) { fail(4401, 'Signed out'); return; }
     // Admission: bytes are the whole message's, charged to its first surviving
     // entry — a coalesced move never hides a large text command's cost. A
     // message that coalesced away entirely costs nothing: it kept no data.
@@ -169,7 +171,7 @@ function startWorker(s: Session): void {
       // Every command boundary re-reads the session row (one indexed lookup,
       // cheaper than the CDP round trip it precedes): a sign-out is terminal
       // for whatever this viewer still has queued.
-      if (!getSession(owner.session)) { owner.dispose(); owner.sock.close(4401, 'Signed out'); continue; }
+      if (!principalAlive(owner.session)) { owner.dispose(); owner.sock.close(4401, 'Signed out'); continue; }
       let timer: ReturnType<typeof setTimeout> | undefined;
       const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('the page did not take the input')), CMD_MS); });
       late.catch(() => {});

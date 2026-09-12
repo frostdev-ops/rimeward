@@ -15,6 +15,7 @@ import { expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
 
 import { RENDERERS, body } from './wards.ts';
 import { el, normalizeUrl, postJson } from './dom.ts';
+import { shareReadOnly } from './share-view.ts';
 import { icon } from './icon.ts';
 import { openMenu, menuItem, closeMenu } from './menu.ts';
 import type { BrowserDownload } from '../../lib/browser/downloads.ts';
@@ -376,7 +377,7 @@ function stats(m: Mount, bytes: number, painted = false): void {
 const wsReady = (m: Mount): boolean => m.ws?.readyState === WebSocket.OPEN && m.ready;
 
 function push(m: Mount, c: Cmd, urgent = false): void {
-  if (m.stopped || m.closing) return;
+  if (m.stopped || m.closing || shareReadOnly) return; // a share's viewer watches; the owner's page is not theirs to drive
   if (m.mode === 'ws' && !m.driver && !isLocal(m) && !wsReady(m)) {
     // Silent for the pointer; a click, key or navigation that goes nowhere says so.
     if (c.t !== 'move' && c.t !== 'wheel' && c.t !== 'resize') flash(m, 'Reconnecting to the browser…', 2000);
@@ -707,7 +708,8 @@ function build(w: WardInstance): Mount {
   bar.addEventListener('submit', (e) => e.preventDefault());
   const url = el('input', 'input min-h-0 min-w-0 flex-1 px-2 py-0.5 text-xs');
   url.type = 'text';
-  url.placeholder = 'https://…';
+  url.placeholder = shareReadOnly ? 'Viewing' : 'https://…';
+  url.readOnly = shareReadOnly;
   url.autocomplete = 'off';
   url.spellcheck = false;
   url.setAttribute('aria-label', 'Address');

@@ -25,7 +25,8 @@ window.addEventListener('fd:page', () => {
     if (w) rerenderInstance(w);
   }
 });
-import { ago, el, postJson, tapToast, typingInto } from './dom.ts';
+import { ago, el, postJson, tapToast, typingInto, toast } from './dom.ts';
+import { shareView } from './share-view.ts';
 import { propView } from './notion-view.ts';
 import type { PropValue } from '../../lib/notion-props.ts';
 import { applyLayout } from './edit.ts';
@@ -103,7 +104,8 @@ window.addEventListener('pagehide', () => { for (const stream of instanceStreams
  *  reconnects). Renderers and the wire editor call this on boot. */
 export function ensureStream(): void {
   if (es) return;
-  es = new LiveEventSource('/api/logic/stream');
+  // Inside a share view the feed is the share's own: the owner's events filtered to its wards.
+  es = new LiveEventSource(shareView ? `/api/share/${shareView.id}/stream` : '/api/logic/stream');
   es.onopen = () => window.dispatchEvent(new CustomEvent('fd:agent-reconnect'));
   const on = (event: string, fn: (data: any) => void) => {
     instanceHandlers.set(event, fn);
@@ -152,6 +154,11 @@ export function ensureStream(): void {
   // Theme knobs apply straight to <html> — no reload has anything to add. The
   // derivation is imported on demand: changing the theme from the agent is rare
   // and every dashboard would otherwise carry theme.ts for it.
+  // Who is looking at a shared ward (presence.ts); a share view whose owner rearranged reloads.
+  on('presence', (d: unknown) => window.dispatchEvent(new CustomEvent('fd:presence', { detail: d })));
+  on('reload', () => { if (shareView) location.reload(); });
+  // Someone shared something with this user: point at where it lands.
+  on('share', (d: { title?: string; owner?: string }) => toast(`${d?.owner ?? 'Someone'} shared “${d?.title ?? 'a ward'}” with you — Add ward › Shared with me.`));
   on('theme', (d: unknown) => {
     void Promise.all([import('../../lib/theme.ts'), import('./theme-live.ts')]).then(([t, live]) =>
       live.applyThemeLive(t.normalizeTheme(d as Record<string, unknown>))

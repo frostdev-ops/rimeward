@@ -148,6 +148,10 @@ const OK_MESSAGES: Record<string, string> = {
           <label for="site-cards" class="label">Splash cards — one per line as <code>Title | blurb</code>, up to 6</label>
           <textarea id="site-cards" name="cards" class="input" rows="4">{cardsToLines(site.cards)}</textarea>
         </div>
+        <div class="sm:col-span-2">
+          <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="links" checked={site.links} /> Public share links</label>
+          <p class="mt-1 text-xs text-ink-faint">Members may share a ward or page with anyone holding a link (view-only). Off: sharing stays between accounts.</p>
+        </div>
         <div class="sm:col-span-2 flex flex-wrap items-center gap-3">
           <button type="submit" class="btn-primary">Save</button>
           <span class="text-xs text-ink-faint">

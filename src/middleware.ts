@@ -14,6 +14,7 @@ import { ensureDevices } from './lib/dev/devices.ts';
 import { nativeRequest } from './lib/dev/native.ts';
 import { routeInstance } from './lib/dev/instance-routing.ts';
 import { validUserCode, CONNECT_COOKIE } from './lib/dev/device-auth.ts';
+import { SHARE_TOKEN_RE, shareAllows, shareCookie, shareLocals, sharePrincipal, shareScope } from './lib/shares.ts';
 import { ensureUpdateChecks } from './lib/updates.ts';
 import { ensureAgentMonitors } from './lib/agent/monitors.ts';
 import { ensureKnowledge } from './lib/agent/knowledge.ts';
@@ -56,6 +57,7 @@ const PUBLIC_PREFIXES = [
   '/api/connect/zoho/callback',
   '/_astro/',
   '/_image', // Astro's image optimizer
+  '/runtime-bridge.js', // the share view's URL bridge (relayed documents get it inlined)
   '/brand/', // the favicon and the splash's art (lib/brand-files.ts)
   '/favicon', // browsers ask for /favicon.ico unprompted: a 404, not a bounce to /login
   '/apple-touch-icon',
@@ -79,6 +81,24 @@ export const onRequest = defineMiddleware(async (context, next) => {
 
   const cookie = sessionId(context.cookies);
   const session = getSession(cookie);
+  // A share: /s/<id> or any request carrying ?share=<id> runs AS THE OWNER, restricted to
+  // shareAllows (lib/shares.ts). Grantees are signed in; link holders carry the token cookie
+  // the landing set; a raw token in /s/<token> goes to the page, which swaps it for that cookie.
+  const shareId = pathname.startsWith('/s/') ? pathname.split('/')[2] ?? '' : context.url.searchParams.get('share') ?? '';
+  if (pathname.startsWith('/s/') && SHARE_TOKEN_RE.test(shareId)) return next();
+  if (shareId) {
+    const json = (error: string, status: number) => new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } });
+    const scope = shareScope(shareId, session, context.cookies.get(shareCookie(shareId))?.value);
+    if (typeof scope === 'number') {
+      // A grantee's link opened signed out: sign in, then find it under Add ward › Shared with me.
+      if (scope === 403 && !session && pathname.startsWith('/s/')) return context.redirect('/login', 303);
+      return json(scope === 404 ? 'no such share' : 'forbidden', scope);
+    }
+    if (!pathname.startsWith('/s/') && !shareAllows(scope, context.request.method, context.url)) return json('forbidden', 403);
+    context.locals.user = sharePrincipal(scope, context.url.searchParams.get('theme') === 'mine' ? 'mine' : 'owner');
+    context.locals.share = shareLocals(scope);
+    return (await routeInstance(context)) ?? next();
+  }
   if (!session) {
     // A cookie that no longer names a session is dead weight: an HttpOnly
     // cookie the browser keeps sending, that no script can replace, and that
