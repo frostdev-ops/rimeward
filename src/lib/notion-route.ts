@@ -19,7 +19,7 @@ export async function notionRoute(userId: number, tag: string, run: () => Promis
     const status = (err as { status?: number }).status;
     // Notion's own 4xx is the caller's fault (bad id, bad value) and its
     // message is the useful part; anything else is an upstream failure.
-    const code = status && status >= 400 && status < 500 ? 400 : 502;
+    const code = status === 403 ? 403 : status && status >= 400 && status < 500 ? 400 : 502;
     if (code === 502) console.error(`[${tag}]`, err);
     return Response.json({ error: (err as Error).message }, { status: code });
   }

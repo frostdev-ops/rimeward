@@ -16,7 +16,7 @@ import { notebookIdOf } from './notebook.ts';
 import { siteInfo } from './site.ts';
 import type { Snapshot } from './status.ts';
 import { getUser, getUserByEmail } from './users.ts';
-import { CATALOG, pageOf, shownServiceIds, wardTitle, type PageDef, type WardInstance } from './wards.ts';
+import { CATALOG, TASK_WARDS, pageOf, shownServiceIds, wardTitle, type PageDef, type WardInstance } from './wards.ts';
 
 export type ShareRole = 'view' | 'edit';
 export type ShareKind = 'ward' | 'page';
@@ -270,6 +270,8 @@ export function shareStillAllows(was: Pick<Share, 'id' | 'role'>, method: string
 export const shareLive = (share: ShareLocals, url: URL): boolean => principalAlive(share.principal) && shareStillAllows(share, 'GET', url);
 
 const STATUS_TYPES = new Set(['service-group', 'incidents', 'chart']);
+/** The Notion wards: the database views (TASK_WARDS) and the page ward. share-notion.ts answers the per-id questions. */
+export const NOTION_TYPES = new Set([...TASK_WARDS, 'notion-page']);
 /** The positive allowlist: what a request inside the share may do, by route, method
  *  and ward. Everything not listed is refused before any handler runs. */
 export function shareAllows(scope: ShareScope, method: string, url: URL): boolean {
@@ -284,7 +286,11 @@ export function shareAllows(scope: ShareScope, method: string, url: URL): boolea
   if (p === '/api/status' || p === '/api/status/stream' || p === '/api/status/incidents' || p === '/api/status/history') return get && wards.some((w) => STATUS_TYPES.has(w.type));
   if (p === '/api/weather') return get && ward(q.get('ward'))?.type === 'weather';
   if (p === '/api/flow') return get && ward(q.get('ward'))?.type === 'flow';
-  if ((m = /^\/api\/timers\/([^/]+)$/.exec(p))) return get && ward(m[1])?.type === 'timer';
+  // Controls: a timer's start/pause/skip/reset and a button's press are the edit role's (the owner's hourly caps apply).
+  if ((m = /^\/api\/timers\/([^/]+)$/.exec(p))) return ward(m[1])?.type === 'timer' && (get || method === 'POST');
+  if ((m = /^\/api\/button\/([^/]+)$/.exec(p))) return method === 'POST' && ward(m[1])?.type === 'button';
+  // The merged agenda, no wider than the wards read it (five days).
+  if (p === '/api/calendar') return get && wards.some((w) => w.type === 'calendar' || w.type === 'next-up') && (!q.has('days') || Number(q.get('days')) <= 5);
   if ((m = /^\/api\/note\/(ws\/)?([^/]+)$/.exec(p))) {
     // Only THE document of a shared notepad, or a document filed in a shared notebook;
     // the collaboration socket (ws/) is the same document, opened read-only for a viewer.
@@ -301,6 +307,18 @@ export function shareAllows(scope: ShareScope, method: string, url: URL): boolea
     if (m[1]) return get; // frames
     // Input only: never the extension, download or restart actions the query selects.
     return method === 'POST' && [...q.keys()].every((k) => k === 'share');
+  }
+  // Notion: the shared wards' own pages and lists. The route pins every id it is handed (share-notion.ts);
+  // here the reads are pinned to a shared ward and nothing workspace-wide (search, recent, config) passes.
+  if (wards.some((w) => NOTION_TYPES.has(w.type))) {
+    const task = (id: string | null) => TASK_WARDS.has(ward(id)?.type ?? '');
+    if (p === '/api/notion/source') return get && task(q.get('ward')) && !q.has('db') && !q.has('ds');
+    if (p === '/api/checklist') return get ? task(q.get('ward')) : method === 'POST';
+    if (/^\/api\/checklist\/[^/]+$/.test(p)) return method === 'PATCH';
+    if (p === '/api/notion/page') return get || method === 'PATCH' || method === 'POST';
+    if (p === '/api/notion/block') return method === 'POST' || method === 'PATCH' || method === 'DELETE';
+    if (p === '/api/notion/capture' || p === '/api/notion/upload') return method === 'POST';
+    if (p === '/api/notion/users') return get && share.role === 'edit'; // the people picker, for an editor
   }
   if (p.startsWith('/api/bg/') || p.startsWith('/api/icon/')) return get;
   return false;
@@ -351,6 +369,7 @@ export function shareEvent(scope: ShareScope, event: string, data: unknown): { e
     case 'notebook':
       return typeof d.notebook === 'string' && wards.some((w) => w.type === 'notebook' && notebookIdOf(w) === d.notebook) ? { event, data } : undefined;
     case 'refresh':
+      if (d.link === 'notion' && wards.some((w) => CATALOG[w.type]?.link === 'notion')) return { event, data: { link: 'notion' } };
       return typeof d.type === 'string' && wards.some((w) => w.type === d.type) ? { event, data: { type: d.type } } : undefined;
     case 'timer':
       return typeof d.ward === 'string' && W.has(d.ward) ? { event, data } : undefined;

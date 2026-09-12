@@ -15,6 +15,7 @@ import { icon } from './icon.ts';
 import { SCENES, sceneDefaults, type SceneId } from '../../lib/theme.ts';
 import type { BgHandle } from './bg-scene.ts';
 import { inWardView, popoutWard } from './ward-view.ts';
+import { shareView } from './share-view.ts';
 
 type LinkName = 'google' | 'microsoft' | 'notion' | 'zoho' | 'mailbox' | 'icloud';
 
@@ -94,6 +95,8 @@ export function poll(fn: () => void | Promise<void>, ms: number, skip: () => boo
 
 /** Shared error handling: 404 not-linked → connect chip, 409 → reconnect chip. */
 export function handled(id: string, provider: LinkName, status: number): boolean {
+  // A share's viewer cannot connect or reconnect the owner's account: say so and no more.
+  if (shareView && (status === 404 || status === 409)) { note(id, 'Unavailable right now.'); return true; }
   if (status === 404) {
     connectChip(id, provider);
     return true;

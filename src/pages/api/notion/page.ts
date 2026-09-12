@@ -1,5 +1,6 @@
 import type { APIRoute } from 'astro';
 import { jsonBody, needId, needStr, notionRoute } from '../../../lib/notion-route.ts';
+import { notShared, shareNotionPage, shareNotionSource } from '../../../lib/share-notion.ts';
 import {
   notionAddComment,
   notionArchive,
@@ -20,6 +21,7 @@ export const GET: APIRoute = ({ url, locals }) =>
   notionRoute(locals.user!.userId, 'notion page', async () => {
     const userId = locals.user!.userId;
     const id = needId(url.searchParams.get('id'), 'page id');
+    if (locals.share && !(await shareNotionPage(locals.share, userId, id))) throw notShared();
     const parts = new Set((url.searchParams.get('parts') ?? 'props,blocks,comments').split(','));
     const depth = Math.min(Math.max(Number(url.searchParams.get('depth')) || 3, 0), 4);
 
@@ -51,6 +53,7 @@ export const PATCH: APIRoute = ({ request, locals }) =>
     const userId = locals.user!.userId;
     const body = await jsonBody<PatchBody>(request);
     const id = needId(body.id, 'page id');
+    if (locals.share && !(await shareNotionPage(locals.share, userId, id))) throw notShared();
     let skipped: string[] = [];
     if (body.props && Object.keys(body.props).length) {
       const page = await notionPage(userId, id);
@@ -77,6 +80,11 @@ interface PostBody {
 export const POST: APIRoute = ({ request, locals }) =>
   notionRoute(locals.user!.userId, 'notion page create', async () => {
     const body = await jsonBody<PostBody>(request);
+    if (locals.share) {
+      const owner = locals.user!.userId;
+      const ok = body.sourceId ? await shareNotionSource(locals.share, owner, needId(body.sourceId, 'data source id')) : body.parentPageId ? await shareNotionPage(locals.share, owner, needId(body.parentPageId, 'page id')) : false;
+      if (!ok) throw notShared();
+    }
     if (body.sourceId) {
       const props = body.props && Object.keys(body.props).length ? body.props : { title: needStr(body.title, 'a title', 200) };
       return notionCreatePage(locals.user!.userId, { sourceId: needId(body.sourceId, 'data source id') }, props);

@@ -26,7 +26,7 @@ window.addEventListener('fd:page', () => {
   }
 });
 import { ago, el, postJson, tapToast, typingInto, toast } from './dom.ts';
-import { shareView } from './share-view.ts';
+import { shareReadOnly, shareView } from './share-view.ts';
 import { propView } from './notion-view.ts';
 import type { PropValue } from '../../lib/notion-props.ts';
 import { applyLayout } from './edit.ts';
@@ -524,7 +524,8 @@ async function renderFlow(w: WardInstance): Promise<void> {
  *  it is never a mystery what a press does; the run line is the last result. */
 async function renderButton(w: WardInstance): Promise<void> {
   ensureStream();
-  const { data } = await getJson('/api/logic');
+  // Inside a share the owner's graph is not on offer: a shared button is a button, its leylines the owner's business.
+  const { data } = shareView ? { data: null } : await getJson('/api/logic');
   const b = body(w.i);
   if (!b) return;
   const edges = ((data?.graph?.edges ?? []) as { id: string; source: { ward: string; trigger: string }; conditions: unknown[]; action: { type: string } }[]).filter(
@@ -543,7 +544,7 @@ async function renderButton(w: WardInstance): Promise<void> {
   btn.append(icon(typeof w.config?.icon === 'string' ? w.config.icon : 'button', rows === 1 ? 'text-2xl' : 'text-3xl'), el('span', 'truncate text-xs', wardTitle(w)));
   wrap.append(btn);
   const side = cols >= 2 ? el('div', 'flex min-w-0 flex-1 flex-col justify-center gap-0.5 text-[10px] text-ink-faint') : null;
-  const wired = el('div', 'truncate', edges.length ? edges.map((e) => `${e.conditions.length ? 'When matched → ' : ''}${ACTIONS[e.action.type]?.label ?? e.action.type}`).join(' · ') : 'Draw a leyline to me in Leylines mode.');
+  const wired = el('div', 'truncate', edges.length ? edges.map((e) => `${e.conditions.length ? 'When matched → ' : ''}${ACTIONS[e.action.type]?.label ?? e.action.type}`).join(' · ') : shareView ? '' : 'Draw a leyline to me in Leylines mode.');
   const run = el('div', 'truncate');
   if (side) {
     side.append(wired, run);
@@ -575,8 +576,12 @@ async function renderButton(w: WardInstance): Promise<void> {
     }
     const res = await postJson(`/api/button/${encodeURIComponent(w.i)}`, {});
     if (!res.ok) {
-      run.textContent = res.status === 429 ? 'too many presses — wait a bit' : res.status === 404 ? 'save the layout first' : (res.data?.error ?? 'press failed');
+      run.textContent = res.status === 429 ? 'too many presses — wait a bit' : res.status === 404 ? 'save the layout first' : res.status === 403 ? 'view only' : (res.data?.error ?? 'press failed');
       run.classList.add('text-warn');
+    } else if (shareView) {
+      // The owner's runs stream stays theirs: the press itself is the feedback here.
+      run.textContent = 'pressed just now';
+      run.classList.remove('text-warn');
     }
   };
   if (matchMedia('(pointer: coarse)').matches) {
@@ -691,6 +696,7 @@ export async function renderChecklist(w: WardInstance): Promise<void> {
     cb.type = 'checkbox';
     cb.className = 'self-center';
     cb.checked = item.done;
+    cb.disabled = shareReadOnly;
     cb.addEventListener('change', async () => {
       li.style.opacity = '0.5';
       const res = await postJson(`/api/checklist/${encodeURIComponent(item.id)}`, { ward: w.i, done: cb.checked }, 'PATCH');
@@ -731,7 +737,7 @@ export async function renderChecklist(w: WardInstance): Promise<void> {
   b.append(list);
   if (!items.length) b.append(el('p', 'wd-note text-xs text-ink-faint', cfg.show === 'done' ? 'Nothing finished yet.' : 'All clear.'));
 
-  b.append(addRowForm(w, () => renderChecklist(w), true));
+  if (!shareReadOnly) b.append(addRowForm(w, () => renderChecklist(w), true));
 }
 
 /** The "add a row" line under a database ward — the list view (with a due

@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
 import { getLink, reconnectResponse } from '../../../lib/linked-accounts.ts';
 import { notionChecklist, notionChecklistAdd, taskWardSource } from '../../../lib/notion.ts';
+import { shareNotionWard } from '../../../lib/share-notion.ts';
 
 export const prerender = false;
 
@@ -28,6 +29,7 @@ export const POST: APIRoute = async ({ request, locals }) => {
   const userId = locals.user!.userId;
   if (!getLink(userId, 'notion')) return Response.json({ error: 'not-linked' }, { status: 404 });
   const body = (await request.json().catch(() => null)) as { ward?: string; title?: string; due?: string } | null;
+  if (locals.share && !shareNotionWard(locals.share, body?.ward)) return Response.json({ error: 'not in this share' }, { status: 403 });
   const db = await taskWardSource(userId, body?.ward);
   const title = typeof body?.title === 'string' ? body.title.trim() : '';
   const due = typeof body?.due === 'string' && DUE_RE.test(body.due) ? body.due : undefined;

@@ -14,6 +14,7 @@ import {
   shareOwnerName, shareScope, shareSnapshot, shareStatusScope, shareStillAllows, shareWards, sharedWithMe, verifyShareToken, shareLocals, sharePrincipal, type ShareScope,
 } from '../src/lib/shares.ts';
 import { GET as notebookGet } from '../src/pages/api/notebook/[ward].ts';
+import { shareNotionBlock, shareNotionPage, shareNotionWard } from '../src/lib/share-notion.ts';
 import { POST as browserPost } from '../src/pages/api/browser/[ward].ts';
 import { GET as meGet } from '../src/pages/api/me.ts';
 import { GET as notesGet } from '../src/pages/api/notes.ts';
@@ -40,7 +41,12 @@ saveDashboard(owner, [
   { i: 'w2', type: 'weather', size: '1x1', in: 'grp' },
   { i: 'flow1', type: 'flow', size: '2x1', page: 'ops' },
   { i: 'inc', type: 'incidents', size: '2x1', page: 'ops' },
-], [{ id: 'home', title: 'Home' }, { id: 'ops', title: 'Ops' }]);
+  { i: 'btn', type: 'button', size: '1x1', page: 'ctl' },
+  { i: 'tmr', type: 'timer', size: '1x1', page: 'ctl' },
+  { i: 'cal', type: 'calendar', size: '2x2', page: 'ctl' },
+  { i: 'ndb', type: 'notion-db', size: '3x2', page: 'ctl', config: { db: '0123456789abcdef0123456789abcdef' } },
+  { i: 'npg', type: 'notion-page', size: '2x2', page: 'ctl', config: { page: 'fedcba9876543210fedcba9876543210' } },
+], [{ id: 'home', title: 'Home' }, { id: 'ops', title: 'Ops' }, { id: 'ctl', title: 'Controls' }]);
 assert.ok(getDashboard(owner).some((w) => w.i === 'web'), 'the browser ward survived validation');
 ensureNotebook(owner, 'book', 'Book');
 const inBook = createNote(owner, { notebook: 'book', title: 'Filed' }).id;
@@ -334,4 +340,37 @@ test('socket upgrades inside a share: the owner as principal on the server, forw
   }
   revokeShare(owner, share.id);
   assert.ok(!principalAlive(`share:${share.id}:${sid}`), 'a revoked share ends its sockets');
+});
+
+test('controls and Notion inside a share: button and timer under edit, the agenda no wider than five days, Notion pinned to the wards’ own pages and lists', async () => {
+  assert.ok(getDashboard(owner).some((w) => w.i === 'npg') && getDashboard(owner).some((w) => w.i === 'ndb'), 'the Notion wards survived validation');
+  const ctl = scopeOf(createShare(owner, { kind: 'page', target: 'ctl', email: 'viewer@example.com', role: 'edit' }).share.id);
+  assert.ok(allows(ctl, 'POST', '/api/button/btn'));
+  assert.ok(!allows(ctl, 'POST', '/api/button/pad'), 'not a button');
+  assert.ok(allows(ctl, 'GET', '/api/timers/tmr') && allows(ctl, 'POST', '/api/timers/tmr'));
+  assert.ok(allows(ctl, 'GET', '/api/calendar?days=5') && allows(ctl, 'GET', '/api/calendar'));
+  assert.ok(!allows(ctl, 'GET', '/api/calendar?days=31'), 'no wider than the wards read it');
+  assert.ok(allows(ctl, 'GET', '/api/notion/source?ward=ndb&rows=1'));
+  assert.ok(!allows(ctl, 'GET', '/api/notion/source?ward=ndb&db=0123456789abcdef0123456789abcdef'), 'never a database the caller names');
+  assert.ok(!allows(ctl, 'GET', '/api/notion/source?ward=npg'), 'not through a page ward');
+  assert.ok(allows(ctl, 'GET', '/api/checklist?ward=ndb') && allows(ctl, 'POST', '/api/checklist') && allows(ctl, 'PATCH', '/api/checklist/abc'));
+  assert.ok(allows(ctl, 'GET', '/api/notion/page?id=x') && allows(ctl, 'PATCH', '/api/notion/page') && allows(ctl, 'POST', '/api/notion/block') && allows(ctl, 'POST', '/api/notion/capture'));
+  assert.ok(allows(ctl, 'GET', '/api/notion/users'), 'the people picker, for an editor');
+  assert.ok(!allows(ctl, 'GET', '/api/notion/search?q=x') && !allows(ctl, 'GET', '/api/notion/recent') && !allows(ctl, 'GET', '/api/notion/config'), 'never the whole workspace');
+  assert.deepEqual(shareEvent(ctl, 'refresh', { link: 'notion' }), { event: 'refresh', data: { link: 'notion' } });
+  assert.equal(shareEvent(scopeOf(listShares(owner).find((s) => s.target === 'pad')!.id), 'refresh', { link: 'notion' }), undefined);
+  // The per-id questions the routes ask (share-notion.ts): the wards' own page and nothing else; a page the
+  // config names costs no Notion call, and with no Notion link here every other lookup fails closed.
+  const locals = shareLocals(ctl);
+  assert.equal(await shareNotionPage(locals, owner, 'fedcba98-7654-3210-fedc-ba9876543210'), true);
+  assert.equal(await shareNotionPage(locals, owner, 'FEDCBA9876543210FEDCBA9876543210'), true, 'however the id is spelled');
+  assert.equal(await shareNotionPage(locals, owner, '00000000-0000-0000-0000-000000000000'), false);
+  assert.equal(await shareNotionBlock(locals, owner, '00000000-0000-0000-0000-000000000000'), false);
+  assert.equal(await shareNotionBlock(locals, owner, 'fedcba9876543210fedcba9876543210'), true, 'the page itself is a block parent');
+  assert.ok(shareNotionWard(locals, 'ndb') && !shareNotionWard(locals, 'npg') && !shareNotionWard(locals, 'pad'));
+  setShareRole(owner, ctl.share.id, 'view');
+  const view = scopeOf(ctl.share.id);
+  assert.ok(!allows(view, 'POST', '/api/button/btn') && !allows(view, 'POST', '/api/timers/tmr') && !allows(view, 'GET', '/api/notion/users'));
+  assert.ok(allows(view, 'GET', '/api/timers/tmr') && allows(view, 'GET', '/api/notion/source?ward=ndb&rows=1') && allows(view, 'GET', '/api/calendar'));
+  revokeShare(owner, ctl.share.id);
 });

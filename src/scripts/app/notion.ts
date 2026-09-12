@@ -17,6 +17,7 @@ import { busy, el, getJson, postJson } from './dom.ts';
 import { addRowForm, pickDbNote, renderChecklist } from './logic.ts';
 import { blockView, propView, withValue } from './notion-view.ts';
 import { renderNotionCalendar } from './notion-cal.ts';
+import { shareReadOnly, shareView } from './share-view.ts';
 
 interface SourceProp {
   name: string;
@@ -153,6 +154,7 @@ function propControl(pv: PropValue, spec: SourceProp | undefined, save: (v: unkn
  *  click and goes back to the look once the write lands, Escape is pressed or
  *  a click lands elsewhere. Checkboxes are live either way. */
 function editableView(pv: PropValue, spec: SourceProp | undefined, save: (v: unknown) => Promise<boolean>): HTMLElement {
+  if (shareReadOnly) return propView(pv, spec); // a share's viewer reads
   const kind = editorFor(pv.type);
   if (kind === 'none' || !pv.editable) {
     const v = propView(pv, spec);
@@ -349,7 +351,7 @@ function blockRow(b: NBlock & { depth: number }, reload: () => void, n = 1): HTM
   const show = () => {
     const view = blockView(b, n);
     const cb = b.type === 'to_do' ? view.querySelector<HTMLInputElement>('input[type=checkbox]') : null;
-    if (cb) {
+    if (cb && !shareReadOnly) {
       cb.disabled = false;
       cb.addEventListener('change', async () => {
         if (!(await patch({ text: b.text, checked: cb.checked }, row))) cb.checked = !cb.checked;
@@ -357,7 +359,7 @@ function blockRow(b: NBlock & { depth: number }, reload: () => void, n = 1): HTM
       });
     }
     if (!b.editable) view.title = `${blockLabel(b.type)} — read-only here; open it in Notion to edit`;
-    else if (b.type !== 'divider') {
+    else if (b.type !== 'divider' && !shareReadOnly) {
       view.classList.add('cursor-text');
       view.addEventListener('click', (e) => {
         if ((e.target as HTMLElement).closest('a, input')) return;
@@ -415,7 +417,7 @@ function blockRow(b: NBlock & { depth: number }, reload: () => void, n = 1): HTM
     row.remove();
     reload();
   });
-  row.append(del);
+  if (!shareReadOnly) row.append(del);
   return row;
 }
 
@@ -530,6 +532,7 @@ async function renderNotionPage(w: WardInstance): Promise<void> {
   // No page + the capture line = the bare capture ward: the account's capture page.
   if (typeof cfg.page !== 'string' && show.has('add')) {
     if (!pre) return;
+    if (shareView) return note(w.i, 'Capture goes to its owner’s page: not available in a share.');
     pre.textContent = '';
     pre.append(captureForm(w, undefined, () => {}));
     pre.classList.add('flex');
@@ -562,7 +565,8 @@ async function renderNotionPage(w: WardInstance): Promise<void> {
       list.append(blockRow(blk, reload, n));
     }
     if (!bundle.blocks.length) list.append(el('p', 'text-[10px] text-ink-faint', 'Empty page.'));
-    b.append(list, addBlockForm(bundle.meta.id, reload));
+    b.append(list);
+    if (!shareReadOnly) b.append(addBlockForm(bundle.meta.id, reload));
   }
 
   if (show.has('comments')) {
@@ -585,10 +589,10 @@ async function renderNotionPage(w: WardInstance): Promise<void> {
       input.value = '';
       reload();
     });
-    b.append(form);
+    if (!shareReadOnly) b.append(form);
   }
 
-  if (show.has('add')) b.append(captureForm(w, bundle.meta.id, reload));
+  if (show.has('add') && !shareReadOnly) b.append(captureForm(w, bundle.meta.id, reload));
 }
 
 // ------------------------------------------------------------ database table
@@ -676,7 +680,7 @@ async function renderNotionTable(w: WardInstance): Promise<void> {
   b.append(wrap);
   if (!rows.length) b.append(el('p', 'wd-note text-xs text-ink-faint', 'No rows.'));
 
-  b.append(addRowForm(w, () => renderNotionTable(w), false));
+  if (!shareReadOnly) b.append(addRowForm(w, () => renderNotionTable(w), false));
 }
 
 RENDERERS['notion-page'] = { intervalMs: 2 * 60_000, render: (w) => renderNotionPage(w) };

@@ -2,6 +2,7 @@ import type { APIRoute } from 'astro';
 import { jsonBody, needId, notionRoute } from '../../../lib/notion-route.ts';
 import { notionAppendBlocks, notionDeleteBlock, notionUpdateBlock, type BlockDraft } from '../../../lib/notion.ts';
 import { isWritable } from '../../../lib/notion-blocks.ts';
+import { notShared, shareNotionBlock, shareNotionPage } from '../../../lib/share-notion.ts';
 
 export const prerender = false;
 
@@ -32,6 +33,7 @@ export const POST: APIRoute = ({ request, locals }) =>
   notionRoute(locals.user!.userId, 'notion block append', async () => {
     const body = await jsonBody<PostBody>(request);
     const parentId = needId(body.parentId, 'parent id');
+    if (locals.share && !(await shareNotionPage(locals.share, locals.user!.userId, parentId)) && !(await shareNotionBlock(locals.share, locals.user!.userId, parentId))) throw notShared();
     const drafts = (Array.isArray(body.blocks) ? body.blocks : []).slice(0, 50).map(draft);
     if (!drafts.length) throw Object.assign(new Error('nothing to add'), { status: 400 });
     return { blocks: await notionAppendBlocks(locals.user!.userId, parentId, drafts, body.after ? needId(body.after, 'anchor id') : undefined) };
@@ -41,11 +43,14 @@ export const PATCH: APIRoute = ({ request, locals }) =>
   notionRoute(locals.user!.userId, 'notion block update', async () => {
     const body = await jsonBody<{ id?: string; block?: unknown }>(request);
     const id = needId(body.id, 'block id');
+    if (locals.share && !(await shareNotionBlock(locals.share, locals.user!.userId, id))) throw notShared();
     return { block: await notionUpdateBlock(locals.user!.userId, id, draft(body.block)) };
   });
 
 export const DELETE: APIRoute = ({ url, locals }) =>
   notionRoute(locals.user!.userId, 'notion block delete', async () => {
-    await notionDeleteBlock(locals.user!.userId, needId(url.searchParams.get('id'), 'block id'));
+    const id = needId(url.searchParams.get('id'), 'block id');
+    if (locals.share && !(await shareNotionBlock(locals.share, locals.user!.userId, id))) throw notShared();
+    await notionDeleteBlock(locals.user!.userId, id);
     return { ok: true };
   });

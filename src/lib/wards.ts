@@ -158,26 +158,31 @@ export const CATALOG: Record<string, CatalogEntry> = {
     does: ['reads every linked mailbox in one list', 'counts unread mail', 'opens and reads a message', 'composes replies and sends mail', 'archives a message', 'fires logic when new mail arrives', 'filters by account'],
   },
   calendar: {
+    share: 'view',
     title: 'Agenda', defaultSize: '2x2', icon: 'calendar', blurb: 'Google, Outlook, iCloud and a Notion calendar database, next 5 days.', category: 'glance',
     concepts: ['calendar', 'agenda', 'schedule', 'events', 'meetings', 'appointments', 'classes', 'today', 'tomorrow', 'this week', 'upcoming', 'due', 'deadlines', 'when', 'google calendar', 'outlook', 'icloud', 'notion calendar', 'all day'],
     does: ['reads the merged agenda from google outlook icloud and a notion database', 'lists the next five days of events', 'shows the free gap today', 'fires logic before an event starts', 'fires logic when an event is added'],
   },
   'next-up': {
+    share: 'view',
     title: 'Next up', defaultSize: '1x1', icon: 'calendar', blurb: 'Countdown to your next event — room and Join link.', category: 'glance',
     concepts: ['next up', 'next event', 'next meeting', 'next class', 'countdown', 'soon', 'upcoming', 'in x minutes', 'join link', 'zoom', 'teams', 'meet', 'room', 'where', 'agenda', 'schedule', 'ends in'],
     does: ['counts down to the next calendar event', 'shows the room and a join link', 'shows ends in during an event', 'reads the merged agenda', 'fires logic before an event starts'],
   },
   'notion-db': {
+    share: 'edit',
     title: 'Database view', defaultSize: '3x2', icon: 'database', blurb: 'One view of a Notion database — table, task list or month calendar. What Notion shows, editable here.', link: 'notion', multi: true, configurable: true, category: 'notion',
     concepts: ['todo', 'todos', 'tasks', 'task list', 'checklist', 'checkbox', 'table', 'rows', 'columns', 'spreadsheet', 'database', 'view', 'list', 'calendar', 'month', 'schedule', 'assignments', 'exams', 'due', 'deadline', 'deadlines', 'overdue', 'done', 'tick', 'kanban', 'project', 'tracker', 'habits', 'grocery', 'shopping list'],
     does: ['reads a notion database', 'shows rows as an editable table or a task list', 'shows rows on a month calendar', 'picks which date column the calendar uses', 'edits cells in place', 'checks off todos', 'adds rows', 'shows what is due', 'fires logic when items change or come due', 'counts items'],
   },
   'notion-tasks': {
+    share: 'edit',
     title: 'Tasks', defaultSize: '2x2', icon: 'tasks', blurb: 'A Notion database as a task list.', link: 'notion', multi: true, legacy: true, configurable: true, category: 'notion',
     concepts: ['tasks', 'todo', 'task list', 'checklist', 'due', 'done'],
     does: ['reads a notion database as a task list', 'checks off tasks', 'fires logic when items change'],
   },
   'notion-page': {
+    share: 'edit',
     title: 'Notion page', defaultSize: '2x2', icon: 'page', blurb: 'A whole page — properties, blocks, comments, a capture line — all editable. No page = capture to your capture page.', link: 'notion', multi: true, configurable: true, category: 'notion',
     concepts: ['page', 'document', 'doc', 'wiki', 'notes', 'properties', 'fields', 'blocks', 'content', 'comments', 'form', 'status', 'tags', 'journal', 'capture', 'jot', 'write', 'outline', 'headings', 'checkbox'],
     does: ['reads a whole notion page', 'edits properties in place', 'edits blocks in place', 'adds comments', 'appends captured text', 'fires logic when the page or a property changes'],
@@ -223,12 +228,13 @@ export const CATALOG: Record<string, CatalogEntry> = {
     does: ['plots service latency or uptime history', 'plots host cpu memory or disk', 'plots the weather forecast', 'line area or bar chart', 'picks a lookback window'],
   },
   timer: {
-    share: 'view',
+    share: 'edit',
     title: 'Timer', defaultSize: '1x1', icon: 'timer', blurb: 'Server-side countdown — fires logic when done.', multi: true, configurable: true, category: 'logic',
     concepts: ['timer', 'countdown', 'stopwatch', 'alarm', 'pomodoro', 'focus', 'break', 'minutes', 'seconds', 'remind', 'reminder', 'routine', 'interval', 'schedule', 'every', 'clock', 'delay', 'wait'],
     does: ['counts down on the server', 'fires logic when it finishes', 'starts pauses and restarts from logic', 'runs every n minutes', 'runs at a time of day', 'keeps going with the tab closed'],
   },
   button: {
+    share: 'edit',
     title: 'Button', defaultSize: '1x1', icon: 'button', blurb: 'One tap fires your logic — wire it up in Logic mode.', multi: true, configurable: true, category: 'logic',
     concepts: ['button', 'switch', 'trigger', 'tap', 'press', 'click', 'manual', 'start', 'go', 'run', 'panel', 'remote', 'hotkey', 'launch', 'kick off', 'one tap'],
     does: ['fires logic when pressed', 'one tap fires your automations', 'press and hold on touch', 'shows the wired rules and the last run'],
@@ -246,6 +252,7 @@ export const CATALOG: Record<string, CatalogEntry> = {
     does: ['organizes notes into sections and tags', 'searches titles text and tags', 'pins and orders notes by hand', 'saves filtered sorted views as list table or cards', 'archives and trashes notes with restore and delete forever', 'links an existing notepad document', 'generates an index of the notebook', 'opens a full editor for each note', 'links notes to each other and lists backlinks', 'defines typed properties per notebook', 'starts notes from templates', 'answers questions from the notes', 'syncs notes between the server and paired desktops'],
   },
   checklist: {
+    share: 'edit',
     title: 'Checklist', defaultSize: '2x2', icon: 'check', blurb: 'Same list, compact — a second view of any database.', link: 'notion', multi: true, legacy: true, configurable: true, category: 'notion',
     concepts: ['checklist', 'tasks', 'todo', 'tick', 'done', 'list'],
     does: ['reads a notion database as a checklist', 'checks off items', 'fires logic when an item is checked'],
