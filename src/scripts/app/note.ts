@@ -23,12 +23,13 @@ import { expandedDesktopWard, restoreExpandedWard, readDesktopCheckpoint, saveDe
 
 import { noteConfig, wardTitle, type NoteConfig, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body } from './wards.ts';
-import { el, postJson, toast } from './dom.ts';
+import { el, newId, postJson, toast } from './dom.ts';
 import { shareReadOnly } from './share-view.ts';
+import { createDocumentEditor, type DocumentEditor } from './note-editor.ts';
 import { icon, relabel } from './icon.ts';
 import { askText, confirmAction } from './workspace-dialogs.ts';
 import { pageDocument, readPageDocument, type NotebookPageType } from '../../lib/notebook-pages.ts';
-import { sanitizeHtml, plainText } from '../../lib/note-text.ts';
+import { sanitizeHtml, plainText, textToHtml } from '../../lib/note-text.ts';
 import { saveDocumentBlob, printDocument } from './document-export.ts';
 import { menuItem, openMenu } from './menu.ts';
 import { popupLayer, popupFrame, popupViewport } from './popup-layer.ts';
@@ -44,10 +45,15 @@ import { marked } from 'marked';
 /** [x, y] in page CSS px (the scroll content's box), pressure 0..1. */
 type Pt = [number, number, number];
 interface Stroke {
+  /** Set by the collaborative editor so a stroke can be erased by name wherever it is drawn. */
+  id?: string;
   c: string;
   w: number;
   p: Pt[];
 }
+/** The collaborative (ProseMirror + Yjs) document editor, opted into per browser while
+ *  the ribbon and review tools are ported to it: `localStorage['fd-note-editor'] = 'pm'`. */
+const PM = (() => { try { return localStorage.getItem('fd-note-editor') === 'pm'; } catch { return false; } })();
 type Tool = 'text' | 'pen' | 'eraser';
 
 /** What an editor edits: one document, addressed and drawn one way. */
@@ -70,6 +76,10 @@ interface State {
   format: HTMLSelectElement;
   word: ReturnType<typeof attachWordEditor> | null;
   proof: ReturnType<typeof attachProofreading> | null;
+  /** The collaborative editor over this document, when PM is on and the room took us. */
+  editor: DocumentEditor | null;
+  /** The room refused this document once: the plain editor for the rest of this open. */
+  pmFailed: boolean;
   target: EditorTarget | null;
   /** The stored revision of the open document; every save hands it back. */
   rev: number;
@@ -196,7 +206,7 @@ function build(owner: string, expandable: boolean): State {
   width.setAttribute('aria-label', 'Pen width');
 
   const st: State = {
-    owner, pageEngine: null, pageType: null, replacePage: false, engineHost, format, word: null, proof: null, target: null, rev: 0, loaded: false, loadGen: 0, gen: 0, chain: Promise.resolve(), opening: Promise.resolve(), docSeq: 0, inkSeq: 0, docFlight: null, inkFlight: null, conflict: false, saving: 0,
+    owner, pageEngine: null, pageType: null, replacePage: false, engineHost, format, word: null, proof: null, editor: null, pmFailed: false, target: null, rev: 0, loaded: false, loadGen: 0, gen: 0, chain: Promise.resolve(), opening: Promise.resolve(), docSeq: 0, inkSeq: 0, docFlight: null, inkFlight: null, conflict: false, saving: 0,
     root, page, doc, canvas, status, err, count, exportStatus, btn: {}, color, width, ai: null, sel: null,
     strokes: [], cur: null, fresh: new Set(), tool: 'text', penSeen: false,
     docTimer: 0, inkTimer: 0, liveTimer: 0, docDirty: false, inkDirty: false, busy: false,
@@ -262,7 +272,7 @@ function build(owner: string, expandable: boolean): State {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
       link(st);
-    } else if (e.key === 'Tab' && (e.target as HTMLElement).closest?.('li')) {
+    } else if (!st.editor && e.key === 'Tab' && (e.target as HTMLElement).closest?.('li')) {
       e.preventDefault();
       cmd(st, e.shiftKey ? 'outdent' : 'indent');
     }
@@ -273,8 +283,7 @@ function build(owner: string, expandable: boolean): State {
   canvas.addEventListener('pointercancel', (e) => up(st, e));
   st.ro.observe(doc);
   st.ro.observe(page);
-  st.word = attachWordEditor({ doc, tools, changed: () => markDoc(st), title: () => st.target?.title ?? 'Document', identity: () => `${st.gen}:${st.loadGen}` });
-  st.proof = attachProofreading({ doc, tools, api: () => st.loaded && !st.pageEngine ? st.target?.api ?? null : null, onChange: () => markDoc(st), replace: (range, text) => st.word!.replace(range, text) });
+  attachLegacyTools(st, tools);
   const importButton = button(tools, 'folder', 'Import file', () => {
     if (!st.target || !st.loaded) { toast('Wait for the document to finish loading before importing.', undefined, true); return; }
     pickNotebookFiles(async files => {
@@ -288,8 +297,7 @@ function build(owner: string, expandable: boolean): State {
         const hasContent = st.pageEngine || st.doc.textContent?.trim() || st.doc.querySelector('img,table') || st.strokes.length;
         if (hasContent && !await confirmAction('Replace this document’s content with the imported file? Existing ink is kept.')) return;
         if (!unchanged()) { toast('The document changed. Import again to continue.', undefined, true); return; }
-        showDocument(st, imported.html); st.replacePage = true; markDoc(st);
-        if (!(await flushDoc(st))) return;
+        if (!(await replaceDocument(st, imported.html))) return;
         toast(imported.warnings.length ? `Imported ${imported.title}. ${imported.warnings.join(' ')}` : `Imported ${imported.title}.`);
       } finally { importButton.disabled = !st.target || !st.loaded; }
     }, false);
@@ -300,8 +308,53 @@ function build(owner: string, expandable: boolean): State {
   return st;
 }
 
+/** The ribbon and the grammar tools drive the plain contenteditable; the collaborative
+ *  editor owns its DOM, so they are detached while it runs and back when it is not. */
+function attachLegacyTools(st: State, tools = st.root.querySelector<HTMLElement>('.np-tools')!): void {
+  if (st.word || st.editor) return;
+  st.word = attachWordEditor({ doc: st.doc, tools, changed: () => markDoc(st), title: () => st.target?.title ?? 'Document', identity: () => `${st.gen}:${st.loadGen}` });
+  st.proof = attachProofreading({ doc: st.doc, tools, api: () => st.loaded && !st.pageEngine && !st.editor ? st.target?.api ?? null : null, onChange: () => markDoc(st), replace: (range, text) => st.word!.replace(range, text) });
+}
+
+/** Bind the collaborative editor to the open document: the room's copy is the truth from here. */
+function connectEditor(st: State): void {
+  const t = st.target;
+  if (st.editor || !t) return;
+  st.word?.destroy(); st.word = null;
+  st.proof?.destroy(); st.proof = null;
+  st.root.dataset.pm = '';
+  const ward = new URL(t.api, location.origin).searchParams.get('ward') ?? '';
+  const editor = createDocumentEditor({
+    mount: st.doc, docId: t.id, ward, readOnly: shareReadOnly,
+    onChange: () => { if (st.editor !== editor) return; updateCount(st); st.onInput?.(); },
+    onStatus: (status) => { if (st.editor !== editor) return; setStatus(st, status === 'connected' ? 'Live' : status === 'connecting' ? 'Connecting…' : 'Offline — reconnecting…'); },
+    onFail: () => { if (st.editor !== editor) return; st.pmFailed = true; disconnectEditor(st); void load(st, true); },
+  });
+  st.editor = editor;
+  // Ink is a shared list too: whatever anyone draws lands here.
+  editor.ink.observe(() => {
+    if (st.editor !== editor) return;
+    const fresh = new Set([...st.fresh].map((s) => s.id));
+    st.strokes = editor.ink.toJSON() as Stroke[];
+    if (st.cur) st.strokes.push(st.cur);
+    st.fresh = new Set(st.strokes.filter((s) => s.id && fresh.has(s.id)));
+    st.inkDirty = false;
+    fit(st);
+  });
+  apply(st);
+}
+function disconnectEditor(st: State): void {
+  const e = st.editor;
+  if (!e) return;
+  st.editor = null;
+  delete st.root.dataset.pm;
+  e.destroy();
+  attachLegacyTools(st);
+}
+
 function serializeDocument(st: State): string {
-  return st.pageEngine && st.pageType ? pageDocument(st.pageType, st.pageEngine.serialize(), st.pageEngine.text()) : st.doc.innerHTML;
+  if (st.pageEngine && st.pageType) return pageDocument(st.pageType, st.pageEngine.serialize(), st.pageEngine.text());
+  return st.editor ? st.editor.html() : st.doc.innerHTML;
 }
 function showDocument(st: State, html: string): void {
   const data = readPageDocument(html);
@@ -315,6 +368,7 @@ function showDocument(st: State, html: string): void {
     try { engine.load(data.state); } catch (error) { engine.destroy(); throw error; }
   }
   st.pageEngine?.destroy(); st.pageEngine = engine; st.pageType = data?.type ?? null;
+  if (data) disconnectEditor(st);
   st.engineHost.replaceChildren(); st.engineHost.hidden = !data; st.page.hidden = !!data;
   st.proof?.refresh();
   st.exportStatus.textContent = '';
@@ -324,8 +378,26 @@ function showDocument(st: State, html: string): void {
     if (data.type !== 'markdown') st.format.append(new Option(data.type === 'notion' ? 'Linked Notion database' : data.type[0]!.toUpperCase() + data.type.slice(1), data.type));
     st.format.value = data.type;
     st.engineHost.append(engine.element); st.doc.textContent = engine.text();
-  } else { delete st.root.dataset.pageType; st.doc.innerHTML = html; st.format.value = 'document'; st.word?.refresh(); }
+  } else {
+    delete st.root.dataset.pageType;
+    st.format.value = 'document';
+    if (PM && !st.pmFailed && st.target) connectEditor(st); // the room's copy replaces `html`
+    else { st.doc.innerHTML = html; st.word?.refresh(); }
+  }
   apply(st);
+}
+
+/** Put a whole new document in place — an import, a format conversion. Through the
+ *  shared document when it stays free text; through the store when a page type changes. */
+async function replaceDocument(st: State, html: string): Promise<boolean> {
+  if (st.editor && !readPageDocument(html)) { st.editor.setHtml(html); return true; }
+  if (st.editor || (PM && !st.pmFailed && !readPageDocument(html) && st.pageEngine)) {
+    const ok = await put(st, { html, replacePage: true }, false, true);
+    if (ok) await load(st, true);
+    return ok;
+  }
+  showDocument(st, html); st.replacePage = true; markDoc(st);
+  return flushDoc(st);
 }
 function documentMarkdown(html: string): string {
   const converter = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
@@ -344,15 +416,14 @@ async function changeFormat(st: State, value: string): Promise<void> {
   if (!st.target || !st.loaded || value === (st.pageType ?? 'document')) return;
   if (st.pageType && st.pageType !== 'markdown') { st.format.value = st.pageType; return; }
   if (!await confirmAction(`Switch to ${value === 'markdown' ? 'Markdown' : 'Document'}? The content is kept, but formatting that the other format cannot represent may change.`)) { st.format.value = st.pageType ?? 'document'; return; }
-  st.replacePage = true;
   if (value === 'markdown') {
-    const source = documentMarkdown(st.doc.innerHTML);
-    showDocument(st, pageDocument('markdown', { source }));
+    const source = documentMarkdown(st.editor ? st.editor.html() : st.doc.innerHTML);
+    await replaceDocument(st, pageDocument('markdown', { source }));
   } else if (st.pageType === 'markdown') {
     const source = (st.pageEngine!.serialize() as { source: string }).source;
-    showDocument(st, sanitizeHtml(marked.parse(source, { async: false, gfm: true })));
+    await replaceDocument(st, sanitizeHtml(marked.parse(source, { async: false, gfm: true })));
   }
-  markDoc(st); st.pageEngine?.focus();
+  st.pageEngine?.focus();
 }
 
 /** Re-read the target's knobs (config changed, or first paint). */
@@ -367,7 +438,8 @@ function apply(st: State): void {
   if (!ink || shareReadOnly) setTool(st, 'text');
   // A share's viewer reads: no caret, no pen, no toolbar (frost.css [data-readonly]).
   st.root.toggleAttribute('data-readonly', shareReadOnly);
-  st.doc.contentEditable = st.target && st.loaded && !st.pageEngine && !shareReadOnly ? 'true' : 'false';
+  if (st.editor) st.editor.setEditable(!!st.target && st.loaded && !shareReadOnly);
+  else st.doc.contentEditable = st.target && st.loaded && !st.pageEngine && !shareReadOnly ? 'true' : 'false';
   st.format.disabled = !st.target || !st.loaded;
   st.root.toggleAttribute('data-empty', !st.target);
   // The pen defaults to the text colour of THIS card — its theme, not the page's.
@@ -390,19 +462,22 @@ function mount(st: State, b: HTMLElement): void {
 // ------------------------------------------------------------- document
 
 function cmd(st: State, name: string, value?: string): void {
+  if (st.editor) { st.editor.cmd(name, value); markDoc(st); return; }
   if (st.word && (name === 'undo' || name === 'redo')) { st.word.history(name); return; }
   st.doc.focus();
   document.execCommand(name, false, value);
   markDoc(st);
 }
 
+const currentBlock = (st: State): string => (st.editor ? st.editor.blockType() : String(document.queryCommandValue('formatBlock')).toLowerCase());
+
 function cycleHeading(st: State): void {
-  const cur = String(document.queryCommandValue('formatBlock')).toLowerCase();
+  const cur = currentBlock(st);
   cmd(st, 'formatBlock', cur === 'h1' ? 'h2' : cur === 'h2' ? 'h3' : cur === 'h3' ? 'p' : 'h1');
 }
 
 function toggleBlock(st: State, tag: string): void {
-  const cur = String(document.queryCommandValue('formatBlock')).toLowerCase();
+  const cur = currentBlock(st);
   cmd(st, 'formatBlock', cur === tag ? 'p' : tag);
 }
 
@@ -440,6 +515,7 @@ function inline(text: string): DocumentFragment {
 /** Insert paragraphs at the page-y where they were written: before the first
  *  block below it, else at the end. */
 function insertAt(st: State, text: string, y: number): void {
+  if (st.editor) { st.editor.insertParagraphsAt(text, y); markDoc(st); return; }
   const rect = st.page.getBoundingClientRect();
   let before: Element | null = null;
   for (const child of st.doc.children) {
@@ -453,7 +529,7 @@ function insertAt(st: State, text: string, y: number): void {
 }
 
 function updateCount(st: State): void {
-  const n = st.doc.innerText.trim().split(/\s+/).filter(Boolean).length;
+  const n = (st.editor ? st.editor.text() : st.doc.innerText).trim().split(/\s+/).filter(Boolean).length;
   st.count.textContent = n ? `${n} word${n === 1 ? '' : 's'}` : '';
 }
 
@@ -544,6 +620,7 @@ function put(st: State, patch: { html?: string; ink?: string; replacePage?: bool
 
 function markDoc(st: State): void {
   if (!st.target || !st.loaded) return;
+  if (st.editor) { updateCount(st); st.onInput?.(); linkPicker(st); return; }
   // Text typed into an empty document lands as a bare text node; give it the
   // paragraph every later line gets (the command re-fires input, once).
   if (st.doc.firstChild?.nodeType === Node.TEXT_NODE && document.activeElement === st.doc) document.execCommand('formatBlock', false, 'p');
@@ -562,6 +639,12 @@ function markDoc(st: State): void {
  *  flags belong to that one and are left alone. */
 function flushDoc(st: State, unload = false, force = false): Promise<boolean> {
   clearTimeout(st.docTimer);
+  if (st.editor) {
+    // Edits made offline reach the store the plain way; the room reconciles them when it is back.
+    if (st.editor.connected || !st.editor.pendingLocal) return Promise.resolve(true);
+    const e = st.editor;
+    return put(st, { html: e.html(), ink: JSON.stringify(e.ink.toJSON()) }, unload, true).then((ok) => { if (ok && st.editor === e) e.pendingLocal = false; return ok; });
+  }
   if (!st.docDirty) return Promise.resolve(true);
   if (st.docFlight && st.docFlight.seq === st.docSeq && !force) return st.docFlight.p;
   const gen = st.gen;
@@ -583,7 +666,7 @@ function markInk(st: State): void {
 }
 function flushInk(st: State, unload = false, force = false): Promise<boolean> {
   clearTimeout(st.inkTimer);
-  if (!st.inkDirty) return Promise.resolve(true);
+  if (st.editor || !st.inkDirty) return Promise.resolve(true);
   if (st.inkFlight && st.inkFlight.seq === st.inkSeq && !force) return st.inkFlight.p;
   const gen = st.gen;
   const seq = st.inkSeq;
@@ -693,6 +776,8 @@ async function openNow(st: State, target: EditorTarget | null): Promise<boolean>
   st.rev = 0;
   st.etag = undefined;
   st.loaded = false;
+  st.pmFailed = false;
+  disconnectEditor(st);
   if (picker?.st === st) closePicker();
   st.conflict = false;
   st.docDirty = st.inkDirty = false;
@@ -822,6 +907,7 @@ function pickNote(p: Picker, n: { id: string; title: string }): void {
   const sel = document.getSelection()!;
   sel.removeAllRanges();
   sel.addRange(r);
+  if (st.editor) { st.editor.replaceDomRange(node, start, end, n.id, n.title); markDoc(st); return; }
   st.doc.focus();
   document.execCommand('insertHTML', false, `<a data-note="${n.id}">${esc(n.title)}</a>&nbsp;`);
   markDoc(st);
@@ -939,7 +1025,7 @@ function down(st: State, e: PointerEvent): void {
     erase(st, p);
     return;
   }
-  st.cur = { c: st.color.value, w: Number(st.width.value) || 2.5, p: [p] };
+  st.cur = { id: newId('s'), c: st.color.value, w: Number(st.width.value) || 2.5, p: [p] };
   st.strokes.push(st.cur);
   drawStroke(ctxOf(st), st.cur);
 }
@@ -964,22 +1050,25 @@ function up(st: State, e: PointerEvent): void {
   st.cur = null;
   if (!s) return;
   st.fresh.add(s);
-  markInk(st);
+  if (st.editor) st.editor.ink.push([{ ...s, p: s.p.map((q) => q.map((n) => Math.round(n * 10) / 10) as Pt) }]);
+  else markInk(st);
   fit(st);
   if (st.target?.cfg.transcribe === 'live') scheduleLive(st);
 }
 function erase(st: State, at: Pt): void {
-  const before = st.strokes.length;
-  st.strokes = st.strokes.filter((s) => !s.p.some((p) => Math.hypot(p[0] - at[0], p[1] - at[1]) <= ERASE_R + s.w));
-  if (st.strokes.length === before) return;
+  const gone = st.strokes.filter((s) => s.p.some((p) => Math.hypot(p[0] - at[0], p[1] - at[1]) <= ERASE_R + s.w));
+  if (!gone.length) return;
+  if (st.editor) { st.editor.removeStrokes(new Set(gone.map((s) => s.id ?? ''))); return; } // the shared list observer redraws
+  st.strokes = st.strokes.filter((s) => !gone.includes(s));
   for (const s of st.fresh) if (!st.strokes.includes(s)) st.fresh.delete(s);
   redraw(st);
   markInk(st);
 }
 function clearInk(st: State): void {
   if (!st.strokes.length || !window.confirm('Clear all the ink on this note?')) return;
-  st.strokes = [];
   st.fresh.clear();
+  if (st.editor) { st.editor.ink.delete(0, st.editor.ink.length); return; }
+  st.strokes = [];
   redraw(st);
   markInk(st);
 }
@@ -1058,9 +1147,8 @@ async function transcribe(st: State, strokes: Stroke[]): Promise<void> {
   }
   insertAt(st, text, b.y);
   if (!t.cfg.keepInk) {
-    st.strokes = st.strokes.filter((s) => !set.includes(s));
-    redraw(st);
-    markInk(st);
+    if (st.editor) st.editor.removeStrokes(new Set(set.map((s) => s.id ?? '')));
+    else { st.strokes = st.strokes.filter((s) => !set.includes(s)); redraw(st); markInk(st); }
   }
   if (st.fresh.size && t.cfg.transcribe === 'live') scheduleLive(st);
 }
@@ -1130,8 +1218,9 @@ const blockOf = (node: Node, doc: HTMLElement): Element | null => {
 async function runAi(st: State, mode: string, prompt: string): Promise<void> {
   const t = st.target;
   if (st.busy || !t) return;
-  const range = st.sel && !st.sel.collapsed && st.doc.contains(st.sel.commonAncestorContainer) ? st.sel.cloneRange() : null;
-  const text = range ? range.toString() : st.doc.innerText;
+  const range = !st.editor && st.sel && !st.sel.collapsed && st.doc.contains(st.sel.commonAncestorContainer) ? st.sel.cloneRange() : null;
+  const selected = st.editor ? st.editor.hasSelection() : !!range;
+  const text = st.editor ? (selected ? st.editor.selectionText() : st.editor.text()) : range ? range.toString() : st.doc.innerText;
   if (!text.trim()) {
     fail(st, 'Nothing to work on yet.');
     return;
@@ -1152,7 +1241,12 @@ async function runAi(st: State, mode: string, prompt: string): Promise<void> {
     setStatus(st, 'Rime had nothing to add.');
     return;
   }
-  if (range && (REPLACES.has(mode) || mode === 'custom')) {
+  if (st.editor) {
+    if (selected && (REPLACES.has(mode) || mode === 'custom')) st.editor.insertText(out);
+    else if (selected) st.editor.appendParagraphs(out, true);
+    else if (REPLACES.has(mode)) st.editor.setHtml(textToHtml(out));
+    else st.editor.appendParagraphs(out, false);
+  } else if (range && (REPLACES.has(mode) || mode === 'custom')) {
     range.deleteContents();
     range.insertNode(inline(out));
   } else if (range) {
@@ -1339,11 +1433,12 @@ export function createNoteEditor(owner: string): NoteEditor {
     id: () => st.target?.id ?? null,
     open: (t) => open(st, t),
     flush: () => flushAll(st),
-    dirty: () => st.docDirty || st.inkDirty || st.conflict || !!st.pageEngine?.dirty?.(),
+    dirty: () => (st.editor ? !st.editor.connected && st.editor.pendingLocal : st.docDirty || st.inkDirty || st.conflict) || !!st.pageEngine?.dirty?.(),
     onInput: (fn) => { st.onInput = fn; },
     full: (on) => { st.root.toggleAttribute('data-full', on); fit(st); },
     destroy: () => {
       if (picker?.st === st) closePicker();
+      st.editor?.destroy(); st.editor = null;
       st.pageEngine?.destroy(); st.word?.destroy(); st.proof?.destroy();
       st.ro.disconnect();
       clearTimeout(st.liveTimer);
@@ -1389,6 +1484,7 @@ window.addEventListener('fd:note', (e) => {
       fail(st, 'This note was deleted. Copy any unsaved text before closing.');
       continue;
     }
+    if (st.editor) continue; // the room delivered it already
     if (st.saving || st.docDirty || st.inkDirty || st.conflict || st.pageEngine?.dirty?.()) continue;
     if (d.rev !== undefined && st.rev >= d.rev) continue;
     void load(st);
@@ -1447,6 +1543,7 @@ RENDERERS.note = {
     if (!st) return;
     void flushDoc(st);
     void flushInk(st);
+    st.editor?.destroy(); st.editor = null;
     st.pageEngine?.destroy(); st.word?.destroy(); st.proof?.destroy();
     st.ro.disconnect();
     clearTimeout(st.liveTimer);
