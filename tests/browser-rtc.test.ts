@@ -38,8 +38,11 @@ test('rtcIce: the host is always TURN; a signed-in viewer gets TURN too, an anon
     assert.deepEqual(rtcIce(1, { userId: null }), { host: [], viewer: [] }, 'dev/tests: loopback candidates');
     // Across the relay: the header round-trips.
     const ice = { host: [{ urls: 'turn:t:3478', username: 'u', credential: 'c' }], viewer: [{ urls: 'stun:t:3478' }] };
-    const r = withRtcHeader(new Request('https://x.invalid/api/browser/stream/w'), ice);
+    const ctl = new AbortController();
+    const r = withRtcHeader(new Request('https://x.invalid/api/browser/stream/w', { signal: ctl.signal }), ice);
     assert.deepEqual(rtcIceFromRelay(r), ice);
+    ctl.abort();
+    assert.ok(r.signal.aborted, 'the relayed request keeps the viewer\'s abort signal');
     assert.equal(rtcIceFromRelay(new Request('https://x.invalid/', { headers: { [RTC_HEADER]: '{"host":1}' } })), null);
   } finally {
     if (secret === undefined) delete process.env.RIMEWARD_TURN_SECRET; else process.env.RIMEWARD_TURN_SECRET = secret;
@@ -99,4 +102,13 @@ test('rtcJoin / rtcInbound: one connection per viewer, its messages only, valida
   // No capture page, no ICE: the viewer stays on JPEG.
   assert.equal(rtcJoin({ rtc: new Map() } as unknown as Session, ice, () => {}, () => {}), null);
   assert.equal(rtcJoin(s, null, () => {}, () => {}), null);
+  // Peers whose session closed, or whose leave never arrived, free their slot for the next viewer.
+  const stale = [fakeSession(), fakeSession()];
+  for (const f of stale) { rtcJoin(f.s, ice, () => {}, () => {}); rtcJoin(f.s, ice, () => {}, () => {}); }
+  assert.equal(rtcPeers(), 4, 'the runtime-wide cap is full');
+  (stale[0]!.s as { closing?: Promise<void> }).closing = Promise.resolve();
+  stale[1]!.s.rtc.clear();
+  const fresh = fakeSession();
+  assert.ok(rtcJoin(fresh.s, ice, () => {}, () => {}), 'a closed session and a vanished viewer no longer count');
+  assert.equal(rtcPeers(), 1);
 });

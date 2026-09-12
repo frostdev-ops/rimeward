@@ -10,6 +10,7 @@ import { secretEqual } from './native.ts';
 import fs from 'node:fs';
 import { backgroundPath } from '../backgrounds.ts';
 import { shareDevRelay } from '../share-dev.ts';
+import { rtcIce, withRtcHeader } from '../browser/rtc.ts';
 
 const localPaths = /^\/(?:_astro\/|api\/(?:native\/|logout(?:\?|$)|runtime(?:\?|$)|dashboard(?:\?|$)|instance(?:\/|\?|$)|dev\/|store\/|agent\/models(?:\?|$)|logic\/stream(?:\?|$)|account\/(?:theme|background)(?:\?|$))|desktop\/|dash(?:\/|\?|$)|brand\/|favicon|apple-touch-icon)/;
 const wardPath = /^\/api\/(?:(?:agent|browser(?:\/stream)?|note|notebook|comms)\/([^/?]+)|agent\/([^/?]+)\/voice)$/;
@@ -81,6 +82,9 @@ export async function routeInstance(context: APIContext): Promise<Response | und
       if (desktop) return await instanceRequest(user, `/runtime/${device}${path}`, request);
       // A share's terminal viewer: what leaves the desktop is cut to the ward (lib/share-dev.ts) before it leaves here.
       if (context.locals.share && url.pathname.startsWith('/api/dev/')) return await shareDevRelay(user, context.locals.share, device, url, request);
+      // A browser stream a desktop hosts: the ICE its capture page needs is minted here, where the
+      // TURN secret lives, and rides the relayed request (lib/browser/rtc.ts, x-rimeward-rtc).
+      if (/^\/api\/browser\/stream\/[^/]+$/.test(url.pathname)) return await relayRequest(user, device, path, withRtcHeader(request, rtcIce(user, { userId: context.locals.share ? context.locals.share.viewer : user })));
       return await relayRequest(user, device, path, request);
     }
     // An unplaced "My computer" browser belongs to this desktop even after

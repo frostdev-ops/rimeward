@@ -63,7 +63,8 @@ export function withRtcHeader(request: Request, ice: RtcIce | null): Request {
   if (!ice) return request;
   const headers = new Headers(request.headers);
   headers.set(RTC_HEADER, JSON.stringify(ice));
-  return new Request(request.url, { method: request.method, headers });
+  // The relay tears its channel down on this signal: a viewer that leaves must end the desktop's stream too.
+  return new Request(request.url, { method: request.method, headers, signal: request.signal });
 }
 
 /** A viewer joins the session's stream. Null when there is no capture page, no ICE, or a peer
@@ -71,6 +72,8 @@ export function withRtcHeader(request: Request, ice: RtcIce | null): Request {
  *  alone; `connected` flips its JPEG frames off and back on. */
 export function rtcJoin(s: Session, ice: RtcIce | null, send: (msg: RtcMessage) => void, connected: (on: boolean) => void): { conn: string; leave: () => void } | null {
   if (!s.stream || !ice) return null;
+  // A peer whose session closed, or whose viewer left without the leave reaching here, never counts against the caps.
+  for (const [conn, p] of peers) if (p.s.closing || !p.s.rtc.has(conn)) peers.delete(conn);
   if (s.rtc.size >= peersMax() || peers.size >= globalMax()) return null;
   const conn = randomBytes(16).toString('hex');
   peers.set(conn, { s, answered: false, count: 0 });
