@@ -8,7 +8,8 @@ import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { EditorState, Plugin, PluginKey, TextSelection, type Command, type Transaction } from 'prosemirror-state';
 import { Decoration, DecorationSet } from 'prosemirror-view';
-import { ReplaceAroundStep, ReplaceStep } from 'prosemirror-transform';
+import { ReplaceStep } from 'prosemirror-transform';
+import * as decoding from 'lib0/decoding';
 import { EditorView } from 'prosemirror-view';
 import { DOMParser as PMDOMParser, Fragment, Slice, type Node as PMNode } from 'prosemirror-model';
 import { keymap } from 'prosemirror-keymap';
@@ -16,7 +17,7 @@ import { baseKeymap, chainCommands, lift, setBlockType, toggleMark, wrapIn } fro
 import { liftListItem, sinkListItem, splitListItem, wrapInList } from 'prosemirror-schema-list';
 import { inputRules, textblockTypeInputRule, wrappingInputRule } from 'prosemirror-inputrules';
 import { tableEditing } from 'prosemirror-tables';
-import { initProseMirrorDoc, prosemirrorToYXmlFragment, redo, undo, yCursorPlugin, ySyncPlugin, ySyncPluginKey, yUndoPlugin } from 'y-prosemirror';
+import { absolutePositionToRelativePosition, initProseMirrorDoc, redo, relativePositionToAbsolutePosition, undo, yCursorPlugin, ySyncPlugin, ySyncPluginKey, yUndoPlugin } from 'y-prosemirror';
 import { noteSchema, parseNoteHtml, serializeNoteDoc } from '../../lib/note-schema.ts';
 
 export interface Stroke { id?: string; c: string; w: number; p: [number, number, number][] }
@@ -30,20 +31,22 @@ export interface DocumentEditor {
   readonly view: EditorView;
   readonly ink: Y.Array<Stroke>;
   readonly track: TrackRef;
-  /** The socket is open and the first sync is done. */
+  /** The socket is open and synced. */
   readonly connected: boolean;
-  /** Local edits made while disconnected that the room has not seen. */
+  /** Local edits made while out of sync that the room has not seen; they live in this document until it syncs. */
   pendingLocal: boolean;
   /** The document as the store would keep it. */
   html(): string;
   text(): string;
-  /** Replace the whole document (an import): reconciled into the shared document, history kept. */
+  /** Replace the whole document (an import, a Rime rewrite) as one undoable change. */
   setHtml(html: string): void;
   insertHtml(html: string): void;
-  /** Replace the selection with text; newlines become line breaks. */
-  insertText(text: string): void;
-  /** Paragraphs (blank-line separated) after the selection's block, or at the end. */
-  appendParagraphs(text: string, afterSelection: boolean): void;
+  /** Replace the selection (or `range`) with text; newlines become line breaks. */
+  insertText(text: string, range?: { from: number; to: number }): void;
+  /** Paragraphs (blank-line separated) after the block holding `after`, or at the end. */
+  appendParagraphs(text: string, after?: number): void;
+  /** The selection as positions that follow every edit (a remote collaborator's included) until read. */
+  anchor(): () => { from: number; to: number } | null;
   /** Paragraphs before the first block below page-y `y` (handwriting lands where it was written). */
   insertParagraphsAt(text: string, y: number): void;
   /** Replace a document range with plain text (a grammar fix). */
@@ -111,7 +114,9 @@ function markDeleted(frag: Fragment, author: string, id: string): Fragment {
   });
   return Fragment.from(out);
 }
-/** While tracking, every local edit is rewritten in place: insertions marked, deletions kept as marked text. */
+/** While tracking, this author's inline edits are rewritten in place: insertions marked,
+ *  deletions kept as marked text. Structural edits (a heading, a list, Enter, a paste of
+ *  blocks) apply directly — only a replacement inside one text block is tracked. */
 function trackChanges(track: TrackRef): Plugin {
   return new Plugin({
     appendTransaction(trs, _old, newState) {
@@ -120,9 +125,12 @@ function trackChanges(track: TrackRef): Plugin {
       for (const t of trs) {
         if (!t.docChanged || t.getMeta('track') || t.getMeta(ySyncPluginKey) || t.getMeta('addToHistory') === false) continue;
         t.steps.forEach((step, i) => {
-          if (!(step instanceof ReplaceStep) && !(step instanceof ReplaceAroundStep)) return;
-          const { from, to, slice } = step as ReplaceStep;
+          if (!(step instanceof ReplaceStep)) return;
+          const { from, to, slice } = step;
+          if (slice.openStart || slice.openEnd || (slice.size && !slice.content.firstChild!.isInline)) return;
           const before = t.docs[i]!;
+          const $from = before.resolve(from);
+          if (!$from.parent.isTextblock || !$from.sameParent(before.resolve(to))) return;
           const toFinal = t.mapping.slice(i + 1);
           tr ??= newState.tr.setMeta('track', true).setMeta('addToHistory', true);
           const id = Math.random().toString(36).slice(2, 10);
@@ -140,6 +148,22 @@ function trackChanges(track: TrackRef): Plugin {
     },
   });
 }
+
+/** A rule or a table as the last block leaves nowhere to type after it: a paragraph follows
+ *  (the legacy editor inserted one). Only after local edits — every client fixing a remote
+ *  document at once would add one paragraph each. */
+const trailingParagraph = () => new Plugin({
+  appendTransaction(trs, _old, state) {
+    if (!trs.some((t) => t.docChanged && !t.getMeta(ySyncPluginKey))) return null;
+    const { doc } = state;
+    let container: PMNode = doc, base = 0;
+    if (doc.lastChild?.type === s.nodes.page) { container = doc.lastChild; base = doc.content.size - container.nodeSize + 1; }
+    let last: PMNode | undefined, endPos = base;
+    container.forEach((child, offset) => { if (child.type !== s.nodes.page_footer) { last = child; endPos = base + offset + child.nodeSize; } });
+    if (!last || !((last as PMNode).isLeaf || (last as PMNode).type === s.nodes.table)) return null;
+    return state.tr.insert(endPos, s.nodes.paragraph!.create()).setMeta('addToHistory', false).setMeta('track', true);
+  },
+});
 
 const inList = (state: EditorState, type: string): boolean => {
   const { $from } = state.selection;
@@ -186,6 +210,8 @@ export interface EditorOptions {
   onStatus(status: EditorStatus): void;
   /** The room refused us (an old server, a structured page, a desktop viewing a share): fall back. */
   onFail(): void;
+  /** The room's save landed or was refused (lib/note-room.ts MSG_STATUS): what the status line shows. */
+  onPersist?(status: { persist: 'ok' | 'error'; message?: string }): void;
 }
 
 export function createDocumentEditor(o: EditorOptions): DocumentEditor {
@@ -195,13 +221,14 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
   const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/note/ws`;
   const provider = new WebsocketProvider(url, o.docId, ydoc, { params: { ward: o.ward }, disableBc: true, maxBackoffTime: 10_000 });
   let readOnly = o.readOnly;
-  let synced = false;
+  // Nothing is editable before the first sync: a keystroke into the empty pre-sync document would be a document.
+  let everSynced = false;
   let failures = 0;
   const track: TrackRef = { on: false, author: 'You' };
   const editor = {
     pendingLocal: false,
     track,
-    get connected() { return provider.wsconnected && synced; },
+    get connected() { return provider.wsconnected && provider.synced; },
   } as DocumentEditor & { pendingLocal: boolean };
 
   const { doc, meta } = initProseMirrorDoc(fragment, s);
@@ -220,6 +247,7 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
       }),
       keymap(baseKeymap),
       trackChanges(track),
+      trailingParagraph(),
       highlights(),
       inputRules({ rules: [
         wrappingInputRule(/^\s*([-+*])\s$/, s.nodes.bullet_list!),
@@ -233,27 +261,37 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
   const changeListeners = new Set<() => void>();
   const view = new EditorView({ mount: o.mount }, {
     state,
-    editable: () => !readOnly,
+    editable: () => !readOnly && everSynced,
     dispatchTransaction(tr: Transaction) {
       view.updateState(view.state.apply(tr));
       if (tr.docChanged) {
-        if (!provider.wsconnected) editor.pendingLocal = true;
+        if (!provider.synced && !tr.getMeta(ySyncPluginKey)) editor.pendingLocal = true;
         o.onChange();
         for (const fn of changeListeners) fn();
       }
     },
   });
   provider.on('status', ({ status }: { status: string }) => {
-    if (status === 'connected') { failures = 0; editor.pendingLocal = false; }
-    o.onStatus(status === 'connected' ? (synced ? 'connected' : 'connecting') : status === 'connecting' ? 'connecting' : 'disconnected');
+    if (status === 'connected') failures = 0;
+    o.onStatus(status === 'connected' ? (provider.synced ? 'connected' : 'connecting') : status === 'connecting' ? 'connecting' : 'disconnected');
   });
-  provider.on('sync', (ok: boolean) => { if (ok) { synced = true; o.onStatus('connected'); o.onChange(); } });
+  provider.on('sync', (ok: boolean) => {
+    if (!ok) return;
+    const first = !everSynced;
+    everSynced = true;
+    editor.pendingLocal = false; // whatever was typed offline has been exchanged
+    if (first) view.setProps({ editable: () => !readOnly });
+    o.onStatus('connected');
+    o.onChange();
+  });
+  // Each failed attempt closes once (the error event precedes it): two closes before any sync = fall back.
   provider.on('connection-close', (event: { code?: number } | null) => {
     // The room said no (deleted, a structured page) or the server cannot host it: the surface falls back.
     if (event?.code === 4404 || event?.code === 4426) { o.onFail(); return; }
-    if (!synced && ++failures >= 2) o.onFail();
+    if (!everSynced && ++failures >= 2) o.onFail();
   });
-  provider.on('connection-error', () => { if (!synced && ++failures >= 2) o.onFail(); });
+  // lib/note-room.ts MSG_STATUS (100): the room's save landed or was refused.
+  provider.messageHandlers[100] = (_encoder, decoder) => { try { o.onPersist?.(JSON.parse(decoding.readVarString(decoder))); } catch { /* not ours */ } };
   void whoami().then((user) => { provider.awareness.setLocalStateField('user', user); if (track.author === 'You') track.author = user.name; });
 
   const run = (command: Command) => { command(view.state, view.dispatch, view); view.focus(); };
@@ -280,13 +318,29 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
     view, ink,
     html: () => serializeNoteDoc(document, view.state.doc),
     text: () => view.state.doc.textBetween(0, view.state.doc.content.size, '\n', ''),
-    setHtml: (html: string) => { ydoc.transact(() => { prosemirrorToYXmlFragment(parseNoteHtml(document, html), fragment); }); },
+    // One ProseMirror transaction, so ⌘Z undoes it (a change made on the Y.Doc directly is outside the undo manager).
+    setHtml: (html: string) => { view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, parseNoteHtml(document, html).content).setMeta('track', true)); },
     insertHtml: (html: string) => { view.dispatch(view.state.tr.replaceSelection(parseFragment(html)).scrollIntoView()); view.focus(); },
-    insertText: (text: string) => { view.dispatch(view.state.tr.replaceSelection(new Slice(Fragment.from(lineContent(text)), 0, 0)).scrollIntoView()); },
-    appendParagraphs: (text: string, afterSelection: boolean) => {
-      const { $to } = view.state.selection;
-      const pos = afterSelection && $to.depth >= 1 ? $to.after(1) : view.state.doc.content.size;
-      insertBlocksAt(pos, paragraphs(text));
+    insertText: (text: string, range?: { from: number; to: number }) => {
+      const slice = new Slice(Fragment.from(lineContent(text)), 0, 0);
+      view.dispatch((range ? view.state.tr.replaceRange(range.from, range.to, slice) : view.state.tr.replaceSelection(slice)).scrollIntoView());
+    },
+    appendParagraphs: (text: string, after?: number) => {
+      const $p = after !== undefined ? view.state.doc.resolve(Math.min(after, view.state.doc.content.size)) : null;
+      insertBlocksAt($p && $p.depth >= 1 ? $p.after(1) : view.state.doc.content.size, paragraphs(text));
+    },
+    anchor: () => {
+      const ys = ySyncPluginKey.getState(view.state);
+      const { from, to } = view.state.selection;
+      if (!ys?.binding) return () => ({ from, to });
+      const rel = (pos: number) => absolutePositionToRelativePosition(pos, ys.type, ys.binding!.mapping);
+      const rf = rel(from), rt = rel(to);
+      return () => {
+        const now = ySyncPluginKey.getState(view.state);
+        if (!now?.binding) return null;
+        const a = relativePositionToAbsolutePosition(ydoc, ys.type, rf, now.binding.mapping), b = relativePositionToAbsolutePosition(ydoc, ys.type, rt, now.binding.mapping);
+        return a === null || b === null ? null : { from: Math.min(a, b), to: Math.max(a, b) };
+      };
     },
     insertParagraphsAt: (text: string, y: number) => {
       const page = o.mount.closest<HTMLElement>('.np-page') ?? o.mount;
@@ -337,7 +391,14 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
         case 'formatBlock': return block((value ?? 'p').toLowerCase().replace(/[<>]/g, ''));
         case 'indent': return run(sinkListItem(s.nodes.list_item!));
         case 'outdent': return run(liftListItem(s.nodes.list_item!));
-        case 'removeFormat': { const { from, to } = view.state.selection; view.dispatch(view.state.tr.removeMark(from, to)); return; }
+        case 'removeFormat': {
+          // Formatting only: links, note links, comments and tracked changes are content, not style.
+          const { from, to } = view.state.selection;
+          const tr = view.state.tr;
+          for (const m of [s.marks.strong, s.marks.em, s.marks.underline, s.marks.strike, s.marks.sub, s.marks.sup, s.marks.code, s.marks.highlight, s.marks.text_style]) tr.removeMark(from, to, m!);
+          view.dispatch(tr);
+          return;
+        }
         case 'undo': return run(undo);
         case 'redo': return run(redo);
         case 'createLink': {
@@ -358,7 +419,15 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
     },
     setEditable: (on: boolean) => { readOnly = !on; view.setProps({ editable: () => on }); },
     focus: () => view.focus(),
-    destroy: () => { view.destroy(); provider.destroy(); ydoc.destroy(); },
+    destroy: () => {
+      view.destroy();
+      o.mount.classList.remove('ProseMirror'); // the view leaves its class on the mount; the plain editor's CSS must not inherit it
+      // Edits made out of sync live only in this Y.Doc: it and its socket stay until they reach the room (or five minutes).
+      const done = () => { provider.destroy(); ydoc.destroy(); };
+      if (!editor.pendingLocal || provider.synced) { done(); return; }
+      const t = setTimeout(done, 5 * 60_000);
+      provider.on('sync', (ok: boolean) => { if (ok) { clearTimeout(t); done(); } });
+    },
   });
   return editor;
 }

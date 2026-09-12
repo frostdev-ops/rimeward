@@ -334,8 +334,12 @@ test('shared wards and shared pages: the share id is the config, never a first p
   assert.equal(validateLayout([{ i: 'a', type: 'shared', size: '2x2', config: { share: '../x' } }]), null);
   assert.equal(validateLayout([{ i: 'a', type: 'shared', size: '2x2' }]), null);
   assert.equal(validatePages([{ id: 'home', title: 'Home' }, { id: 'x', title: 'Theirs', share: 'abc123def456' }])?.[1]?.share, 'abc123def456');
-  assert.equal(validatePages([{ id: 'x', title: 'Theirs', share: 'abc123def456' }])?.[0]?.share, undefined, 'a shared page is never the first page');
-  assert.equal(validatePages([{ id: 'home', title: 'Home' }, { id: 'x', title: 'T', share: 'nope' }])?.[1]?.share, undefined);
+  const solo = validatePages([{ id: 'x', title: 'Theirs', share: 'abc123def456' }]);
+  assert.equal(solo?.length, 1, 'the list is kept');
+  assert.equal(solo?.[0]?.share, undefined, 'a shared page is never the first page');
+  const junk = validatePages([{ id: 'home', title: 'Home' }, { id: 'x', title: 'T', share: 'nope' }]);
+  assert.equal(junk?.length, 2, 'the list is kept');
+  assert.equal(junk?.[1]?.share, undefined, 'a malformed share id is dropped');
   assert.ok(CATALOG.shared!.legacy, 'placed from the Shared-with-me list, never the picker');
 });
 

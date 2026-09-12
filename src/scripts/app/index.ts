@@ -30,7 +30,8 @@ import { shareView } from './share-view.ts';
 // lingering fill phase overrides every inline style.transform write and
 // silently kills the drag engine's follow/FLIP/spring rendering.
 
-bootStatus();
+// A share view without a status ward may not read the status stream (lib/shares.ts): asking would only loop on 403.
+if (!shareView || document.querySelector('[data-wd-type="service-group"], [data-wd-type="incidents"], [data-wd-type="chart"]')) bootStatus();
 bootPages(); // stages the current page before any ward boots
 ensureStream(); // layout and theme updates also reach pages with only development wards
 bootWards();

@@ -6,7 +6,7 @@
 // server-side looks at pages; the engine, the bots and the watchers run every
 // ward on every page.
 
-import { DEFAULT_PAGES, MAX_PAGES, pageSlug, validatePages, type PageDef } from '../../lib/wards.ts';
+import { CATALOG, DEFAULT_PAGES, MAX_PAGES, pageSlug, validatePages, type PageDef } from '../../lib/wards.ts';
 import { el, holdToFire, keyboardInUse, q, reducedMotion, toast } from './dom.ts';
 import { icon } from './icon.ts';
 import { menuItem, openMenu } from './menu.ts';
@@ -206,7 +206,8 @@ export function renderTabs(): void {
     b.type = 'button';
     b.dataset.pageTab = p.id;
     b.addEventListener('click', () => showPage(p.id));
-    const menu = (e: { clientX: number; clientY: number }) => openMenu(e.clientX, e.clientY, (m) => pageMenu(m, p, b));
+    // Leylines mode lays every page out at once: no page menu there (deleting the current one would strand the stage).
+    const menu = (e: { clientX: number; clientY: number }) => { if (!grid?.classList.contains('wiring')) openMenu(e.clientX, e.clientY, (m) => pageMenu(m, p, b)); };
     b.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation(); // edit.ts's grid menu listens on <main> and would replace this one
@@ -231,6 +232,7 @@ export function renderTabs(): void {
   more.setAttribute('aria-haspopup', 'menu');
   more.append(icon('more'));
   more.addEventListener('click', () => {
+    if (grid?.classList.contains('wiring')) return;
     const p = pages.find((x) => x.id === current);
     const chip = nav?.querySelector<HTMLElement>(`[data-page-tab="${current}"]`);
     if (!p || !chip) return;
@@ -249,7 +251,10 @@ function pageMenu(m: HTMLElement, p: PageDef, chip: HTMLElement): void {
   if (p.share) m.append(menuItem('share', 'Open shared page', () => window.open(`/s/${p.share}`, '_blank', 'noopener')));
   else {
     const item = menuItem('share', 'Share page…', () => openShareDialog({ kind: 'page', target: p.id, title: p.title })) as HTMLButtonElement;
+    // The same test the server applies (lib/shares.ts shareWards): a visible ward of a shareable type on this page.
+    const shareable = topCards().some((n) => !n.hasAttribute('data-wd-hidden') && (n.dataset.page && pages.some((x) => x.id === n.dataset.page) ? n.dataset.page : firstPage()) === p.id && CATALOG[n.dataset.wdType ?? '']?.share);
     if (!canShare()) { item.disabled = true; item.title = 'Sharing needs a server'; }
+    else if (!shareable) { item.disabled = true; item.title = 'Nothing on this page can be shared'; }
     m.append(item);
   }
   if (pages.length > 1) m.append(el('hr', 'ctx-sep'), menuItem('trash', p.share ? 'Remove page' : 'Delete page', () => deletePage(p), true));
@@ -375,7 +380,7 @@ function deletePage(p: PageDef): void {
     changed();
     showPage(p.id);
   };
-  toast(`Removed ${p.title} — its wards are on ${pages[0]!.title}.`, { label: 'Undo', fn: undo });
+  toast(p.share ? `Removed ${p.title}.` : `Removed ${p.title} — its wards are on ${pages[0]!.title}.`, { label: 'Undo', fn: undo });
 }
 
 // -------------------------------------------------------------------- boot

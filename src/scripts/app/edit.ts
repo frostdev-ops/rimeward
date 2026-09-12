@@ -471,8 +471,11 @@ function stampHidden(node: HTMLElement, hidden: boolean): void {
   node.toggleAttribute('data-wd-hidden', hidden);
 }
 
-/** The ONE writer of a card's page (pages.ts stages by it; layoutOf reads it back). */
+/** The ONE writer of a card's page (pages.ts stages by it; layoutOf reads it back). A page
+ *  nothing knows (a toolbar undo re-stamping a deleted page) means the first page — as the
+ *  server heals it, so what this tab shows and saves is what the server keeps. */
 function stampPage(node: HTMLElement, page: string | undefined): void {
+  if (page && (page === firstPage() || !readPages().some((p) => p.id === page))) page = undefined;
   if (page) node.dataset.page = page;
   else delete node.dataset.page;
 }
@@ -1014,7 +1017,8 @@ function bootDrag(): void {
     }
     if (tab === hotTab) return;
     clearTab();
-    if (!tab || tab.dataset.pageTab === currentPage()) return;
+    // A shared page is someone else's: nothing of ours can land on it.
+    if (!tab || tab.dataset.pageTab === currentPage() || readPages().find((p) => p.id === tab.dataset.pageTab)?.share) return;
     hotTab = tab;
     tab.setAttribute('data-drop-hot', '1');
     dwellT = window.setTimeout(() => {
@@ -2525,6 +2529,10 @@ function bootDialog(): void {
 /** Land a freshly built ward on the stage (the current page, or the group the
  *  dialog was opened from) and save. False = no shell could be made. */
 function placeNew(w: WardInstance, dialog: HTMLDialogElement): boolean {
+  if (readPages().find((p) => p.id === currentPage())?.share) {
+    toast('This page is shared with you — its owner arranges it. Switch to one of your pages first.', undefined, true);
+    return false;
+  }
   if (currentPage() !== firstPage()) w.page = currentPage(); // layoutOf strips it again if it lands in a group
   state.set(w.i, w);
   const shell = newShell(w);

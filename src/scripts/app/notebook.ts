@@ -26,6 +26,9 @@ import { importNotebookFile, pickNotebookFiles, type ImportedNotebookFile } from
 import { askText, confirmAction } from './workspace-dialogs.ts';
 import { bindContextMenu, menuItem, openMenu } from './menu.ts';
 import { createNoteEditor, openLinkedNote, refitNoteEditors, setDocumentFullscreen, type NoteEditor } from './note.ts';
+// Inside a share (lib/shares.ts SHARE_NOTEBOOK_OPS): a viewer changes nothing; an editor writes
+// pages, never the notebook itself — the controls the server would refuse are not offered.
+import { shareReadOnly, shareView } from './share-view.ts';
 
 interface Meta {
   notebook: Notebook;
@@ -133,7 +136,7 @@ async function renderCompact(w: WardInstance): Promise<void> {
   });
   add.className = 'btn-primary nb-add';
   add.append(el('span', undefined, 'New page'));
-  bar.append(search, add, btn('resize', 'Open the notebook', () => void openNotebook(w)));
+  bar.append(search, ...(shareReadOnly ? [] : [add]), btn('resize', 'Open the notebook', () => void openNotebook(w)));
   root.append(bar);
   const rows = el('div', 'nb-c-rows');
   rows.setAttribute('role', 'list');
@@ -253,6 +256,8 @@ function dialog(): HTMLDialogElement | null {
   };
   d.querySelector('[data-nb-close]')?.addEventListener('click', () => void tryClose());
   d.querySelector('[data-nb-open]')?.addEventListener('click', () => { if (cur) openNotebookFile(cur); });
+  if (shareView) d.querySelector<HTMLElement>('[data-nb-rename]')?.setAttribute('hidden', '');
+  if (shareReadOnly) d.querySelector<HTMLElement>('[data-nb-open]')?.setAttribute('hidden', '');
   d.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); if (cur) openNotebookFile(cur); } });
   d.querySelector('[data-nb-sidebar]')?.addEventListener('click', () => {
     if (!cur) return;
@@ -468,8 +473,8 @@ function navItem(c: Dlg, iconId: string, label: string, nav: Nav, n?: number, me
   b.addEventListener('click', () => setNav(c, nav));
   const buildMenu = (m: HTMLElement) => {
     m.append(menuItem(iconId, `Open ${label}`, () => setNav(c, nav)));
-    if (nav.kind === 'status' && nav.status === 'trash') m.append(menuItem('trash', 'Empty trash…', () => void emptyTrash(c), true));
-    else if (nav.kind === 'all' || nav.kind === 'section' || nav.kind === 'templates') m.append(menuItem('plus', 'New page here', () => { setNav(c, nav); void createNote(c); }));
+    if (nav.kind === 'status' && nav.status === 'trash') { if (!shareView) m.append(menuItem('trash', 'Empty trash…', () => void emptyTrash(c), true)); }
+    else if ((nav.kind === 'all' || nav.kind === 'section' || nav.kind === 'templates') && !shareReadOnly) m.append(menuItem('plus', 'New page here', () => { setNav(c, nav); void createNote(c); }));
     menu?.(m);
   };
   bindContextMenu(b, e => { e.preventDefault(); e.stopPropagation(); b.focus({ preventScroll: true }); openMenu(e.clientX, e.clientY, buildMenu); });
@@ -478,9 +483,11 @@ function navItem(c: Dlg, iconId: string, label: string, nav: Nav, n?: number, me
 }
 
 function notebookMenu(c: Dlg, m: HTMLElement): void {
+  if (shareReadOnly) return;
   m.append(menuItem('folder', 'Open file…', () => openNotebookFile(c)));
-  m.append(menuItem('pen', 'Rename notebook…', () => void renameNotebook(c)));
+  if (!shareView) m.append(menuItem('pen', 'Rename notebook…', () => void renameNotebook(c)));
   for (const [kind, label, glyph] of [['document', 'Document', 'note'], ['markdown', 'Markdown', 'code'], ['spreadsheet', 'Spreadsheet', 'database'], ['slides', 'Slides', 'page'], ['drawing', 'Drawing', 'pen'], ['notion', 'Linked Notion database', 'database']] as const) m.append(menuItem(glyph, `New ${label.toLowerCase()}`, () => void createNote(c, undefined, kind === 'document' ? undefined : kind)));
+  if (shareView) return;
   m.append(menuItem('folder', 'New section…', () => void addSection(c)));
   m.append(menuItem('eye', 'Save current view…', () => void saveView(c)));
   for (const type of Object.keys(PROP_TYPE_LABELS) as PropType[]) m.append(menuItem(propIcon(type), `Add ${PROP_TYPE_LABELS[type].toLowerCase()} property…`, () => void addProperty(c, type)));
@@ -500,9 +507,9 @@ function renderNav(c: Dlg): void {
   nav.append(navItem(c, 'pin', 'Pinned', { kind: 'pinned' }));
   nav.append(navItem(c, 'list', 'Index', { kind: 'index' }));
   nav.append(navItem(c, 'sparkle', 'Ask', { kind: 'ask' }));
-  head('Sections', btn('plus', 'New section', () => void addSection(c), 'nb-nav-act'));
+  head('Sections', shareView ? undefined : btn('plus', 'New section', () => void addSection(c), 'nb-nav-act'));
   for (const s of book.sections) {
-    nav.append(navItem(c, 'folder', s.title, { kind: 'section', id: s.id }, undefined, (m) => {
+    nav.append(navItem(c, 'folder', s.title, { kind: 'section', id: s.id }, undefined, shareView ? undefined : (m) => {
       m.append(el('div', 'ctx-label', s.title));
       m.append(menuItem('pen', 'Rename…', () => void renameSection(c, s)));
       m.append(menuItem('close', 'Delete section (notes stay)', () => void deleteSection(c, s), true));
@@ -513,9 +520,9 @@ function renderNav(c: Dlg): void {
     head('Tags');
     for (const t of c.meta.tags.slice(0, 40)) nav.append(navItem(c, 'tag', t.tag, { kind: 'tag', tag: t.tag }, t.n));
   }
-  head('Views', btn('plus', 'Save the current list as a view', () => void saveView(c), 'nb-nav-act'));
+  head('Views', shareView ? undefined : btn('plus', 'Save the current list as a view', () => void saveView(c), 'nb-nav-act'));
   for (const v of book.views) {
-    nav.append(navItem(c, v.layout === 'table' ? 'database' : v.layout === 'cards' ? 'page' : 'eye', v.title, { kind: 'view', id: v.id }, undefined, (m) => {
+    nav.append(navItem(c, v.layout === 'table' ? 'database' : v.layout === 'cards' ? 'page' : 'eye', v.title, { kind: 'view', id: v.id }, undefined, shareView ? undefined : (m) => {
       m.append(el('div', 'ctx-label', v.title));
       m.append(menuItem('pen', 'Rename…', () => void renameView(c, v)));
       m.append(menuItem('reset', 'Update to the current list', () => void updateView(c, v)));
@@ -523,7 +530,7 @@ function renderNav(c: Dlg): void {
     }));
   }
   const addProp = btn('plus', 'Add a property', () => addPropertyMenu(c, addProp), 'nb-nav-act');
-  head('Properties', addProp);
+  head('Properties', shareView ? undefined : addProp);
   for (const p of book.props) {
     const b = el('button', 'nb-item');
     b.type = 'button';
@@ -532,10 +539,10 @@ function renderNav(c: Dlg): void {
     b.append(icon(propIcon(p.type)), el('span', 'truncate', p.name), el('span', 'nb-n', PROP_TYPE_LABELS[p.type]));
     const menu = (m: HTMLElement) => {
       m.append(el('div', 'ctx-label', `${p.name} · ${PROP_TYPE_LABELS[p.type]}`));
-      m.append(menuItem('pen', 'Rename…', () => void renameProperty(c, p)));
-      if (p.type === 'select') m.append(menuItem('list', 'Edit choices…', () => void editPropertyOptions(c, p)));
+      if (!shareView) m.append(menuItem('pen', 'Rename…', () => void renameProperty(c, p)));
+      if (p.type === 'select' && !shareView) m.append(menuItem('list', 'Edit choices…', () => void editPropertyOptions(c, p)));
       m.append(menuItem('search', 'Filter the list by it…', () => void filterByProperty(c, p)));
-      m.append(menuItem('close', 'Delete property (values go)', () => void deleteProperty(c, p), true));
+      if (!shareView) m.append(menuItem('close', 'Delete property (values go)', () => void deleteProperty(c, p), true));
     };
     b.addEventListener('click', () => {
       const r = b.getBoundingClientRect();
@@ -976,6 +983,7 @@ function noteMenu(c: Dlg, n: NoteMeta, m: HTMLElement): void {
     const link = el('a', undefined, titleOf(n)); link.dataset.note = n.id;
     await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([link.outerHTML], { type: 'text/html' }), 'text/plain': new Blob([titleOf(n)], { type: 'text/plain' }) })]);
   })().catch(() => toast('Clipboard unavailable. Type [[ in a document to insert a page link.', undefined, true)); }));
+  if (shareReadOnly) return;
   if (!n.trashed) {
     m.append(menuItem('pen', 'Rename…', () => { void askText('Page title', n.title).then(title => { if (title?.trim()) void patchNote(c, n, { title: title.trim() }); }); }));
     m.append(menuItem('copy', 'Duplicate page', () => { void (async () => { if (c.selected?.id === n.id && !(await c.editor.flush())) return; await createNote(c, n.id); })(); }));
@@ -994,7 +1002,7 @@ function noteMenu(c: Dlg, n: NoteMeta, m: HTMLElement): void {
     m.append(menuItem('folder-out', 'Remove from notebook (keep the note)', () => void unlinkNote(c, n), true));
   } else {
     m.append(menuItem('undo', 'Restore', () => void trashNote(c, n, false)));
-    m.append(menuItem('trash', 'Delete forever…', () => void purgeNote(c, n), true));
+    if (!shareView) m.append(menuItem('trash', 'Delete forever…', () => void purgeNote(c, n), true));
     m.append(el('p', 'px-3 py-1 text-[10px] text-ink-faint', 'Restore puts it back where it was. Delete forever cannot be undone.'));
   }
 }

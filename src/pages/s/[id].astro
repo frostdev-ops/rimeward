@@ -37,7 +37,7 @@ const escape = (v: unknown) => JSON.stringify(v).replaceAll('<', '\\u003c');
 ---
 
 <AppLayout title={`${title} — shared by ${share.owner}`} search={false} fonts={layout.map((w) => w.theme?.font)} share={{ id: share.id, owner: share.owner, viewer: share.viewer !== null, embed, monitors }}>
-  <main class={embed ? 'px-2 py-2' : 'mx-auto max-w-7xl px-4 py-6'} data-share={share.id} data-share-role={share.role} data-ward-window-scope={`share:${share.id}`} data-popout-ward={share.kind === 'ward' ? share.target : undefined}>
+  <main class={embed ? 'px-2 py-2' : 'mx-auto max-w-7xl px-4 py-6'} data-share={share.id} data-share-role={share.role} data-ward-window-scope={`share:${share.id}`} data-popout-ward={share.kind === 'ward' && layout.some((w) => w.i === share.target) ? share.target : undefined}>
     <div id="alerts" data-mode="off"></div>
     <div id="sse-banner" class="banner banner-warn hidden">Live feed lost — retrying…</div>
     <div class="wd-grid mb-8" id="wd-grid">

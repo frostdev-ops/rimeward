@@ -25,9 +25,7 @@ import { noteConfig, wardTitle, type NoteConfig, type WardInstance } from '../..
 import { RENDERERS, body } from './wards.ts';
 import { el, newId, postJson, toast } from './dom.ts';
 import { shareReadOnly } from './share-view.ts';
-import { createDocumentEditor, type DocumentEditor } from './note-editor.ts';
-import { attachWordRibbon } from './note-word-pm.ts';
-import { attachProofreadingPm } from './note-proofreading-pm.ts';
+import type { DocumentEditor } from './note-editor.ts';
 import { icon, relabel } from './icon.ts';
 import { askText, confirmAction } from './workspace-dialogs.ts';
 import { pageDocument, readPageDocument, type NotebookPageType } from '../../lib/notebook-pages.ts';
@@ -84,6 +82,8 @@ interface State {
   ribbon: { destroy(): void } | null;
   /** The room refused this document once: the plain editor for the rest of this open. */
   pmFailed: boolean;
+  /** The collaborative editor's modules are on their way (they load on first use). */
+  connecting: boolean;
   target: EditorTarget | null;
   /** The stored revision of the open document; every save hands it back. */
   rev: number;
@@ -210,7 +210,7 @@ function build(owner: string, expandable: boolean): State {
   width.setAttribute('aria-label', 'Pen width');
 
   const st: State = {
-    owner, pageEngine: null, pageType: null, replacePage: false, engineHost, format, word: null, proof: null, editor: null, ribbon: null, pmFailed: false, target: null, rev: 0, loaded: false, loadGen: 0, gen: 0, chain: Promise.resolve(), opening: Promise.resolve(), docSeq: 0, inkSeq: 0, docFlight: null, inkFlight: null, conflict: false, saving: 0,
+    owner, pageEngine: null, pageType: null, replacePage: false, engineHost, format, word: null, proof: null, editor: null, ribbon: null, pmFailed: false, connecting: false, target: null, rev: 0, loaded: false, loadGen: 0, gen: 0, chain: Promise.resolve(), opening: Promise.resolve(), docSeq: 0, inkSeq: 0, docFlight: null, inkFlight: null, conflict: false, saving: 0,
     root, page, doc, canvas, status, err, count, exportStatus, btn: {}, color, width, ai: null, sel: null,
     strokes: [], cur: null, fresh: new Set(), tool: 'text', penSeen: false,
     docTimer: 0, inkTimer: 0, liveTimer: 0, docDirty: false, inkDirty: false, busy: false,
@@ -320,35 +320,47 @@ function attachLegacyTools(st: State, tools = st.root.querySelector<HTMLElement>
   st.proof = attachProofreading({ doc: st.doc, tools, api: () => st.loaded && !st.pageEngine && !st.editor ? st.target?.api ?? null : null, onChange: () => markDoc(st), replace: (range, text) => st.word!.replace(range, text) });
 }
 
+// ProseMirror + Yjs ride their own chunk, fetched the first time a collaborative document opens.
+type Collab = { createDocumentEditor: typeof import('./note-editor.ts').createDocumentEditor; attachWordRibbon: typeof import('./note-word-pm.ts').attachWordRibbon; attachProofreadingPm: typeof import('./note-proofreading-pm.ts').attachProofreadingPm };
+let collab: Promise<Collab> | undefined;
+const loadCollab = (): Promise<Collab> => (collab ??= Promise.all([import('./note-editor.ts'), import('./note-word-pm.ts'), import('./note-proofreading-pm.ts')]).then(([a, b, c]) => ({ createDocumentEditor: a.createDocumentEditor, attachWordRibbon: b.attachWordRibbon, attachProofreadingPm: c.attachProofreadingPm })));
+
 /** Bind the collaborative editor to the open document: the room's copy is the truth from here. */
 function connectEditor(st: State): void {
   const t = st.target;
-  if (st.editor || !t) return;
-  st.word?.destroy(); st.word = null;
-  st.proof?.destroy(); st.proof = null;
-  st.root.dataset.pm = '';
-  const ward = new URL(t.api, location.origin).searchParams.get('ward') ?? '';
-  const editor = createDocumentEditor({
-    mount: st.doc, docId: t.id, ward, readOnly: shareReadOnly,
-    onChange: () => { if (st.editor !== editor) return; updateCount(st); st.onInput?.(); },
-    onStatus: (status) => { if (st.editor !== editor) return; setStatus(st, status === 'connected' ? 'Live' : status === 'connecting' ? 'Connecting…' : 'Offline — reconnecting…'); },
-    onFail: () => { if (st.editor !== editor) return; st.pmFailed = true; disconnectEditor(st); void load(st, true); },
-  });
-  st.editor = editor;
-  const tools = st.root.querySelector<HTMLElement>('.np-tools')!;
-  st.ribbon = attachWordRibbon({ editor, tools, changed: () => markDoc(st), title: () => st.target?.title ?? 'Document' });
-  st.proof = attachProofreadingPm({ editor, tools, api: () => (st.loaded && st.editor === editor ? st.target?.api ?? null : null), onChange: () => markDoc(st) });
-  // Ink is a shared list too: whatever anyone draws lands here.
-  editor.ink.observe(() => {
-    if (st.editor !== editor) return;
-    const fresh = new Set([...st.fresh].map((s) => s.id));
-    st.strokes = editor.ink.toJSON() as Stroke[];
-    if (st.cur) st.strokes.push(st.cur);
-    st.fresh = new Set(st.strokes.filter((s) => s.id && fresh.has(s.id)));
-    st.inkDirty = false;
-    fit(st);
-  });
-  apply(st);
+  if (st.editor || st.connecting || !t) return;
+  st.connecting = true;
+  const gen = st.gen;
+  loadCollab().then((mod) => {
+    st.connecting = false;
+    if (st.gen !== gen || st.editor || st.target !== t || st.pmFailed || st.pageEngine || !st.loaded) return;
+    st.word?.destroy(); st.word = null;
+    st.proof?.destroy(); st.proof = null;
+    st.root.dataset.pm = '';
+    const ward = new URL(t.api, location.origin).searchParams.get('ward') ?? '';
+    const editor = mod.createDocumentEditor({
+      mount: st.doc, docId: t.id, ward, readOnly: shareReadOnly,
+      onChange: () => { if (st.editor !== editor) return; updateCount(st); st.onInput?.(); },
+      onStatus: (status) => { if (st.editor !== editor) return; setStatus(st, status === 'connected' ? 'Live' : status === 'connecting' ? 'Connecting…' : 'Offline — reconnecting…'); },
+      onFail: () => { if (st.editor !== editor) return; st.pmFailed = true; disconnectEditor(st); void load(st, true); },
+      onPersist: (status) => { if (st.editor !== editor) return; if (status.persist === 'error') fail(st, `Not saved: ${status.message ?? 'the server refused the change'}`); else { st.err.textContent = ''; setStatus(st, 'Live'); } },
+    });
+    st.editor = editor;
+    const tools = st.root.querySelector<HTMLElement>('.np-tools')!;
+    st.ribbon = mod.attachWordRibbon({ editor, tools, changed: () => markDoc(st), title: () => st.target?.title ?? 'Document' });
+    st.proof = mod.attachProofreadingPm({ editor, tools, api: () => (st.loaded && st.editor === editor ? st.target?.api ?? null : null), onChange: () => markDoc(st) });
+    // Ink is a shared list too: whatever anyone draws lands here.
+    editor.ink.observe(() => {
+      if (st.editor !== editor) return;
+      const fresh = new Set([...st.fresh].map((s) => s.id));
+      st.strokes = editor.ink.toJSON() as Stroke[];
+      if (st.cur) st.strokes.push(st.cur);
+      st.fresh = new Set(st.strokes.filter((s) => s.id && fresh.has(s.id)));
+      st.inkDirty = false;
+      fit(st);
+    });
+    apply(st);
+  }, () => { st.connecting = false; st.pmFailed = true; if (st.gen === gen && st.target === t) void load(st, true); });
 }
 function disconnectEditor(st: State): void {
   const e = st.editor;
@@ -390,7 +402,9 @@ function showDocument(st: State, html: string): void {
   } else {
     delete st.root.dataset.pageType;
     st.format.value = 'document';
-    if (PM && !st.pmFailed && st.target) connectEditor(st); // the room's copy replaces `html`
+    // Only a LOADED document joins the room (its own load says it is prose, not a structured
+    // page); the room's copy replaces `html`. The empty document shown while opening stays plain.
+    if (PM && !st.pmFailed && st.target && st.loaded) connectEditor(st);
     else { st.doc.innerHTML = html; st.word?.refresh(); }
   }
   apply(st);
@@ -648,12 +662,9 @@ function markDoc(st: State): void {
  *  flags belong to that one and are left alone. */
 function flushDoc(st: State, unload = false, force = false): Promise<boolean> {
   clearTimeout(st.docTimer);
-  if (st.editor) {
-    // Edits made offline reach the store the plain way; the room reconciles them when it is back.
-    if (st.editor.connected || !st.editor.pendingLocal) return Promise.resolve(true);
-    const e = st.editor;
-    return put(st, { html: e.html(), ink: JSON.stringify(e.ink.toJSON()) }, unload, true).then((ok) => { if (ok && st.editor === e) e.pendingLocal = false; return ok; });
-  }
+  // The room saves; edits made out of sync wait in the shared document for it — a save of our own
+  // over the row would clobber what collaborators wrote meanwhile. Not flushed = keep this note open.
+  if (st.editor) return Promise.resolve(st.editor.connected || !st.editor.pendingLocal);
   if (!st.docDirty) return Promise.resolve(true);
   if (st.docFlight && st.docFlight.seq === st.docSeq && !force) return st.docFlight.p;
   const gen = st.gen;
@@ -1131,7 +1142,9 @@ function setBusy(st: State, busy: boolean): void {
 async function transcribe(st: State, strokes: Stroke[]): Promise<void> {
   const t = st.target;
   if (!t) return;
-  const set = strokes.filter((s) => st.strokes.includes(s));
+  // By id where there is one: the shared list's observer replaces the stroke objects on every remote change.
+  const same = (a: Stroke, b: Stroke) => a === b || (!!a.id && a.id === b.id);
+  const set = strokes.filter((s) => st.strokes.some((x) => same(x, s)));
   if (!set.length || st.busy) {
     if (set.length && t.cfg.transcribe === 'live') scheduleLive(st); // busy: try again after
     return;
@@ -1148,7 +1161,7 @@ async function transcribe(st: State, strokes: Stroke[]): Promise<void> {
     fail(st, d?.error ?? 'Could not read the handwriting.');
     return;
   }
-  for (const s of set) st.fresh.delete(s);
+  for (const f of [...st.fresh]) if (set.some((s) => same(s, f))) st.fresh.delete(f);
   const text = String(d?.text ?? '').trim();
   if (!text) {
     setStatus(st, 'No writing found in the ink.');
@@ -1235,6 +1248,8 @@ async function runAi(st: State, mode: string, prompt: string): Promise<void> {
     return;
   }
   const gen = st.gen;
+  // Where the passage IS when the answer lands, not where the caret went meanwhile (a collaborator's edits included).
+  const at = st.editor?.anchor();
   setBusy(st, true);
   setStatus(st, 'Rime is thinking…');
   const res = await postJson(t.api, { action: 'ai', mode, prompt, text });
@@ -1251,10 +1266,11 @@ async function runAi(st: State, mode: string, prompt: string): Promise<void> {
     return;
   }
   if (st.editor) {
-    if (selected && (REPLACES.has(mode) || mode === 'custom')) st.editor.insertText(out);
-    else if (selected) st.editor.appendParagraphs(out, true);
+    const r = at?.() ?? null;
+    if (selected && (REPLACES.has(mode) || mode === 'custom')) { if (r) st.editor.insertText(out, r); else st.editor.appendParagraphs(out); }
+    else if (selected) st.editor.appendParagraphs(out, r?.to);
     else if (REPLACES.has(mode)) st.editor.setHtml(textToHtml(out));
-    else st.editor.appendParagraphs(out, false);
+    else st.editor.appendParagraphs(out);
   } else if (range && (REPLACES.has(mode) || mode === 'custom')) {
     range.deleteContents();
     range.insertNode(inline(out));
@@ -1274,7 +1290,8 @@ async function runAi(st: State, mode: string, prompt: string): Promise<void> {
 // ------------------------------------------------------------- export
 
 function exportContent(st: State): string {
-  return st.pageType === 'markdown' ? sanitizeHtml(marked.parse((st.pageEngine!.serialize() as { source: string }).source, { async: false, gfm: true })) : st.doc.innerHTML;
+  // The document, never the live view (collaborators' cursors and highlights are decorations, not content).
+  return st.pageType === 'markdown' ? sanitizeHtml(marked.parse((st.pageEngine!.serialize() as { source: string }).source, { async: false, gfm: true })) : serializeDocument(st);
 }
 function exportHtml(st: State): string {
   const title = st.target?.title ?? 'Note';

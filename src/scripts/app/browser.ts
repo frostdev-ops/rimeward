@@ -15,7 +15,7 @@ import { expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
 
 import { RENDERERS, body } from './wards.ts';
 import { el, normalizeUrl, postJson } from './dom.ts';
-import { shareReadOnly } from './share-view.ts';
+import { shareReadOnly, shareView } from './share-view.ts';
 import { icon } from './icon.ts';
 import { openMenu, menuItem, closeMenu } from './menu.ts';
 import type { BrowserDownload } from '../../lib/browser/downloads.ts';
@@ -788,8 +788,8 @@ function build(w: WardInstance): Mount {
     navButton(m, '⟳', 'Reload', { t: 'reload' }),
     url,
     navButton(m, '＋', 'New tab', { t: 'newtab' }),
-    downloads,
-    extensions,
+    // A share drives the page only (lib/shares.ts): the owner's downloads and extensions are not on offer.
+    ...(shareView ? [] : [downloads, extensions]),
     expand
   );
   root.append(bar, tabs, view);
