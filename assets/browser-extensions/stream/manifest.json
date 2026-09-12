@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Rimeward Stream",
+  "version": "1.0.0",
+  "description": "Streams this browser's active tab, with its sound, to the people watching the ward. Loaded by Rimeward; not installable by hand.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabCapture", "tabs"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4N/roU7YqN9laOPQfaxyLMwrY81Y+pqFmnU8QKEomlF3LeJigaKFc7VJkBUhHKwhezZXtyqb0FKZytBzbwzCuiZRR4njTQMJEjKcRHUo1MC+mKYR94segjL/+CjW4h7/i4zeb6Sl/3y0AZ2d1q+97O5NktMFzYfqPB1691idHbes3oFwvL2cwqF3Db5xrTqjs4RYCMuH1O9XGcsAH8B0maO6A3AhdEaxcMxoF1tDyCNxzp7l5yWImGPHcftnXpc7ihd52U6da3kYPUyFjkpeB0fH29NIOdtKiVpF710nZMlvjWnL9g3vyRdN2b/RTbQes1utLJeJUCWyDsuoxm8ExwIDAQAB"
+}
