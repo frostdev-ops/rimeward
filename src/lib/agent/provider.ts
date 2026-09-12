@@ -53,6 +53,8 @@ export interface ProviderCall {
   /** An interrupt (core.interruptTurn) aborts the call in flight through this. */
   signal?: AbortSignal;
   onProgress?: () => void;
+  /** Display-only text; replay and tools use the completed result. */
+  onTextDelta?: (delta: string) => void;
   /** Native relay calls retain metadata only and never retry uncertain inference. */
   relayRequestId?: string;
 }

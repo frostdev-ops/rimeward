@@ -68,6 +68,9 @@ const agentSubs = new Map<string, Set<(p?: AgentPing) => void>>();
  *  'user' (what started the turn) and 'end' (it died without settling). */
 export interface AgentLive {
   ward: string;
+  conversation?: number;
+  task?: string;
+  run?: string;
   source?: 'chat' | 'automation' | 'wake' | 'agent';
   event: any;
 }

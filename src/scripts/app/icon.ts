@@ -55,7 +55,7 @@ function cfg(): IconCfg | null {
 }
 
 export function icon(id: string, cls = '', title?: string): HTMLElement {
-  const r = iconRef(cfg(), id);
+  const r = id === 'rime' ? { kind: 'mask' as const, url: '/rime-agent.svg' } : iconRef(cfg(), id);
   let n: HTMLElement;
   if (r.kind === 'text') {
     n = document.createElement('span');

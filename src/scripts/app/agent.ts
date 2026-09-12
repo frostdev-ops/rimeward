@@ -1,3 +1,5 @@
+import { readSse } from '../../lib/agent/stream.ts';
+import type { LiveTurn } from '../../lib/agent/live-turn.ts';
 import { readDesktopState, readDesktopCheckpoint, saveDesktopState, expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
 import type { ContextUsage } from '../../lib/agent/context.ts';
 // Agent wards: a chat client over the streamed POST /api/agent/<ward>
@@ -23,7 +25,7 @@ import { currentPage, readPages } from './pages.ts';
 import { activeMentions, mentionPattern, tagMentionMessage, plainMentionText, MAX_WARD_MENTIONS, type WardMention } from '../../lib/agent/mentions.ts';
 import { dialog } from './workspace-dialogs.ts';
 import '../../styles/conversation.css';
-import { ensureStream, flushPendingLayout, onAgentLive, onAgentPing, reloadHolds } from './logic.ts';
+import { ensureStream, flushPendingLayout, onAgentLive, onAgentPing, reloadHolds, type AgentLive } from './logic.ts';
 
 // ------------------------------------------------------------------ markdown
 // Covers the subset a chat actually emits: inline code/bold/italic/strike/
@@ -237,45 +239,46 @@ function humanise(tool: string): string {
 
 /** One tool call, as the user reads it: the reason first, in plain words.
  *  Tool name, args and raw result live behind a <details> click. */
+function animateDetails(detail: HTMLDetailsElement) {
+  let animation: Animation | undefined, closing = false;
+  detail.querySelector('summary')!.addEventListener('click', event => {
+    if (reducedMotion()) return;
+    event.preventDefault();
+    const body = detail.querySelector<HTMLElement>('.ag-step-details')!;
+    const open = !detail.open || closing, from = detail.open ? body.getBoundingClientRect().height : 0;
+    animation?.cancel(); closing = !open; detail.open = true;
+    animation = body.animate([{ height: `${from}px`, opacity: open ? 0 : 1 }, { height: `${open ? body.scrollHeight : 0}px`, opacity: open ? 1 : 0 }], { duration: 200, easing: 'ease-out' });
+    const current = animation;
+    void current.finished.then(() => { if (animation === current) { detail.open = open; closing = false; animation = undefined; } }).catch(() => {});
+  });
+}
+
 function stepCard(step: Step, running = false, ward = ''): HTMLElement {
-  const row = el('div', 'ag-step');
-
-  const head = el('div', 'flex items-start gap-2');
-  const mark = el('span', running ? 'spinner mt-0.5 shrink-0' : 'mt-px shrink-0');
-  if (!running) {
-    mark.append(icon(step.error ? 'close' : ICON[step.kind] ?? 'eye'));
-    if (step.error) mark.classList.add('text-err');
-  }
-  const line = el('span', `min-w-0 flex-1${step.error ? ' text-err' : ''}`, step.reason || humanise(step.tool));
-  head.append(mark, line);
-  if (step.result && typeof step.result === 'object' && 'background' in step.result && step.result.background)
-    head.append(el('span', 'text-[10px] text-ink-faint', 'Background task'));
-
-  if (!running && step.ms) head.append(el('span', 'shrink-0 text-[10px] text-ink-faint', fmtMs(step.ms)));
+  const row = el('details', 'ag-activity ag-step');
+  row.dataset.running = String(running); row.dataset.error = String(!!step.error);
+  row.open = !!step.error;
+  const head = el('summary');
+  const mark = el('span', running ? 'ag-working-mark' : 'ag-activity-mark');
+  mark.append(icon(running ? 'rime' : step.error ? 'warning' : 'check'));
+  head.append(mark, el('span', 'ag-step-reason', step.reason || humanise(step.tool)));
+  if (!running && step.ms !== undefined) head.append(el('span', 'ag-step-time', fmtMs(step.ms)));
   row.append(head);
-  if (typeof step.args?.device === 'string') row.append(el('small', 'ml-5 text-ink-faint', `Computer: ${step.args.device}`));
-
-  // An error is something the user has to know about, so it stays visible.
-  if (step.error) {
-    row.append(el('div', 'mt-1 pl-5 text-err', step.error));
-  } else if (!running && step.result !== undefined) {
-    const det = document.createElement('details');
-    const sum = el('summary', 'mt-0.5 ml-5 cursor-pointer text-[11px] text-ink-faint select-none hover:text-ink-muted', 'details');
-    const pre = el('pre', 'mt-1 ml-5 max-h-64 overflow-auto rounded bg-surface-2 p-2 text-[11px] whitespace-pre-wrap');
-    const args = { ...(step.args ?? {}) };
-    delete args.reason; // already said, in English, above
-    const text =
-      `${step.tool}(${Object.keys(args).length ? JSON.stringify(args, null, 1) : ''})\n\n` +
-      (typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 1));
-    pre.textContent = text.length > 20_000 ? `${text.slice(0, 20_000)}\n… (truncated for display)` : text;
-    det.append(sum, pre);
-    if (['computer_screenshot', 'computer_app_state', 'computer_app_input', 'render_document_page'].includes(step.tool) && step.result && typeof step.result === 'object' && 'image_sha256' in step.result && typeof step.result.image_sha256 === 'string' && /^[a-f0-9]{64}$/.test(step.result.image_sha256)) {
-      const image = el('img', 'mt-2 max-w-full rounded'); image.alt = step.tool === 'render_document_page' ? 'Rime PDF page' : 'Rime computer screenshot'; image.loading = 'lazy';
-      image.src = `/api/agent/files?sha=${step.result.image_sha256}&_ward=${encodeURIComponent(ward)}`;
-      det.append(image);
-    }
-    row.append(det);
+  const body = el('div', 'ag-step-details');
+  if (typeof step.args?.device === 'string') body.append(el('small', 'muted', `Computer: ${step.args.device}`));
+  if (step.result && typeof step.result === 'object' && 'background' in step.result && step.result.background)
+    body.append(el('small', 'muted', 'Background task'));
+  const args = { ...(step.args ?? {}) }; delete args.reason;
+  const text = `${step.tool}(${Object.keys(args).length ? JSON.stringify(args, null, 1) : ''})` +
+    (step.result !== undefined ? `\n\n${typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 1)}` : running ? '\n\nRunning…' : '');
+  body.append(el('pre', 'ag-step-output', text.length > 20_000 ? `${text.slice(0, 20_000)}\n… (truncated for display)` : text));
+  if (step.error) body.prepend(el('p', 'ag-step-error', step.error));
+  if (['computer_screenshot', 'computer_app_state', 'computer_app_input', 'render_document_page'].includes(step.tool) && step.result && typeof step.result === 'object' &&
+      'image_sha256' in step.result && typeof step.result.image_sha256 === 'string' && /^[a-f0-9]{64}$/.test(step.result.image_sha256)) {
+    const image = el('img', 'ag-step-image'); image.alt = step.tool === 'render_document_page' ? 'Rime PDF page' : 'Rime computer screenshot'; image.loading = 'lazy';
+    image.src = `/api/agent/files?sha=${step.result.image_sha256}&_ward=${encodeURIComponent(ward)}`; body.append(image);
   }
+  row.append(body);
+  animateDetails(row);
   return row;
 }
 
@@ -315,7 +318,7 @@ const newRun = (): Run => ({ steps: new Map(), seq: ++runSeq, spoken: new Set() 
 const batchKey = (seq: number | string, round: unknown) => (typeof round === 'number' ? `${seq}:${round}` : undefined);
 
 type Item =
-  | { k: 'msg'; role: 'user' | 'assistant'; text: string; src?: TurnSource }
+  | { k: 'msg'; role: 'user' | 'assistant'; text: string; src?: TurnSource; id?: string; streaming?: boolean; incomplete?: boolean }
   | StepItem
   | { k: 'thinking'; label?: string }
   | { k: 'note'; text: string; err?: boolean; icon?: string };
@@ -347,10 +350,20 @@ interface Ui {
   jump: HTMLButtonElement;
   follow: boolean;
   restored?: boolean;
-  rendered: { signature: string; node: HTMLElement }[];
+  rendered: { key?: string; signature: string; node: HTMLElement }[];
+  scroll?: ReturnType<typeof followLog>;
+  visibility?: IntersectionObserver;
+  live?: boolean;
 }
 
+type LogUi = Pick<Ui, 'root' | 'log' | 'input' | 'rendered' | 'jump' | 'follow' | 'live' | 'restored' | 'scroll'>;
+
 interface State {
+  task?: string;
+  reloadLive?: () => void;
+  conversation?: number;
+  run?: string;
+  frame?: number;
   w: WardInstance;
   items: Item[];
   pending: Pending | null;
@@ -401,6 +414,7 @@ function hideVoiceCapture(st: State) {
 }
 window.addEventListener('fd:page', () => { for (const st of states.values()) hideVoiceCapture(st); });
 document.addEventListener('visibilitychange', () => {
+  document.documentElement.classList.toggle('ag-page-hidden', document.hidden);
   if (document.visibilityState === 'hidden') for (const st of states.values()) void st.voice?.viewHidden();
 });
 
@@ -458,9 +472,11 @@ function copyButton(text: string, label: string): HTMLButtonElement {
   button.title = label;
   button.setAttribute('aria-label', label);
   button.append(icon('copy'), el('span', undefined, 'Copy'));
-  button.onclick = async () => {
+  button.dataset.copyText = text;
+  button.onclick = async event => {
+    const button = event.currentTarget as HTMLButtonElement;
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(button.dataset.copyText ?? '');
       button.lastElementChild!.textContent = 'Copied';
       setTimeout(() => { button.lastElementChild!.textContent = 'Copy'; }, 1600);
     } catch {
@@ -490,16 +506,98 @@ function appendMentionText(text: string, into: HTMLElement): void {
   into.append(document.createTextNode(text.slice(from)));
 }
 
+const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function arrive(node: HTMLElement) {
+  if (!reducedMotion() && !document.hidden && node.getClientRects().length)
+    node.animate([{ opacity: 0, translate: '0 3px' }, { opacity: 1, translate: '0 0' }], { duration: 180, easing: 'ease-out' });
+}
+
+/** Patch safe, renderer-created DOM; preserve details, focus and existing text nodes. */
+function patchDom(old: Node, fresh: Node, reveal = false): void {
+  if (old.nodeType !== fresh.nodeType || old.nodeName !== fresh.nodeName) { old.parentNode?.replaceChild(fresh, old); return; }
+  if (old instanceof Text) {
+    const value = fresh.textContent ?? '';
+    if (value.startsWith(old.data)) old.appendData(value.slice(old.data.length));
+    else if (old.data !== value) old.data = value;
+    return;
+  }
+  if (!(old instanceof Element) || !(fresh instanceof Element)) return;
+  const wasError = old.getAttribute('data-error') === 'true';
+  for (const attr of [...old.attributes]) if (attr.name !== 'open' && !fresh.hasAttribute(attr.name)) old.removeAttribute(attr.name);
+  for (const attr of [...fresh.attributes]) if (attr.name !== 'open' && old.getAttribute(attr.name) !== attr.value) old.setAttribute(attr.name, attr.value);
+  if (old instanceof HTMLDetailsElement && fresh instanceof HTMLDetailsElement && fresh.open && !wasError) old.open = true;
+  if (old instanceof HTMLElement && fresh instanceof HTMLElement && fresh.onclick) old.onclick = fresh.onclick;
+  // Streaming plain text grows without replacing the preceding selection.
+  if (fresh.childNodes.length === 1 && fresh.firstChild instanceof Text &&
+      [...old.childNodes].every(n => n instanceof Text || n instanceof HTMLElement && n.dataset.reveal === 'true')) {
+    const text = fresh.textContent ?? '', previous = old.textContent ?? '';
+    if (text === previous) return;
+    if (text.startsWith(previous)) {
+      const next = document.createTextNode(text.slice(previous.length));
+      if (reveal && !reducedMotion() && !document.hidden) {
+        const span = el('span'); span.dataset.reveal = 'true'; span.append(next); old.append(span);
+        const animation = span.animate([{ opacity: .35 }, { opacity: 1 }], { duration: 180 });
+        void animation.finished.then(() => { span.replaceWith(...span.childNodes); old.normalize(); }).catch(() => {});
+      } else old.append(next);
+      return;
+    }
+  }
+  const children = [...fresh.childNodes];
+  children.forEach((node, i) => {
+    const current = old.childNodes[i];
+    if (current) patchDom(current, node, reveal);
+    else { old.append(node); if (reveal && node instanceof HTMLElement) arrive(node); }
+  });
+  while (old.childNodes.length > children.length) old.lastChild!.remove();
+}
+
+const proseParts = new WeakMap<HTMLElement, { source: string; node: HTMLElement }[]>();
+function paintProse(prose: HTMLElement, text: string, reveal: boolean) {
+  // Blank lines close a block, except inside a fenced code block. Only changed
+  // chunks are parsed; a long completed answer never rebuilds on a tool tick.
+  const parts: string[] = []; let start = 0, offset = 0, fenced = false;
+  for (const line of text.split('\n')) {
+    if (/^```/.test(line)) fenced = !fenced;
+    offset += line.length + 1;
+    if (!fenced && !line.trim()) { parts.push(text.slice(start, Math.min(offset, text.length))); start = offset; }
+  }
+  if (start < text.length) parts.push(text.slice(start));
+  const previous = proseParts.get(prose) ?? [];
+  const next = parts.map((source, i) => {
+    const old = previous[i];
+    if (old?.source === source) return old;
+    const fresh = el('div', 'ag-prose-part'); fresh.append(markdown(source));
+    if (old) { patchDom(old.node, fresh, reveal); return { source, node: old.node }; }
+    prose.append(fresh); if (reveal) arrive(fresh);
+    return { source, node: fresh };
+  });
+  previous.slice(parts.length).forEach(part => part.node.remove()); proseParts.set(prose, next);
+}
+
 function bubble(role: 'user' | 'assistant', text: string): HTMLElement {
   const wrap = el('article', `ag-message ag-${role}`);
   wrap.setAttribute('aria-label', role === 'user' ? 'You' : 'Assistant');
   const inner = el('div', 'ag-prose');
-  if (role === 'user') appendMentionText(text, inner);
-  else inner.append(markdown(text));
-  const actions = el('div', 'ag-message-actions');
-  actions.append(copyButton(plainMentionText(text), 'Copy message'));
-  wrap.append(inner, actions);
-  return wrap;
+  if (role === 'user') appendMentionText(text, inner); else paintProse(inner, text, false);
+  const actions = el('div', 'ag-message-actions'); actions.append(copyButton(plainMentionText(text), 'Copy message'));
+  wrap.append(inner, actions); return wrap;
+}
+
+function updateBubble(node: HTMLElement, item: Extract<Item, { k: 'msg' }>, st: State, reveal: boolean) {
+  const message = node.matches('.ag-message') ? node : node.querySelector<HTMLElement>('.ag-message')!;
+  if (item.role === 'assistant') paintProse(message.querySelector<HTMLElement>('.ag-prose')!, item.text, reveal);
+  message.dataset.streaming = String(!!item.streaming);
+  message.dataset.incomplete = String(!!item.incomplete);
+  message.querySelector<HTMLButtonElement>('.ag-copy')!.dataset.copyText = plainMentionText(item.text);
+  const actions = message.querySelector<HTMLElement>('.ag-message-actions')!;
+  let read = actions.querySelector<HTMLButtonElement>('[data-read]');
+  if (item.role === 'assistant' && !read) {
+    read = el('button', 'ag-copy'); read.type = 'button'; read.dataset.read = '';
+    read.title = 'Read this message aloud'; read.setAttribute('aria-label', 'Read this message aloud');
+    read.append(icon('volume'), el('span', undefined, 'Read aloud')); actions.append(read);
+  }
+  if (read) { read.disabled = !!item.streaming; read.onclick = () => { void voiceFor(st).speak(item.text); }; }
 }
 
 // ------------------------------------------------------------- empty state
@@ -541,10 +639,10 @@ function capabilities(): [string, string][] {
   ];
 }
 
-function emptyState(st: State, ui: Ui): HTMLElement {
+function emptyState(st: State, ui: Pick<Ui, 'input'>): HTMLElement {
   const wrap = el('div', 'ag-empty');
   const mark = el('div', 'ag-empty-mark');
-  mark.append(icon('sparkle'));
+  mark.append(icon('rime'));
   wrap.append(mark, el('h3', undefined, 'What would you like to work on?'),
     el('p', undefined, 'Plan a project, explore an idea, or put your workspace to work.'));
   const chips = el('div', 'ag-starters');
@@ -582,93 +680,171 @@ function emptyState(st: State, ui: Ui): HTMLElement {
 
 const SRC_LABEL: Record<TurnSource, string> = { chat: '', automation: 'automation', wake: 'scheduled', agent: 'another agent' };
 
-function reconcileLog(log: HTMLElement, previous: Ui['rendered'], entries: { signature: string; create: () => HTMLElement }[]): Ui['rendered'] {
+function reconcileLog(log: HTMLElement, previous: Ui['rendered'], entries: { key?: string; signature: string; create: () => HTMLElement; update?: (node: HTMLElement) => void }[], animate = false): Ui['rendered'] {
+  const byKey = new Map(previous.map((entry, i) => [entry.key ?? String(i), entry]));
   const rendered = entries.map((entry, i) => {
-    const old = previous[i];
-    if (old?.signature === entry.signature) return old;
-    const node = entry.create();
-    if (old?.node instanceof HTMLDetailsElement && node instanceof HTMLDetailsElement) node.open ||= old.node.open;
-    if (old) old.node.replaceWith(node);
-    else log.append(node);
-    return { signature: entry.signature, node };
+    const key = entry.key ?? String(i), old = byKey.get(key); byKey.delete(key);
+    if (old) {
+      if (old.signature !== entry.signature) {
+        if (entry.update) entry.update(old.node); else patchDom(old.node, entry.create(), animate);
+        old.signature = entry.signature;
+      }
+      if (log.children[i] !== old.node) log.insertBefore(old.node, log.children[i] ?? null);
+      return old;
+    }
+    const node = entry.create(); log.insertBefore(node, log.children[i] ?? null);
+    if (animate) arrive(node);
+    return { key, signature: entry.signature, node };
   });
-  for (const old of previous.slice(entries.length)) old.node.remove();
+  for (const old of byKey.values()) old.node.remove();
   return rendered;
 }
 
-function buildLog(st: State, ui: Ui): void {
+const WORKING_WORDS = ['Contemplating…', 'Gathering the threads…', 'Weaving a plan…', 'Consulting the runes…'];
+function thinking(label?: string): HTMLElement {
+  const node = el('div', 'ag-thinking'), mark = el('span', 'ag-working-mark'); mark.append(icon('rime'));
+  const words = el('span', label ? 'ag-working-label' : 'ag-working-words');
+  words.setAttribute('aria-hidden', 'true');
+  if (label) words.textContent = label;
+  else WORKING_WORDS.forEach((word, i) => { const phrase = el('span', undefined, word); phrase.style.setProperty('--ag-word-delay', `${i ? (i - 4) * 6 : 0}s`); words.append(phrase); });
+  node.append(mark, words); return node;
+}
+
+/** One scroll writer for compact, expanded and child logs. */
+function followLog(log: HTMLElement, jump: HTMLElement, view: { follow: boolean }) {
+  let frame = 0, written = log.scrollTop, writing = false, touchY = 0;
+  const near = () => log.scrollHeight - log.scrollTop - log.clientHeight < 64;
+  const cancel = () => { cancelAnimationFrame(frame); frame = 0; };
+  const show = () => { jump.hidden = !!log.querySelector('.ag-empty') || view.follow || log.scrollHeight - log.clientHeight < 48; };
+  const stop = () => { view.follow = false; cancel(); show(); };
+  const tick = () => {
+    frame = 0;
+    if (!view.follow || document.hidden || !log.isConnected || !log.getClientRects().length) return;
+    const target = Math.max(0, log.scrollHeight - log.clientHeight), distance = target - log.scrollTop;
+    written = log.scrollTop + (Math.abs(distance) < 1 ? distance : distance * .3);
+    const before = log.scrollTop;
+    log.scrollTop = written; written = log.scrollTop; writing ||= before !== written;
+    if (Math.abs(target - written) > 1) frame = requestAnimationFrame(tick);
+    show();
+  };
+  const update = (instant = false) => {
+    show();
+    if (log.querySelector('.ag-empty')) { cancel(); log.scrollTop = 0; written = 0; writing = false; return; }
+    if (!view.follow) return;
+    if (instant || reducedMotion()) { cancel(); const before = log.scrollTop; log.scrollTop = log.scrollHeight; written = log.scrollTop; writing ||= before !== written; }
+    else if (!frame) frame = requestAnimationFrame(tick);
+  };
+  log.addEventListener('wheel', e => { if (e.deltaY < 0) stop(); }, { passive: true });
+  log.addEventListener('touchstart', e => { touchY = e.touches[0]?.clientY ?? 0; }, { passive: true });
+  log.addEventListener('touchmove', e => { const y = e.touches[0]?.clientY ?? touchY; if (y > touchY) stop(); touchY = y; }, { passive: true });
+  log.addEventListener('keydown', e => { if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) stop(); });
+  log.addEventListener('scroll', () => {
+    const top = log.scrollTop;
+    if (!writing || Math.abs(top - written) > 1) { view.follow = near(); if (!view.follow) cancel(); }
+    writing = false; show();
+  }, { passive: true });
+  jump.onclick = () => { view.follow = true; update(true); };
+  const resize = new ResizeObserver(() => update()); resize.observe(log);
+  log.addEventListener('load', () => update(), true);
+  log.addEventListener('toggle', () => update(), true);
+  return { update, dispose() { cancel(); resize.disconnect(); } };
+}
+
+function buildLog(st: State, ui: LogUi): void {
   const log = ui.log;
-  const entries: { signature: string; create: () => HTMLElement }[] = [];
-  if (!st.items.length) entries.push({ signature: 'empty', create: () => emptyState(st, ui) });
+  const entries: { key: string; signature: string; create: () => HTMLElement; update?: (node: HTMLElement) => void }[] = [];
+  if (!st.items.length) entries.push({ key: 'empty', signature: 'empty', create: () => st.task ? el('p', 'ag-child-empty', st.remote ? 'The child agent is starting…' : 'No conversation was recorded for this run.') : emptyState(st, ui) });
   let prev: TurnSource = 'chat';
   for (let i = 0; i < st.items.length; i++) {
     const it = st.items[i]!;
+    if (it.k === 'thinking' && (st.pending || currentQuestion(st)?.wait || st.items.some(x => x.k === 'msg' && x.streaming))) continue;
     const src = it.k === 'msg' || it.k === 'step' ? it.src ?? 'chat' : 'chat';
     const label = src !== 'chat' && src !== prev ? SRC_LABEL[src] : '';
     const group: StepItem[] = [];
     if (it.k === 'step') {
       group.push(it);
-      while (st.items[i + 1]?.k === 'step' && (st.items[i + 1] as StepItem).src === it.src)
-        group.push(st.items[++i] as StepItem);
+      while (st.items[i + 1]?.k === 'step' && (st.items[i + 1] as StepItem).src === it.src) group.push(st.items[++i] as StepItem);
     }
-    entries.push({ signature: JSON.stringify([label, group.length ? group : it]), create: () => {
-      let node: HTMLElement;
-      if (it.k === 'msg') {
-        node = bubble(it.role, it.text);
-        if (it.role === 'assistant') {
-          const read = el('button', 'ag-copy');
-          read.type = 'button'; read.title = 'Read this message aloud'; read.setAttribute('aria-label', 'Read this message aloud');
-          read.append(icon('volume'), el('span', undefined, 'Read aloud'));
-          read.onclick = () => { void voiceFor(st).speak(it.text); };
-          node.querySelector('.ag-message-actions')!.append(read);
+    const key = it.k === 'msg' ? `msg:${it.id ?? `${i}:${it.role}`}` : it.k === 'step' ? `steps:${it.step.id ?? i}` : it.k === 'thinking' ? 'thinking' : `note:${i}`;
+    entries.push({ key, signature: JSON.stringify([label, group.length ? group : it]),
+      ...(it.k === 'msg' && it.role === 'assistant' ? { update: (node: HTMLElement) => updateBubble(node, it, st, ui.live === true) } : {}),
+      create: () => {
+        let node: HTMLElement;
+        if (it.k === 'msg') { node = bubble(it.role, it.text); updateBubble(node, it, st, false); }
+        else if (it.k === 'step') {
+          node = el('div', 'ag-timeline');
+          for (const [index, item] of group.entries()) {
+            if (item.batch && item.batch !== group[index - 1]?.batch) {
+              const count = group.filter(x => x.batch === item.batch).length;
+              const label = el('div', 'ag-batch-label', `${count} parallel actions`); label.hidden = count < 2; node.append(label);
+            }
+            node.append(stepCard(item.step, item.running, st.w.i));
+          }
+        } else if (it.k === 'thinking') node = thinking(it.label);
+        else {
+          node = el('div', `ag-notice${it.err ? ' ag-error' : ''}`);
+          if (it.icon || it.err) node.append(icon(it.icon ?? 'warning'), document.createTextNode(' '));
+          node.append(document.createTextNode(it.text));
         }
-      }
-      else if (it.k === 'step') {
-        const activity = el('details', 'ag-activity');
-        const running = group.filter(g => g.running).length;
-        const failed = group.filter(g => g.step.error).length;
-        const summary = el('summary');
-        const mark = el('span', running ? 'spinner' : 'ag-activity-mark');
-        if (!running) mark.append(icon(failed ? 'warning' : 'check'));
-        summary.append(mark,
-          el('span', undefined, running ? group.find(g => g.running)!.step.reason || 'Working…' : `${group.length} ${group.length === 1 ? 'agent action' : 'agent actions'}${failed ? ` · ${failed} need attention` : ''}`));
-        activity.open = failed > 0;
-        activity.append(summary, ...group.map(g => stepCard(g.step, g.running, st.w.i)));
-        node = activity;
-      } else if (it.k === 'thinking') {
-        node = el('div', 'ag-thinking');
-        node.append(el('span', 'spinner'), el('span', undefined, it.label ?? 'Thinking…'));
-      } else {
-        node = el('div', `ag-notice${it.err ? ' ag-error' : ''}`);
-        if (it.icon || it.err) node.append(icon(it.icon ?? 'warning'), document.createTextNode(' '));
-        node.append(document.createTextNode(it.text));
-      }
-      if (label) {
-        const rail = el('div', 'ag-source');
-        const source = el('span', 'ag-source-label');
-        source.append(icon(src === 'wake' ? 'timer' : src === 'agent' ? 'bot' : 'flow'), document.createTextNode(' ' + label));
-        rail.append(source, node);
-        return rail;
-      }
-      return node;
-    }});
+        if (label) {
+          const rail = el('div', 'ag-source'), source = el('span', 'ag-source-label');
+          source.append(icon(src === 'wake' ? 'timer' : src === 'agent' ? 'rime' : 'flow'), document.createTextNode(' ' + label));
+          rail.append(source, node); return rail;
+        }
+        return node;
+      },
+    });
     prev = src;
   }
-  // Keep unchanged message nodes in place: selecting text, reading older
-  // replies and expanding tool details must survive live activity.
   const top = log.scrollTop;
-  ui.rendered = reconcileLog(log, ui.rendered, entries);
-  log.scrollTop = ui.follow ? log.scrollHeight : top;
+  ui.rendered = reconcileLog(log, ui.rendered, entries, ui.live === true);
+  if (!ui.follow) log.scrollTop = top;
   if (!ui.restored && entries.length) {
     ui.restored = true;
-    const saved = readDesktopCheckpoint<{ follow: boolean; top: number; details: number[] }>(`agent-view:${st.w.i}:${st.w.device ?? ''}`);
+    const saved = st.task ? null : readDesktopCheckpoint<{ follow: boolean; top: number; details: number[] }>(`agent-view:${st.w.i}:${st.w.device ?? ''}`);
     if (saved && Number.isFinite(saved.top)) {
       ui.follow = saved.follow === true;
       log.querySelectorAll('details').forEach((detail, index) => { detail.open = saved.details?.includes(index) ?? false; });
-      log.scrollTop = ui.follow ? log.scrollHeight : saved.top;
+      if (!ui.follow) log.scrollTop = saved.top;
+    }
+    ui.scroll?.update(true);
+  } else ui.scroll?.update();
+}
+
+function paintStream(st: State) {
+  if (st.frame) return;
+  st.frame = requestAnimationFrame(() => { st.frame = undefined; for (const ui of st.uis) if (ui.root.isConnected) buildLog(st, ui); });
+}
+
+function restoreSurface(st: State, data: { conversation?: number; transcript?: TranscriptMsg[]; live?: LiveTurn }) {
+  const old = st.items, sameRun = !!data.live && (!st.run || st.run === data.live.id);
+  st.conversation = data.conversation; st.run = data.live?.id;
+  st.items = itemsFrom(data.live?.transcript ?? data.transcript ?? []);
+  const matched = new Set<Item>();
+  for (const item of st.items) if (item.k === 'msg') {
+    const previous = old.find(x => !matched.has(x) && x.k === 'msg' && x.role === item.role && x.text === item.text);
+    if (previous?.k === 'msg') { item.id = previous.id; matched.add(previous); }
+  }
+  const run = newRun();
+  if (data.live) {
+    if (!st.task) remoteRuns.set(st.w.i, run);
+    for (const event of data.live.events) applyEvent(st, run, event, undefined, true);
+  }
+  if (sameRun) {
+    for (const item of old) {
+      if (item.k === 'msg' && item.id) {
+        const current = st.items.find(x => x.k === 'msg' && x.id === item.id);
+        if (current?.k === 'msg' && item.text.startsWith(current.text) && (item.text.length > current.text.length || !item.streaming)) Object.assign(current, item);
+        else if (!current) st.items.push(item);
+      } else if (item.k === 'step' && item.step.id) {
+        const current = st.items.find(x => x.k === 'step' && x.step.id === item.step.id);
+        if (current?.k === 'step' && current.running && !item.running) Object.assign(current, item);
+        else if (!current) st.items.push(item);
+      }
     }
   }
-  ui.jump.hidden = ui.follow || log.scrollHeight - log.clientHeight < 48;
+  for (const ui of st.uis) ui.live = false;
+  return run;
 }
 
 function setDraft(st: State, value: string): void {
@@ -722,9 +898,7 @@ function paintChips(st: State, chips: HTMLElement): void {
   chips.classList.toggle('flex', any);
 }
 
-/** Repaint every attached view from the item model. Cheap and impossible to
- *  desync — transcripts are short and streams emit tens of frames, not
- *  thousands. */
+/** Draft checkpoints are independent of frame-batched streamed text. */
 function saveDraft(st: State) {
   saveDesktopState(`agent:${st.w.i}:${st.w.device ?? ''}`, { draft: st.draft, mentions: st.mentions, attachments: st.attachments });
 }
@@ -766,7 +940,7 @@ function paintQuestion(st: State, ui: Ui): void {
   };
   if (ui.questionId !== question.id) {
     ui.questionId = question.id; box.replaceChildren();
-    const heading = el('div', 'ag-question-heading'); heading.append(icon('bot'), el('span', undefined, question.wait ? 'Rime is waiting for your answer' : 'A question from Rime'));
+    const heading = el('div', 'ag-question-heading'); heading.append(icon('rime'), el('span', undefined, question.wait ? 'Rime is waiting for your answer' : 'A question from Rime'));
     const group = el('fieldset', 'ag-question-fields'), legend = el('legend', 'ag-question-title', question.question);
     group.append(legend);
     if (question.input === 'text') {
@@ -806,7 +980,7 @@ function paint(st: State): void {
   if (st.busy || st.remote) reloadHolds.add(st.w.i);
   else reloadHolds.delete(st.w.i);
   try { saveDraft(st); } catch { /* Retain the in-memory draft until recovery can be saved. */ }
-  for (const ui of [...st.uis]) if (!ui.root.isConnected) st.uis.delete(ui);
+  for (const ui of [...st.uis]) if (!ui.root.isConnected) { ui.scroll?.dispose(); ui.visibility?.disconnect(); st.uis.delete(ui); }
   for (const ui of st.uis) {
     buildLog(st, ui);
     const voicePhase = st.voiceState?.phase ?? 'idle';
@@ -827,6 +1001,8 @@ function paint(st: State): void {
     // Mid-turn the composer stays open: a send steers the running turn.
     ui.send.disabled = !!st.pending?.question || st.configured === false || st.uploading > 0 || st.clearing || (!st.draft.trim() && !st.attachments.length);
     const working = st.busy || st.remote;
+    const paused = !!st.pending || !!currentQuestion(st)?.wait;
+    ui.root.dataset.paused = String(paused);
     const status = st.pending?.question ? 'Waiting for your answer' : st.pending ? 'Approval needed' : st.clearing ? 'Starting a new chat…' : working ? 'Working · send a follow-up to steer' : st.sharedStatus || 'Rimeward agent';
     if (ui.status.textContent !== status) ui.status.textContent = status;
     paintContext(ui.context, st.context);
@@ -861,11 +1037,11 @@ async function refetch(st: State, settled = false): Promise<void> {
   const refresh = ++st.refresh;
   const { status, data } = await getJson(`/api/agent/${encodeURIComponent(st.w.i)}`).catch(() => ({ status: 0, data: null }));
   if (status !== 200 || !data) return;
-  if (st.busy || st.revision !== revision || st.refresh !== refresh) return;
+  if (st.busy || st.refresh !== refresh || st.revision !== revision && !data.live) return;
   st.configured = data.configured;
   st.context = data.context ?? undefined;
   st.tasks = data.tasks ?? [];
-  if (!st.remote || !data.busy) st.items = itemsFrom(data.transcript ?? []);
+  restoreSurface(st, data);
   st.pending = data.pending ?? null;
   st.question = data.question ?? null;
   // A turn is running elsewhere (another client, or an automation) — its live
@@ -881,7 +1057,10 @@ async function refetch(st: State, settled = false): Promise<void> {
 function endTurn(st: State): void {
   st.busy = false;
   // A stream that ends mid-call must not leave spinners running forever.
-  for (const it of st.items) if (it.k === 'step') it.running = false;
+  for (const it of st.items) {
+    if (it.k === 'step') it.running = false;
+    if (it.k === 'msg' && it.streaming) { it.streaming = false; it.incomplete = true; }
+  }
   dropThinking(st);
 }
 
@@ -911,14 +1090,30 @@ function fail(st: State, msg: string, restore: Restore): void {
 /** Apply one streamed AgentEvent to the item model. Shared by the local POST
  *  stream and the SSE mirror of headless runs ('user' only ever arrives on the
  *  mirror). Returns false for the types the caller owns (done/error). */
-function applyEvent(st: State, run: Run, e: any, src?: TurnSource): boolean {
+function applyEvent(st: State, run: Run, e: any, src?: TurnSource, replay = false): boolean {
   st.revision++;
+  for (const ui of st.uis) ui.live = true;
   switch (e.type) {
     case 'user':
       dropThinking(st);
       if (typeof e.text === 'string' && e.text.trim()) st.items.push({ k: 'msg', role: 'user', text: e.text, src });
       return true;
+    case 'text_delta': {
+      if (typeof e.id !== 'string' || typeof e.delta !== 'string' || !Number.isInteger(e.offset) || e.offset < 0) return true;
+      dropThinking(st);
+      let item = st.items.find((x): x is Extract<Item, { k: 'msg' }> => x.k === 'msg' && x.id === e.id);
+      if (!item) {
+        if (e.offset !== 0) { if (st.reloadLive) st.reloadLive(); else if (!st.busy) void refetch(st); return true; }
+        item = { k: 'msg', id: e.id, role: 'assistant', text: '', streaming: true, src }; st.items.push(item);
+      }
+      if (!item.streaming) return true;
+      if (e.offset > item.text.length) { if (st.reloadLive) st.reloadLive(); else if (!st.busy) void refetch(st); return true; }
+      const skip = item.text.length - e.offset;
+      if (skip < e.delta.length) item.text += e.delta.slice(skip);
+      return true;
+    }
     case 'thinking':
+      if (st.items.some(x => x.k === 'msg' && x.streaming)) return true;
       dropThinking(st);
       st.items.push({ k: 'thinking', ...(typeof e.label === 'string' ? { label: e.label } : {}) });
       return true;
@@ -929,11 +1124,13 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource): boolean {
     case 'says':
       dropThinking(st);
       if (typeof e.text === 'string' && e.text.trim()) {
-        st.items.push({ k: 'msg', role: 'assistant', text: e.text, src });
+        const item = typeof e.id === 'string' ? st.items.find(x => x.k === 'msg' && x.id === e.id) : undefined;
+        if (item?.k === 'msg') Object.assign(item, { text: e.text, streaming: false, incomplete: !!e.incomplete });
+        else st.items.push({ k: 'msg', role: 'assistant', text: e.text, src, id: e.id, incomplete: !!e.incomplete });
         const speechKey = typeof e.id === 'string' ? e.id : e.text;
-        if (!run.spoken.has(speechKey)) {
+        if (!e.incomplete && !run.spoken.has(speechKey)) {
           run.spoken.add(speechKey);
-          st.voice?.read(e.text, typeof e.id === 'string' ? e.id : `${run.seq}:${run.spoken.size}`);
+          if (!replay) st.voice?.read(e.text, typeof e.id === 'string' ? e.id : `${run.seq}:${run.spoken.size}`);
         }
       }
       return true;
@@ -951,7 +1148,7 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource): boolean {
       return true;
     }
     case 'step': {
-      const it = run.steps.get(String(e.step?.id));
+      const it = run.steps.get(String(e.step?.id)) ?? st.items.find((x): x is StepItem => x.k === 'step' && x.step.id === e.step?.id);
       if (it) {
         it.step = e.step;
         it.running = false;
@@ -975,11 +1172,13 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource): boolean {
       // done's reply field repeats it and is ignored by the caller.
       dropThinking(st);
       if (typeof e.text === 'string' && e.text.trim()) {
-        st.items.push({ k: 'msg', role: 'assistant', text: e.text, src });
+        const item = typeof e.id === 'string' ? st.items.find(x => x.k === 'msg' && x.id === e.id) : undefined;
+        if (item?.k === 'msg') Object.assign(item, { text: e.text, streaming: false, incomplete: !!e.incomplete });
+        else st.items.push({ k: 'msg', role: 'assistant', text: e.text, src, id: e.id, incomplete: !!e.incomplete });
         const speechKey = typeof e.id === 'string' ? e.id : e.text;
-        if (!run.spoken.has(speechKey)) {
+        if (!e.incomplete && !run.spoken.has(speechKey)) {
           run.spoken.add(speechKey);
-          st.voice?.read(e.text, typeof e.id === 'string' ? e.id : `${run.seq}:${run.spoken.size}`);
+          if (!replay) st.voice?.read(e.text, typeof e.id === 'string' ? e.id : `${run.seq}:${run.spoken.size}`);
         }
       }
       return true;
@@ -1034,7 +1233,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
         return; // fail() painted
       }
     }
-    paint(st);
+    if (e.type === 'text_delta') paintStream(st); else paint(st);
   };
 
   try {
@@ -1080,23 +1279,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
     }
 
     accepted = true;
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const frames = buf.split('\n\n');
-      buf = frames.pop() ?? '';
-      for (const frame of frames) {
-        const line = frame.split('\n').find((l) => l.startsWith('data: '));
-        if (!line) continue;
-        try {
-          dispatch(JSON.parse(line.slice(6)));
-        } catch {}
-      }
-    }
+    await readSse(res.body!, payload => { if (payload !== '[DONE]') dispatch(JSON.parse(payload)); });
     if (!completed) reconnect();
   } catch (err) {
     if (accepted && !completed) { reconnect(); return; }
@@ -1200,7 +1383,8 @@ function openTasks(st: State): void {
   form.onsubmit = e => e.preventDefault();
   const list = el('div', 'ag-task-list');
   const history = el('input'); history.type = 'checkbox';
-  const historyLabel = el('label', 'ag-task-history'); historyLabel.append(history, icon('history'), document.createTextNode('Show completed logs'));
+  history.setAttribute('role', 'switch');
+  const historyLabel = el('label', 'ag-task-history switch'); historyLabel.append(history, icon('history'), document.createTextNode('Show completed logs'));
   historyLabel.title = 'Newest 100 completed logs, kept for up to 30 days';
   actions.before(historyLabel, list);
   let selected: string | null = null, cursor = 0, result = false;
@@ -1310,6 +1494,8 @@ function openTasks(st: State): void {
   void refresh();
 }
 
+const childLive = new Map<string, (event: AgentLive) => void>();
+
 function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogElement): void {
   const { d, form, actions, submit, error } = dialog('Child agent');
   d.classList.remove('dev-project-dialog');
@@ -1322,7 +1508,7 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
   back.title = 'Back to tasks'; back.setAttribute('aria-label', 'Back to tasks');
   const header = el('header', 'ag-dialog-header');
   const identity = el('div', 'ag-dialog-identity');
-  const avatar = el('span', 'ag-avatar'); avatar.append(icon('bot'));
+  const avatar = el('span', 'ag-avatar'); avatar.append(icon('rime'));
   const labels = el('div');
   const statusLine = el('p', 'ag-status', 'Connecting…'); statusLine.setAttribute('role', 'status');
   labels.append(heading, statusLine); identity.append(avatar, labels); header.append(identity, back);
@@ -1373,20 +1559,23 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
   error.setAttribute('role', 'alert'); error.classList.add('ag-child-error');
   footer.append(connection, error, composer, help); form.replaceChildren(header, stage, footer);
   const endpoint = `/api/agent/${encodeURIComponent(st.w.i)}`;
-  let fetching = false, sending = false, stopping = false, connected = false, canMessage = false, follow = true;
-  let rendered: Ui['rendered'] = [], receiptNodes: Ui['rendered'] = [];
+  let fetching = false, sending = false, stopping = false, connected = false, canMessage = false;
+  let receiptNodes: Ui['rendered'] = [];
+  const childState: State = { ...st, task: task.id, items: [], pending: null, question: null, busy: false, remote: true, voice: undefined, uis: new Set(), frame: undefined, revision: 0 };
+  const childUi: LogUi = { root: d, log: transcriptBox, input, rendered: [], jump, follow: true, restored: false, live: false };
+  let childRun = newRun(), childFrame = 0;
+  childUi.scroll = followLog(log, jump, childUi);
   let question: { id: number; text: string; maxLength: number } | null = null;
   const failure = (e: unknown) => { error.hidden = false; error.textContent = e instanceof Error ? e.message : String(e); };
   const controlsState = () => {
     submit.disabled = sending || !connected || !canMessage || !input.value.trim() || input.value.length > input.maxLength || draftQuestionId !== question?.id;
     stop.disabled = stopping || !connected;
   };
-  const scroll = () => { if (follow) log.scrollTop = log.scrollHeight; jump.hidden = follow || log.scrollHeight - log.clientHeight < 48; };
-  log.addEventListener('scroll', () => { follow = log.scrollHeight - log.scrollTop - log.clientHeight < 64; scroll(); });
-  jump.onclick = () => { follow = true; scroll(); };
+  const scroll = () => childUi.scroll!.update();
   const refresh = async () => {
     if (!d.open || fetching || document.hidden) return;
     fetching = true;
+    const revision = childState.revision;
     try {
       const response = await fetch(`${endpoint}?tasks=1&task=${encodeURIComponent(task.id)}&session=1`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
       const status = response.status, data = await response.json();
@@ -1405,23 +1594,14 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
         matchMedia('(pointer: coarse)').matches ? 'Tap send · messages are read at the next step' : 'Enter to send · Shift + Enter for a new line' :
         'This run has ended. Its conversation and your draft remain available to copy.';
       if (running && input.value && draftQuestionId !== question?.id) help.textContent = 'The waiting question changed. Review the latest activity and edit your draft before sending.';
-      const entries = (data.transcript as TranscriptMsg[]).map(message => ({ signature: JSON.stringify(message), create: () => {
-        const group = el('div');
-        if (message.steps?.length) {
-          const activity = el('details', 'ag-activity');
-          activity.append(el('summary', undefined, `${message.steps.length} agent ${message.steps.length === 1 ? 'action' : 'actions'}`), ...message.steps.map(step => stepCard({ ...step, kind: step.kind === 'write' || step.kind === 'confirm' ? step.kind : 'read' }, false, st.w.i)));
-          group.append(activity);
-        }
-        if (message.text) {
-          const messageNode = bubble(message.role === 'user' ? 'user' : 'assistant', message.text);
-          messageNode.setAttribute('aria-label', message.role === 'assistant' ? 'Child agent' : message.source === 'agent' ? 'Parent agent' : 'You');
-          if (message.role === 'user' && message.source === 'agent') group.append(el('p', 'ag-source-label', 'Parent agent'));
-          group.append(messageNode);
-        }
-        return group;
-      }}));
-      if (!entries.length) entries.push({ signature: `empty:${data.task.state}`, create: () => el('p', 'ag-child-empty', running ? 'The child agent is starting…' : 'No conversation was recorded for this run.') });
-      rendered = reconcileLog(transcriptBox, rendered, entries);
+      if (childState.revision === revision) {
+        childRun = restoreSurface(childState, data);
+        childUi.live = false; childState.remote = running;
+        if (running && !childState.items.some(x => x.k === 'thinking' || x.k === 'msg' && x.streaming || x.k === 'step' && x.running))
+          childState.items.push({ k: 'thinking' });
+        buildLog(childState, childUi);
+      }
+      d.dataset.paused = String(!!question || !running);
       progressTitle.textContent = running ? 'Live activity' : 'Run activity';
       const activity = `${data.truncated ? '[Earlier activity is no longer retained]\n' : ''}${data.output || 'No activity recorded yet.'}`;
       if (output.textContent !== activity) output.textContent = activity;
@@ -1458,7 +1638,7 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
         if (drafts.get(draftKey)?.text === message && drafts.get(draftKey)?.questionId === questionId) saveDraft('');
         input.value = ''; autoGrow(input);
       }
-      delivery.open = true; follow = true;
+      delivery.open = true; childUi.follow = true;
       await refresh();
     } catch (e) { failure(e); void refresh(); }
     finally { sending = false; controlsState(); }
@@ -1479,10 +1659,25 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
     }
   });
   controlsState(); autoGrow(input);
-  progress.open = task.state === 'running';
+  progress.open = false;
+  childState.reloadLive = () => { void refresh(); };
+  const onLive = (event: AgentLive) => {
+    if (!d.open || event.conversation && childState.conversation && event.conversation !== childState.conversation) return;
+    childUi.live = true;
+    if (event.run) childState.run = event.run;
+    if (event.event.type === 'end') { endTurn(childState); childState.remote = false; buildLog(childState, childUi); void refresh(); return; }
+    if (applyEvent(childState, childRun, event.event, 'agent')) {
+      if (event.event.type === 'text_delta') {
+        if (!childFrame) childFrame = requestAnimationFrame(() => { childFrame = 0; buildLog(childState, childUi); });
+      } else buildLog(childState, childUi);
+    }
+  };
+  childLive.set(task.id, onLive);
   const timer = setInterval(() => { void refresh(); }, 2000);
   d.addEventListener('close', () => {
-    saveDraft(); clearInterval(timer); d.remove();
+    saveDraft(); clearInterval(timer); cancelAnimationFrame(childFrame); childUi.scroll?.dispose(); childState.voice?.dispose();
+    if (childLive.get(task.id) === onLive) childLive.delete(task.id);
+    d.remove();
     [...tasksDialog.querySelectorAll<HTMLButtonElement>('[data-ag-child]')].find(button => button.dataset.agChild === task.id)?.focus();
   }, { once: true });
   back.focus();
@@ -1783,15 +1978,7 @@ function wireComposer(ui: Ui, cur: () => State | undefined): void {
       void addFiles(st, e.clipboardData.files);
     }
   });
-  ui.log.addEventListener('scroll', () => {
-    ui.follow = ui.log.scrollHeight - ui.log.scrollTop - ui.log.clientHeight < 64;
-    ui.jump.hidden = ui.follow;
-  }, { passive: true });
-  ui.jump.onclick = () => {
-    ui.follow = true;
-    ui.log.scrollTop = ui.log.scrollHeight;
-    ui.jump.hidden = true;
-  };
+  ui.scroll = followLog(ui.log, ui.jump, ui);
   ui.root.querySelector('[data-ag-clear]')?.addEventListener('click', () => {
     const st = cur();
     if (st) void clearChat(st);
@@ -1830,6 +2017,8 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   status.after(context);
   const stage = el('div', 'ag-stage');
   const log = el('div', 'ag-log');
+  const visibility = new IntersectionObserver(entries => { root.dataset.visible = String(entries.some(entry => entry.isIntersecting)); });
+  visibility.observe(root);
   log.dataset.agLog = '';
   log.setAttribute('role', 'log');
   log.setAttribute('aria-label', 'Conversation');
@@ -1895,8 +2084,8 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   const voiceStatus = el('p', 'ag-voice-status');
   voiceStatus.hidden = true; voiceStatus.setAttribute('role', 'status');
   const voiceOptions = el('div', 'ag-voice-options');
-  const readLabel = el('label');
-  const readResponses = el('input'); readResponses.type = 'checkbox';
+  const readLabel = el('label', 'switch');
+  const readResponses = el('input'); readResponses.type = 'checkbox'; readResponses.setAttribute('role', 'switch');
   readLabel.append(readResponses, document.createTextNode('Read responses'));
   const modeLabel = el('label');
   const conversationMode = el('select'); conversationMode.setAttribute('aria-label', 'Voice conversation mode');
@@ -1907,7 +2096,7 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   voiceOptions.append(readLabel, modeLabel);
   footer.append(questionBox, pendingBox, form, voiceOptions, voiceStatus, help);
   host.append(stage, footer);
-  return { root, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, readResponses, conversationMode, chips, pendingBox, pendingText, pendingDetails, pendingPatch, questionBox, status, context, jump, follow: true, rendered: [] };
+  return { root, visibility, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, readResponses, conversationMode, chips, pendingBox, pendingText, pendingDetails, pendingPatch, questionBox, status, context, jump, follow: true, rendered: [] };
 }
 
 // ------------------------------------------------------------ shared dialog
@@ -1953,6 +2142,8 @@ function openDialog(st: State): void {
   // into another ward's conversation.
   dialogUi.input.value = st.draft;
   dialogUi.rendered = [];
+  dialogUi.restored = false;
+  dialogUi.live = false;
   dialogUi.log.replaceChildren();
   dialogUi.follow = true;
   dialogUi.input.style.height = '';
@@ -2114,7 +2305,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   if (!data.configured && !data.transcript?.length && !data.tasks?.length && !st.items.length && !st.busy && !st.remote) {
     const setup = el('div', 'ag-empty ag-setup');
     const mark = el('div', 'ag-empty-mark');
-    mark.append(icon('sparkle'));
+    mark.append(icon('rime'));
     const link = el('a', 'btn', 'Set up your agent');
     link.href = '/account#agent';
     setup.append(mark, el('h3', undefined, 'Meet your workspace agent'),
@@ -2126,7 +2317,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   // A rerender mid-stream must not clobber the live turn's log.
   st.tasks = data.tasks ?? st.tasks;
   if (!st.busy && st.revision === revision) {
-    if (!st.remote || !data.busy) st.items = itemsFrom(data.transcript ?? []);
+    restoreSurface(st, data);
     st.pending = data.pending ?? null;
     st.question = data.question ?? null;
     st.remote = !!data.busy; // a turn already running when this client loaded
@@ -2194,7 +2385,9 @@ function watchAgent(ward: string): void {
   // 'agent-live'. This is what makes one thread look the same in every open
   // client at the same moment; the settle ping then reconciles against storage.
   onAgentLive(ward, (d) => {
+    if (d?.task) { childLive.get(d.task)?.(d); return; }
     const live = states.get(ward);
+    if (d?.conversation && live?.conversation && d.conversation !== live.conversation) return;
     if (live && d?.event?.type === 'task') { updateTask(live, d.event.task); return; }
     if (!live || live.busy || !d) return; // this client's own stream owns the log
     let running = remoteRuns.get(ward);
@@ -2204,16 +2397,16 @@ function watchAgent(ward: string): void {
       remoteRuns.delete(ward);
       live.revision++;
       live.remote = false;
-      for (const it of live.items) if (it.k === 'step') it.running = false;
-      live.items = live.items.filter((it) => it.k !== 'thinking');
+      endTurn(live);
       if (d.event.error) live.items.push({ k: 'note', err: true, text: d.event.error });
       paint(live);
       flushPendingLayout();
       return;
     }
     live.remote = true;
+    if (d.run) live.run = d.run;
     const src: TurnSource = d.source === 'wake' || d.source === 'automation' || d.source === 'agent' ? d.source : 'chat';
-    if (applyEvent(live, running, d.event, src)) paint(live);
+    if (applyEvent(live, running, d.event, src)) { if (d.event.type === 'text_delta') paintStream(live); else paint(live); }
   });
 }
 

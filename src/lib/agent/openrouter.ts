@@ -5,6 +5,7 @@ import { getSetting, setSetting } from '../settings.ts';
 import { agentKey, endpointOf } from './accounts.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { pinnedRequest } from './shell.ts';
+import { sseParser } from './stream.ts';
 import {
   isTransient,
   recordAgentStatus,
@@ -20,16 +21,16 @@ import {
 // messages carry toolCalls[{id, function:{name, arguments}}], tool results are
 // {role:'tool', toolCallId, content} — so a stored conversation round-trips
 // through chat.send verbatim.
-//
-// stream:false on purpose: turns are tool-loop dominated and the ward streams
-// step events, not tokens. ponytail: flip to stream:true + accumulate deltas
-// if slow models ever hit proxy idle timeouts.
+
 
 const TIMEOUT_MS = 120_000;
 
 interface ChatMsg {
   role?: string;
   content?: unknown;
+  reasoning?: string;
+  refusal?: string;
+  reasoningDetails?: Record<string, any>[];
   toolCalls?: { id: string; type: string; function: { name: string; arguments: string } }[];
   toolCallId?: string;
 }
@@ -109,11 +110,66 @@ export function markLast(items: unknown[]): unknown[] {
   return [...items.slice(0, -1), { ...last, content }];
 }
 
+/** Both chat transports reconstruct the same replay message, including opaque reasoning. */
+function chatStream(onText?: (delta: string) => void) {
+  const msg: ChatMsg = { role: 'assistant', content: '' };
+  const calls = new Map<number, NonNullable<ChatMsg['toolCalls']>[number]>();
+  const reasoning = new Map<string, Record<string, any>>();
+  let finished = false, usage: any;
+  return {
+    push(chunk: any) {
+      if (chunk.error) throw Error(chunk.error.message ?? JSON.stringify(chunk.error));
+      if (chunk.usage) usage = chunk.usage;
+      const choice = chunk.choices?.[0];
+      if (!choice) return;
+      const delta = choice.delta ?? {};
+      const text = delta.content ?? delta.refusal;
+      if (typeof text === 'string' && text) { msg.content = String(msg.content) + text; onText?.(text); }
+      if (typeof delta.reasoning === 'string') msg.reasoning = (msg.reasoning ?? '') + delta.reasoning;
+      if (typeof delta.refusal === 'string') msg.refusal = (msg.refusal ?? '') + delta.refusal;
+      for (const tc of delta.toolCalls ?? delta.tool_calls ?? []) {
+        if (!Number.isInteger(tc.index) || tc.index < 0) throw Error('Invalid streamed tool index');
+        const item = calls.get(tc.index) ?? { id: '', type: 'function', function: { name: '', arguments: '' } };
+        if (tc.id) item.id = tc.id;
+        if (tc.function?.name) item.function.name += tc.function.name;
+        if (tc.function?.arguments) item.function.arguments += tc.function.arguments;
+        calls.set(tc.index, item);
+      }
+      for (const [i, detail] of (delta.reasoningDetails ?? delta.reasoning_details ?? []).entries()) {
+        const key = `${detail.type}:${detail.index ?? detail.id ?? i}`;
+        const old = reasoning.get(key);
+        const next = { ...old, ...detail };
+        for (const field of ['text', 'summary', 'data'])
+          if (typeof old?.[field] === 'string' && typeof detail[field] === 'string') next[field] = old[field] + detail[field];
+        reasoning.set(key, next);
+      }
+      const finish = choice.finishReason ?? choice.finish_reason;
+      if (finish) {
+        if (!['stop', 'tool_calls', 'function_call'].includes(finish)) throw Error(`Incomplete response (${finish})`);
+        finished = true;
+      }
+    },
+    result() {
+      if (!finished) throw Error('response stream ended before completion');
+      if (calls.size) {
+        msg.toolCalls = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call);
+        for (const tc of msg.toolCalls) {
+          if (!tc.id || !tc.function.name) throw Error('Incomplete streamed tool call');
+          JSON.parse(tc.function.arguments || '{}');
+        }
+      }
+      if (reasoning.size) msg.reasoningDetails = [...reasoning.values()];
+      return { choices: [{ message: msg }], usage };
+    },
+  };
+}
+
 async function callOpenRouter(call: ProviderCall, retried = false): Promise<ProviderResult> {
   const key = agentKey(call.userId, 'openrouter');
   if (!key) throw new Error('openrouter: no API key — add one under Account → Agent');
   const or = new OpenRouter({ apiKey: key });
   let result: any;
+  let visible = false;
   try {
     result = await or.chat.send(
       {
@@ -137,16 +193,21 @@ async function callOpenRouter(call: ProviderCall, retried = false): Promise<Prov
             : {}),
           ...(call.effort ? { reasoning: { effort: call.effort as any } } : {}),
           ...(call.cacheKey ? { promptCacheKey: call.cacheKey } : {}),
-          stream: false,
+          stream: true,
         },
       },
       // The SDK skips its own timeout once a signal is given, so both ride one.
-      { timeoutMs: TIMEOUT_MS, ...(call.relayRequestId ? { retries: { strategy: 'none' as const } } : {}), ...(call.signal ? { fetchOptions: { signal: AbortSignal.any([call.signal, AbortSignal.timeout(TIMEOUT_MS)]) } } : {}) }
+      { timeoutMs: TIMEOUT_MS, retries: { strategy: 'none' as const }, ...(call.signal ? { fetchOptions: { signal: AbortSignal.any([call.signal, AbortSignal.timeout(TIMEOUT_MS)]) } } : {}) }
     );
+    if (result?.[Symbol.asyncIterator]) {
+      const stream = chatStream(delta => { visible = true; call.onTextDelta?.(delta); });
+      for await (const chunk of result) { call.onProgress?.(); stream.push(chunk); }
+      result = stream.result();
+    }
   } catch (err) {
     if (call.signal?.aborted) throw new Error('openrouter: interrupted');
     const e = new Error(`openrouter: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
-    if (!call.relayRequestId && !retried && isTransient(e)) {
+    if (!visible && !call.relayRequestId && !retried && isTransient(e)) {
       await new Promise((r) => setTimeout(r, 1200));
       return callOpenRouter(call, true);
     }
@@ -270,25 +331,35 @@ export function toWire(item: unknown): unknown {
         })
       : m.content;
   } else if (m.role === 'assistant') out.content = '';
+  if (m.reasoning !== undefined) out.reasoning = m.reasoning;
+  if (m.reasoningDetails !== undefined) out.reasoning_details = m.reasoningDetails;
+  if (m.refusal !== undefined) out.refusal = m.refusal;
   if (m.toolCallId) out.tool_call_id = m.toolCallId;
   if (Array.isArray(m.toolCalls)) out.tool_calls = m.toolCalls.map((tc) => ({ id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } }));
   return out;
 }
 
 /** Wire (snake_case) → stored (camelCase). Only what the loop reads back. */
-export function fromWire(msg: { role?: string; content?: unknown; tool_calls?: { id?: unknown; function?: { name?: unknown; arguments?: unknown } }[] }): ChatMsg {
+export function fromWire(msg: { role?: string; content?: unknown; reasoning?: string; refusal?: string; reasoning_details?: Record<string, any>[]; tool_calls?: { id?: unknown; function?: { name?: unknown; arguments?: unknown } }[] }): ChatMsg {
   const toolCalls = Array.isArray(msg.tool_calls)
     ? msg.tool_calls
         .filter((tc) => typeof tc?.id === 'string' && typeof tc.function?.name === 'string')
         .map((tc) => ({ id: String(tc.id), type: 'function', function: { name: String(tc.function!.name), arguments: typeof tc.function!.arguments === 'string' ? tc.function!.arguments : '{}' } }))
     : [];
-  return { role: 'assistant', content: typeof msg.content === 'string' ? msg.content : '', ...(toolCalls.length ? { toolCalls } : {}) };
+  return { role: 'assistant', content: typeof msg.content === 'string' ? msg.content : msg.refusal ?? '',
+    ...(typeof msg.reasoning === 'string' ? { reasoning: msg.reasoning } : {}),
+    ...(typeof msg.refusal === 'string' ? { refusal: msg.refusal } : {}),
+    ...(Array.isArray(msg.reasoning_details) ? { reasoningDetails: msg.reasoning_details } : {}),
+    ...(toolCalls.length ? { toolCalls } : {}) };
 }
 
 async function callCompat(endpoint: string, call: ProviderCall): Promise<ProviderResult> {
   const target = endpointOf(call.userId, endpoint);
   if (!target) throw new Error(`compat: no endpoint "${endpoint}" — add it under Account → Agent`);
   if (!call.model) throw new Error(`compat: pick a model for "${endpoint}" (list_models shows what it serves)`);
+  const stream = chatStream(call.onTextDelta), decoder = new TextDecoder();
+  let streaming = false;
+  const parser = sseParser(payload => { if (payload !== '[DONE]') stream.push(JSON.parse(payload)); });
   const res = await pinnedRequest(`${target.url}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(target.key ? { Authorization: `Bearer ${target.key}` } : {}) },
@@ -298,21 +369,32 @@ async function callCompat(endpoint: string, call: ProviderCall): Promise<Provide
       ...(call.tools.length
         ? { tools: call.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })), tool_choice: 'auto' }
         : {}),
-      stream: false,
+      stream: true,
     }),
     timeoutMs: COMPAT_TIMEOUT_MS,
     signal: call.signal,
     allowLoopback: isDesktop(),
+    onChunk(chunk, headers) {
+      call.onProgress?.();
+      if (headers['content-type']?.includes('text/event-stream')) {
+        streaming = true;
+        parser.push(decoder.decode(chunk, { stream: true }));
+      }
+    },
   }).catch((err) => {
     if (call.signal?.aborted) throw new Error('compat: interrupted');
     throw new Error(`compat (${endpoint}): ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   });
   if (res.status < 200 || res.status >= 300) throw Object.assign(new Error(`compat (${endpoint}): ${res.status} ${res.text.slice(0, 300)}`), { status: res.status });
-  let data: { choices?: { message?: Parameters<typeof fromWire>[0] }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown } } };
-  try { data = JSON.parse(res.text); } catch { throw new Error(`compat (${endpoint}): response was not JSON`); }
+  let data: any;
+  if (streaming) {
+    parser.push(decoder.decode()); parser.finish(); data = stream.result();
+  } else {
+    try { data = JSON.parse(res.text); } catch { throw new Error(`compat (${endpoint}): response was not JSON`); }
+  }
   const raw = data.choices?.[0]?.message;
   if (!raw) throw new Error(`compat (${endpoint}): empty response`);
-  const msg = fromWire(raw);
+  const msg = streaming ? raw as ChatMsg : fromWire(raw);
   const { text, calls } = readChatResponse(msg);
   if (!text && !calls.length) throw new Error(`compat (${endpoint}): empty response`);
   const input = Number(data.usage?.prompt_tokens) || 0;

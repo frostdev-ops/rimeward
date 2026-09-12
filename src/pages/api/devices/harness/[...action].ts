@@ -188,11 +188,8 @@ export const ALL: APIRoute = async ({
           { status: 503 },
         );
       const provider = await getProvider(body.provider, endpoint);
-      // Exactly one model call. The desktop owns the loop and executes its tools.
-      // Answered as a stream: Cloudflare returns 524 to the desktop when the
-      // origin is silent for 100s, and a long reasoning round is silent for
-      // longer — so whitespace heartbeats go out until the JSON does. The
-      // status line is already sent by then, so an error rides the body too.
+      // Streaming is negotiated; older desktops still receive the JSON result.
+      const streaming = body.stream === true && request.headers.get('accept')?.includes('text/event-stream');
       const disconnected = new AbortController();
       const call: ProviderCall = {
         userId: user,
@@ -209,7 +206,6 @@ export const ALL: APIRoute = async ({
             : undefined,
         signal: AbortSignal.any([request.signal, disconnected.signal]),
       };
-      const pending = provider.run(call);
       const owner = user;
       modelUser = undefined; // the stream releases the slot when the call settles
       const enc = new TextEncoder();
@@ -224,19 +220,20 @@ export const ALL: APIRoute = async ({
                 /* the desktop went away; the slot is still released below */
               }
             };
-            const beat = setInterval(() => push("\n"), 15_000);
+            const send = (event: unknown) => push(`data: ${JSON.stringify(event)}\n\n`);
+            if (streaming) call.onTextDelta = delta => send({ type: 'text_delta', delta });
+            push(streaming ? ': connected\n\n' : '\n');
+            const beat = setInterval(() => push(streaming ? ': heartbeat\n\n' : "\n"), 15_000);
             try {
-              push(JSON.stringify(await pending));
+              const result = await provider.run(call);
+              if (streaming) send({ type: 'result', result });
+              else push(JSON.stringify(result));
             } catch (e) {
               const failure = modelFailure(owner, e, call.relayRequestId, call.signal?.aborted);
-              push(
-                JSON.stringify({
-                  error: failure.message,
-                  status: failure.status ?? 502,
-                  category: failure.category,
-                  requestId: failure.requestId,
-                }),
-              );
+              const error = { type: 'error', error: failure.message, status: failure.status ?? 502,
+                category: failure.category, requestId: failure.requestId };
+              if (streaming) send(error);
+              else push(JSON.stringify(error));
             } finally {
               clearInterval(beat);
               release(owner, child);
@@ -250,7 +247,7 @@ export const ALL: APIRoute = async ({
         }),
         {
           headers: {
-            "content-type": "application/json",
+            "content-type": streaming ? "text/event-stream" : "application/json",
             "cache-control": "no-store",
             "x-accel-buffering": "no",
           },

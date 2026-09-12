@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { readSse } from './stream.ts';
 import { getSetting, setSetting, deleteSetting } from '../settings.ts';
 import { openToken } from '../crypto.ts';
 import { cached } from '../cache.ts';
@@ -253,7 +254,7 @@ type OutputItem = {
   name?: string;
   call_id?: string;
   arguments?: string;
-  content?: { type?: string; text?: string }[];
+  content?: { type?: string; text?: string; refusal?: string }[];
 };
 
 /** Split raw Responses output items into display text + pending function calls. */
@@ -264,6 +265,7 @@ export function readItems(items: OutputItem[]): { text: string; calls: AgentTool
     if (item.type === 'message') {
       for (const part of item.content ?? []) {
         if (part.type === 'output_text' && part.text) text += part.text;
+        else if (part.type === 'refusal' && part.refusal) text += part.refusal;
       }
     } else if (item.type === 'function_call' && item.name) {
       calls.push({ call_id: item.call_id ?? '', name: item.name, arguments: item.arguments ?? '{}' });
@@ -383,7 +385,7 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
         // steers requests with that prefix to the same cache.
         prompt_cache_key: call.cacheKey,
         store: false,
-        stream: true, // required by this backend; parsed whole below, nothing streams onward
+        stream: true,
       }),
       signal: call.signal ? AbortSignal.any([call.signal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -421,52 +423,39 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
     throw err;
   }
 
-  // SSE, parsed after the fact: response.completed carries the authoritative
-  // output list; per-item response.output_item.done events are the fallback.
-  // The body drains for as long as the model thinks, so a reset HERE is just
-  // as transient as one during connect. Direct calls may retry; relayed calls never do.
-  let raw: string;
+  type Completed = { output?: OutputItem[]; usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } } };
+  const streamed: OutputItem[] = [];
+  let completed: Completed | undefined;
+  let visible = false;
   try {
-    raw = await res.text();
+    if (!res.body) throw Error('missing response stream');
+    await readSse(res.body, payload => {
+      if (payload === '[DONE]') return;
+      const ev = JSON.parse(payload);
+      if (ev.type === 'response.output_text.delta' || ev.type === 'response.refusal.delta') {
+        if (typeof ev.delta === 'string' && ev.delta) { visible = true; call.onTextDelta?.(ev.delta); }
+      } else if (ev.type === 'response.output_item.done' && ev.item) streamed.push(ev.item);
+      else if (ev.type === 'response.completed') completed = ev.response;
+      else if (ev.type === 'response.failed' || ev.type === 'response.incomplete' || ev.type === 'error')
+        throw Error(JSON.stringify(ev.response?.error ?? ev.error ?? ev.message ?? ev.response?.incomplete_details ?? 'incomplete response').slice(0, 300));
+    }, call.onProgress);
+    // An EOF is not completion: an unfinished tool call must never execute.
+    if (!completed) throw Error('response stream ended before completion');
   } catch (err) {
     const e = new CodexError(`${tag}: stream (${err instanceof Error ? err.message : err})`, { cause: err });
-    if (!call.relayRequestId && !retriedTransient && isTransient(e)) {
+    if (!visible && !call.signal?.aborted && !call.relayRequestId && !retriedTransient && isTransient(e)) {
       await new Promise((r) => setTimeout(r, 1200));
       return callResponses(call, transport, retriedAuth, true, noReasoning);
     }
     throw e;
   }
-  type Completed = { output?: OutputItem[]; usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } } };
-  const streamed: OutputItem[] = [];
-  let completed: Completed | null = null;
-  let failure: string | null = null;
-  for (const line of raw.split('\n')) {
-    if (!line.startsWith('data:')) continue;
-    const payload = line.slice(5).trim();
-    if (!payload || payload === '[DONE]') continue;
-    let ev: { type?: string; item?: OutputItem; response?: unknown };
-    try {
-      ev = JSON.parse(payload);
-    } catch {
-      continue;
-    }
-    if (ev.type === 'response.output_item.done' && ev.item) streamed.push(ev.item);
-    else if (ev.type === 'response.completed') completed = ev.response as Completed;
-    else if (ev.type === 'response.failed') failure = JSON.stringify(ev.response ?? '').slice(0, 200);
-  }
-  if (failure !== null) {
-    // A rate limit or upstream 5xx delivered as an SSE event is the same
-    // hiccup as one delivered as a status code.
-    const err = new CodexError(`${tag}: response failed ${failure}`);
-    if (!call.relayRequestId && !retriedTransient && isTransient(err)) {
-      await new Promise((r) => setTimeout(r, 1200));
-      return callResponses(call, transport, retriedAuth, true, noReasoning);
-    }
-    throw err;
-  }
   const items = completed?.output?.length ? completed.output : streamed;
   const { text, calls } = readItems(items);
   if (!text && !calls.length) throw new CodexError(`${tag}: empty response`);
+  for (const call of calls) {
+    if (!call.call_id) throw new CodexError(`${tag}: incomplete tool call`);
+    JSON.parse(call.arguments);
+  }
   const u = completed?.usage;
   return { text, calls, items, ...(u?.input_tokens ? { usage: { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens ?? 0, output: u.output_tokens } } : {}) };
 }

@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { liveTurn, trackTurn, type LiveTurn } from './live-turn.ts';
 import { siteInfo } from '../site.ts';
 import { getSetting, setSetting, takeSetting, deleteSetting } from '../settings.ts';
 import { parseUserQuestion, validateUserAnswer, questionAnswerText, storedUserQuestion, saveUserAnswer, drainUserAnswer, clearUserQuestion, type UserQuestion, type PendingQuestion } from './questions.ts';
@@ -84,19 +85,21 @@ export type AgentEvent =
   | { type: 'question'; question: PendingQuestion | null }
   | { type: 'task'; task: import('./tasks.ts').AgentTask }
   | { type: 'thinking'; round: number; label?: string }
-  | { type: 'says'; text: string; id?: string }
+  | { type: 'text_delta'; id: string; delta: string; offset: number }
+  | { type: 'says'; text: string; id?: string; incomplete?: boolean }
   /** A status line for the log (compaction happened) — not model output. */
   | { type: 'note'; text: string }
   | { type: 'step_start'; id: string; round: number; tool: string; kind: ToolKind; args: Record<string, unknown>; reason: string }
   | { type: 'step'; step: AgentStep }
   | { type: 'pending'; pending: PendingConfirm | null }
-  | { type: 'reply'; text: string; id?: string }
+  | { type: 'reply'; text: string; id?: string; incomplete?: boolean }
   /** A message steered into the turn while it ran (the user's, or a peer agent's). */
   | { type: 'user'; text: string; source?: TurnSource }
   /** Full-request token estimate and selected-model capacity for the context meter. */
   | ({ type: 'usage' } & ContextUsage);
 
 export interface AgentTurn {
+  interjections?: { text: string; steps: AgentStep[] }[];
   reply: string;
   steps: AgentStep[];
   pending?: PendingConfirm;
@@ -743,7 +746,19 @@ export interface LoopCfg {
   signal?: AbortSignal;
 }
 
-export async function runLoop(
+export async function runLoop(cfg: LoopCfg, items: unknown[], emit?: (e: AgentEvent) => void, flush?: (reset?: boolean) => void): Promise<AgentTurn> {
+  const task = cfg.conv.task_id ?? undefined;
+  const turn: LiveTurn = { id: randomUUID(), conversation: cfg.conv.id, task, transcript: transcript(cfg.conv.id), events: [] };
+  const tracking = trackTurn(cfg.conv.user_id, turn);
+  const publish = (event: AgentEvent | { type: 'end'; error?: string }) => {
+    if (task) broadcast(cfg.conv.user_id, 'agent-live', { ward: cfg.conv.ward, conversation: cfg.conv.id, task, run: turn.id, source: 'agent', event });
+  };
+  try {
+    return await loop(cfg, items, event => { tracking.event(event); emit?.(event); publish(event); }, flush);
+  } finally { tracking.close(); publish({ type: 'end' }); }
+}
+
+async function loop(
   cfg: LoopCfg,
   items: unknown[],
   emit?: (e: AgentEvent) => void,
@@ -751,6 +766,9 @@ export async function runLoop(
   flush?: (reset?: boolean) => void
 ): Promise<AgentTurn> {
   const steps: AgentStep[] = [];
+  let partial: { id: string; text: string } | undefined;
+  const said: NonNullable<AgentTurn['interjections']> = [];
+  let recordedSteps = 0;
   // A child run acts as its ward (config, permissions, tools) in its own thread; its
   // steers, interrupts and aborts are keyed by its task so they never cross the ward's.
   const child = cfg.conv.task_id ?? undefined;
@@ -763,7 +781,7 @@ export async function runLoop(
   const done = (turn: AgentTurn): AgentTurn => {
     for (const s of absorbed) s.done?.(turn.reply);
     absorbed.length = 0;
-    return turn;
+    return said.length ? { ...turn, interjections: said } : turn;
   };
   /** Pull every queued steer into the items as user messages. */
   const drain = async (): Promise<boolean> => {
@@ -812,8 +830,8 @@ export async function runLoop(
     const by = interrupts.get(key);
     if (by === undefined) return null;
     interrupts.delete(key);
-    const reply = `⏹ Interrupted by ${by}.`;
-    emit?.({ type: 'reply', text: reply, id: randomUUID() });
+    const reply = [partial?.text, `⏹ Interrupted by ${by}.`].filter(Boolean).join('\n\n');
+    emit?.({ type: 'reply', text: reply, id: partial?.id ?? randomUUID(), incomplete: true });
     return done({ reply, steps });
   };
   const me = child ? childJob(ctx.userId, child) : null;
@@ -904,10 +922,11 @@ export async function runLoop(
     }
     emit?.({ type: 'thinking', round });
     let result: ProviderResult;
+    const messageId = randomUUID();
+    partial = { id: messageId, text: '' };
     const waitingSince = Date.now();
-    let lastProgress: number | undefined;
     const waitTimer = setInterval(() => emit?.({ type: 'thinking', round,
-      label: `Waiting for model · ${Math.floor((Date.now() - waitingSince) / 1000)}s · ${lastProgress ? `relay progress ${Math.floor((Date.now() - lastProgress) / 1000)}s ago` : 'no transport progress observed'}` }), 5000);
+      label: partial?.text ? 'Writing…' : Date.now() - waitingSince >= 30_000 ? `Still thinking · ${Math.floor((Date.now() - waitingSince) / 1000)}s` : undefined }), 5000);
     try {
       result = await cfg.provider.run({
         userId: cfg.conv.user_id,
@@ -919,13 +938,19 @@ export async function runLoop(
         tools,
         cacheKey: `conv:${cfg.conv.id}`,
         signal: ac.signal,
-        onProgress: () => { lastProgress = Date.now(); },
+        onTextDelta: delta => {
+          if (!delta || ac.signal.aborted) return;
+          const offset = partial!.text.length;
+          partial!.text += delta;
+          emit?.({ type: 'text_delta', id: messageId, delta, offset });
+        },
       });
     } catch (err) {
       // An aborted call has no items to bank: the turn simply ends here and
       // the next message follows the last answered round.
       const stop = ac.signal.aborted ? interrupted() : null;
       if (stop) return stop;
+      if (partial?.text) emit?.({ type: 'says', id: messageId, text: `${partial.text}\n\n⚠️ Response incomplete.`, incomplete: true });
       throw err;
     } finally {
       clearInterval(waitTimer);
@@ -934,20 +959,21 @@ export async function runLoop(
     recordContextUsage(cfg.conv.id, cfg.provider.id, model, items, instructions, tools, result.usage, result.items);
     if (cfg.monitorGuard && !cfg.monitorGuard()) return done({ reply:'skipped — monitor cancelled or permissions changed during inference',steps });
     items.push(...result.items);
+    partial = undefined;
     emit?.({ type: 'usage', ...usage() });
 
     if (!result.calls.length) {
       // A steer that arrived during the final call is not lost: the answer
       // stands as an interjection and the turn goes one more round for it.
       if (steers.get(key)?.length || storedUserQuestion(ctx.userId, ctx.conv)?.answer !== undefined || pendingMonitorNotices(ctx)) {
-        if (result.text.trim()) emit?.({ type: 'says', text: result.text, id: randomUUID() });
+        if (result.text.trim()) { said.push({ text: result.text, steps: steps.slice(recordedSteps) }); recordedSteps = steps.length; emit?.({ type: 'says', text: result.text, id: messageId }); }
         flush?.();
         continue;
       }
-      emit?.({ type: 'reply', text: result.text, id: randomUUID() });
+      emit?.({ type: 'reply', text: result.text, id: messageId });
       return done({ reply: result.text, steps });
     }
-    if (result.text.trim()) emit?.({ type: 'says', text: result.text, id: randomUUID() });
+    if (result.text.trim()) { said.push({ text: result.text, steps: steps.slice(recordedSteps) }); recordedSteps = steps.length; emit?.({ type: 'says', text: result.text, id: messageId }); }
 
     // A Stop that landed while the model was answering: nothing in this batch
     // starts — every call is answered as not run, so the thread stays well-formed.
@@ -1183,6 +1209,14 @@ function buildUserItem(provider: AgentProvider, userId: number, text: string, fi
 /** Persistence is the caller's `flush` (it runs every round too); this records
  *  the human-visible turn, delivers it wherever it was asked to go, and
  *  publishes it as a value the logic system can route onward. */
+function recordTurn(conv: ConvRow, turn: AgentTurn, source: TurnSource, tail = '') {
+  let count = 0;
+  for (const message of turn.interjections ?? []) {
+    addMessage(conv, { role: 'assistant', ...message, source }); count += message.steps.length;
+  }
+  addMessage(conv, { role: 'assistant', text: turn.reply + tail, steps: turn.steps.slice(count), source });
+}
+
 async function settleAndRecord(
   conv: ConvRow,
   turn: AgentTurn,
@@ -1191,8 +1225,7 @@ async function settleAndRecord(
   route = true
 ): Promise<void> {
   const tail = turn.pending ? `\n\n${turn.pending.question ? 'Waiting for your answer' : '⏸ Waiting for your confirmation'}: ${turn.pending.summary}` : '';
-  const text = turn.reply + tail;
-  addMessage(conv, { role: 'assistant', text, steps: turn.steps, source });
+  recordTurn(conv, turn, source, tail);
   void syncRime(conv.user_id, true);
   // The client badges/toasts off this; `source` is what makes an automation
   // answer legible as one instead of looking like something the user typed.
@@ -1268,7 +1301,7 @@ export function bankFailure(conv: ConvRow, seen: AgentEvent[], err: unknown, sou
  *  renders its own POST stream and ignores the mirror; every other tab (and
  *  every other device) paints from this. Errors and the turn's end are mirrored
  *  too — a tab that only ever saw 'step_start' would spin forever. */
-function liveMirror(userId: number, ward: string, source: TurnSource) {
+function liveMirror(userId: number, ward: string, source: TurnSource, conversation?: number) {
   type Mirrored =
     | AgentEvent
     /** What started the turn — the loop never emits it, but a watching client
@@ -1278,7 +1311,7 @@ function liveMirror(userId: number, ward: string, source: TurnSource) {
     | { type: 'pending'; pending: null }
     /** The turn threw: no settle ping is coming, so release the watchers. */
     | { type: 'end'; error?: string };
-  return (e: Mirrored) => broadcast(userId, 'agent-live', { ward, source, event: e });
+  return (e: Mirrored) => broadcast(userId, 'agent-live', { ward, source, conversation, run: conversation ? liveTurn(userId, conversation)?.id : undefined, event: e });
 }
 
 function mentionLabels(user: number, ids: string[], labels: WardMention[] = []): WardMention[] {
@@ -1319,11 +1352,11 @@ export function runChatTurn(userId: number, ward: string, body: ChatBody, emit: 
     const shown = tagMentionMessage(body.message, mentionLabels(userId, wardIds, body.mentions)) + (built.label ? `\n📎 ${built.label}` : '');
     if (!answering) addMessage(conv, { role: 'user', text: shown });
 
-    const live = liveMirror(userId, ward, 'chat');
+    const live = liveMirror(userId, ward, 'chat', conv.id);
     if (!answering) live({ type: 'user', text: shown });
     const seen: AgentEvent[] = [];
     const both = (e: AgentEvent) => {
-      seen.push(e);
+      if (e.type !== 'text_delta' && e.type !== 'thinking') seen.push(e);
       emit(e);
       live(e);
     };
@@ -1373,7 +1406,7 @@ export function resolveConfirmTurn(
     const response = question && approved ? validateUserAnswer(question, answer) : undefined;
     if (!question && answer !== undefined) throw Error('This is an approval, not a user question.');
     const parked = claimConfirm(userId, conv, confirmId);
-    const live = liveMirror(userId, ward, 'chat');
+    const live = liveMirror(userId, ward, 'chat', conv.id);
     // Every other client is showing the confirm bar for a call this one just
     // decided — clear it there before the loop resumes.
     live({ type: 'pending', pending: null });
@@ -1460,7 +1493,7 @@ export function resolveConfirmTurn(
     flush(); // the approved tool already ran — persist its output before looping
     const seen: AgentEvent[] = steps.map((step) => ({ type: 'step', step }));
     const tap = (e: AgentEvent) => {
-      seen.push(e);
+      if (e.type !== 'text_delta' && e.type !== 'thinking') seen.push(e);
       both(e);
     };
     try {
@@ -1586,7 +1619,7 @@ export function runHeadlessTurn(
           : `⏰ ${prompt.slice(0, 300)}`;
     addMessage(conv, { role: 'user', text: shown, source: turnSource });
 
-    const live = liveMirror(userId, ward, turnSource);
+    const live = liveMirror(userId, ward, turnSource, conv.id);
     live({ type: 'user', text: shown });
 
     const cfg: LoopCfg = { provider, wardCfg, conv, headless: true, via: source.via,monitorWake:source.kind === 'monitor',monitorGuard:source.guard };
@@ -1599,7 +1632,7 @@ export function runHeadlessTurn(
     };
     const seen: AgentEvent[] = [];
     const tap = (e: AgentEvent) => {
-      seen.push(e);
+      if (e.type !== 'text_delta' && e.type !== 'thinking') seen.push(e);
       live(e);
     };
     try {
@@ -1709,7 +1742,7 @@ export async function runChildRun(args: Record<string, unknown>, ctx: ToolCtx): 
   const log = (line: string) => ctx.progress?.(`${line}\n`);
   const seen: AgentEvent[] = [];
   const tap = (e: AgentEvent) => {
-    seen.push(e);
+    if (e.type !== 'text_delta' && e.type !== 'thinking') seen.push(e);
     if (e.type === 'says' || e.type === 'reply') log(e.text);
     else if (e.type === 'step_start') log(`→ ${e.reason || e.tool}`);
     else if (e.type === 'step' && e.step.error) log(`✗ ${e.step.tool}: ${e.step.error}`);
@@ -1727,7 +1760,7 @@ export async function runChildRun(args: Record<string, unknown>, ctx: ToolCtx): 
   try {
     const turn = await runLoop(loop, items, tap, flush);
     flush();
-    addMessage(conv, { role: 'assistant', text: turn.reply, steps: turn.steps, source: 'agent' });
+    recordTurn(conv, turn, 'agent');
     const final = effective.get(key) ?? childCfg; // the model it ENDED on, after any set_model
     return { reply: turn.reply, steps: turn.steps.length, conversation: conv.id, provider: sel.provider, ...(sel.endpoint ? { endpoint: sel.endpoint } : {}), model: final.model, effort: final.effort, ...(ctx.signal?.aborted ? { cancelled: true } : {}) };
   } catch (err) {
@@ -1803,6 +1836,8 @@ export async function wardSurface(userId: number, ward: string): Promise<{
   busy: boolean;
   tasks: ReturnType<typeof listTasks>;
   context: ContextUsage | null;
+  conversation?: number;
+  live?: LiveTurn;
 } | null> {
   const wardCfg = agentWardConfig(userId, ward);
   if (!wardCfg) return null;
@@ -1828,7 +1863,9 @@ export async function wardSurface(userId: number, ward: string): Promise<{
   return {
     configured,
     provider: wardCfg.provider,
-    transcript: conv ? transcript(conv.id) : [],
+    conversation: conv?.id,
+    live: conv ? liveTurn(userId, conv.id) : undefined,
+    transcript: conv ? liveTurn(userId, conv.id)?.transcript ?? transcript(conv.id) : [],
     pending,
     question: question?.answer === undefined ? question : null,
     busy: wardBusy(userId, ward),

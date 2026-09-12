@@ -114,7 +114,7 @@ async function vetHost(target: URL, allowLoopback = false): Promise<VettedAddres
  *  from the URL). */
 function request(
   target: URL,
-  options: { method: string; headers?: Record<string, string>; body?: string; timeoutMs: number; pinned: VettedAddress; signal?: AbortSignal; deadlineMs?: number }
+  options: { method: string; headers?: Record<string, string>; body?: string; timeoutMs: number; pinned: VettedAddress; signal?: AbortSignal; deadlineMs?: number; onChunk?: (chunk: Uint8Array, headers: Record<string, string>) => void }
 ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: Uint8Array; location?: string }> {
   const mod = target.protocol === 'https:' ? https : http;
   const { address, family } = options.pinned;
@@ -142,6 +142,7 @@ function request(
       target,
       { method: options.method, headers: options.headers, timeout: options.timeoutMs, lookup: lookup as never },
       (res) => {
+        const headers = Object.fromEntries(Object.entries(res.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : String(value ?? '')]));
         const chunks: Buffer[] = [];
         let size = 0;
         let ended = false;
@@ -152,6 +153,9 @@ function request(
             return;
           }
           chunks.push(c);
+          if ((res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300) {
+            try { options.onChunk?.(c, headers); } catch (error) { req.destroy(error instanceof Error ? error : new Error(String(error))); }
+          }
         });
         // A response that errors, is aborted, or closes before its end (a
         // provider dropping the socket mid-body) settles here — a promise that
@@ -195,7 +199,7 @@ function request(
  */
 export async function pinnedRequest(
   url: string,
-  options: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; signal?: AbortSignal; allowLoopback?: boolean }
+  options: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; signal?: AbortSignal; allowLoopback?: boolean; onChunk?: (chunk: Uint8Array, headers: Record<string, string>) => void }
 ): Promise<{ status: number; headers: Record<string, string>; text: string }> {
   const target = new URL(url);
   const pinned = await vetHost(target, options.allowLoopback === true);
@@ -204,7 +208,7 @@ export async function pinnedRequest(
   // One bound, the caller's: a non-streaming inference legitimately sends no
   // byte for minutes, so socket inactivity is not cut shorter than the deadline.
   const deadlineMs = options.timeoutMs ?? 20_000;
-  const res = await request(target, { method: options.method ?? 'GET', headers: options.headers, body: options.body, timeoutMs: deadlineMs, deadlineMs, pinned, signal: options.signal });
+  const res = await request(target, { method: options.method ?? 'GET', headers: options.headers, body: options.body, timeoutMs: deadlineMs, deadlineMs, pinned, signal: options.signal, onChunk: options.onChunk });
   if (res.status >= 300 && res.status < 400) throw new Error(`refused: ${target.host} redirected (${res.status}); credentials are never forwarded to another address`);
   return { status: res.status, headers: res.headers, text: Buffer.from(res.body).toString('utf8') };
 }

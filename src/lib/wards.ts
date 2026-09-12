@@ -56,6 +56,12 @@ export function sizeParts(size: string): [number, number] {
   return m ? [+m[1]!, +m[2]!] : [2, 1];
 }
 
+/** Agent controls need four rows; all layout writers share the same minimum. */
+export function fitWardSize(type: string, size: WardSize): WardSize {
+  const [cols, rows] = sizeParts(size);
+  return `${cols}x${type === 'agent' ? Math.max(4, rows) : rows}`;
+}
+
 /** Row span of an instance — the wards that cap their item count scale it by this. */
 export const rowsOf = (w: WardInstance): number => sizeParts(w.size)[1];
 
@@ -250,7 +256,7 @@ export const CATALOG: Record<string, CatalogEntry> = {
     does: ['holds packets in channels', 'emits packets from logic', 'moves packets ward to ward', 'fires logic when a packet arrives or passes', 'passes waiting packets along', 'completes and annotates packets', 'sorts packets with a model'],
   },
   agent: {
-    title: 'Rime', defaultSize: '2x2', icon: 'bot', blurb: 'Rime — an AI with real tools over your wards, logic and Notion.', multi: true, configurable: true, category: 'rime',
+    title: 'Rime', defaultSize: '2x4', icon: 'rime', blurb: 'Rime — an AI with real tools over your wards, logic and Notion.', multi: true, configurable: true, category: 'rime',
     share: 'view',
     concepts: ['rime', 'ai', 'assistant', 'agent', 'chat', 'bot', 'llm', 'gpt', 'model', 'openrouter', 'codex', 'ask', 'talk', 'help', 'automation', 'tools', 'shell', 'web search', 'browse'],
     does: ['chats with a model that has real tools', 'reads and edits your wards and logic', 'reads and writes notion', 'runs shell commands in a sandbox', 'searches the web', 'drives the browser ward', 'wakes on a schedule or a trigger', 'answers a question from logic', 'confirms before sending mail'],
@@ -1003,7 +1009,7 @@ export function validateLayout(raw: unknown, pages?: PageDef[]): WardInstance[] 
     if (typeof size !== 'string' || !SIZE_RE.test(size)) return null;
     seen.add(i);
     seenTypes.add(uniqueType);
-    const w: WardInstance = { i, type, size: size as WardSize };
+    const w: WardInstance = { i, type, size: fitWardSize(type, size as WardSize) };
     if (typeof device === 'string' && /^[a-f0-9-]{36}$/.test(device)) w.device = device;
     if (typeof title === 'string' && title.trim() && title.length <= 60) w.title = title.trim();
     if (hidden === true) w.hidden = true;

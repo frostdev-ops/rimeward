@@ -9,7 +9,7 @@ import { readDesktopCheckpoint, saveDesktopState } from "./desktop-state.ts";
 
 import { calcGeneratorDuration, spring } from 'motion';
 import { icon, relabel } from './icon.ts';
-import { validateLayout, validatePages, CATALOG, CHART_SOURCES, DEFAULT_LAYOUT, MAX_H, MAX_W, TASK_WARDS, httpUrl, notionIdFrom, sizeParts, wardTitle, type WardInstance, type WardSize } from '../../lib/wards.ts';
+import { fitWardSize, validateLayout, validatePages, CATALOG, CHART_SOURCES, DEFAULT_LAYOUT, MAX_H, MAX_W, TASK_WARDS, httpUrl, notionIdFrom, sizeParts, wardTitle, type WardInstance, type WardSize } from '../../lib/wards.ts';
 import { normalizeWardTheme, wardThemeAttrs, WARD_STYLE_PROPS, type WardTheme } from '../../lib/theme.ts';
 import { ensureFonts } from './fonts.ts';
 import { ACTIONS, TRIGGERS } from '../../lib/logic.ts';
@@ -581,6 +581,7 @@ function toggleHidden(node: HTMLElement, w: WardInstance): void {
 /** Returns FLIP's settled rects so a live resize can re-read its own origin
  *  without measuring a card mid-animation. `refresh` off = caller repaints later. */
 function applySize(node: HTMLElement, w: WardInstance, size: WardSize, refresh = true): Map<HTMLElement, DOMRect> {
+  size = fitWardSize(w.type, size);
   if (w.size === size) return new Map();
   const rects = flip(() => {
     stampSize(node, size);
@@ -1422,6 +1423,7 @@ function sizeMatrix(node: HTMLElement, w: WardInstance): HTMLElement {
   const cells: HTMLElement[] = [];
 
   const paint = (cw: number, ch: number) => {
+    [cw, ch] = sizeParts(fitWardSize(w.type, `${cw}x${ch}`));
     cells.forEach((c, n) => {
       const col = (n % MAX_W) + 1;
       const row = Math.floor(n / MAX_W) + 1;

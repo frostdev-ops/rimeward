@@ -1,3 +1,4 @@
+import { readSse } from './stream.ts';
 import { REMOTE_DESKTOP_HEADER, REMOTE_DESKTOP_PROTOCOL } from '../dev/remote-desktop-contract.ts';
 import { modelFailure } from "./diagnostics.ts";
 import { randomUUID } from "node:crypto";
@@ -335,8 +336,9 @@ export async function sharedModel(
       "/model",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", accept: "text/event-stream" },
         body: JSON.stringify({
+          stream: true,
           provider,
           endpoint,
           child: call.child === true,
@@ -354,24 +356,31 @@ export async function sharedModel(
       },
     );
     accepted = true;
-    // Whitespace heartbeats, then one JSON document: the result, or the
-    // server's error with its status (the status line was long gone by then).
     if (!response.body) throw new SyntaxError("Missing model response.");
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let text = '';
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        call.onProgress?.();
-        text += decoder.decode(value, { stream: true });
-      }
-      text += decoder.decode();
-    } finally { reader.releaseLock(); }
-    const parsed = JSON.parse(text) as
-      | ProviderResult
-      | { error: string; status?: number; category?: string };
+    let parsed: ProviderResult | { error: string; status?: number; category?: string } | undefined;
+    if (response.headers.get('content-type')?.includes('text/event-stream')) {
+      await readSse(response.body, payload => {
+        if (payload === '[DONE]') return;
+        const event = JSON.parse(payload);
+        if (event.type === 'text_delta' && typeof event.delta === 'string') call.onTextDelta?.(event.delta);
+        else if (event.type === 'result') parsed = event.result;
+        else if (event.type === 'error') parsed = event;
+      }, call.onProgress);
+      if (!parsed) throw Error('Model relay ended before completion.');
+    } else {
+      // Older servers send whitespace heartbeats and one final JSON document.
+      const reader = response.body.getReader(), decoder = new TextDecoder();
+      let text = '';
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          call.onProgress?.(); text += decoder.decode(value, { stream: true });
+        }
+        parsed = JSON.parse(text + decoder.decode());
+      } finally { reader.releaseLock(); }
+    }
+    if (!parsed) throw Error('Missing model result.');
     if ("error" in parsed)
       throw Object.assign(new Error(typeof parsed.error === "string" ? parsed.error : "Invalid model response."), {
         status: parsed.status ?? 502,

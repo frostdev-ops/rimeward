@@ -12,7 +12,7 @@ interface Props {
 
 const { id, class: cls = '', title } = Astro.props;
 const theme = parseTheme(Astro.locals.user?.theme);
-const r = iconRef(theme ? iconConfig(theme) : null, id);
+const r = id === 'rime' ? { kind: 'mask' as const, url: '/rime-agent.svg' } : iconRef(theme ? iconConfig(theme) : null, id);
 ---
 
 {

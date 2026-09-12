@@ -1,3 +1,4 @@
+import { liveTurn } from './live-turn.ts';
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db.ts';
 import { broadcast } from '../logic-engine.ts';
@@ -130,7 +131,8 @@ export function readChildTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string)
   const messages = db().prepare(`SELECT id,text,status,result FROM agent_inbox WHERE user_id=? AND ward=? AND sender='user' ORDER BY id DESC LIMIT 50`)
     .all(ctx.userId, id) as { id: number; text: string; status: string; result: string }[];
   const question = r.state === 'running' ? openQuestion(ctx.userId, id, ctx.ward) : null;
-  return { task: view(r), transcript: conv ? transcript(conv.id) : [], output: r.output, truncated: r.output_offset > 0,
+  const running = conv ? liveTurn(ctx.userId, conv.id) : undefined;
+  return { task: view(r), conversation: conv?.id, live: running, transcript: running?.transcript ?? (conv ? transcript(conv.id) : []), output: r.output, truncated: r.output_offset > 0,
     canMessage: r.state === 'running' && isLive(id), messages: messages.reverse(),
     question: question ? { id: question.id, text: question.text, maxLength: CHILD_ANSWER_MAX } : null };
 }

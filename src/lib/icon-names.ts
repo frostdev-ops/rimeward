@@ -96,6 +96,8 @@ export const ICONS = {
   notebook: ['📓', 'notebook', 'notebook', 'notebook', 'notebook', 'book'],
   check: ['☑️', 'square-check', 'check-square', 'square-check', 'check-square', 'check-box'],
   flow: ['📦', 'package', 'package', 'package', 'box', 'package-2'],
+  // Catalogue fallback; both UI renderers use Rime's own SVG for this identity.
+  rime: ['❄️', 'sparkles', 'sparkle', 'sparkles', 'stars-minimalistic', 'auto-awesome'],
   bot: ['🤖', 'bot', 'robot', 'robot', 'chat-round-dots', 'smart-toy'],
   memory: ['🧠', 'brain', 'brain', 'brain', 'brain', 'psychology'],
   skill: ['📜', 'book-open', 'book-open', 'book', 'book', 'menu-book'],
