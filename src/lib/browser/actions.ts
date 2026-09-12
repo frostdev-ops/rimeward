@@ -59,7 +59,7 @@ export async function runBrowserAction(user: number, ward: string, action: strin
   return withSession(s, async () => {
     if (action === 'download') {
       const download = startUrlDownload(user, ward, s.context, s.page, String(args.url), file => {
-        for (const sub of s.subs) sub({ type: 'download', file });
+        for (const sub of s.subs.keys()) sub({ type: 'download', file });
       });
       return { download, downloads: [download] };
     }

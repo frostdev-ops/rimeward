@@ -41,6 +41,26 @@ function readFiles(dir: string, prefix = ''): Unzipped {
   return files;
 }
 export function bundledExtension(): Unzipped { return readFiles(path.join(repoDir('assets'), 'browser-extensions/glaze')); }
+/** Chromium's extension id for a manifest `key`: the first 32 hex digits of sha256(DER public key), a–p. */
+export function extensionIdOf(key: string): string {
+  return [...createHash('sha256').update(Buffer.from(key, 'base64')).digest('hex').slice(0, 32)].map(c => String.fromCharCode(97 + parseInt(c, 16))).join('');
+}
+/** Rimeward Stream (assets/browser-extensions/stream): the capture extension every LOCAL
+ *  browser loads beside the registry's — not an entry in it, so nobody can disable it,
+ *  the ward's extension list never shows it, and Browserbase never receives it. The id
+ *  is fixed by the manifest's key; `--allowlisted-extension-id` names it at launch so
+ *  tabCapture works without a user gesture (chrome tab_capture_api.cc). */
+export const STREAM_EXTENSION = (() => {
+  const dir = path.join(repoDir('assets'), 'browser-extensions/stream');
+  const id = extensionIdOf((JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')) as { key: string }).key);
+  return { dir, id, origin: `chrome-extension://${id}/` };
+})();
+/** Run `fn` while the context's `page` events are ours, not the ward's (a maintenance
+ *  or capture page must never become a tab). */
+export async function quiet<T>(context: BrowserContext, fn: () => Promise<T>): Promise<T> {
+  maintenance.add(context);
+  try { return await fn(); } finally { maintenance.delete(context); }
+}
 
 function safeFile(name: string): boolean {
   return name.length <= 240 && !/[\\\x00-\x1f:<>"|?*]/.test(name) && !name.startsWith('/') &&
@@ -74,7 +94,7 @@ function installFiles(root: string, files: Unzipped, bundled = false): BrowserEx
   if (typeof manifest.key !== 'string' || !/^[A-Za-z0-9+/]+=*$/.test(manifest.key)) throw Error('Invalid extension key');
   try { createPublicKey({ key: Buffer.from(manifest.key, 'base64'), format: 'der', type: 'spki' }); }
   catch { throw Error('Invalid extension public key'); }
-  const id = [...createHash('sha256').update(Buffer.from(manifest.key, 'base64')).digest('hex').slice(0, 32)].map(c => String.fromCharCode(97 + parseInt(c, 16))).join('');
+  const id = extensionIdOf(manifest.key);
   const popup = manifest.options_ui?.page ?? manifest.options_page ?? manifest.action?.default_popup;
   if (popup !== undefined && (typeof popup !== 'string' || !safeFile(popup) || !files[popup])) throw Error('Extension settings page is missing or invalid');
   const dir = path.join(root, id);

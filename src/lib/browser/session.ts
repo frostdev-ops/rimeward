@@ -7,13 +7,14 @@ import { createHash } from 'node:crypto';
 import { chromium, type BrowserContext, type CDPSession, type Page } from 'playwright-core';
 import { DATA_DIR } from '../db.ts';
 import { browserScale, httpUrl, type BrowserConfig } from '../wards.ts';
-import { guardFor, guardPort, type Dial } from './guard.ts';
+import { direct, guardFor, guardPort, type Dial } from './guard.ts';
 import { connectBrowserbase, dropBrowserbase } from './browserbase.ts';
 import { connectApp } from './app-backend.ts';
 import { publicAddress } from '../net-guard.ts';
 import { openStream, subscribeTunnel, tunnelOnline, tunnelStatus } from '../tunnel.ts';
 import { captureDownload, listDownloads, moveDownloads, type BrowserDownload } from './downloads.ts';
-import { extensionPaths, extensionStorage, cleanExtensions, extensionMaintenance } from './extensions.ts';
+import { extensionPaths, extensionStorage, cleanExtensions, extensionMaintenance, quiet, STREAM_EXTENSION } from './extensions.ts';
+import { TURN_HOST } from '../dev/remote-turn.ts';
 
 // One live browser per browser ward, keyed `${userId}:${ward}`. The human
 // (screencast out + input in over the ward's WebSocket, lib/browser/live.ts;
@@ -62,9 +63,16 @@ export type BrowserEvent =
   | { type: 'route'; online: boolean; detail?: string }
   | { type: 'download'; file: BrowserDownload }
   /** The session's device scale: a frame is viewport × dsf pixels. Sent with
-   *  the state on connect; the in-app driver emits it after its own resize. */
-  | { type: 'view'; dsf: number }
+   *  the state on connect and on every resize, with the CSS viewport (what a
+   *  viewer maps input against once the picture is a video, not a frame); the
+   *  in-app driver emits it after its own resize, scale only. */
+  | { type: 'view'; dsf: number; width?: number; height?: number }
   | { type: 'closed' };
+
+/** The capture page (assets/browser-extensions/stream) of a local browser. */
+export interface Streamer { page: Page; rev: number }
+/** A message from the capture page for one viewer: an offer, a candidate, or a connection state. */
+export type StreamSignal = { conn: string; sdp?: string; candidate?: unknown; state?: string; message?: string };
 
 /** One connected human viewer on the ward's WebSocket (lib/browser/live.ts). */
 export interface HumanOwner {
@@ -91,7 +99,19 @@ export interface Session {
   viewport: { width: number; height: number };
   /** Device scale factor, fixed at launch (a Playwright context option). */
   dsf: number;
-  subs: Set<(e: BrowserEvent) => void>;
+  /** Viewers; `jpeg` = this one still wants screencast frames (a viewer on WebRTC does not). */
+  subs: Map<(e: BrowserEvent) => void, { jpeg: boolean }>;
+  /** The ward's sound knob: play the tabs' audio on the machine running Chromium. */
+  sound: boolean;
+  /** The capture page — local backends only; undefined = JPEG frames for everyone. */
+  stream?: Streamer;
+  /** Its open in flight: a close waits for it, so a half-open blank tab never lands in the saved session. */
+  streamOpening?: Promise<void>;
+  /** WebRTC signaling sinks by viewer connection id (lib/browser/rtc.ts registers them). */
+  rtc: Map<string, (msg: StreamSignal) => void>;
+  /** Pages the context announced while the capture page was being opened (the `page` event is
+   *  quiet then): whoever opened it sorts them — its own page dropped, every other one adopted. */
+  quietPages: Page[];
   /** The human WebSocket viewers' ordered input, drained by ONE worker
    *  (lib/browser/live.ts); separate from the agent's `chain`. */
   humanQueue: HumanEntry[];
@@ -156,8 +176,10 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
   const { context } = backend;
   try { if (cfg.backend === 'browserbase') await extensionStorage(context, userId, ward, true); }
   catch (error) { await backend.close(); throw error; }
+  // A restored profile (macOS --restore-last-session) brings the capture page back as a tab: never that.
+  for (const p of context.pages().filter(isStreamPage)) await p.close().catch(() => {});
   const restored = restoreDesktop() && cfg.backend !== 'browserbase' ? await restoreView(context, userId, ward) : null;
-  const page = restored?.page ?? context.pages()[0] ?? (await context.newPage());
+  const page = restored?.page ?? userPages(context)[0] ?? (await context.newPage());
   const s: Session = {
     key,
     userId,
@@ -165,12 +187,15 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
     backend: cfg.backend,
     route: cfg.route,
     context,
-    pages: restored?.pages ?? context.pages(),
+    pages: restored?.pages ?? userPages(context),
     pageReady: new WeakMap(),
     page,
     viewport: { ...DEFAULT_VIEWPORT },
     dsf,
-    subs: new Set(),
+    subs: new Map(),
+    sound: cfg.sound === true,
+    rtc: new Map(),
+    quietPages: [],
     humanQueue: [],
     humanBytes: 0,
     owners: new Set(),
@@ -182,12 +207,8 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
   if (s.route === 'home') s.unsubRoute = subscribeTunnel(userId, (online) => emit(s, { type: 'route', online }));
   // Popups (OAuth consent, "open in new window") become tabs and take focus.
   context.on('page', (p) => {
-    if (extensionMaintenance(context)) return;
-    s.pages.push(p);
-    watchPage(s, p);
-    const ready = activate(s, p);
-    s.pageReady.set(p, ready);
-    void ready.catch(() => {}); // explicit new-tab commands await and report it
+    if (extensionMaintenance(context)) { s.quietPages.push(p); return; }
+    adopt(s, p);
   });
   context.on('close', () => {
     // Crashed, or closed by us: either way the viewers reconnect and relaunch.
@@ -195,6 +216,7 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
     emit(s, { type: 'closed' });
   });
   sessions.set(key, s);
+  if (cfg.backend === 'local') s.streamOpening = openStreamer(s);
   // A fresh (headless) profile always opens on about:blank; the ward's URL is
   // its home page. Failures show on the screencast, not here.
   if (cfg.url && page.url() === 'about:blank') void page.goto(cfg.url, { waitUntil: 'commit', timeout: NAV_MS }).catch(() => {});
@@ -207,6 +229,7 @@ async function launch(userId: number, ward: string, key: string, cfg: BrowserCon
 const homeDial =
   (userId: number): Dial =>
   async (host, port) => {
+    if (host === TURN_HOST) return direct(host, port); // media to our own relay never rides the home uplink twice
     await publicAddress(host);
     return openStream(userId, `${host}:${port}`);
   };
@@ -254,21 +277,24 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig, dsf
     downloadsPath: downloads,
     // Chromium restores history, scroll positions and form state itself. A
     // forced blank startup tab would take the place of the restored page.
-    // Playwright mutes by default; a ward with sound on plays through this
-    // machine's default output (CoreAudio / WASAPI / PulseAudio-PipeWire via
-    // XDG_RUNTIME_DIR, which browserEnv passes through).
-    ignoreDefaultArgs: ['--disable-extensions', ...(restoreDesktop() ? ['about:blank'] : []), ...(cfg.sound ? ['--mute-audio'] : [])],
+    // Playwright's --mute-audio would starve the capture (renderers get a null sink), so it
+    // goes: the capture page mutes every tab browser-side while the ward's sound is off
+    // (stream.js applySound), and a ward with sound on plays through this machine's default
+    // output (CoreAudio / WASAPI / PulseAudio-PipeWire via XDG_RUNTIME_DIR, which browserEnv passes).
+    ignoreDefaultArgs: ['--disable-extensions', '--mute-audio', ...(restoreDesktop() ? ['about:blank'] : [])],
     args: [
       '--enable-unsafe-extension-debugging',
-      ...(extensions.length ? [`--load-extension=${extensions.join(',')}`] : []),
+      `--load-extension=${[...extensions, STREAM_EXTENSION.dir].join(',')}`,
+      `--allowlisted-extension-id=${STREAM_EXTENSION.id}`, // tabCapture without a gesture, for that one extension
       ...(restoreDesktop() ? ['--restore-last-session'] : []),
       ...(dsf !== 1 ? [`--force-device-scale-factor=${dsf}`] : []),
       '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', // no unproxied UDP out of ICE
       '--disk-cache-size=52428800', // the profile's size cap, in effect
     ],
   });
-  if (restoreDesktop() && context.pages().length === 1 && context.pages()[0]!.url().startsWith('chrome://new-tab-page'))
-    await context.pages()[0]!.goto('about:blank');
+  const pages = userPages(context);
+  if (restoreDesktop() && pages.length === 1 && pages[0]!.url().startsWith('chrome://new-tab-page'))
+    await pages[0]!.goto('about:blank');
   return {
     context,
     close: async () => {
@@ -298,7 +324,7 @@ async function restoreView(context: BrowserContext, userId: number, ward: string
     const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { tabs: { url: string; key: string }[]; active: number };
     if (!Array.isArray(saved.tabs) || saved.tabs.length > 32 || !Number.isInteger(saved.active) || !saved.tabs[saved.active] ||
       saved.tabs.some(t => !t || typeof t.url !== 'string' || !/^[a-f0-9]{64}$/.test(t.key))) return null;
-    const available = await Promise.all(context.pages().map(async page => ({ page, ...await tabView(context, page) })));
+    const available = await Promise.all(userPages(context).map(async page => ({ page, ...await tabView(context, page) })));
     const pages: Page[] = [];
     let active: Page | undefined;
     for (const [i, tab] of saved.tabs.entries()) {
@@ -347,7 +373,7 @@ async function makeRoom(): Promise<void> {
 // the number of concurrent first-opens. Count `opening` too if it ever matters.
 
 function emit(s: Session, ev: BrowserEvent): void {
-  for (const sub of s.subs) sub(ev);
+  for (const [sub, o] of s.subs) if (ev.type !== 'frame' || o.jpeg) sub(ev);
 }
 
 function watchPage(s: Session, p: Page): void {
@@ -388,7 +414,7 @@ async function pushTabs(s: Session): Promise<void> {
 
 /** What a viewer needs on connect: the current page and tab strip. */
 export async function pushState(s: Session): Promise<void> {
-  emit(s, { type: 'view', dsf: s.dsf });
+  emit(s, { type: 'view', dsf: s.dsf, width: s.viewport.width, height: s.viewport.height });
   await pushNav(s);
   await pushTabs(s);
   if (s.route === 'home') emit(s, { type: 'route', online: tunnelOnline(s.userId) });
@@ -404,15 +430,32 @@ export async function activate(s: Session, page: Page): Promise<void> {
     if (s.page !== page || s.closing) return; // A newer tab selection owns the cast.
     await page.setViewportSize(s.viewport).catch(() => {});
     if (s.page !== page) return;
+    // Chromium's active tab follows ours: the capture page takes the tab from the activation this fires.
+    await page.bringToFront().catch(() => {});
+    if (s.page !== page) return;
     startCast(s);
+    capture(s);
   }
   await pushState(s);
 }
 
+/** A new page becomes a tab and takes focus; its screencast/selection work is
+ *  asynchronous (`pageReady`), and a page is adopted once. */
+function adopt(s: Session, p: Page): void {
+  if (s.pages.includes(p) || p.isClosed()) return;
+  s.pages.push(p);
+  watchPage(s, p);
+  const ready = activate(s, p);
+  s.pageReady.set(p, ready);
+  void ready.catch(() => {}); // explicit new-tab commands await and report it
+}
+
 async function newPage(s: Session): Promise<Page> {
   const page = await s.context.newPage();
-  // The context event installs the tab before newPage resolves, but its
-  // screencast/selection work is asynchronous. Do not activate it twice.
+  // The context event adopts the tab before newPage resolves — unless the capture
+  // page was being opened at that instant (the event is quiet then): adopt it here.
+  s.quietPages = s.quietPages.filter(p => p !== page);
+  adopt(s, page);
   await s.pageReady.get(page);
   return page;
 }
@@ -438,6 +481,8 @@ export async function resize(s: Session, width: number, height: number): Promise
   if (w === s.viewport.width && h === s.viewport.height) return;
   s.viewport = { width: w, height: h };
   await s.page.setViewportSize(s.viewport).catch(() => {});
+  tell(s, { size: captureSize(s) });
+  emit(s, { type: 'view', dsf: s.dsf, width: w, height: h });
   // The screencast's max size is fixed at start, and frames only shrink to
   // fit it: restart only when the viewport outgrows it (the expand dialog),
   // never on the way back down — that restart was a visible frame gap.
@@ -588,21 +633,29 @@ export function withSession<T>(s: Session, fn: () => Promise<T>): Promise<T> {
 
 // ------------------------------------------------------------- screencast
 
-/** Events flow while at least one subscriber is attached; nothing is encoded
- *  for nobody. Returns the unsubscribe. */
-export function subscribe(s: Session, fn: (e: BrowserEvent) => void): () => void {
-  s.subs.add(fn);
+/** Events flow while at least one subscriber is attached; frames are encoded only
+ *  while one still wants them — `jpeg(false)` once that viewer is on WebRTC, `jpeg(true)`
+ *  when that ends. Returns the unsubscribe, carrying `jpeg`. */
+export function subscribe(s: Session, fn: (e: BrowserEvent) => void, jpeg = true): (() => void) & { jpeg: (on: boolean) => void } {
+  s.subs.set(fn, { jpeg });
   s.lastUsed = Date.now();
-  if (s.subs.size === 1) startCast(s);
-  return () => {
-    s.subs.delete(fn);
+  recast(s);
+  const unsub = () => {
+    if (!s.subs.delete(fn)) return;
     s.lastUsed = Date.now();
-    if (!s.subs.size) void stopCast(s);
+    recast(s);
   };
+  return Object.assign(unsub, { jpeg: (on: boolean) => { const o = s.subs.get(fn); if (!o || o.jpeg === on) return; o.jpeg = on; recast(s); } });
+}
+const wantsJpeg = (s: Session): boolean => [...s.subs.values()].some(o => o.jpeg);
+/** Start or stop the screencast to match who still wants frames. */
+function recast(s: Session): void {
+  if (wantsJpeg(s)) startCast(s);
+  else if (s.cast) void stopCast(s);
 }
 
 function startCast(s: Session): void {
-  if (s.cast || !s.subs.size || s.closing) return;
+  if (s.cast || !wantsJpeg(s) || s.closing) return;
   const page = s.page;
   const stopped = s.castStop;
   const max = { width: Math.round(s.viewport.width * s.dsf), height: Math.round(s.viewport.height * s.dsf) };
@@ -643,23 +696,97 @@ function stopCast(s: Session): Promise<void> {
   })();
 }
 
+// ---------------------------------------------------------------- capture
+
+const isStreamPage = (p: Page): boolean => p.url().startsWith(STREAM_EXTENSION.origin);
+/** The ward's tabs: every page of the context but the capture page. */
+const userPages = (context: BrowserContext): Page[] => context.pages().filter(p => !isStreamPage(p));
+
+/** The capture page (assets/browser-extensions/stream), opened so it is never a tab of the
+ *  ward, kept behind the active page, reopened once if something closes it. Without it the
+ *  ward is what it was: JPEG frames for everyone. */
+async function openStreamer(s: Session, retry = true): Promise<void> {
+  if (s.backend !== 'local' || s.closing) return;
+  let mine: Page | undefined;
+  try {
+    const page = await quiet(s.context, async () => {
+      const p = mine = await s.context.newPage();
+      try {
+        await p.exposeBinding('rwSignal', (source, raw: unknown) => { if (source.frame.url().startsWith(STREAM_EXTENSION.origin)) streamSignal(s, raw); });
+        await p.goto(STREAM_EXTENSION.origin + 'stream.html', { timeout: 10_000, waitUntil: 'domcontentloaded' });
+      } catch (error) { await p.close().catch(() => {}); throw error; }
+      return p;
+    });
+    if (s.closing) { await page.close().catch(() => {}); return; }
+    s.stream = { page, rev: s.stream?.rev ?? 0 };
+    page.on('close', () => {
+      if (s.stream?.page !== page) return;
+      s.stream = undefined;
+      for (const [conn, sink] of s.rtc) sink({ conn, state: 'closed' }); // its peers died with it
+      if (retry && !s.closing) s.streamOpening = openStreamer(s, false);
+    });
+    await s.page.bringToFront().catch(() => {});
+    tell(s, { sound: s.sound, size: captureSize(s) });
+  } catch (error) {
+    if (s.closing) return;
+    console.warn('[browser] capture page unavailable, frames stay JPEG:', error instanceof Error ? error.message.split('\n')[0] : error);
+    if (retry) setTimeout(() => { if (!s.closing && !s.stream) s.streamOpening = openStreamer(s, false); }, 2_000).unref?.();
+  } finally {
+    // A popup that arrived while the event was quiet is a tab like any other.
+    for (const p of s.quietPages.splice(0)) if (p !== mine) adopt(s, p);
+  }
+}
+/** A command for the capture page (stream.js rwIn). A gone page is a lost message, never a throw. */
+export function tell(s: Session, msg: Record<string, unknown>): void {
+  void s.stream?.page.evaluate((m) => (window as unknown as { rwIn?: (m: unknown) => boolean }).rwIn?.(m), msg).catch(() => {});
+}
+/** Follow the active tab: the capture page takes the tab from the activation `bringToFront` fired. */
+function capture(s: Session): void {
+  if (!s.stream) return;
+  tell(s, { capture: { rev: ++s.stream.rev, size: captureSize(s) } });
+}
+/** The capture's pixel size: CSS px on a server (software encode, no GPU), the
+ *  device scale on a desktop (hardware encode). */
+export function captureSize(s: Session): { w: number; h: number } {
+  const k = isDesktop() ? s.dsf : 1;
+  return { w: Math.round(s.viewport.width * k), h: Math.round(s.viewport.height * k) };
+}
+function streamSignal(s: Session, raw: unknown): void {
+  let msg: unknown;
+  try { msg = JSON.parse(String(raw)); } catch { return; }
+  if (!msg || typeof msg !== 'object') return;
+  const m = msg as { event?: string; message?: string; conn?: unknown };
+  if (m.event) { if (m.event === 'error') console.warn('[browser] capture:', m.message); return; }
+  if (typeof m.conn !== 'string') return;
+  s.rtc.get(m.conn)?.(m as StreamSignal);
+}
+
 // -------------------------------------------------------------- lifecycle
 
 export function closeSession(s: Session): Promise<void> {
   return s.closing ??= closeBrowser(s);
 }
 
-/** A launch-time knob changed (sound): close the session so its viewers
- *  reconnect and relaunch with the saved config — unless the agent is on it,
- *  in which case the change waits for the next launch. */
-export function relaunchIdle(userId: number, ward: string): void {
+/** The ward's sound knob changed: the capture page applies it live. A browser
+ *  without one relaunches if idle — unless the agent is on it, in which case
+ *  the change waits for the next launch. */
+export function setSound(userId: number, ward: string, sound: boolean): void {
   const s = peek(userId, ward);
-  if (s && !s.operations && !s.closing) void closeSession(s).catch(() => {});
+  if (!s) return;
+  s.sound = sound;
+  if (s.stream) tell(s, { sound });
+  else if (!s.operations && !s.closing) void closeSession(s).catch(() => {});
 }
 
 async function closeBrowser(s: Session): Promise<void> {
   if (s.backend === 'browserbase') await extensionStorage(s.context, s.userId, s.ward, false).catch(error => console.warn('[browser] Could not save extension settings:', error instanceof Error ? error.message : error));
   s.unsubRoute?.();
+  // The capture page must not be in the session Chromium saves: macOS restore would bring
+  // it back as a tab (blank, before the extension loads — invisible to the launch-time filter).
+  await Promise.race([s.streamOpening?.catch(() => {}), sleep(3_000)]);
+  const stream = s.stream;
+  s.stream = undefined;
+  if (stream) await Promise.race([stream.page.close().catch(() => {}), sleep(1_000)]);
   await Promise.race([saveView(s), sleep(1_000)]);
   // Graceful first (Browser.close flushes the profile); if the browser won't
   // go, the process scan below will. A stalled CDP screencast must not prevent

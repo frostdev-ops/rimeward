@@ -171,7 +171,7 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
     return () => { closed = true; stop(); watcher?.close(); clearTimeout(debounce); };
   }
   if (s.type === 'browser') {
-    const { peek } = await import('../browser/session.ts');
+    const { peek, subscribe } = await import('../browser/session.ts');
     const session = peek(user,s.target!); if (!session) throw Error('Browser is offline; waiting for its session to reconnect.');
     const marker = `rimeMonitor${randomUUID().replaceAll('-','')}`;
     let first = true,last = '',closed = false,busy = false;
@@ -199,8 +199,8 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
       } finally { busy = false; }
     };
     const sub = (event:{ type:string }) => { if (event.type === 'closed' || ('online' in event && event.online === false)) offline('Browser disconnected.'); if (event.type === 'nav' || event.type === 'tabs') void sample().catch(e => offline(e.message)); };
-    session.subs.add(sub); const stop = poll(sample,1000,offline);
-    return () => { closed = true; stop(); session.subs.delete(sub); for (const page of pages) void page.evaluate(marker => { const g = window as unknown as Record<string,any>; g[marker]?.observer.disconnect(); delete g[marker]; },marker).catch(() => {}); };
+    const unsub = subscribe(session,sub,false); const stop = poll(sample,1000,offline); // no frames: the monitor reads nav and tabs
+    return () => { closed = true; stop(); unsub(); for (const page of pages) void page.evaluate(marker => { const g = window as unknown as Record<string,any>; g[marker]?.observer.disconnect(); delete g[marker]; },marker).catch(() => {}); };
   }
   if (s.type === 'http') {
     let first = true,last = '';

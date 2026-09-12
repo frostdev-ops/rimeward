@@ -8,7 +8,8 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { getDb } from '../src/lib/db.ts';
 import { saveDashboard } from '../src/lib/dashboard.ts';
-import { closeSession, killByProfile, normalizeCmds, open, peek, runCmds, subscribe } from '../src/lib/browser/session.ts';
+import { closeSession, killByProfile, normalizeCmds, open, peek, pushState, runCmds, setSound, subscribe, type BrowserEvent } from '../src/lib/browser/session.ts';
+import { STREAM_EXTENSION } from '../src/lib/browser/extensions.ts';
 import { TOOLS } from '../src/lib/agent/tools.ts';
 
 // The one end-to-end check: a real headless Chromium through session.ts, the
@@ -106,7 +107,7 @@ test('local desktop browser: tabs, input batches, live frames and native session
   const fixture = async (context: import('playwright-core').BrowserContext) => context.route('https://browser.fixture/**', route =>
     route.fulfill({ contentType: 'text/html', body: `<title>${new URL(route.request().url()).pathname}</title><h1>Generated fixture</h1><input name="draft" aria-label="Draft"><a href="/third" target="_blank">Popup</a>` }));
   try {
-    try { s = await open(uid, 'desktop-browser', { backend: 'app' }); }
+    try { s = await open(uid, 'desktop-browser', { backend: 'app' }); await s.streamOpening; }
     catch (err) {
       if (existsSync(process.env.BROWSER_EXECUTABLE ?? chromium.executablePath())) throw err;
       t.skip('no Chromium installed'); return;
@@ -120,10 +121,10 @@ test('local desktop browser: tabs, input batches, live frames and native session
     const first = s.page;
     let tabTitle = '';
     const tabs = (event: import('../src/lib/browser/session.ts').BrowserEvent) => { if (event.type === 'tabs') tabTitle = event.tabs[event.active]?.title ?? ''; };
-    s.subs.add(tabs);
+    const untabs = subscribe(s, tabs, false);
     await runCmds(s, [{ t: 'newtab' }, { t: 'goto', url: 'https://browser.fixture/three' }]);
     for (let attempt = 0; tabTitle !== '/three' && attempt < 100; attempt++) await new Promise(r => setTimeout(r, 20));
-    s.subs.delete(tabs);
+    untabs();
     assert.equal(tabTitle, '/three', 'navigation updates the tab caption without switching tabs');
     const second = s.page;
     await first.locator('input').focus(); await second.locator('input').focus();
@@ -142,6 +143,7 @@ test('local desktop browser: tabs, input batches, live frames and native session
     if (process.platform === 'darwin') {
       await closeSession(s);
       s = await open(uid, 'desktop-browser', { backend: 'app' });
+      await s.streamOpening;
       const restored = await Promise.all(s.pages.map(async page => {
         const cdp = await s!.context.newCDPSession(page);
         try { const h = await cdp.send('Page.getNavigationHistory'); return h.entries[h.currentIndex]!.url; }
@@ -155,6 +157,7 @@ test('local desktop browser: tabs, input batches, live frames and native session
       await closeSession(s);
       writeFileSync(path.join(process.env.HOMEPAGE_DATA_DIR!, 'browser', String(uid), 'desktop-browser', 'rimeward-view.json'), '{broken');
       s = await open(uid, 'desktop-browser', { backend: 'app' });
+      await s.streamOpening;
       assert.equal(s.pages.length, 2, 'invalid optional tab metadata never deletes native restored tabs');
     }
     await fixture(s.context);
@@ -175,7 +178,7 @@ test('local desktop browser: tabs, input batches, live frames and native session
         const url = `https://browser.fixture/replacement-${cycle}`;
         await runCmds(s, [{ t: 'closetab', i: 0 }, { t: 'goto', url }]);
         assert.equal(s.pages.length, 1, 'closing the final tab completes with exactly one replacement');
-        assert.equal(s.context.pages().length, 1, 'close events do not create duplicate replacements');
+        assert.equal(s.context.pages().filter((p: { url: () => string }) => !p.url().startsWith('chrome-extension://')).length, 1, 'close events do not create duplicate replacements (the capture page is not a tab)');
         assert.equal(previous.isClosed(), true);
         assert.equal(s.page, s.pages[0]);
         assert.equal(s.page.url(), url, 'same-batch navigation uses the live replacement immediately');
@@ -193,5 +196,57 @@ test('local desktop browser: tabs, input batches, live frames and native session
     if (s) await closeSession(s);
     if (oldDesktop === undefined) delete process.env.RIMEWARD_DESKTOP; else process.env.RIMEWARD_DESKTOP = oldDesktop;
     if (oldToken === undefined) delete process.env.RIMEWARD_NATIVE_TOKEN; else process.env.RIMEWARD_NATIVE_TOKEN = oldToken;
+  }
+});
+
+test('the capture page: never a tab, frames only while a viewer wants them, view carries the viewport, sound mutes tabs', async (t) => {
+  const uid = seedUser('bw-stream@test');
+  saveDashboard(uid, [{ i: 'bw2', type: 'browser', size: '3x2', config: { backend: 'local' } }]);
+  let s;
+  try {
+    s = await open(uid, 'bw2', { backend: 'local' });
+  } catch (err) {
+    if (existsSync(process.env.BROWSER_EXECUTABLE ?? chromium.executablePath())) throw err;
+    t.skip(`no chromium here: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
+    return;
+  }
+  const until = async (pred: () => boolean, ms: number, what: string) => { const t0 = Date.now(); while (!pred()) { if (Date.now() - t0 > ms) throw Error(`timed out: ${what}`); await new Promise((r) => setTimeout(r, 50)); } };
+  try {
+    await until(() => !!s.stream, 15_000, 'capture page');
+    // One more page in the context than the ward has tabs, and it is the extension's.
+    assert.equal(s.context.pages().length, s.pages.length + 1);
+    assert.ok(s.context.pages().some((p: { url: () => string }) => p.url() === `chrome-extension://${STREAM_EXTENSION.id}/stream.html`));
+    assert.ok(!s.pages.some((p: { url: () => string }) => p.url().startsWith('chrome-extension://')));
+
+    const events: BrowserEvent[] = [];
+    const unsub = subscribe(s, (e) => events.push(e));
+    await pushState(s);
+    assert.deepEqual(events.find((e) => e.type === 'view'), { type: 'view', dsf: 1, width: 1280, height: 800 });
+    const tabs = events.find((e) => e.type === 'tabs') as Extract<BrowserEvent, { type: 'tabs' }>;
+    assert.ok(tabs && !tabs.tabs.some((x) => x.url.startsWith('chrome-extension://')), 'the tab strip never lists the capture page');
+
+    // JPEG frames flow for a viewer that wants them and stop when it does not.
+    await until(() => events.some((e) => e.type === 'frame'), 10_000, 'first frame');
+    unsub.jpeg(false);
+    await until(() => !s.cast, 5_000, 'cast stopped');
+    const n = events.filter((e) => e.type === 'frame').length;
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(events.filter((e) => e.type === 'frame').length, n, 'no frames reach a viewer on WebRTC');
+    unsub.jpeg(true);
+    await until(() => !!s.cast, 5_000, 'cast resumed');
+    await runCmds(s, [{ t: 'resize', w: 640, h: 480 }]);
+    assert.deepEqual(events.filter((e) => e.type === 'view').at(-1), { type: 'view', dsf: 1, width: 640, height: 480 });
+
+    // The ward's sound is off: its tabs are muted browser-side, the capture page itself never.
+    const muted = () => s.stream!.page.evaluate(() => (globalThis as unknown as { chrome: { tabs: { query: (q: object) => Promise<{ url?: string; mutedInfo?: { muted: boolean } }[]> } } }).chrome.tabs.query({})
+      .then((ts) => ts.map((x) => ({ url: x.url ?? '', muted: !!x.mutedInfo?.muted })))) as Promise<{ url: string; muted: boolean }[]>;
+    let state = await muted();
+    assert.ok(state.find((x) => x.url === 'about:blank')?.muted === true && state.find((x) => x.url.startsWith('chrome-extension://'))?.muted === false, JSON.stringify(state));
+    setSound(uid, 'bw2', true);
+    for (let i = 0; i < 40 && state.find((x) => x.url === 'about:blank')?.muted; i++) { await new Promise((r) => setTimeout(r, 50)); state = await muted(); }
+    assert.equal(state.find((x) => x.url === 'about:blank')?.muted, false, 'sound on unmutes the tabs live, no relaunch');
+    unsub();
+  } finally {
+    await closeSession(s);
   }
 });
