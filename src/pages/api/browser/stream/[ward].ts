@@ -113,8 +113,13 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
       void pushState(s);
       // The stream, once the capture page is up: `ice` now, the page's offer next; frames stop once the peer connects.
       void (s.streamOpening ?? Promise.resolve()).then(() => { if (unsub === sub) rtc = rtcJoin(s, ice, write, on => sub.jpeg(!on)); });
+      let stalled = 0;
       ping = setInterval(() => {
         if (share && !shareLive(share, url)) { end(); return; }
+        // A consumer that stopped pulling (a viewer gone behind a relay that never said so) must not
+        // hold the session's screencast and peer for good: two quiet beats with a full queue end it.
+        if ((controller.desiredSize ?? 1) <= 0 && ++stalled >= 2) { end(); return; }
+        if ((controller.desiredSize ?? 1) > 0) stalled = 0;
         try {
           controller.enqueue(encoder.encode(': ping\n\n'));
         } catch {}

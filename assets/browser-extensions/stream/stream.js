@@ -35,7 +35,11 @@ let lastActivated = null; // { tabId, at }
 const waiters = [];
 let sound = false, audioCtx = null, audioSrc = null;
 
-chrome.tabs.getCurrent().then((tab) => { me = tab ?? null; });
+chrome.tabs.getCurrent().then((tab) => {
+  me = tab ?? null;
+  // Never a candidate for Chromium's tab discarding: a discarded capture page is a closed one.
+  if (me?.id !== undefined) chrome.tabs.update(me.id, { autoDiscardable: false }).catch(() => {});
+});
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   lastActivated = { tabId, at: Date.now() };
   for (const w of waiters.splice(0)) w(tabId);

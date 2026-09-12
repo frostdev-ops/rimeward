@@ -703,10 +703,17 @@ const isStreamPage = (p: Page): boolean => p.url().startsWith(STREAM_EXTENSION.o
 const userPages = (context: BrowserContext): Page[] => context.pages().filter(p => !isStreamPage(p));
 
 /** The capture page (assets/browser-extensions/stream), opened so it is never a tab of the
- *  ward, kept behind the active page, reopened once if something closes it. Without it the
- *  ward is what it was: JPEG frames for everyone. */
-async function openStreamer(s: Session, retry = true): Promise<void> {
+ *  ward, kept behind the active page, reopened whenever something closes it (Chromium can drop
+ *  a background tab; the page marks itself non-discardable, this is the belt to those braces),
+ *  with a backoff after repeated failures. Without it the ward is what it was: JPEG frames for
+ *  everyone. */
+const STREAMER_RETRY_MS = [2_000, 5_000, 15_000, 60_000];
+async function openStreamer(s: Session, attempt = 0): Promise<void> {
   if (s.backend !== 'local' || s.closing) return;
+  const again = (next: number) => {
+    const delay = STREAMER_RETRY_MS[Math.min(next, STREAMER_RETRY_MS.length - 1)]!;
+    setTimeout(() => { if (!s.closing && !s.stream) s.streamOpening = openStreamer(s, next); }, delay).unref?.();
+  };
   let mine: Page | undefined;
   try {
     let flipped = false;
@@ -726,7 +733,7 @@ async function openStreamer(s: Session, retry = true): Promise<void> {
       if (s.stream?.page !== page) return;
       s.stream = undefined;
       for (const [conn, sink] of s.rtc) sink({ conn, state: 'closed' }); // its peers died with it
-      if (retry && !s.closing) s.streamOpening = openStreamer(s, false);
+      if (!s.closing) again(0);
     });
     if (flipped) {
       await s.page.bringToFront().catch(() => {});
@@ -736,7 +743,7 @@ async function openStreamer(s: Session, retry = true): Promise<void> {
   } catch (error) {
     if (s.closing) return;
     console.warn('[browser] capture page unavailable, frames stay JPEG:', error instanceof Error ? error.message.split('\n')[0] : error);
-    if (retry) setTimeout(() => { if (!s.closing && !s.stream) s.streamOpening = openStreamer(s, false); }, 2_000).unref?.();
+    again(attempt + 1);
   } finally {
     // A popup that arrived while the event was quiet is a tab like any other.
     for (const p of s.quietPages.splice(0)) if (p !== mine) adopt(s, p);
