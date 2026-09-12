@@ -47,6 +47,8 @@ export function browserUpgrade(req: http.IncomingMessage, socket: net.Socket, he
   if (typeof auth === 'number') { refuseUpgrade(socket, auth); return; }
   const m = ROUTE.exec(req.url ?? '');
   if (!m) { refuseUpgrade(socket, 404); return; }
+  // A share viewed from a desktop app: the frames come over the forwarded SSE + POST path.
+  if (auth.forward) { refuseUpgrade(socket, 409); return; }
   const ward = m[1]!, userId = auth.userId;
   const cfg = browserWard(userId, ward);
   if (!cfg) { refuseUpgrade(socket, 400); return; }

@@ -18,6 +18,9 @@ import { GET as notesGet } from '../src/pages/api/notes.ts';
 import { GET as sharesGet, POST as sharesPost } from '../src/pages/api/share/index.ts';
 import { DELETE as shareDelete, GET as shareGet } from '../src/pages/api/share/[id].ts';
 import { PUT as dashboardPut } from '../src/pages/api/dashboard.ts';
+import { createSession } from '../src/lib/auth.ts';
+import { principalAlive, upgradeSession } from '../src/lib/live-stream.ts';
+import type http from 'node:http';
 
 const owner = createUser('owner@example.com', 'pw-owner-1');
 const viewer = createUser('viewer@example.com', 'pw-viewer-1');
@@ -247,4 +250,31 @@ test('PUT /api/dashboard: a shared ward or page must be one of MY shares; a vani
   assert.equal((await put(viewer, [{ i: 'w', type: 'weather', size: '1x1' }], pages)).status, 200);
   assert.equal((await put(stranger, [{ i: 'w', type: 'weather', size: '1x1' }], pages)).status, 400);
   assert.equal((await put(viewer, [{ i: 's1', type: 'shared', size: '2x2', config: { share: 'gone00000000' } }])).status, 200, 'revoked: the card says so, the layout still saves');
+});
+
+test('socket upgrades inside a share: the owner as principal on the server, forwarded from a desktop', () => {
+  const { share } = createShare(owner, { kind: 'ward', target: 'web', email: 'viewer@example.com', role: 'edit' });
+  const sid = createSession(viewer).id;
+  const req = (url: string, cookie?: string) => ({ headers: { origin: 'http://localhost:4321', host: 'localhost:4321', cookie }, url }) as unknown as http.IncomingMessage;
+  const ok = upgradeSession(req(`/api/browser/ws/web?share=${share.id}`, `rimeward_session=${sid}`));
+  assert.equal(typeof ok, 'object');
+  assert.equal((ok as { userId: number }).userId, owner, 'the principal is the owner');
+  assert.equal((ok as { id: string }).id, `share:${share.id}:${sid}`);
+  assert.ok(principalAlive((ok as { id: string }).id));
+  assert.equal(upgradeSession(req(`/api/browser/ws/web?share=${share.id}`)), 403, 'a grantee share needs the grantee');
+  assert.equal(upgradeSession(req(`/api/browser/ws/pad?share=${share.id}`, `rimeward_session=${sid}`)), 403, 'not this share’s ward');
+  assert.equal(upgradeSession(req('/api/browser/ws/web?share=nope00000000', `rimeward_session=${sid}`)), 404);
+  const env = { desktop: process.env.RIMEWARD_DESKTOP, token: process.env.RIMEWARD_NATIVE_TOKEN };
+  process.env.RIMEWARD_DESKTOP = '1'; process.env.RIMEWARD_NATIVE_TOKEN = 'test';
+  try {
+    const fwd = upgradeSession(req(`/api/live/stream?share=${share.id}`, `rimeward_session=${sid}`));
+    assert.equal((fwd as { forward?: string }).forward, share.id, 'a desktop forwards instead of judging');
+    assert.equal((fwd as { userId: number }).userId, viewer);
+    assert.equal(upgradeSession(req(`/api/live/stream?share=${share.id}`)), 401);
+  } finally {
+    if (env.desktop === undefined) delete process.env.RIMEWARD_DESKTOP; else process.env.RIMEWARD_DESKTOP = env.desktop;
+    if (env.token === undefined) delete process.env.RIMEWARD_NATIVE_TOKEN; else process.env.RIMEWARD_NATIVE_TOKEN = env.token;
+  }
+  revokeShare(owner, share.id);
+  assert.ok(!principalAlive(`share:${share.id}:${sid}`), 'a revoked share ends its sockets');
 });

@@ -55,6 +55,11 @@ export async function routeInstance(context: APIContext): Promise<Response | und
   }
   if (url.pathname.startsWith('/api/icon/')) return;
   if (desktop && url.pathname === '/api/agent/history' && !url.searchParams.has('_ward')) return;
+  // Shares live on the server (lib/shares.ts): the share view and every call inside one go there.
+  if (desktop && connection && (url.pathname.startsWith('/s/') || url.searchParams.has('share'))) {
+    try { return await instanceRequest(user, path, request); }
+    catch (e) { return Response.json({ error: e instanceof DevError ? e.message : 'The server is not reachable.' }, { status: e instanceof DevError ? e.status : 503 }); }
+  }
   try {
     // A /runtime/<device> URL already names its target. Re-resolving the ward
     // inside it would relay a /runtime path, which the relay refuses (403).

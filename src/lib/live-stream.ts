@@ -3,6 +3,7 @@ import type net from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { SESSION_COOKIES, getSession } from './auth.ts';
 import { resolveShare, shareAllows, shareCookie, sharePrincipalId, shareScope, type ShareScope } from './shares.ts';
+import { isDesktop } from './dev/runtime.ts';
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
 // Only existing, authenticated SSE GETs. The original middleware still decides device and ward access.
@@ -15,7 +16,7 @@ export const refuseUpgrade = (socket: net.Socket, status: number) => socket.end(
  *  share's viewer: the principal is the OWNER, `share` says what they may do,
  *  and `id` is what principalAlive re-checks (the share, plus the grantee's
  *  session when there is one). */
-export function upgradeSession(req: http.IncomingMessage): { id: string; userId: number; origin: URL; share?: ShareScope } | number {
+export function upgradeSession(req: http.IncomingMessage): { id: string; userId: number; origin: URL; share?: ShareScope; forward?: string } | number {
   let origin: URL;
   try { origin = new URL(req.headers.origin ?? ''); } catch { return 403; }
   const expected = process.env.PUBLIC_BASE_URL;
@@ -25,6 +26,9 @@ export function upgradeSession(req: http.IncomingMessage): { id: string; userId:
   const row = id ? getSession(id) : null;
   const url = new URL(req.url ?? '/', 'http://localhost');
   const shareId = url.searchParams.get('share');
+  // A desktop judges no share: its own signed-in user opens the socket and every
+  // subscription inside it is forwarded to the server (instance-routing.ts).
+  if (shareId && isDesktop()) return row && id ? { id, userId: row.userId, origin, forward: shareId } : 401;
   if (shareId) {
     const scope = shareScope(shareId, row, cookies.get(shareCookie(shareId)));
     if (typeof scope === 'number') return scope;
@@ -47,7 +51,7 @@ export function liveUpgrade(req: http.IncomingMessage, socket: net.Socket, head:
   if (typeof auth === 'number') { refuse(auth); return; }
   const { id: session, origin } = auth;
   // Inside a share every subscription stays inside it: the upstream GET carries the share id.
-  const share = auth.share?.share.id;
+  const share = auth.share?.share.id ?? auth.forward;
   const port = req.socket.localPort;
   if (!port) { refuse(503); return; }
   wss.handleUpgrade(req, socket, head, ws => {

@@ -15,6 +15,7 @@ import { nativeRequest } from './lib/dev/native.ts';
 import { routeInstance } from './lib/dev/instance-routing.ts';
 import { validUserCode, CONNECT_COOKIE } from './lib/dev/device-auth.ts';
 import { SHARE_TOKEN_RE, shareAllows, shareCookie, shareLocals, sharePrincipal, shareScope } from './lib/shares.ts';
+import { isDesktop } from './lib/dev/runtime.ts';
 import { ensureUpdateChecks } from './lib/updates.ts';
 import { ensureAgentMonitors } from './lib/agent/monitors.ts';
 import { ensureKnowledge } from './lib/agent/knowledge.ts';
@@ -85,9 +86,16 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // shareAllows (lib/shares.ts). Grantees are signed in; link holders carry the token cookie
   // the landing set; a raw token in /s/<token> goes to the page, which swaps it for that cookie.
   const shareId = pathname.startsWith('/s/') ? pathname.split('/')[2] ?? '' : context.url.searchParams.get('share') ?? '';
+  const json = (error: string, status: number) => new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } });
+  if (isDesktop() && (shareId || pathname.startsWith('/s/'))) {
+    // Shares live on the server: a joined desktop forwards the share view and every call
+    // inside it (routeInstance); one that is not joined has nothing to show.
+    if (!session) return pathname.startsWith('/s/') ? context.redirect('/login', 303) : json('unauthorized', 401);
+    context.locals.user = session;
+    return (await routeInstance(context)) ?? json('no such share', 404);
+  }
   if (pathname.startsWith('/s/') && SHARE_TOKEN_RE.test(shareId)) return next();
   if (shareId) {
-    const json = (error: string, status: number) => new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } });
     const scope = shareScope(shareId, session, context.cookies.get(shareCookie(shareId))?.value);
     if (typeof scope === 'number') {
       // A grantee's link opened signed out: sign in, then find it under Add ward › Shared with me.
