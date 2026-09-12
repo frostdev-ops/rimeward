@@ -27,6 +27,7 @@ import { el, newId, postJson, toast } from './dom.ts';
 import { shareReadOnly } from './share-view.ts';
 import { createDocumentEditor, type DocumentEditor } from './note-editor.ts';
 import { attachWordRibbon } from './note-word-pm.ts';
+import { attachProofreadingPm } from './note-proofreading-pm.ts';
 import { icon, relabel } from './icon.ts';
 import { askText, confirmAction } from './workspace-dialogs.ts';
 import { pageDocument, readPageDocument, type NotebookPageType } from '../../lib/notebook-pages.ts';
@@ -334,7 +335,9 @@ function connectEditor(st: State): void {
     onFail: () => { if (st.editor !== editor) return; st.pmFailed = true; disconnectEditor(st); void load(st, true); },
   });
   st.editor = editor;
-  st.ribbon = attachWordRibbon({ editor, tools: st.root.querySelector<HTMLElement>('.np-tools')!, changed: () => markDoc(st), title: () => st.target?.title ?? 'Document' });
+  const tools = st.root.querySelector<HTMLElement>('.np-tools')!;
+  st.ribbon = attachWordRibbon({ editor, tools, changed: () => markDoc(st), title: () => st.target?.title ?? 'Document' });
+  st.proof = attachProofreadingPm({ editor, tools, api: () => (st.loaded && st.editor === editor ? st.target?.api ?? null : null), onChange: () => markDoc(st) });
   // Ink is a shared list too: whatever anyone draws lands here.
   editor.ink.observe(() => {
     if (st.editor !== editor) return;
@@ -352,6 +355,7 @@ function disconnectEditor(st: State): void {
   if (!e) return;
   st.editor = null;
   st.ribbon?.destroy(); st.ribbon = null;
+  st.proof?.destroy(); st.proof = null;
   delete st.root.dataset.pm;
   e.destroy();
   attachLegacyTools(st);

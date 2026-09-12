@@ -6,7 +6,8 @@
 // document: open another and this one is destroyed.
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
-import { EditorState, Plugin, TextSelection, type Command, type Transaction } from 'prosemirror-state';
+import { EditorState, Plugin, PluginKey, TextSelection, type Command, type Transaction } from 'prosemirror-state';
+import { Decoration, DecorationSet } from 'prosemirror-view';
 import { ReplaceAroundStep, ReplaceStep } from 'prosemirror-transform';
 import { EditorView } from 'prosemirror-view';
 import { DOMParser as PMDOMParser, Fragment, Slice, type Node as PMNode } from 'prosemirror-model';
@@ -45,6 +46,14 @@ export interface DocumentEditor {
   appendParagraphs(text: string, afterSelection: boolean): void;
   /** Paragraphs before the first block below page-y `y` (handwriting lands where it was written). */
   insertParagraphsAt(text: string, y: number): void;
+  /** Replace a document range with plain text (a grammar fix). */
+  replaceRange(from: number, to: number, text: string): void;
+  /** Inline highlights (grammar issues) by document position; an empty list clears them. */
+  setHighlights(marks: { from: number; to: number; cls: string }[]): void;
+  /** Hear every document change, local or remote; returns the unsubscribe. */
+  onDocChange(fn: () => void): () => void;
+  /** The document's text with a map from text index to document position (search, grammar). */
+  textRuns(): { text: string; posAt(i: number): number | null };
   /** Replace the DOM text range [from, to) of `node` with a note link — the `[[` picker's pick. */
   replaceDomRange(node: Text, from: number, to: number, id: string, title: string): void;
   selectionText(): string;
@@ -60,6 +69,21 @@ export interface DocumentEditor {
 }
 
 const s = noteSchema;
+
+/** Inline highlights set from outside (the grammar review): a decoration set mapped through every change. */
+const highlightsKey = new PluginKey<DecorationSet>('np-highlights');
+const highlights = () => new Plugin<DecorationSet>({
+  key: highlightsKey,
+  state: {
+    init: () => DecorationSet.empty,
+    apply(tr, set) {
+      const next = tr.getMeta(highlightsKey) as { from: number; to: number; cls: string }[] | undefined;
+      if (next) return DecorationSet.create(tr.doc, next.map((m) => Decoration.inline(m.from, m.to, { class: m.cls })));
+      return set.map(tr.mapping, tr.doc);
+    },
+  },
+  props: { decorations: (state) => highlightsKey.getState(state) },
+});
 
 /** Copies of a fragment with this author's own tracked insertions dropped (deleting
  *  what you just inserted is a real delete) and, for the rest, the deletion mark added. */
@@ -196,6 +220,7 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
       }),
       keymap(baseKeymap),
       trackChanges(track),
+      highlights(),
       inputRules({ rules: [
         wrappingInputRule(/^\s*([-+*])\s$/, s.nodes.bullet_list!),
         wrappingInputRule(/^(\d+)\.\s$/, s.nodes.ordered_list!, (m) => ({ start: Number(m[1]) }), (m, node) => node.childCount + (node.attrs.start as number) === Number(m[1])),
@@ -205,6 +230,7 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
       tableEditing(),
     ],
   });
+  const changeListeners = new Set<() => void>();
   const view = new EditorView({ mount: o.mount }, {
     state,
     editable: () => !readOnly,
@@ -213,6 +239,7 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
       if (tr.docChanged) {
         if (!provider.wsconnected) editor.pendingLocal = true;
         o.onChange();
+        for (const fn of changeListeners) fn();
       }
     },
   });
@@ -268,6 +295,19 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
       let pos = view.state.doc.content.size;
       if (hit) { const $p = view.state.doc.resolve(hit.pos); if ($p.depth >= 1) pos = $p.before(1); }
       insertBlocksAt(pos, paragraphs(text));
+    },
+    replaceRange: (from: number, to: number, text: string) => { view.dispatch(view.state.tr.insertText(text, from, to)); },
+    setHighlights: (marks: { from: number; to: number; cls: string }[]) => { view.dispatch(view.state.tr.setMeta(highlightsKey, marks).setMeta('addToHistory', false)); },
+    onDocChange: (fn: () => void) => { changeListeners.add(fn); return () => { changeListeners.delete(fn); }; },
+    textRuns: () => {
+      let text = '';
+      const runs: { start: number; end: number; pos: number }[] = [];
+      view.state.doc.descendants((node, pos) => {
+        if (node.isText) { runs.push({ start: text.length, end: text.length + node.text!.length, pos }); text += node.text; }
+        else if (node.isBlock && text && !text.endsWith('\n')) text += '\n';
+        return true;
+      });
+      return { text, posAt: (i: number) => { const r = runs.find((x) => i >= x.start && i <= x.end); return r ? r.pos + (i - r.start) : null; } };
     },
     replaceDomRange: (node: Text, from: number, to: number, id: string, title: string) => {
       const a = view.posAtDOM(node, from), b = view.posAtDOM(node, to);
