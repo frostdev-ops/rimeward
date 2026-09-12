@@ -67,6 +67,31 @@ function attr(raw: string, name: string): string {
   });
 }
 
+/** The inline style rules a document may keep — the same allowlist for the sanitizer
+ *  and the editor's schema (note-schema.ts): lowercased, quotes dropped, `key:value;…`. */
+export function cleanStyle(raw: string): string {
+  const styles: string[] = [];
+  for (const rule of raw.split(';')) {
+    const [rawKey, ...rest] = rule.split(':');
+    const key = rawKey?.trim().toLowerCase() ?? '', value = rest.join(':').trim().toLowerCase();
+    const valid =
+      (key === 'text-align' && /^(left|center|right|justify)$/.test(value)) ||
+      (key === 'font-family' && /^(arial|calibri|cambria|georgia|helvetica|times new roman|courier new|verdana|system-ui|serif|sans-serif|monospace)$/.test(value.replace(/["']/g, ''))) ||
+      (key === 'font-size' && /^(\d{1,2}(?:\.\d+)?)(px|pt)$/.test(value) && parseFloat(value) >= 6) ||
+      (key === 'line-height' && /^(normal|[1-3](?:\.\d{1,2})?|4(?:\.0)?)$/.test(value)) ||
+      (/^(color|background-color)$/.test(key) && /^(#[a-f0-9]{3,8}|black|white|red|yellow|blue|green|transparent|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\))$/.test(value)) ||
+      (/^(margin-left|margin-right|margin-top|margin-bottom|text-indent|padding|padding-left|padding-right|padding-top|padding-bottom)$/.test(key) && /^-?\d{1,3}(?:\.\d+)?(px|pt|mm|in)$/.test(value)) ||
+      (/^(width|height|max-width)$/.test(key) && /^(auto|\d{1,4}(?:\.\d+)?(px|pt|mm|in|%))$/.test(value)) ||
+      (/^page-break-(before|after|inside)$/.test(key) && /^(always|avoid|auto)$/.test(value)) ||
+      (key === 'font-weight' && /^(normal|bold|[1-9]00)$/.test(value)) ||
+      (key === 'font-style' && /^(normal|italic)$/.test(value)) ||
+      (key === 'text-decoration' && /^(none|underline|line-through)$/.test(value)) ||
+      (key === 'vertical-align' && /^(top|middle|bottom|sub|super)$/.test(value));
+    if (valid) styles.push(`${key}:${value.replace(/["']/g, '')}`);
+  }
+  return styles.join(';');
+}
+
 /** Rebuild `input` from an allowlist. The output is only ever escaped text and
  *  canonical tags this function wrote — nothing from the input reaches it as-is. */
 export function sanitizeHtml(input: string): string {
@@ -129,26 +154,8 @@ export function sanitizeHtml(input: string): string {
       const value = attr(raw, key);
       if (value) attrs += ` ${key}="${value.slice(0, 4000).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`;
     }
-    const styles: string[] = [];
-    for (const rule of attr(raw, 'style').split(';')) {
-      const [rawKey, ...rest] = rule.split(':');
-      const key = rawKey?.trim().toLowerCase() ?? '', value = rest.join(':').trim().toLowerCase();
-      const valid =
-        (key === 'text-align' && /^(left|center|right|justify)$/.test(value)) ||
-        (key === 'font-family' && /^(arial|calibri|cambria|georgia|helvetica|times new roman|courier new|verdana|system-ui|serif|sans-serif|monospace)$/.test(value.replace(/["']/g, ''))) ||
-        (key === 'font-size' && /^(\d{1,2}(?:\.\d+)?)(px|pt)$/.test(value) && parseFloat(value) >= 6) ||
-        (key === 'line-height' && /^(normal|[1-3](?:\.\d{1,2})?|4(?:\.0)?)$/.test(value)) ||
-        (/^(color|background-color)$/.test(key) && /^(#[a-f0-9]{3,8}|black|white|red|yellow|blue|green|transparent|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\))$/.test(value)) ||
-        (/^(margin-left|margin-right|margin-top|margin-bottom|text-indent|padding|padding-left|padding-right|padding-top|padding-bottom)$/.test(key) && /^-?\d{1,3}(?:\.\d+)?(px|pt|mm|in)$/.test(value)) ||
-        (/^(width|height|max-width)$/.test(key) && /^(auto|\d{1,4}(?:\.\d+)?(px|pt|mm|in|%))$/.test(value)) ||
-        (/^page-break-(before|after|inside)$/.test(key) && /^(always|avoid|auto)$/.test(value)) ||
-        (key === 'font-weight' && /^(normal|bold|[1-9]00)$/.test(value)) ||
-        (key === 'font-style' && /^(normal|italic)$/.test(value)) ||
-        (key === 'text-decoration' && /^(none|underline|line-through)$/.test(value)) ||
-        (key === 'vertical-align' && /^(top|middle|bottom|sub|super)$/.test(value));
-      if (valid) styles.push(`${key}:${value.replace(/["']/g, '')}`);
-    }
-    if (styles.length) attrs += ` style="${styles.join(';')}"`;
+    const style = cleanStyle(attr(raw, 'style'));
+    if (style) attrs += ` style="${style}"`;
     out.push(`<${name}${attrs}>`);
     if (!VOID.has(name)) open.push(name);
   }
