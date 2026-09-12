@@ -11,10 +11,17 @@ const identity = process.env.APPLE_SIGNING_IDENTITY;
 if (process.platform !== "darwin" || !identity)
   throw new Error("macOS and APPLE_SIGNING_IDENTITY are required.");
 
+// A local build may leave a top-level runtime directory as shipped (RIMEWARD_SIGN_SKIP=browsers):
+// Chromium runs as its own process under Google's signature, and only what OUR processes load
+// (node modules, the media and cua binaries) needs the team identity. Signing Chromium's fifty
+// nested helpers races LaunchServices re-tagging them — fine on the CI runner, flaky on a Mac in
+// use. Notarization (the CI) still signs everything.
+const skip = new Set((process.env.RIMEWARD_SIGN_SKIP ?? "").split(",").filter(Boolean).map((name) => path.join(root, name)));
 const files = [], bundles = [];
 function scan(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const file = path.join(dir, entry.name);
+    if (skip.has(file)) continue;
     if (entry.isDirectory()) {
       scan(file);
       if (/\.(app|framework|xpc)$/.test(entry.name)) bundles.push(file);
@@ -46,7 +53,10 @@ const code = [...files, ...bundles].sort((a, b) => b.split(path.sep).length - a.
 // clearing again. A pass that stops halfway leaves the shallower files ad-hoc signed —
 // the hardened app then cannot load them (dlopen: code signature invalid), and every
 // route answers 500 (v1.0.8's first local build).
-const clear = (target) => execFileSync("xattr", ["-cr", target], { stdio: "pipe" });
+// `xattr -cr` clears what is INSIDE a directory, not the directory's own attributes — and the
+// FinderInfo codesign refuses sits on the bundle directory itself. Both, always. (com.apple.provenance
+// cannot be removed and codesign tolerates it.)
+const clear = (target) => { execFileSync("xattr", ["-c", target], { stdio: "pipe" }); execFileSync("xattr", ["-cr", target], { stdio: "pipe" }); };
 for (const file of code) {
   const bundle = bundles.find((dir) => file === dir || file.startsWith(dir + path.sep));
   clear(bundle ?? file);
@@ -58,8 +68,12 @@ for (const file of code) {
     catch { throw new Error(`codesign refused ${file}: ${String(first.stderr ?? first.message).trim()}`); }
   }
 }
-clear(root);
-for (const file of code) execFileSync("codesign", ["--verify", "--strict", file], { stdio: "pipe" });
+// Signing a bundle re-tags its directory (LaunchServices), and --strict counts that as detritus: clear before each check too.
+for (const file of code) {
+  const bundle = bundles.find((dir) => file === dir || file.startsWith(dir + path.sep));
+  clear(bundle ?? file);
+  execFileSync("codesign", ["--verify", "--strict", file], { stdio: "pipe" });
+}
 // Signing changes Mach-O bytes; the manifest must describe the files sealed into the app.
 const mediaManifest = path.join(root, "media/manifest.json");
 if (fs.existsSync(mediaManifest)) {
