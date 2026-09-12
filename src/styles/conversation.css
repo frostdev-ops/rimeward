@@ -232,7 +232,13 @@ dialog.fd-dialog.ag-child-dialog { width:min(52rem,94vw); height:min(88dvh,54rem
 @keyframes ag-word { 0%,25%,100% { opacity:0; } 2%,23% { opacity:1; } }
 @keyframes ag-breathe { 0%,100% { opacity:.82; } 50% { opacity:.92; } }
 .ag-timeline { position:relative; padding-left:.25rem; }
-.ag-timeline::before { content:''; position:absolute; left:.9rem; top:.8rem; bottom:.8rem; width:1px; background:var(--color-line-strong); }
+/* The rail is a leyline (frost.css .wire-base + .wire-flow) drawn quieter: an accent base under
+   the same 6/14 beads, which only flow while a step in this timeline is still running. */
+.ag-timeline::before, .ag-timeline::after { content:''; position:absolute; left:calc(.9rem - 1px); top:.8rem; bottom:.8rem; width:2px; border-radius:1px; pointer-events:none; }
+.ag-timeline::before { background:color-mix(in srgb,var(--color-accent) 22%,transparent); }
+.ag-timeline::after { opacity:.28; background:repeating-linear-gradient(to bottom,var(--color-accent-hi) 0 6px,transparent 6px 20px); }
+.ag-timeline:has(.ag-step[data-running="true"])::after { opacity:.6; animation:ag-rail-flow 1.1s linear infinite; }
+@keyframes ag-rail-flow { to { background-position:0 20px; } }
 .ag-timeline > .ag-step { position:relative; border:0; border-radius:0; padding:0; margin:0; overflow:visible; font-size:.76rem; }
 .ag-step > summary { min-height:2.25rem; padding:.35rem .35rem .35rem 0; gap:.65rem; border:0 !important; border-radius:.45rem; }
 .ag-step > summary:hover { background:var(--color-surface-2); }
@@ -260,10 +266,12 @@ dialog.fd-dialog.ag-child-dialog { width:min(52rem,94vw); height:min(88dvh,54rem
 .ag-dialog .ag-footer { flex-shrink:0; }
 .ag-page-hidden .ag-working-mark, .ag-page-hidden .ag-working-words > span,
 [data-visible="false"] .ag-working-mark, [data-visible="false"] .ag-working-words > span,
-[data-paused="true"] .ag-working-mark, [data-paused="true"] .ag-working-words > span { animation-play-state:paused; }
+[data-paused="true"] .ag-working-mark, [data-paused="true"] .ag-working-words > span,
+.ag-page-hidden .ag-timeline::after, [data-visible="false"] .ag-timeline::after, [data-paused="true"] .ag-timeline::after { animation-play-state:paused; }
 @media (prefers-reduced-motion:reduce) {
   .ag-working-words > span { opacity:0; animation:none; }
   .ag-working-words > span:first-child { opacity:1; }
+  .ag-timeline::after { animation:none; }
 }
 
 .ag-shell .ag-empty { min-height:0; padding:.4rem; }
@@ -274,3 +282,7 @@ dialog.fd-dialog.ag-child-dialog { width:min(52rem,94vw); height:min(88dvh,54rem
 
 .ag-working-mark [data-icon="rime"] { width:calc(1.2rem * var(--fd-icon-size,1)); height:calc(1.2rem * var(--fd-icon-size,1)); }
 .ag-avatar [data-icon="rime"] { width:calc(1.4rem * var(--fd-icon-size,1)); height:calc(1.4rem * var(--fd-icon-size,1)); }
+/* Monitor activity: one collapsed block per run of observations; the raw matches stay in Tasks. */
+.ag-monitor > summary { font-size:.72rem; }
+.ag-monitor .ag-notice { border-left:0; font-family:var(--font-mono,monospace); font-size:.66rem; max-height:14rem; overflow:auto; }
+.ag-monitor .ag-notice + .ag-notice { border-top:1px solid var(--color-line); }

@@ -218,7 +218,7 @@ export function validateRecord(record: SyncRecord) {
           typeof m.text !== "string" ||
           (m.steps !== undefined && !Array.isArray(m.steps)) ||
           (m.source !== undefined &&
-            !["chat", "automation", "wake", "agent"].includes(m.source)) ||
+            !["chat", "automation", "wake", "agent", "monitor"].includes(m.source)) ||
           (m.at !== undefined && (typeof m.at !== "string" || m.at.length > 40))
         )
           throw failure("Invalid conversation message.");
@@ -636,6 +636,6 @@ export async function continueSharedChat(
   // No pending approvals, scheduled wakes, or commands are imported or executed.
   const monitorNotice = '[Stopped monitors] Monitor subscriptions and pending deliveries from the earlier conversation are not continued or imported. Create a new monitor only if the user requests observation again.';
   appendItems(conv.id,[userItemFor(conv.dialect,monitorNotice)]);
-  addMessage(conv,{ role:'user',text:monitorNotice,source:'automation' });
+  addMessage(conv,{ role:'user',text:monitorNotice,source:'monitor' });
   return conv;
 }

@@ -66,6 +66,8 @@ Unsent child drafts survive closing and reopening the conversation, and the desk
 
 Child notifications are delivered once. A failed or stopped receiving turn closes its message receipts; recovery does not replay them later. Stopped children retain their results without waking the parent. Queued monitor prompts check that their Leyline is still enabled before starting, and stopping a turn also discards unattended prompts already queued behind it.
 
+Monitor observations appear in the chat as one collapsed **Monitor activity** block per burst, never as messages from you; open it to read the raw text, or use **Tasks** for the full recent matches. Rime answers a monitor wake only when something needs attention. A wake that finds nothing adds no reply, toast or badge, and your own messages and Rime's answers always follow the observations that came before them.
+
 ## Memory, skills, and automations
 
 Memory and Skills wards expose reusable context and instructions for Rime. MCP wards connect additional tool servers under the configured trust policy. Review a tool server's access before connecting it.

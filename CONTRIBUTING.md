@@ -43,8 +43,8 @@ updater manifests; the desktop job builds native applications and Linux packages
 
 Before promotion, keep the package and desktop version files consistent, run the
 applicable local checks, and wait for all three workflows to pass on the final
-branch commit. Regenerate and inspect goldens for UI changes, then run the remote
-workspace smoke check. Review the release diff and merge into `main`; a
+branch commit. Run the UI smoke checks for UI changes, then the remote workspace
+smoke check; goldens are regenerated only on request. Review the release diff and merge into `main`; a
 fast-forward keeps the validated commit intact. If integrating newer `main`
 changes alters the release, validate the resulting branch commit again.
 
@@ -119,7 +119,8 @@ and synthetic conversation data. It builds the app, captures the original dashbo
 and runs the editor, terminal, and conversation UI checks for desktop/phone screenshots.
 It needs Chromium (`npx playwright-core install chromium` or `desktop/prebuild.mjs`) and
 uses software rendering. Review every generated image before committing it. Goldens are
-documentation screenshots, not pixel-diff assertions.
+documentation screenshots, not pixel-diff assertions, and are regenerated only on request,
+never as part of validating a UI change.
 
 Update README, this guide, the security boundaries, and the workspace guide together when
 changing setup or ownership. `docs/pages-spec.md` records the page model and its workspace

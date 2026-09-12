@@ -56,7 +56,7 @@ const packetSubs = new Map<string, Set<() => void>>();
 /** What the server says about a turn that just landed on an agent ward. */
 export interface AgentPing {
   ward: string;
-  source?: 'chat' | 'automation' | 'wake' | 'agent';
+  source?: 'chat' | 'automation' | 'wake' | 'agent' | 'monitor';
   /** Short slice of the reply, for the toast. */
   summary?: string;
   /** Server-side policy: headless answers toast unless the rule opted out. */
@@ -71,7 +71,7 @@ export interface AgentLive {
   conversation?: number;
   task?: string;
   run?: string;
-  source?: 'chat' | 'automation' | 'wake' | 'agent';
+  source?: 'chat' | 'automation' | 'wake' | 'agent' | 'monitor';
   event: any;
 }
 const agentLiveSubs = new Map<string, Set<(d?: AgentLive) => void>>();

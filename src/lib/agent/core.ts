@@ -14,7 +14,7 @@ import { NOTES_CAP, NOTES_FILE, ensureNotes } from './history.ts';
 import { docIndex, docPath } from './store.ts';
 import { memoryPassages } from './knowledge.ts';
 import { BOOTSTRAP_TOOLS, discoverTools, preloadTools } from './tool-discovery.ts';
-import { monitorNotices, pendingMonitorNotices } from './monitors.ts';
+import { monitorNotices, pendingMonitorNotices, MONITOR_QUIET } from './monitors.ts';
 import { agentWardConfig, HEADLESS_PER_HOUR, type AgentWardConfig, type ApprovalsPolicy } from './ward-config.ts';
 export { agentWardConfig, type AgentWardConfig, type ApprovalsPolicy } from './ward-config.ts';
 import { mcpToolDefs, mcpToolDefsSync } from './mcp.ts';
@@ -89,8 +89,9 @@ export type AgentEvent =
   | { type: 'thinking'; round: number; label?: string }
   | { type: 'text_delta'; id: string; delta: string; offset: number }
   | { type: 'says'; text: string; id?: string; incomplete?: boolean }
-  /** A status line for the log (compaction happened) — not model output. */
-  | { type: 'note'; text: string }
+  /** A status line for the log (compaction happened) — not model output.
+   *  `source: 'monitor'` marks a delivered monitor observation, folded into activity by the client. */
+  | { type: 'note'; text: string; source?: TurnSource }
   | { type: 'step_start'; id: string; round: number; tool: string; kind: ToolKind; args: Record<string, unknown>; reason: string }
   | { type: 'step'; step: AgentStep }
   | { type: 'pending'; pending: PendingConfirm | null }
@@ -941,7 +942,7 @@ async function loop(
     // revisions are checked immediately before their first inference delivery.
     const notices = monitorNotices(ctx);
     if (round === 0 && cfg.monitorWake && !notices.length) return done({ reply:'skipped — monitor delivery was cancelled or superseded',steps });
-    for (const notice of notices) { items.push(notice.item); emit?.({ type:'note',text:notice.text }); }
+    for (const notice of notices) { items.push(notice.item); emit?.({ type:'note',text:notice.text,source:'monitor' }); }
     if (notices.length) {
       flush?.(true);
       if (limits && usage().tokens >= limits.inputLimit) throw Error('Monitor observations exceed this model’s input budget. History was preserved; use /compact or select a larger-context model.');
@@ -1640,17 +1641,20 @@ export function runHeadlessTurn(
     items.push(item);
     appendItems(conv.id, [item]);
     persisted = items.length;
-    const turnSource: TurnSource = source.kind === 'ask' || source.kind === 'monitor' ? 'automation' : source.kind === 'agent' ? 'agent' : 'wake';
+    const turnSource: TurnSource = source.kind === 'ask' ? 'automation' : source.kind === 'agent' ? 'agent' : source.kind === 'monitor' ? 'monitor' : 'wake';
     const shown =
       source.kind === 'ask'
         ? `Automation: ${prompt.slice(0, 300)}`
         : source.kind === 'agent'
           ? `${fromTitle}: ${prompt.slice(0, 300)}`
           : `Scheduled: ${prompt.slice(0, 300)}`;
-    addMessage(conv, { role: 'user', text: shown, source: turnSource });
-
     const live = liveMirror(userId, ward, turnSource, conv.id);
-    live({ type: 'user', text: shown });
+    // A monitor wake is the system's own prompt: the observations it delivers are the
+    // record (monitorNotices), so no user bubble is stored or mirrored for it.
+    if (source.kind !== 'monitor') {
+      addMessage(conv, { role: 'user', text: shown, source: turnSource });
+      live({ type: 'user', text: shown });
+    }
 
     const cfg: LoopCfg = { provider, wardCfg, conv, headless: true, via: source.via,monitorWake:source.kind === 'monitor',monitorGuard:source.guard };
     const flush = (reset = false) => {
@@ -1668,7 +1672,12 @@ export function runHeadlessTurn(
     try {
       const turn = await runLoop(cfg, items, tap, flush);
       flush();
-      await settleAndRecord(conv, turn, turnSource, source.delivery,source.kind !== 'monitor');
+      // A monitor turn that found nothing to report (or was superseded before inference), with
+      // nobody steered into it, stays quiet: its observations are already in the thread; no
+      // reply bubble, toast or badge. The settle still runs so watching clients are released.
+      const quiet = source.kind === 'monitor' && !turn.pending && (MONITOR_QUIET.test(turn.reply.trim()) || turn.reply.startsWith('skipped — ')) && !seen.some(e => e.type === 'user');
+      const recorded = quiet ? { ...turn, reply: '', interjections: turn.interjections?.filter(m => !MONITOR_QUIET.test(m.text.trim())) } : turn;
+      await settleAndRecord(conv, recorded, turnSource, quiet ? { toast: false } : source.delivery, source.kind !== 'monitor');
       return turn.reply;
     } catch (err) {
       flush();

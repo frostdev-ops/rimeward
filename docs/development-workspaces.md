@@ -105,6 +105,12 @@ Migration `020_agent_jobs.sql` stores runtime-local task receipts, scoped to use
 
 Connected messaging wards also support multiline drafts and retain them through feed refreshes, scoped to their channel.
 
+### Monitor activity in chat
+
+Monitor traffic has its own transcript source, `monitor`, separate from `automation`. A delivered observation notice is stored as a `monitor` user-role row and streamed as a `note` event stamped `source: 'monitor'`; the client folds every run of them into one collapsed **Monitor activity · N** block, so the chat shows the count and the raw text opens on demand while **Tasks** keeps the full recent matches. The wake that runs a monitor turn is the system's own prompt: it is sent to the model but no user bubble is stored or mirrored for it. The turn's reply is a normal assistant message labelled *monitor*; when the model answers exactly `No update` and nobody steered a message into the turn, no reply row, toast or unread badge is produced. Observation still authorizes nothing: monitor turns never fire `agent-replied` or deliver to connectors. Migration `034_monitor_source.sql` relabels the rows earlier builds stored as `automation` (observation, stopped-monitor and wake rows only, matched by the server's own literal text), so older histories fold the same way.
+
+The chat log is reconciled by key, and a message keyed by index can change root when a source label boundary moves (a bare bubble becomes a labelled rail); the reconciler now tracks the node that replaced it and removes anything it does not own, which is what previously left a monitor block pinned under every later message.
+
 ## Ownership and transport
 
 - `homepage.db` and the existing harness run independently on each installation. `workspaces.db` stores desktop projects, recovery buffers, session screens, assignments, and review receipts. OS credential storage holds the encryption key and pairing credentials. PTY/Git environments exclude backend secrets.

@@ -297,7 +297,7 @@ interface Pending {
 
 /** Who asked for the turn this item belongs to. Server-stamped and stored, so
  *  an automation still reads as one after a reload. */
-type TurnSource = 'chat' | 'automation' | 'wake' | 'agent';
+type TurnSource = 'chat' | 'automation' | 'wake' | 'agent' | 'monitor';
 
 interface StepItem {
   k: 'step';
@@ -323,7 +323,7 @@ type Item =
   | { k: 'msg'; role: 'user' | 'assistant'; text: string; src?: TurnSource; id?: string; streaming?: boolean; incomplete?: boolean }
   | StepItem
   | { k: 'thinking'; label?: string }
-  | { k: 'note'; text: string; err?: boolean; icon?: string };
+  | { k: 'note'; text: string; err?: boolean; icon?: string; src?: TurnSource };
 
 /** One attached view of a ward's conversation (the ward, or the dialog). */
 interface Ui {
@@ -624,9 +624,12 @@ function itemsFrom(transcript: any[]): Item[] {
   const items: Item[] = [];
   transcript.forEach((m, mi) => {
     // Older rows predate the column; anything unrecognised reads as chat.
-    const src: TurnSource = m.source === 'automation' || m.source === 'wake' || m.source === 'agent' ? m.source : 'chat';
+    const src: TurnSource = m.source === 'automation' || m.source === 'wake' || m.source === 'agent' || m.source === 'monitor' ? m.source : 'chat';
     for (const step of (m.steps ?? []) as Step[]) items.push({ k: 'step', step, src, batch: batchKey(mi, step.round) });
-    if (typeof m.text === 'string' && m.text.trim()) items.push({ k: 'msg', role: m.role === 'user' ? 'user' : 'assistant', text: m.text, src });
+    if (typeof m.text !== 'string' || !m.text.trim()) return;
+    // A monitor's own user-role rows (observations, stop notices) are activity, never the user's words.
+    if (src === 'monitor' && m.role === 'user') items.push({ k: 'note', text: m.text, src });
+    else items.push({ k: 'msg', role: m.role === 'user' ? 'user' : 'assistant', text: m.text, src });
   });
   return items;
 }
@@ -842,15 +845,24 @@ function emptyState(st: State, ui: Pick<Ui, 'input'>): HTMLElement {
 
 // ----------------------------------------------------------------- the log
 
-const SRC_LABEL: Record<TurnSource, string> = { chat: '', automation: 'automation', wake: 'scheduled', agent: 'another agent' };
+const SRC_LABEL: Record<TurnSource, string> = { chat: '', automation: 'automation', wake: 'scheduled', agent: 'another agent', monitor: 'monitor' };
 
+/** Every child of `log` is one tracked entry, in entry order. A node the reconciler stops
+ *  tracking (a root patchDom swapped for one of another kind, a duplicate key) is what
+ *  drifted to the tail of the chat and stayed there under every later message. */
 function reconcileLog(log: HTMLElement, previous: Ui['rendered'], entries: { key?: string; signature: string; create: () => HTMLElement; update?: (node: HTMLElement) => void }[], animate = false): Ui['rendered'] {
-  const byKey = new Map(previous.map((entry, i) => [entry.key ?? String(i), entry]));
+  const byKey = new Map<string, Ui['rendered'][number]>();
+  previous.forEach((entry, i) => { const key = entry.key ?? String(i); byKey.get(key)?.node.remove(); byKey.set(key, entry); });
   const rendered = entries.map((entry, i) => {
     const key = entry.key ?? String(i), old = byKey.get(key); byKey.delete(key);
     if (old) {
       if (old.signature !== entry.signature) {
-        if (entry.update) entry.update(old.node); else patchDom(old.node, entry.create(), animate);
+        if (entry.update) entry.update(old.node);
+        else {
+          const fresh = entry.create(); patchDom(old.node, fresh, animate);
+          // A different root (a bubble becoming a labelled rail) is replaced in the DOM, not patched — track the replacement.
+          if (old.node.parentNode !== log) old.node = fresh;
+        }
         old.signature = entry.signature;
       }
       if (log.children[i] !== old.node) log.insertBefore(old.node, log.children[i] ?? null);
@@ -861,6 +873,8 @@ function reconcileLog(log: HTMLElement, previous: Ui['rendered'], entries: { key
     return { key, signature: entry.signature, node };
   });
   for (const old of byKey.values()) old.node.remove();
+  const kept = new Set<Element>(rendered.map(r => r.node));
+  for (const child of [...log.children]) if (!kept.has(child)) child.remove();
   return rendered;
 }
 
@@ -932,6 +946,19 @@ function buildLog(st: State, ui: LogUi): void {
   for (let i = 0; i < st.items.length; i++) {
     const it = st.items[i]!;
     if (it.k === 'thinking' && (st.pending || currentQuestion(st)?.wait || st.items.some(x => x.k === 'msg' && x.streaming))) continue;
+    if (it.k === 'note' && it.src === 'monitor') {
+      // Routine monitor traffic folds into one collapsed block; Tasks keeps every raw match.
+      const notes = [it], start = i;
+      while (st.items[i + 1]?.k === 'note' && (st.items[i + 1] as Extract<Item, { k: 'note' }>).src === 'monitor') notes.push(st.items[++i] as Extract<Item, { k: 'note' }>);
+      entries.push({ key: `monitor:${start}`, signature: JSON.stringify(notes), create: () => {
+        const node = el('details', 'ag-activity ag-monitor'), summary = el('summary');
+        summary.append(icon('eye'), el('span', undefined, `Monitor activity · ${notes.length}`));
+        node.append(summary, ...notes.map(n => el('div', 'ag-notice', n.text)));
+        return node;
+      } });
+      prev = 'chat';
+      continue;
+    }
     const src = it.k === 'msg' || it.k === 'step' ? it.src ?? 'chat' : 'chat';
     const label = src !== 'chat' && src !== prev ? SRC_LABEL[src] : '';
     const group: StepItem[] = [];
@@ -963,7 +990,7 @@ function buildLog(st: State, ui: LogUi): void {
         }
         if (label) {
           const rail = el('div', 'ag-source'), source = el('span', 'ag-source-label');
-          source.append(icon(src === 'wake' ? 'timer' : src === 'agent' ? 'rime' : 'flow'), document.createTextNode(' ' + label));
+          source.append(icon(src === 'wake' ? 'timer' : src === 'agent' ? 'rime' : src === 'monitor' ? 'eye' : 'flow'), document.createTextNode(' ' + label));
           rail.append(source, node); return rail;
         }
         return node;
@@ -1299,7 +1326,8 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource, replay = fals
       return true;
     case 'note':
       dropThinking(st);
-      if (typeof e.text === 'string' && e.text.trim()) st.items.push({ k: 'note', text: e.text });
+      // Only the server's own stamp folds a note into the monitor block; the turn's source never does.
+      if (typeof e.text === 'string' && e.text.trim()) st.items.push({ k: 'note', text: e.text, ...(e.source === 'monitor' ? { src: 'monitor' as const } : {}) });
       return true;
     case 'says':
       dropThinking(st);
@@ -2619,8 +2647,9 @@ function watchAgent(ward: string): void {
     const live = states.get(ward);
     if (!live) return;
     const headless = !!p && !!p.source && p.source !== 'chat';
-    // A silenced rule still owes the user a trace — quiet isn't invisible.
-    if (headless && !logVisible(ward)) {
+    // A silenced rule still owes the user a trace — quiet isn't invisible. A monitor turn
+    // that had nothing to report (no summary, no toast) owes nothing.
+    if (headless && !logVisible(ward) && (p!.toast || p!.summary)) {
       unread.set(ward, (unread.get(ward) ?? 0) + 1);
       paintBadge(ward);
     }
@@ -2656,7 +2685,7 @@ function watchAgent(ward: string): void {
     }
     live.remote = true;
     if (d.run) live.run = d.run;
-    const src: TurnSource = d.source === 'wake' || d.source === 'automation' || d.source === 'agent' ? d.source : 'chat';
+    const src: TurnSource = d.source === 'wake' || d.source === 'automation' || d.source === 'agent' || d.source === 'monitor' ? d.source : 'chat';
     if (applyEvent(live, running, d.event, src)) { if (d.event.type === 'text_delta') paintStream(live); else paint(live); }
   });
 }

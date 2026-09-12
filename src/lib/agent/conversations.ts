@@ -50,8 +50,10 @@ export interface AgentStep {
   ms?: number;
 }
 
-/** What produced a turn. 'chat' = the user typed it; the others ran unattended. */
-export type TurnSource = 'chat' | 'automation' | 'wake' | 'agent';
+/** What produced a turn. 'chat' = the user typed it; the others ran unattended.
+ *  'monitor' also marks a monitor's own user-role rows (its observations, its stop
+ *  notice), which the client folds into activity rather than drawing as the user. */
+export type TurnSource = 'chat' | 'automation' | 'wake' | 'agent' | 'monitor';
 
 export interface TranscriptMsg {
   role: 'user' | 'assistant';
