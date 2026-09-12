@@ -65,6 +65,25 @@ export function getConversation(id: number): ConvRow | null {
   return (getDb().prepare('SELECT * FROM agent_conversations WHERE id = ?').get(id) as ConvRow | undefined) ?? null;
 }
 
+export function conversationTools(conv: Pick<ConvRow, 'id' | 'user_id' | 'ward'>): string[] {
+  return (getDb().prepare(`SELECT t.name FROM agent_conversation_tools t
+    JOIN agent_conversations c ON c.id=t.conversation_id
+    WHERE c.id=? AND c.user_id=? AND c.ward=? ORDER BY t.name`).all(conv.id,conv.user_id,conv.ward) as { name:string }[]).map(r => r.name);
+}
+
+/** Union only; permissions and current definitions are checked when building each request. */
+export function retainConversationTools(conv: Pick<ConvRow, 'id' | 'user_id' | 'ward'>, names: Iterable<string>): void {
+  const db = getDb();
+  const insert = db.prepare(`INSERT OR IGNORE INTO agent_conversation_tools (conversation_id,name)
+    SELECT id,? FROM agent_conversations WHERE id=? AND user_id=? AND ward=?`);
+  db.transaction(() => {
+    for (const name of names) {
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) throw Error('Invalid tool name.');
+      insert.run(name,conv.id,conv.user_id,conv.ward);
+    }
+  })();
+}
+
 /** The active thread for a ward, if one exists. Read-only: unlike
  *  activeConversation it never creates a row. */
 export function activeConversationRow(userId: number, ward: string): ConvRow | null {
@@ -112,7 +131,11 @@ export function copyItems(from: number, to: number): number {
     .prepare('SELECT a.id FROM agent_conversations a JOIN agent_conversations b ON b.id = ? WHERE a.id = ? AND a.user_id = b.user_id AND a.ward = b.ward AND a.dialect = b.dialect')
     .get(to, from);
   if (!ok) throw new Error('fork refused: the source thread is not this ward’s own, or is written in another dialect');
-  return db.prepare('INSERT INTO agent_items (conversation_id, json, chars) SELECT ?, json, chars FROM agent_items WHERE conversation_id = ? ORDER BY id').run(to, from).changes;
+  return db.transaction(() => {
+    const copied = db.prepare('INSERT INTO agent_items (conversation_id, json, chars) SELECT ?, json, chars FROM agent_items WHERE conversation_id = ? ORDER BY id').run(to, from).changes;
+    db.prepare('INSERT OR IGNORE INTO agent_conversation_tools (conversation_id,name) SELECT ?,name FROM agent_conversation_tools WHERE conversation_id=?').run(to,from);
+    return copied;
+  })();
 }
 
 /** A user message in the shape a thread's dialect stores — for filing a note

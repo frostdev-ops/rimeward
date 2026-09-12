@@ -1,10 +1,28 @@
 # Retrieval and background monitors
 
-Rime starts each turn with seven tools: `search_tools`, `search_knowledge`,
+Rime keeps seven bootstrap tools: `search_tools`, `search_knowledge`,
 `read_knowledge`, `ask_user_question`, `task_list`, `task_output`, and
-`task_cancel`. Tool search loads at most ten callable schemas for later rounds
-of that turn. Existing names, reasons, approvals, routing and sandbox read
-restrictions still apply. MCP definitions and trust are rechecked before calls.
+`task_cancel`. Before responding to each new user message, it preloads up to
+five additional tools from the raw message (up to 2,000 characters). User input
+arriving mid-turn is processed before the next model request. Monitor wakes and
+agent notifications reuse the retained set without automatic selection.
+
+Preloading shares a two-second deadline across concurrent MCP catalog connections
+and hybrid retrieval. Timeout or retrieval failure falls back to keyword matches
+against available definitions. Stop cancels preparation; late results cannot
+change a request already in flight. A preparation status appears as
+“Loading relevant tools…”; no tool is executed by preloading.
+
+Automatic matches and explicit `search_tools` results are retained as names in
+`agent_conversation_tools`, independently of compactable replay. New messages do
+not unload tools, and restart/compaction preserve the set. Every request resolves
+current schemas and permissions; unavailable tools are omitted without forgetting
+their names. A new or imported conversation starts fresh. Forks copying history
+also copy the retained names; independently spawned children start fresh. There
+is no total tool-count limit or silent eviction: schemas count toward the normal
+context budget. Reasons, approvals, routing, sandbox restrictions and MCP
+revision checks still apply. Explicit search loads at most ten schemas per call.
+
 Search for `agent_help`, then select a topic: `general` (default), `computer`,
 `browser`, `sandbox`, `wards`, `leylines`, `memory`, or `delegation`. Use `all`
 for the full reference; pagination offsets belong to the selected topic. Child
@@ -62,6 +80,23 @@ the exact filter passes. Unavailable inference blocks that gate visibly.
 Initial/reconnected observations establish a baseline without a historical
 flood. Matches have durable deduplication and delivery receipts; active turns
 drain them between rounds, while idle conversations wake within existing limits.
+Delivery is rate limited per monitor by `minIntervalSeconds` (1–3600, default 5,
+stored with the monitor and shown in Tasks): the first eligible alert goes at
+once, later ones no sooner than the interval apart, pending matches coalesce into
+one notice, and a trailing notice follows once the source goes quiet. This is
+separate from `source.intervalSeconds`, which paces polling.
+
+Terminal sources observe rendered screen rows, never raw bytes: after each output
+flush the headless terminal's viewport, plus exactly the rows that flush scrolled
+above it, is read back, and only rows not in the previous frame or on screen in the
+last 5 s are emitted. Rows compare by exact text; only Claude Code / Codex status
+chrome (a spinner-led row, or one carrying "esc to interrupt") has its frame glyph
+and counters normalized, so spinner ticks, timers and status-bar repaints drop while
+new progress, questions, results, failures and exit state pass. Long bursts arrive
+as several 16 kB pages; rows that scrolled out of an unretained buffer before they
+were read add an explicit "rows scrolled out of view" line. `terminal_read` and
+`terminal_wait` return the rendered screen by default (an exited session's retained
+snapshot, rendered readable); `raw: true` adds the ordered raw bytes.
 Clearing, archiving, provider changes and child completion delete subscriptions
 and pending delivery, retaining a stopped-monitor notice in the transcript.
 Monitoring authorizes observation only, never a reply or external action.
@@ -96,5 +131,7 @@ memory and must not be used to claim Q8 has a smaller total footprint.
 The [prompt/tool comparison](validation/tool-token-comparison.json) uses the same
 empty account fixture against commit `96fd0dc`: 122 tool schemas and about 33,077
 estimated tokens become seven schemas and 2,429 tokens (92.7% less), before any
-retrieved passages or explicitly named skills. These are estimates, not provider
+retrieved passages or explicitly named skills. This historical comparison predates
+automatic preloading and conversation retention; current requests also include
+retained and newly selected tool schemas. These are estimates, not provider
 billing/tokenizer measurements.

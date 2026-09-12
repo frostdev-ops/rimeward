@@ -43,7 +43,7 @@
 .ag-thinking { display:flex; align-items:center; gap:.6rem; color:var(--color-ink-muted); font-size:.78rem; padding:.5rem 0; }
 .ag-notice { color:var(--color-ink-muted); font-size:.75rem; line-height:1.6; white-space:pre-wrap; padding:.65rem .8rem; border-left:2px solid var(--color-line-strong); }
 .ag-error { color:var(--color-err); border-color:var(--color-err); background:var(--color-err-soft); border-radius:.4rem; }
-.ag-source-label { display:block; font-size:.68rem; color:var(--color-ink-muted); margin-bottom:.5rem; }
+.ag-source-label { display:block; font-size:.6rem; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--color-ink-muted); margin-bottom:.5rem; }
 .ag-empty { display:flex; flex-direction:column; justify-content:center; min-height:100%; padding:1rem .4rem; gap:.65rem; }
 .ag-empty-mark, .ag-avatar { display:grid; place-items:center; width:2.6rem; height:2.6rem; border-radius:.8rem; color:var(--color-accent-hi); background:var(--color-accent-soft); border:1px solid var(--color-line); }
 .ag-empty h3 { font-size:1.2rem; line-height:1.25; letter-spacing:-.025em; font-weight:600; }
@@ -110,8 +110,6 @@ dialog.ag-dialog { width:min(94vw,68rem); height:min(90dvh,60rem); max-height:94
   .ag-dialog .ag-empty { padding:1rem 0; }
   .ag-dialog .ag-empty h3 { font-size:1.65rem; }
   .ag-copy { min-height:36px; }
-}
-@media (prefers-reduced-motion:no-preference) {
 }
 @media (prefers-reduced-motion:reduce) {
   .ag-shell *, .ag-dialog * { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
@@ -206,6 +204,17 @@ dialog.fd-dialog.ag-child-dialog { width:min(52rem,94vw); height:min(88dvh,54rem
 @media (prefers-reduced-motion:no-preference) {
   .ag-question:not([hidden]) { animation:fd-dialog-in 180ms var(--fd-ease); }
 }
+/* The footer's Provider / Model / Effort pickers, between Read responses and Conversation. */
+.ag-model-picker { display:flex; flex-wrap:wrap; align-items:center; gap:.3rem .7rem; min-width:0; }
+.ag-model-picker[hidden] { display:none; }
+.ag-model-picker label { min-width:0; }
+.ag-voice-options .fd-ss-trigger { min-width:0; max-width:13rem; gap:.25rem; }
+.ag-voice-options label:has(select:disabled) { cursor:default; }
+.ag-voice-options .fd-ss-trigger:disabled { opacity:.55; cursor:default; }
+/* Narrow wards shorten picker labels while keeping every control available. */
+@container (max-width:719px) { .ag-shell .ag-picker-word { display:none; } }
+
+
 /* Live conversations keep their nodes, font and theme while their content grows. */
 .ag-prose-part { min-width:0; }
 .ag-prose-part:empty { display:none; }
@@ -236,7 +245,7 @@ dialog.fd-dialog.ag-child-dialog { width:min(52rem,94vw); height:min(88dvh,54rem
 .ag-step-error { color:var(--color-err); padding:.3rem 0; white-space:pre-wrap; }
 .ag-step[data-error="true"] > summary, .ag-step[data-error="true"] .ag-activity-mark { color:var(--color-err); }
 .ag-step-image { max-width:100%; border-radius:.6rem; margin-bottom:.7rem; }
-.ag-batch-label { position:relative; margin:.35rem 0 .15rem 1.95rem; font-size:.63rem; color:var(--color-ink-muted); }
+.ag-batch-label { position:relative; margin:.35rem 0 .15rem 1.95rem; font-size:.6rem; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--color-ink-muted); }
 .ag-voice-options { justify-content:flex-start; gap:.5rem .8rem; }
 .ag-voice-options > label:last-child { margin-left:auto; }
 .ag-model-picker { flex:1 1 auto; }

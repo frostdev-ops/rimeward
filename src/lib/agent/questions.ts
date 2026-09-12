@@ -70,14 +70,14 @@ export function saveUserAnswer(userId: number, conv: number, id: string, raw: un
 }
 
 /** Claim and persist an asynchronous answer together; restart cannot lose or replay it. */
-export function drainUserAnswer(conv: ConvRow): { item: unknown; text: string } | null {
+export function drainUserAnswer(conv: ConvRow): { item: unknown; text: string; query?: string } | null {
   return getDb().transaction(() => {
     const q = storedUserQuestion(conv.user_id, conv.id);
     if (!q || q.answer === undefined) return null;
     const text = q.answer === null ? `Skipped question: ${q.question}` : questionAnswerText(q, q.answer), item = userItemFor(conv.dialect, text);
     appendItems(conv.id, [item]); addMessage(conv, { role: 'user', text, source: 'chat' });
     deleteSetting(key(conv.id));
-    return { item, text };
+    return { item, text, query:q.answer === null ? undefined : Array.isArray(q.answer) ? q.answer.join('\n') : q.answer };
   })();
 }
 export function clearUserQuestion(conv: ConvRow) { drainUserAnswer(conv); deleteSetting(key(conv.id)); }

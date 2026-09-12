@@ -57,6 +57,8 @@ interface Live {
   term: Headless;
   serializer: SerializeAddon;
   sequence: number;
+  /** Main-buffer rows scrolled off the viewport so far (xterm onScroll, one per row). */
+  scrolled: number;
   chunks: { sequence: number; data: string; bytes: number }[];
   head: number;
   bytes: number;
@@ -425,6 +427,7 @@ export async function startSession(
     term,
     serializer,
     sequence: saved?.sequence ?? 0,
+    scrolled: 0,
     chunks: [],
     head: 0,
     bytes: 0,
@@ -436,6 +439,8 @@ export async function startSession(
     id,
   };
   live.set(id, s);
+  // Main buffer only: the alternate screen keeps no scrollback (its viewport is the content) and fires per line feed.
+  term.onScroll(() => { if (term.buffer.active.type === 'normal') s.scrolled++; });
   // node-pty 1.1 exposes errors only from conout; conin otherwise crashes the host.
   // ponytail: pinned private handle; remove when node-pty exposes input errors publicly.
   if (process.platform === "win32") {
@@ -503,6 +508,16 @@ function kittyStacks(term: Headless): { before: string; after: string } {
   };
   const alt = term.buffer.active.type === "alternate";
   return { before: rebuild(k.mainStack, alt ? k.mainFlags : k.flags), after: alt ? rebuild(k.altStack, k.flags) : "" };
+}
+/** Rendered rows of the active buffer as plain text: the viewport plus the rows scrolled
+ *  above it since `since` (a previous `scrolled` count). `lost` counts main-buffer rows that
+ *  scrolled past the 10000 retained; the alternate screen keeps none and is not counted. */
+export function renderedLines(user: number, id: string, since?: number): { lines: string[]; scrolled: number; lost: number } {
+  rowOf(user, id);
+  const s = live.get(id);
+  if (!s) return { lines: [], scrolled: 0, lost: 0 };
+  const b = s.term.buffer.active, wanted = since === undefined ? 0 : Math.max(0, s.scrolled - since), above = Math.min(b.baseY, wanted);
+  return { scrolled: s.scrolled, lost: wanted - above, lines: Array.from({ length: above + s.term.rows }, (_, i) => b.getLine(b.baseY - above + i)?.translateToString(true) ?? "") };
 }
 export function readSession(user: number, id: string, after?: number, review = true) {
   const row = rowOf(user, id),

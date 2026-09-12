@@ -202,7 +202,12 @@ function readTools(result: unknown): McpTool[] {
 
 /** initialize → initialized → tools/list, once per SESSION_TTL; a failure is
  *  remembered for FAILURE_TTL so a dead server costs one request a minute. */
-export async function connect(userId: number, ward: string, fetchImpl: Fetch = vettedFetch): Promise<Session> {
+export async function connect(userId: number, ward: string, fetchImpl: Fetch = vettedFetch, signal?: AbortSignal): Promise<Session> {
+  signal?.throwIfAborted();
+  const fetchWithSignal: Fetch = signal ? (url, options) => {
+    signal.throwIfAborted();
+    return fetchImpl(url,{ ...options,signal:AbortSignal.any([signal,...(options?.signal ? [options.signal] : [])]) });
+  } : fetchImpl;
   const k = key(userId, ward);
   const cur = sessions.get(k);
   const now = Date.now();
@@ -215,17 +220,19 @@ export async function connect(userId: number, ward: string, fetchImpl: Fetch = v
   const headers = authHeaders(userId, ward, cfg);
   const session: Session = { tools: [], at: now,signature };
   try {
-    const init = (await rpc(fetchImpl, cfg, headers, session, 'initialize', {
+    const init = (await rpc(fetchWithSignal, cfg, headers, session, 'initialize', {
       protocolVersion: MCP_PROTOCOL,
       capabilities: {},
       clientInfo: { name: 'rimeward', version: '1' },
     })) as { serverInfo?: { name?: string; version?: string } } | null;
     session.server = init?.serverInfo;
-    await rpc(fetchImpl, cfg, headers, session, 'notifications/initialized', {}, true);
-    session.tools = readTools(await rpc(fetchImpl, cfg, headers, session, 'tools/list', {}));
+    await rpc(fetchWithSignal, cfg, headers, session, 'notifications/initialized', {}, true);
+    session.tools = readTools(await rpc(fetchWithSignal, cfg, headers, session, 'tools/list', {}));
   } catch (err) {
     session.error = err instanceof Error ? err.message : String(err);
   }
+  // A short preload deadline must not replace a usable session or poison its failure cache.
+  signal?.throwIfAborted();
   sessions.set(k, session);
   return session;
 }
@@ -301,10 +308,10 @@ const definitionRevision = (signature:string,t:McpTool) => createHash('sha256').
 /** Every configured MCP server's tools as registry entries, keyed
  *  mcp__<server>__<tool>. Servers that fail to connect contribute nothing
  *  this turn (the ward shows why). */
-export async function mcpToolDefs(userId: number, fetchImpl: Fetch = vettedFetch): Promise<Record<string, ToolDef>> {
-  for (const w of getDashboard(userId)) {
-    if (w.type === 'mcp' && mcpConfig(w).url) await connect(userId, w.i, fetchImpl);
-  }
+export async function mcpToolDefs(userId: number, fetchImpl: Fetch = vettedFetch, signal?: AbortSignal): Promise<Record<string, ToolDef>> {
+  await Promise.all(getDashboard(userId).filter(w => w.type === 'mcp' && mcpConfig(w).url)
+    .map(w => connect(userId,w.i,fetchImpl,signal)));
+  signal?.throwIfAborted();
   return mcpToolDefsSync(userId, fetchImpl);
 }
 

@@ -43,6 +43,11 @@ const schema = (
   required: string[] = [],
 ) => ({ type: "object", properties, required, additionalProperties: false });
 const owner = (ctx: ToolCtx) => `agent:${ctx.ward}`;
+/** The rendered screen is the readable surface; the raw byte stream (escape sequences, repaints)
+ *  is returned only on request so a read stays bounded and legible. */
+const rendered = <T extends { data: string; screen: string }>({ data, ...rest }: T, raw: unknown) => raw === true ? { ...rest, data }
+  // No live terminal (exited/disposed): the retained snapshot is a row dump, so stripping its control sequences reads cleanly.
+  : { ...rest, rawChars: data.length, ...(rest.screen === '' && data ? { screen: stripVTControlCharacters(data).replace(/\r\n?/g, '\n').trimEnd().slice(-8000), snapshot: true } : {}) };
 const appOwner = (ctx: ToolCtx) => `agent:${ctx.ward}:conversation:${ctx.conv}:task:${ctx.task ?? ""}`;
 const wrap = (
   kind: ToolDef["kind"],
@@ -278,10 +283,10 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   },
   terminal_read: wrap(
     "read",
-    "Inspect current terminal screen and ordered output. Empty output or an idle screen does not prove a task completed. Unknown permission screens require attention.",
-    schema({ ...session, after: { type: "number" }, review: { type: "boolean", description: "Read the durable task review and evidence as paginated JSON text instead of terminal output" }, cursor: { type: "number", description: "Review continuation from next" } }, ["runtime", "session"]),
+    "Inspect the current rendered terminal screen (plain text) and session state; session.sequence advances with output. Empty output or an idle screen does not prove a task completed. Unknown permission screens require attention. raw:true adds the ordered raw terminal bytes (escape sequences included) — large; use only to inspect exact output.",
+    schema({ ...session, after: { type: "number" }, raw: { type: "boolean", description: "Include raw ordered output bytes since after (default false: rendered screen only)" }, review: { type: "boolean", description: "Read the durable task review and evidence as paginated JSON text instead of terminal output" }, cursor: { type: "number", description: "Review continuation from next" } }, ["runtime", "session"]),
     (a, c) => {
-      const result = readSession(c.userId, a.session, a.after, a.review === true);
+      const result = rendered(readSession(c.userId, a.session, a.after, a.review === true), a.raw);
       if (!a.review) return result;
       const all = JSON.stringify({ review: result.session.review, evidence: result.session.evidence });
       const cursor = Math.max(0, Math.floor(Number(a.cursor)) || 0);
@@ -293,16 +298,17 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ),
   terminal_wait: { ...wrap(
     "read",
-    "Wait up to 30 seconds for output, then return a screen snapshot. For longer waits use the existing schedule_wake tool; coalesce activity instead of polling the model for every chunk.",
+    "Wait up to 30 seconds for output, then return the rendered screen (raw:true adds the raw bytes). For longer waits use the existing schedule_wake tool; coalesce activity instead of polling the model for every chunk.",
     schema(
       {
         ...session,
         after: { type: "number" },
         milliseconds: { type: "number" },
+        raw: { type: "boolean", description: "Include raw ordered output bytes since after (default false)" },
       },
       ["runtime", "session", "after"],
     ),
-    (a, c) => waitSession(c.userId, a.session, a.after, a.milliseconds, false, c.signal),
+    async (a, c) => rendered(await waitSession(c.userId, a.session, a.after, a.milliseconds, false, c.signal), a.raw),
   ), backgroundable: true, cancellable: true },
   terminal_input: wrap(
     "write",

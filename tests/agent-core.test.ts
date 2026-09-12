@@ -372,6 +372,32 @@ test('a confirm whose call fell out of the replay is refused, not run', async ()
   assert.equal(getDashboard(u).length, 2, 'the side effect did NOT run');
 });
 
+test('a resumed confirm files each interjection\'s steps once and keeps the approved step', async () => {
+  const u = seedUser('core-resume-file@x.dev');
+  const conv = activeConversation(u, 'ag1', 'codex');
+  const provider = await getProvider('codex'), previousRun = provider.run;
+  const fake = fakeProvider([
+    { text: '', calls: [call('p1', 'remove_ward', { ward: 'w1', reason: 'r' })], items: [{ type: 'function_call', ...call('p1', 'remove_ward', { ward: 'w1', reason: 'r' }) }] },
+    { text: 'one', calls: [call('c1', 'get_layout', { reason: 'r' })], items: [{ type: 'function_call', ...call('c1', 'get_layout', { reason: 'r' }) }] },
+    { text: 'two', calls: [call('c2', 'get_layout', { reason: 'r' })], items: [{ type: 'function_call', ...call('c2', 'get_layout', { reason: 'r' }) }] },
+    { text: 'done', calls: [], items: [] },
+  ]);
+  provider.run = fake.run;
+  try {
+    const items: unknown[] = [];
+    const first = await runLoop(cfgFor(u, fake), items);
+    assert.ok(first.pending, 'remove_ward waits for approval');
+    appendItems(conv.id, items);
+    const turn = await resolveConfirmTurn(u, 'ag1', first.pending.confirmId, true, () => {});
+    assert.equal(turn.reply, 'done');
+    const said = transcript(conv.id).filter((m) => m.role === 'assistant').slice(-3);
+    assert.deepEqual(said.map((m) => m.text), ['one', 'two', 'done']);
+    // The fixture's search_tools detour is filed under "one" too; only the scripted ids matter here.
+    const scripted = said.map((m) => (m.steps ?? []).map((s) => s.id).filter((id) => ['p1', 'c1', 'c2'].includes(String(id))));
+    assert.deepEqual(scripted, [[], ['c1'], ['p1', 'c2']], 'no step is filed twice and the approved step is kept');
+  } finally { provider.run = previousRun; }
+});
+
 test('confirm KV: consume-once, echo mismatch, cross-user probe burns the row', () => {
   const u1 = seedUser('core-kv1@x.dev');
   const u2 = seedUser('core-kv2@x.dev');
@@ -450,7 +476,7 @@ test('bankFailure records what a thrown turn said and did', () => {
   const last = transcript(conv.id).at(-1)!;
   assert.equal(last.role, 'assistant');
   assert.match(last.text, /Half way: two findings so far\./);
-  assert.match(last.text, /⚠️ The Rime server disconnected/);
+  assert.match(last.text, /Failed: The Rime server disconnected/);
   assert.deepEqual(last.steps?.map((s) => s.tool), ['get_layout', 'bash']);
   const mirror = fs.readFileSync(path.join(workDir(u), '..', 'history', `${conv.id}.md`), 'utf8');
   assert.match(mirror, /tool bash\(\{"command":"ls"\}\)/, 'the disk mirror carries the steps too');
@@ -709,12 +735,12 @@ test('steer: a message queued mid-turn is the next round\'s user message, and on
   assert.match(text(seen[1]!.at(-1)), /Sent while you were working[\s\S]*also check the weather/);
   assert.match(text(seen[2]!.at(-1)), /from \\"ag2\\" \(ward ag2\)[\s\S]*and hurry/);
   const users = events.filter((e) => e.type === 'user') as { text: string; source?: string }[];
-  assert.deepEqual(users.map((e) => [e.text, e.source]), [['also check the weather', 'chat'], ['🤝 ag2 (mid-turn): and hurry', 'agent']]);
+  assert.deepEqual(users.map((e) => [e.text, e.source]), [['also check the weather', 'chat'], ['ag2 (mid-turn): and hurry', 'agent']]);
   assert.ok(events.some((e) => e.type === 'says' && e.text === 'first answer'));
   assert.equal(receipt, 'final', 'the absorbing turn closes the steer\'s receipt');
   // Both steers are in the transcript as user messages, stamped by origin.
   const t = transcript(activeConversation(u, 'ag1', 'codex').id).filter((m) => m.role === 'user');
-  assert.deepEqual(t.map((m) => [m.text, m.source]), [['also check the weather', 'chat'], ['🤝 ag2 (mid-turn): and hurry', 'agent']]);
+  assert.deepEqual(t.map((m) => [m.text, m.source]), [['also check the weather', 'chat'], ['ag2 (mid-turn): and hurry', 'agent']]);
 });
 
 test('interrupt: aborts the call in flight, else ends the turn after the round it is in', async () => {
@@ -743,7 +769,7 @@ test('interrupt: aborts the call in flight, else ends the turn after the round i
   };
   const events: AgentEvent[] = [];
   const t1 = await runLoop(cfgFor(u, provider), [provider.userItem('go')], (e) => events.push(e));
-  assert.equal(t1.reply, '⏹ Interrupted by the user.');
+  assert.equal(t1.reply, 'Interrupted by the user.');
   assert.equal(rounds, 1);
 
   // Round boundary: the batch's calls are answered first, then the turn ends.
@@ -761,7 +787,7 @@ test('interrupt: aborts the call in flight, else ends the turn after the round i
   };
   const items: unknown[] = [p2.userItem('go')];
   const t2 = await runLoop(cfgFor(u, p2), items);
-  assert.equal(t2.reply, '⏹ Interrupted by agent "Ops".');
+  assert.equal(t2.reply, 'Interrupted by agent "Ops".');
   assert.equal(rounds, 1);
   assert.equal(t2.steps.length, 1, 'the call in the batch still ran and was answered');
   assert.ok(items.some((it) => (it as { call_id?: string }).call_id === 'c1' && (it as { type?: string }).type === 'function_call_output'));

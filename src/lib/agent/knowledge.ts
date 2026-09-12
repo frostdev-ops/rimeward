@@ -71,18 +71,22 @@ export async function knowledgeStatus(user:number): Promise<KnowledgeStatus> {
 export async function rebuildKnowledge(user:number): Promise<KnowledgeStatus> {
   await request(user,'rebuild'); indexKnowledge(user); return knowledgeStatus(user);
 }
-export async function searchKnowledge(user:number, query:string, kinds?:string[], limit = 5, sources?:string[]) {
+export async function searchKnowledge(user:number, query:string, kinds?:string[], limit = 5, sources?:string[], signal?:AbortSignal) {
+  signal?.throwIfAborted();
   if (typeof query !== 'string' || !query.trim() || query.length > 2000) throw Error('Search requires a query of 1–2000 characters.');
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) throw Error('Search limit must be 1–10.');
   if (kinds !== undefined && (!Array.isArray(kinds) || !kinds.length || kinds.some(k => !['tool','memory','skill','standing','note','notebook','conversation','attachment'].includes(k)))) throw Error('Select valid knowledge source scopes.');
   if (sources !== undefined && (!Array.isArray(sources) || sources.length > 2000 || sources.some(s => typeof s !== 'string' || s.length > 160))) throw Error('Invalid knowledge source identities.');
   const config = embeddingConfig(user), profile = embeddingProfile(config);
   let vector:number[] | undefined, fallback = '';
-  try { [vector] = await embed(user,[query],true,undefined,config); }
+  try { [vector] = await embed(user,[query],true,signal,config); }
   catch (e) { fallback = e instanceof Error ? e.message : String(e); }
+  signal?.throwIfAborted();
   const hits = await request<KnowledgeHit[]>(user,'search',{ query,kinds,sources,limit,profile:profile.id,vector });
+  signal?.throwIfAborted();
   indexKnowledge(user);
   const progress = await knowledgeStatus(user);
+  signal?.throwIfAborted();
   const partial = !!fallback || !!progress.vectorError || progress.embedded < progress.chunks;
   return { mode:partial ? 'keyword-fallback' : 'hybrid',status: partial ? fallback || progress.vectorError || 'Embedding index is rebuilding; keyword retrieval remains available.' : 'ready',
     exhaustive:false,profile:profile.id,progress,results:hits.map(h => ({ ...h,text:h.text.slice(0,1800) })) };

@@ -2,7 +2,8 @@ import './_setup.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeInput, readItems, repairResponsesItems } from '../src/lib/agent/codex.ts';
-import { markLast, readChatResponse, repairChatItems } from '../src/lib/agent/openrouter.ts';
+import { chatStream, markLast, readChatResponse, repairChatItems } from '../src/lib/agent/openrouter.ts';
+import { sseParser } from '../src/lib/agent/stream.ts';
 import { usageLine } from '../src/lib/agent/provider.ts';
 
 // Pure wire-shape mappers. The two repairItems dialects are the one place a
@@ -123,4 +124,33 @@ test('usageLine reports the cache hit rate, or plain ok without usage', () => {
   assert.equal(usageLine({ input: 0, cached: 0 }), 'ok');
   assert.equal(usageLine({ input: 15_100, cached: 12_300 }), 'ok · 15.1k in, 12.3k cached (81%)');
   assert.equal(usageLine({ input: 900, cached: 0 }), 'ok · 900 in, 0 cached (0%)');
+});
+
+test('sseParser frames across chunk boundaries, joins multi-line data, skips comments, flushes on finish', () => {
+  const got: string[] = [];
+  const p = sseParser((d) => got.push(d));
+  p.push('data: {"a":1}\r');
+  p.push('\n\r\ndata: x\ndata: y\n\n: keepalive\n\ndata: [DONE]\n\n');
+  assert.deepEqual(got, ['{"a":1}', 'x\ny', '[DONE]']);
+  p.push('data: tail');
+  p.finish();
+  assert.deepEqual(got.at(-1), 'tail');
+});
+
+test('chatStream rebuilds a streamed tool call and refuses an unfinished stream', () => {
+  const seen: string[] = [];
+  const s = chatStream((d) => seen.push(d));
+  s.push({ choices: [{ delta: { content: 'Hel' } }] });
+  s.push({ choices: [{ delta: { content: 'lo', tool_calls: [{ index: 0, id: 'c1', function: { name: 'get_layout', arguments: '{"wa' } }] } }] });
+  // Some servers repeat the whole name on every chunk; only the arguments accumulate.
+  s.push({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'get_layout', arguments: 'rd":"w1"}' } }] } }] });
+  assert.throws(() => s.result(), /ended before completion/);
+  s.push({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { promptTokens: 3 } });
+  const r = s.result();
+  assert.deepEqual(seen, ['Hel', 'lo']);
+  assert.equal(r.choices[0]!.message.content, 'Hello');
+  assert.deepEqual(r.choices[0]!.message.toolCalls, [{ id: 'c1', type: 'function', function: { name: 'get_layout', arguments: '{"ward":"w1"}' } }]);
+  assert.equal(r.usage.promptTokens, 3);
+  const cut = chatStream();
+  assert.throws(() => cut.push({ choices: [{ delta: { content: 'x' }, finish_reason: 'length' }] }), /Incomplete response/);
 });

@@ -431,7 +431,8 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
     if (!res.body) throw Error('missing response stream');
     await readSse(res.body, payload => {
       if (payload === '[DONE]') return;
-      const ev = JSON.parse(payload);
+      let ev: any;
+      try { ev = JSON.parse(payload); } catch { return; } // a non-JSON frame is skipped, as before streaming
       if (ev.type === 'response.output_text.delta' || ev.type === 'response.refusal.delta') {
         if (typeof ev.delta === 'string' && ev.delta) { visible = true; call.onTextDelta?.(ev.delta); }
       } else if (ev.type === 'response.output_item.done' && ev.item) streamed.push(ev.item);
@@ -452,9 +453,9 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
   const items = completed?.output?.length ? completed.output : streamed;
   const { text, calls } = readItems(items);
   if (!text && !calls.length) throw new CodexError(`${tag}: empty response`);
-  for (const call of calls) {
-    if (!call.call_id) throw new CodexError(`${tag}: incomplete tool call`);
-    JSON.parse(call.arguments);
+  for (const fn of calls) {
+    if (!fn.call_id) throw new CodexError(`${tag}: incomplete tool call`);
+    try { JSON.parse(fn.arguments); } catch { throw new CodexError(`${tag}: tool call ${fn.name} carried malformed arguments`); }
   }
   const u = completed?.usage;
   return { text, calls, items, ...(u?.input_tokens ? { usage: { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens ?? 0, output: u.output_tokens } } : {}) };

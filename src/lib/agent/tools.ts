@@ -91,7 +91,7 @@ export type ToolKind = 'read' | 'write' | 'confirm';
 export const AGENT_HELP_TOPICS = ['general', 'computer', 'browser', 'sandbox', 'wards', 'leylines', 'memory', 'delegation', 'all'] as const;
 
 export interface ToolCtx {
-  /** Turn-local discovery, absent in the sandbox and outside the model loop. */
+  /** Conversation-retained discovery, absent in the sandbox and outside the model loop. */
   searchTools?: (args:ToolSearch) => Promise<unknown>;
   userId: number;
   ward: string;
@@ -307,15 +307,15 @@ const docName = str('a slug, [a-z0-9-] ≤48 chars, e.g. "user-timezone" or "dep
 
 export const TOOLS: Record<string, ToolDef> = {
   monitor: {
-    kind:'write',description:'Create, update, pause, resume, delete, or inspect a persistent background monitor in this conversation. Observation only: never authorizes replies or external actions. Sources: terminal, file, browser, agent, note, notebook, http, comms, event (Leylines). Initial observations are baselines; matching events wake this conversation or arrive between rounds. Clearing/archiving deletes monitors. HTTP defaults to 30 seconds. Watching does not occupy running-task slots. Exact filters run before an optional semantic gate; unavailable semantic inference visibly blocks delivery.',
-    parameters:obj({ action:{ type:'string',enum:['create','update','pause','resume','delete','status'] },id:str('Monitor id for an existing monitor'),name:str('Short description'),
+    kind:'write',description:'Create, update, pause, resume, delete, or inspect a persistent background monitor in this conversation. Observation only: never authorizes replies or external actions. Sources: terminal, file, browser, agent, note, notebook, http, comms, event (Leylines). Initial observations are baselines; matching events wake this conversation or arrive between rounds. Clearing/archiving deletes monitors. HTTP defaults to 30 seconds. Watching does not occupy running-task slots. Exact filters run before an optional semantic gate; unavailable semantic inference visibly blocks delivery. Terminal sources observe rendered screen rows (new stable lines, spinner ticks and repaints dropped), never raw bytes. Deliveries are rate limited per monitor by minIntervalSeconds (default 5): bursts coalesce into one notice and a trailing notice follows when the source goes quiet.',
+    parameters:obj({ action:{ type:'string',enum:['create','update','pause','resume','delete','status'] },id:str('Monitor id for an existing monitor'),name:str('Short description'),minIntervalSeconds:num('Minimum seconds between alert deliveries for this monitor, 1–3600; default 5. Distinct from source.intervalSeconds (polling).'),
       source:{ type:'object',properties:{ type:{ type:'string',enum:['terminal','file','browser','agent','note','notebook','http','comms','event'] },target:str('Terminal, ward, note, notebook or child task id'),project:str('Owned local project id for files'),path:str('Project-relative file or scoped folder'),url:str('Read-only HTTP(S) probe'),selector:str('Optional browser CSS selector'),event:str('Leyline trigger type'),intervalSeconds:num('5–86400 seconds, default 30; connector minimums still apply'),headers:{ type:'array',items:{ type:'string' } },fields:{ type:'array',items:{ type:'string' },description:'Selected JSON field paths' } },required:['type'],additionalProperties:false },
       filter:{ type:'object',description:'Exact filter: {all:[filters]}, {any:[filters]}, {not:filter}, or {field,op,value}; op eq, contains, glob (* and ?), gt, gte, lt, lte, changed. Maximum depth 8 and 64 nodes. Source fields include path, sender, channel, eventType, status, exitCode, text, and json fields.',additionalProperties:true },
       semantic:{ type:['object','null'],properties:{ field:str('Text field to compare'),query:str('Meaning to match'),threshold:num('Minimum cosine similarity, -1 to 1') },required:['field','query','threshold'],additionalProperties:false } },['action']),
     run:(a,ctx) => manageMonitor(ctx,a),
   },
   search_tools: {
-    kind:'read', description:'Search available capabilities or exact tool names. Loads up to five callable schemas for the next round (maximum ten). Search before calling tools outside the bootstrap set. Discovery grants no authority.',
+    kind:'read', description:'Search capabilities or exact tool names not already callable. Loads up to five schemas for the next round (maximum ten) and retains them for this conversation across messages, restarts and compaction. Relevant tools may already be preloaded; use those directly. Discovery grants no authority.',
     parameters:obj({ query:str('Capability to find, or exact tool name'), filters:{ type:'object',properties:{ kind:{ type:'string',enum:['read','write','confirm'] },server:str('MCP server name') },additionalProperties:false },limit:num('Default 5; maximum 10') },['query']),
     run:(a,ctx) => { if (!ctx.searchTools) throw Error('Tool discovery requires an agent turn.'); return ctx.searchTools(a as ToolSearch); },
   },

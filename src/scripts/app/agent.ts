@@ -17,7 +17,7 @@ import { completeCommand, parseCommand, type CommandSpec } from '../../lib/agent
 import type { AgentTask } from '../../lib/agent/tasks.ts';
 import type { UserQuestion, PendingQuestion, UserAnswer } from '../../lib/agent/questions.ts';
 import type { TranscriptMsg } from '../../lib/agent/conversations.ts';
-import { CATALOG, pageOf, wardTitle, type WardInstance } from '../../lib/wards.ts';
+import { AGENT_EFFORTS, CATALOG, pageOf, wardTitle, type AgentEffort, type AgentProviderId, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body, note, readLayout } from './wards.ts';
 import { el, getJson, postJson, tapToast, toast } from './dom.ts';
 import { icon } from './icon.ts';
@@ -260,6 +260,7 @@ function stepCard(step: Step, running = false, ward = ''): HTMLElement {
   const head = el('summary');
   const mark = el('span', running ? 'ag-working-mark' : 'ag-activity-mark');
   mark.append(icon(running ? 'rime' : step.error ? 'warning' : 'check'));
+  head.title = step.tool;
   head.append(mark, el('span', 'ag-step-reason', step.reason || humanise(step.tool)));
   if (!running && step.ms !== undefined) head.append(el('span', 'ag-step-time', fmtMs(step.ms)));
   row.append(head);
@@ -337,6 +338,8 @@ interface Ui {
   voiceStatus: HTMLElement;
   readResponses: HTMLInputElement;
   conversationMode: HTMLSelectElement;
+  /** The footer's provider / model / effort pickers (paintPicker fills them). */
+  picker: { root: HTMLElement; provider: HTMLSelectElement; model: HTMLSelectElement; effort: HTMLSelectElement };
   chips: HTMLElement;
   pendingBox: HTMLElement;
   pendingText: HTMLElement;
@@ -388,6 +391,10 @@ interface State {
   sharedStatus?: string;
   configured?: boolean;
   context?: ContextUsage;
+  /** What the footer pickers offer, loaded per ward config (see loadCatalog). */
+  catalog?: Catalog;
+  /** A picker choice is being saved. */
+  switching?: boolean;
   uis: Set<Ui>;
   voice?: ReturnType<typeof createAgentVoice>;
   voiceState?: VoiceState;
@@ -408,6 +415,163 @@ function paintContext(el: HTMLElement, c: State['context']): void {
 }
 
 const states = new Map<string, State>();
+
+// ------------------------------------------------------------ model pickers
+//
+// The footer's Provider / Model / Effort selects. What they show is the ward's
+// EFFECTIVE route — /api/agent/models?ward= resolves the inherited defaults the
+// same way a turn does — and a pick is stored on the ward through the ordinary
+// layout save, so every tab and the ⚙ dialog see it. A provider (or endpoint)
+// change retires the thread, exactly as the ⚙ dialog's does; the confirm says so.
+
+interface Catalog {
+  /** The ward + config the load was for; a mismatch reloads. */
+  key: string;
+  loading: boolean;
+  error?: string;
+  source?: string;
+  /** The account's default provider. */
+  default?: AgentProviderId;
+  current?: { provider: AgentProviderId; endpoint?: string; model: string; effort: AgentEffort };
+  providers: { provider: AgentProviderId; name: string; configured: boolean; default?: string }[];
+  endpoints: string[];
+  models: { id: string; name?: string; efforts?: string[] }[];
+}
+
+const EFFORT_LABELS: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
+/** The ⚙ dialog's short provider names; the footer has no room for the long ones. */
+const PROVIDER_SHORT: Record<string, string> = { codex: 'Codex', openrouter: 'OpenRouter', openai: 'OpenAI API' };
+const routeOf = (provider: string, endpoint?: string) => (provider === 'compat' ? `compat:${endpoint ?? ''}` : provider);
+const catalogKey = (st: State) => {
+  const c = (st.w.config ?? {}) as Record<string, unknown>;
+  return JSON.stringify([st.w.i, c.provider, c.endpoint, c.model, c.effort]);
+};
+
+async function loadCatalog(st: State): Promise<void> {
+  const key = catalogKey(st);
+  if (st.catalog?.key === key) return;
+  const cat: Catalog = { key, loading: true, current: st.catalog?.current, providers: st.catalog?.providers ?? [], endpoints: st.catalog?.endpoints ?? [], models: [] };
+  st.catalog = cat;
+  paint(st);
+  const { status, data } = await getJson(`/api/agent/models?ward=${encodeURIComponent(st.w.i)}`).catch(() => ({ status: 0, data: null }));
+  if (st.catalog !== cat) return; // a newer config superseded this load
+  cat.loading = false;
+  if (data && typeof data === 'object') {
+    cat.current = data.current ?? undefined;
+    cat.default = data.default;
+    cat.providers = Array.isArray(data.providers) ? data.providers : [];
+    cat.endpoints = Array.isArray(data.endpoints) ? data.endpoints : [];
+    cat.models = Array.isArray(data.models) ? data.models : [];
+    cat.source = data.source;
+    if (typeof data.error === 'string') cat.error = data.error;
+  }
+  if (!cat.current) cat.error ??= status ? `Model settings unavailable (${status})` : 'Model settings unavailable';
+  if (cat.error && !cat.models.length) cat.key = ''; // try again on the next repaint data
+  paint(st);
+}
+
+/** Rebuild a select's options only when the list changed; a paint mid-turn must
+ *  not churn a 300-row OpenRouter list (SearchSelect re-syncs on every mutation). */
+function setOptions(select: HTMLSelectElement, rows: { value: string; label: string; disabled?: boolean }[]): void {
+  const same = select.options.length === rows.length && rows.every((r, i) => { const o = select.options[i]!; return o.value === r.value && o.textContent === r.label && o.disabled === !!r.disabled; });
+  if (same) return;
+  select.replaceChildren(...rows.map((r) => { const o = new Option(r.label, r.value); o.disabled = !!r.disabled; return o; }));
+}
+
+function paintPicker(st: State, ui: Ui): void {
+  const c = st.catalog;
+  const p = ui.picker;
+  const cur = c?.current;
+  p.root.hidden = !c || (!c.loading && !cur);
+  if (!c) return;
+  const cfg = (st.w.config ?? {}) as Record<string, unknown>;
+  const working = st.busy || st.remote || st.clearing || !!st.switching || c.loading;
+  // The ward's footer is one row wide at most — the "· default" marker rides the label titles there.
+  const compact = ui.root.classList.contains('ag-shell');
+  const mark = (isDefault: boolean) => (isDefault && !compact ? ' · default' : '');
+  // Provider: every provider the account knows, each endpoint its own row; a
+  // provider that is not connected is listed but not pickable.
+  const route = cur ? routeOf(cur.provider, cur.endpoint) : '';
+  const providers: { value: string; label: string; disabled?: boolean }[] = c.providers.flatMap((pr) => pr.provider === 'compat'
+    ? c.endpoints.map((e) => ({ value: routeOf('compat', e), label: `Endpoint · ${e}` }))
+    : [{ value: pr.provider, label: `${PROVIDER_SHORT[pr.provider] ?? pr.name}${mark(pr.provider === c.default)}${pr.configured ? '' : ' · not connected'}`, disabled: !pr.configured }]);
+  if (route && !providers.some((r) => r.value === route)) providers.unshift({ value: route, label: cur!.endpoint ?? cur!.provider });
+  if (!providers.length) providers.push({ value: '', label: '…', disabled: true });
+  setOptions(p.provider, providers);
+  p.provider.disabled = working; // before the value write: SearchSelect mirrors disabled onto its trigger there
+  p.provider.value = route;
+  p.provider.parentElement!.title = cur ? (cfg.provider && cfg.provider !== 'default' ? 'Provider · set on this ward' : 'Provider · the account default') : '';
+  // Model: the catalog's list for the current route, the current id kept even
+  // when the list does not carry it (a stale or fallback list is never authoritative).
+  const fallback = c.providers.find((pr) => pr.provider === cur?.provider)?.default;
+  const models: { value: string; label: string; disabled?: boolean }[] = c.models.map((m) => ({ value: m.id, label: `${m.name && m.name !== m.id ? `${m.name} · ` : ''}${m.id}${mark(m.id === fallback)}` }));
+  if (cur?.model && !models.some((m) => m.value === cur.model)) models.unshift({ value: cur.model, label: cur.model });
+  if (!cur?.model) models.unshift({ value: '', label: c.loading ? '…' : 'Choose a model…', disabled: true });
+  setOptions(p.model, models);
+  p.model.disabled = working || models.length < 2;
+  p.model.value = cur?.model ?? '';
+  p.model.parentElement!.title = c.error ? `Model · ${c.error}` : cfg.model ? 'Model · set on this ward' : `Model · the provider default${c.source === 'fallback' ? ' · list is the built-in fallback' : ''}`;
+  // Effort: what the model advertises (codex lists them), else every level; the
+  // current value stays listed so the control never lies about it.
+  const known = c.models.find((m) => m.id === cur?.model);
+  const levels = [...(known?.efforts?.length ? known.efforts : AGENT_EFFORTS)];
+  if (cur?.effort && !levels.includes(cur.effort)) levels.unshift(cur.effort);
+  setOptions(p.effort, levels.map((e) => ({ value: e, label: EFFORT_LABELS[e] ?? e })));
+  p.effort.disabled = working || !cur;
+  p.effort.value = cur?.effort ?? '';
+  p.effort.parentElement!.title = cfg.effort ? 'Reasoning effort · set on this ward' : 'Reasoning effort · the default';
+}
+
+function confirmSwitch(name: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const { d, form, actions, submit } = dialog('Switch provider?');
+    submit.textContent = 'Switch';
+    actions.before(el('p', 'muted', `Rime runs on ${name} from your next message. That starts a new chat here — the current one is archived, like New chat does.`));
+    let ok = false;
+    form.onsubmit = (e) => { e.preventDefault(); ok = true; d.close(); };
+    d.addEventListener('close', () => { d.remove(); resolve(ok); }, { once: true });
+  });
+}
+
+/** Store a pick on the ward. The route is pinned with it — a model or an effort
+ *  only means something on the provider it was chosen for — and the ordinary
+ *  layout save carries it, so the push repaints every tab and the ⚙ dialog agrees. */
+async function saveSelection(st: State, patch: { provider?: AgentProviderId; endpoint?: string; model?: string | null; effort?: AgentEffort }): Promise<void> {
+  if (st.switching || st.busy || st.remote || st.clearing) return;
+  const cur = st.catalog?.current;
+  if (!cur) return;
+  if (document.querySelector('.wd-grid.editing')) { toast('Finish editing the layout first.', undefined, true); paint(st); return; }
+  const layout = readLayout();
+  const w = layout.find((x) => x.i === st.w.i);
+  if (!w) { toast('Save the layout first.', undefined, true); paint(st); return; }
+  const config: Record<string, unknown> = { ...(w.config ?? {}) };
+  config.provider = patch.provider ?? cur.provider;
+  if (config.provider === 'compat') config.endpoint = patch.endpoint ?? cur.endpoint;
+  else delete config.endpoint;
+  if ('model' in patch) { if (patch.model) config.model = patch.model; else delete config.model; }
+  if (patch.effort) config.effort = patch.effort;
+  w.config = config;
+  st.switching = true;
+  paint(st);
+  const { ok, data } = await postJson('/api/dashboard', { layout }, 'PUT');
+  st.switching = false;
+  if (!ok) { toast(typeof data?.error === 'string' ? `Could not save: ${data.error}` : 'Could not save the model choice.', undefined, true); paint(st); return; }
+  // Repaint now rather than waiting for the layout push: the GET behind it is
+  // what retires the thread on a provider change and reloads the transcript.
+  await renderAgent(w);
+}
+
+async function pickRoute(st: State, value: string): Promise<void> {
+  const cur = st.catalog?.current;
+  if (!cur || !value || value === routeOf(cur.provider, cur.endpoint)) { paint(st); return; }
+  const compat = value.startsWith('compat:');
+  const provider = (compat ? 'compat' : value) as AgentProviderId;
+  const endpoint = compat ? value.slice(7) : undefined;
+  const name = endpoint ? `endpoint "${endpoint}"` : PROVIDER_SHORT[provider] ?? st.catalog!.providers.find((p) => p.provider === provider)?.name ?? provider;
+  // An empty thread has nothing to archive — switch without asking.
+  if (st.items.length && !(await confirmSwitch(name))) { paint(st); return; }
+  await saveSelection(st, { provider, endpoint, model: null });
+}
 
 function hideVoiceCapture(st: State) {
   if (![...st.uis].some(ui => ui.root.isConnected && ui.root.getClientRects().length > 0)) void st.voice?.viewHidden();
@@ -643,8 +807,7 @@ function emptyState(st: State, ui: Pick<Ui, 'input'>): HTMLElement {
   const wrap = el('div', 'ag-empty');
   const mark = el('div', 'ag-empty-mark');
   mark.append(icon('rime'));
-  wrap.append(mark, el('h3', undefined, 'What would you like to work on?'),
-    el('p', undefined, 'Plan a project, explore an idea, or put your workspace to work.'));
+  wrap.append(mark, el('h3', undefined, 'What would you like to work on?'));
   const chips = el('div', 'ag-starters');
   const starters = st.w.config?.project ? [
     'Explore this project and explain how it fits together',
@@ -716,7 +879,8 @@ function followLog(log: HTMLElement, jump: HTMLElement, view: { follow: boolean 
   const near = () => log.scrollHeight - log.scrollTop - log.clientHeight < 64;
   const cancel = () => { cancelAnimationFrame(frame); frame = 0; };
   const show = () => { jump.hidden = !!log.querySelector('.ag-empty') || view.follow || log.scrollHeight - log.clientHeight < 48; };
-  const stop = () => { view.follow = false; cancel(); show(); };
+  // A wheel or drag that cannot scroll anything is not the reader leaving the bottom.
+  const stop = () => { if (log.scrollHeight - log.clientHeight < 2) return; view.follow = false; cancel(); show(); };
   const tick = () => {
     frame = 0;
     if (!view.follow || document.hidden || !log.isConnected || !log.getClientRects().length) return;
@@ -817,12 +981,15 @@ function paintStream(st: State) {
 }
 
 function restoreSurface(st: State, data: { conversation?: number; transcript?: TranscriptMsg[]; live?: LiveTurn }) {
-  const old = st.items, sameRun = !!data.live && (!st.run || st.run === data.live.id);
+  // Only this run's in-flight items may outlive the snapshot: another tab's New
+  // chat swaps the conversation, and its old messages must not be carried over.
+  const old = st.items, sameRun = !!data.live && (!st.run || st.run === data.live.id) && (!st.conversation || st.conversation === data.conversation);
   st.conversation = data.conversation; st.run = data.live?.id;
   st.items = itemsFrom(data.live?.transcript ?? data.transcript ?? []);
   const matched = new Set<Item>();
   for (const item of st.items) if (item.k === 'msg') {
-    const previous = old.find(x => !matched.has(x) && x.k === 'msg' && x.role === item.role && x.text === item.text);
+    // A stored reply may carry a tail the stream never had (a confirm prompt, a failure note).
+    const previous = old.find(x => !matched.has(x) && x.k === 'msg' && x.role === item.role && (x.text === item.text || item.role === 'assistant' && item.text.startsWith(x.text)));
     if (previous?.k === 'msg') { item.id = previous.id; matched.add(previous); }
   }
   const run = newRun();
@@ -865,7 +1032,7 @@ function paintChips(st: State, chips: HTMLElement): void {
     chip.type = 'button';
     const w = readLayout().find(w => w.i === m.ward);
     chip.append(icon(CATALOG[w?.type ?? '']?.icon ?? 'folder'), el('span', 'truncate', `@${m.title}`), icon('close'));
-    chip.title = `${w ? mentionSummary(w.type) : 'Ward unavailable'} · Captured when sent · Click to remove`;
+    chip.title = `${w ? mentionSummary(w.type) : 'Ward unavailable'} · Click to remove`;
     chip.setAttribute('aria-label', `Remove mention ${m.title}`);
     chip.onclick = () => {
       setDraft(st, st.draft.replace(mentionPattern(m), ''));
@@ -880,6 +1047,7 @@ function paintChips(st: State, chips: HTMLElement): void {
     const rm = el('button', 'shrink-0 text-ink-faint hover:text-err');
     rm.type = 'button';
     rm.append(icon('close'));
+    rm.title = 'Remove';
     rm.setAttribute('aria-label', `Remove ${a.name}`);
     rm.addEventListener('click', () => {
       st.attachments = st.attachments.filter((x) => x !== a);
@@ -958,7 +1126,7 @@ function paintQuestion(st: State, ui: Ui): void {
       }
     }
     const actions = el('div', 'ag-question-actions');
-    const skip = el('button', 'btn', 'Skip'); skip.type = 'button'; skip.onclick = () => { void answer(null); };
+    const skip = el('button', 'btn', 'Skip'); skip.type = 'button'; skip.title = 'Continue without answering'; skip.onclick = () => { void answer(null); };
     const submit = el('button', 'btn-primary', question.wait ? 'Answer & continue' : 'Send answer'); submit.type = 'button'; submit.dataset.questionSubmit = '';
     submit.setAttribute('aria-label', question.wait ? 'Answer and continue' : 'Send answer');
     submit.prepend(icon('right')); submit.onclick = () => { void answer(drafts.get(question.id) ?? ''); };
@@ -1003,7 +1171,7 @@ function paint(st: State): void {
     const working = st.busy || st.remote;
     const paused = !!st.pending || !!currentQuestion(st)?.wait;
     ui.root.dataset.paused = String(paused);
-    const status = st.pending?.question ? 'Waiting for your answer' : st.pending ? 'Approval needed' : st.clearing ? 'Starting a new chat…' : working ? 'Working · send a follow-up to steer' : st.sharedStatus || 'Rimeward agent';
+    const status = st.pending?.question ? 'Waiting for your answer' : st.pending ? 'Approval needed' : st.clearing ? 'Starting a new chat…' : working ? 'Working' : st.sharedStatus || 'Rimeward agent';
     if (ui.status.textContent !== status) ui.status.textContent = status;
     paintContext(ui.context, st.context);
     ui.root.dataset.working = String(working);
@@ -1025,6 +1193,7 @@ function paint(st: State): void {
     if (ui.pendingPatch.textContent !== (st.pending?.patch ?? '')) ui.pendingPatch.textContent = st.pending?.patch ?? '';
     paintChips(st, ui.chips);
     paintQuestion(st, ui);
+    paintPicker(st, ui);
   }
 }
 
@@ -1213,7 +1382,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
     st.busy = false;
     st.remote = true;
     remoteRuns.set(st.w.i, running);
-    st.items.push({ k: 'note', text: 'Response connection lost. Checking the running turn…' });
+    st.items.push({ k: 'note', text: 'Connection lost. Reconnecting…' });
     paint(st);
     void refetch(st);
   };
@@ -1279,7 +1448,8 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
     }
 
     accepted = true;
-    await readSse(res.body!, payload => { if (payload !== '[DONE]') dispatch(JSON.parse(payload)); });
+    // One bad frame must not end the stream (it did not before streaming either).
+    await readSse(res.body!, payload => { if (payload !== '[DONE]') try { dispatch(JSON.parse(payload)); } catch {} });
     if (!completed) reconnect();
   } catch (err) {
     if (accepted && !completed) { reconnect(); return; }
@@ -1301,7 +1471,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
 function submit(st: State, ui: Ui): void {
   if (st.configured === false || st.pending?.question) return;
   const text = ui.input.value.trim();
-  if (text.length > 8000) { toast('Your draft exceeds 8,000 characters. Shorten it before sending.'); return; }
+  if (text.length > 8000) { toast('Messages are limited to 8,000 characters.'); return; }
   const mentions = activeMentions(text, st.mentions);
   if ((!text && !st.attachments.length) || st.uploading > 0 || st.clearing) return;
   for (const view of st.uis) view.follow = true;
@@ -1319,7 +1489,7 @@ function submit(st: State, ui: Ui): void {
   // running turn and paints from its 'user' event. Commands stay commands.
   if ((st.busy || st.remote) && !text.startsWith('/')) {
     if (st.attachments.length) {
-      toast('Send attached files after the current turn finishes. Your draft is saved.');
+      toast('Attachments send once this turn finishes.');
       return;
     }
     setDraft(st, '');
@@ -1362,7 +1532,7 @@ async function background(st: State): Promise<void> {
   const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'background' });
   if (status !== 200) { toast(data?.error ?? 'Could not background the task.'); return; }
   for (const task of data.tasks ?? []) updateTask(st, task);
-  toast(data.forked ? 'The run continues in the background as a child run. You can keep chatting.' : data.tasks?.length ? 'Task continues in the background. You can keep chatting.' : 'Nothing is running.');
+  toast(data.forked || data.tasks?.length ? 'Running in the background.' : 'Nothing is running.');
 }
 
 function updateTask(st: State, task: AgentTask): void {
@@ -1415,7 +1585,7 @@ function openTasks(st: State): void {
       if (next !== signature) {
         signature = next;
         list.replaceChildren();
-        if (!st.tasks.length) list.append(el('p', undefined, 'No tasks yet. Press Ctrl+B while Rime works to keep the run going in the background, or ask Rime to delegate to a child run.'));
+        if (!st.tasks.length) list.append(el('p', undefined, 'No tasks yet. Ctrl+B moves a running turn to the background.'));
         for (const task of st.tasks) {
           const row = el('article', 'ag-task-row');
           const detail = el('div', 'ag-task-description');
@@ -1425,13 +1595,14 @@ function openTasks(st: State): void {
           if (task.error) detail.append(el('span', 'text-err', task.error));
           const rowActions = el('div', 'ag-task-actions');
           if (task.tool === 'spawn_agent') {
-            const open = el('button', 'btn', 'Open conversation'); open.type = 'button';
+            const open = el('button', 'btn', 'Open conversation'); open.type = 'button'; open.title = 'Open the child agent’s conversation';
             open.dataset.agChild = task.id;
             open.onclick = () => openChildSession(st, task, d);
             rowActions.append(open);
           }
           for (const final of task.tool === 'monitor' ? [true] : [false, true]) {
             const button = el('button', 'btn', task.tool === 'monitor' ? 'Filters and matches' : final ? 'Result' : 'Output'); button.type = 'button';
+            button.title = task.tool === 'monitor' ? 'What this monitor watches for, and what it matched' : final ? 'The final result' : 'Live output';
             button.onclick = () => {
               selected = task.id; cursor = 0; result = final;
               output ??= el('pre', 'ag-task-output');
@@ -1446,7 +1617,7 @@ function openTasks(st: State): void {
             rowActions.append(button);
           }
           if (task.state === 'running' && !task.background) {
-            const detach = el('button', 'btn', 'Background'); detach.type = 'button';
+            const detach = el('button', 'btn', 'Background'); detach.type = 'button'; detach.title = 'Keep running in the background';
             detach.onclick = async () => {
               detach.disabled = true;
               const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'background', task: task.id });
@@ -1457,7 +1628,7 @@ function openTasks(st: State): void {
           }
           if (task.cancellable) {
             if (task.tool === 'monitor') {
-              const pause = el('button','btn',task.state === 'paused' ? 'Resume' : 'Pause'); pause.type = 'button';
+              const pause = el('button','btn',task.state === 'paused' ? 'Resume' : 'Pause'); pause.type = 'button'; pause.title = task.state === 'paused' ? 'Resume this monitor' : 'Pause this monitor';
               pause.onclick = async () => {
                 pause.disabled = true;
                 const { status,data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`,{ action:'monitor',task:task.id,operation:task.state === 'paused' ? 'resume' : 'pause' });
@@ -1466,7 +1637,7 @@ function openTasks(st: State): void {
               };
               rowActions.append(pause);
             }
-            const stop = el('button', 'btn', task.tool === 'monitor' ? 'Delete monitor' : 'Stop'); stop.type = 'button'; stop.title = task.tool === 'monitor' ? 'Delete this monitor and its pending deliveries' : 'Stop this task; partial changes remain';
+            const stop = el('button', 'btn', task.tool === 'monitor' ? 'Delete monitor' : 'Stop'); stop.type = 'button'; stop.title = task.tool === 'monitor' ? 'Delete this monitor' : 'Stop this task';
             stop.onclick = async () => {
               stop.disabled = true;
               const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'cancel-task', task: task.id });
@@ -1517,7 +1688,7 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
   const assignment = el('p', 'ag-child-assignment', task.reason);
   const transcriptBox = el('div', 'ag-child-transcript');
   const progress = el('details', 'ag-activity');
-  const progressTitle = el('summary', undefined, 'Live activity');
+  const progressTitle = el('summary', undefined, 'Live activity'); progressTitle.title = 'Raw tool output from this run';
   const output = el('pre', 'ag-task-output'); progress.append(progressTitle, output);
   const questionBox = el('div', 'ag-approval'); questionBox.hidden = true; questionBox.setAttribute('role', 'status');
   const questionText = el('p', 'ag-approval-text');
@@ -1527,7 +1698,7 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
   const receipts = el('div', 'ag-child-receipts'); receipts.setAttribute('aria-label', 'Message delivery');
   delivery.append(deliveryTitle, receipts);
   log.append(assignment, transcriptBox, progress, questionBox, delivery);
-  const jump = el('button', 'ag-jump', 'Jump to latest'); jump.type = 'button'; jump.hidden = true;
+  const jump = el('button', 'ag-jump', 'Jump to latest'); jump.type = 'button'; jump.hidden = true; jump.title = 'Scroll to the latest message';
   stage.append(log, jump);
   const footer = el('div', 'ag-footer');
   const composer = el('div', 'ag-composer');
@@ -1544,12 +1715,12 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
     const draft = value ? { text: value, questionId: draftQuestionId } : undefined;
     if (draft) drafts.set(draftKey, draft); else drafts.delete(draftKey);
     try { saveDesktopState(checkpoint, draft); }
-    catch { failure('Your draft is kept here, but could not be saved for an app restart.'); }
+    catch { failure('Draft kept for this session only.'); }
   };
   const controls = el('div', 'ag-compose-controls');
-  const hint = el('span', 'ag-hint', 'Direct to this child');
+  const hint = el('span', 'ag-hint', 'Direct to this child'); hint.title = 'Messages go to this child agent only';
   const stop = el('button', 'ag-icon-button ag-stop'); stop.type = 'button'; stop.hidden = true; stop.append(icon('stop'));
-  stop.title = 'Stop child · partial changes remain'; stop.setAttribute('aria-label', 'Stop child');
+  stop.title = 'Stop this run'; stop.setAttribute('aria-label', 'Stop this run');
   submit.className = 'ag-send'; submit.replaceChildren(icon('send'));
   submit.title = 'Send message'; submit.setAttribute('aria-label', 'Send message');
   controls.append(hint, stop, submit); composer.append(input, controls);
@@ -1580,7 +1751,7 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
       const response = await fetch(`${endpoint}?tasks=1&task=${encodeURIComponent(task.id)}&session=1`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
       const status = response.status, data = await response.json();
       if (!d.open) return;
-      if (status !== 200 || !data) throw Error(data?.error ?? 'Could not reconnect. Your draft is safe; retrying…');
+      if (status !== 200 || !data) throw Error(data?.error ?? 'Reconnecting…');
       connected = true; connection.hidden = true;
       canMessage = data.canMessage; question = data.question ?? null;
       const running = ['running', 'stopping'].includes(data.task.state);
@@ -1590,10 +1761,10 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
       input.readOnly = !running;
       input.maxLength = question?.maxLength ?? 8000;
       input.placeholder = running ? question ? 'Answer this child agent…' : 'Message this child agent…' : 'This child run has ended';
-      help.textContent = running ? question ? `Your message answers the question above · ${input.maxLength.toLocaleString()} characters max` :
+      help.textContent = running ? question ? `Answers the question above · ${input.maxLength.toLocaleString()} characters max` :
         matchMedia('(pointer: coarse)').matches ? 'Tap send · messages are read at the next step' : 'Enter to send · Shift + Enter for a new line' :
-        'This run has ended. Its conversation and your draft remain available to copy.';
-      if (running && input.value && draftQuestionId !== question?.id) help.textContent = 'The waiting question changed. Review the latest activity and edit your draft before sending.';
+        'This run has ended.';
+      if (running && input.value && draftQuestionId !== question?.id) help.textContent = 'The question changed. Review your draft before sending.';
       if (childState.revision === revision) {
         childRun = restoreSurface(childState, data);
         childUi.live = false; childState.remote = running;
@@ -1949,6 +2120,21 @@ function wireComposer(ui: Ui, cur: () => State | undefined): void {
     const st = cur();
     if (st) void voiceFor(st).setConversation(ui.conversationMode.value as 'off' | 'finish-send' | 'hands-free');
   });
+  ui.picker.provider.addEventListener('change', () => { const st = cur(); if (st) void pickRoute(st, ui.picker.provider.value); });
+  ui.picker.model.addEventListener('change', () => {
+    const st = cur();
+    if (!st) return;
+    const model = ui.picker.model.value;
+    if (model && model !== st.catalog?.current?.model) void saveSelection(st, { model });
+    else paint(st);
+  });
+  ui.picker.effort.addEventListener('change', () => {
+    const st = cur();
+    if (!st) return;
+    const effort = ui.picker.effort.value as AgentEffort;
+    if ((AGENT_EFFORTS as readonly string[]).includes(effort) && effort !== st.catalog?.current?.effort) void saveSelection(st, { effort });
+    else paint(st);
+  });
   // FIRST, so its keydown listener sees Enter/Tab/arrows before the send below.
   wireCommandMenu(ui, go, cur);
   ui.send.addEventListener('click', go);
@@ -2027,7 +2213,7 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   log.tabIndex = 0;
   const jump = el('button', 'ag-jump');
   const down = el('span', 'ag-jump-icon'); down.append(icon('right'));
-  jump.append(down, document.createTextNode(' Latest')); jump.setAttribute('aria-label', 'Latest');
+  jump.append(down, document.createTextNode(' Latest')); jump.setAttribute('aria-label', 'Latest'); jump.title = 'Scroll to the latest message';
   jump.type = 'button';
   jump.hidden = true;
   stage.append(log, jump);
@@ -2040,9 +2226,9 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   const pendingPatch = el('pre', 'font-mono whitespace-pre-wrap');
   pendingDetails.append(el('summary', 'cursor-pointer', 'Review patch'), pendingPatch);
   const approve = el('button', 'btn-primary', 'Confirm');
-  approve.type = 'button'; approve.dataset.agConfirm = '';
+  approve.type = 'button'; approve.dataset.agConfirm = ''; approve.title = 'Run this action';
   const decline = el('button', 'btn', 'Cancel');
-  decline.type = 'button'; decline.dataset.agDecline = '';
+  decline.type = 'button'; decline.dataset.agDecline = ''; decline.title = 'Skip this action';
   pendingBox.append(pendingText, pendingDetails, approve, decline);
   const questionBox = el('section', 'ag-question'); questionBox.hidden = true;
   questionBox.setAttribute('aria-label', 'Question from Rime');
@@ -2060,7 +2246,7 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   attach.title = 'Attach files'; attach.setAttribute('aria-label', 'Attach files');
   attach.append(icon('attach'));
   const file = el('input', 'hidden'); file.type = 'file'; file.multiple = true;
-  const hint = el('span', 'ag-hint', '@ wards · / commands');
+  const hint = el('span', 'ag-hint', '@ wards · / commands'); hint.title = 'Type @ to mention a ward, / for a command';
   const tasksButton = el('button', 'ag-icon-button ag-tasks-button');
   tasksButton.type = 'button'; tasksButton.append(icon('tasks'));
   const background = el('button', 'ag-icon-button hidden');
@@ -2077,7 +2263,7 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   microphone.title = 'Dictate message'; microphone.setAttribute('aria-label', 'Dictate message');
   const voiceStop = el('button', 'ag-icon-button');
   voiceStop.type = 'button'; voiceStop.hidden = true; voiceStop.append(icon('volume-off'));
-  voiceStop.title = 'Stop voice · agent work continues'; voiceStop.setAttribute('aria-label', 'Stop voice');
+  voiceStop.title = 'Stop reading aloud'; voiceStop.setAttribute('aria-label', 'Stop voice');
   controls.append(attach, file, tasksButton, microphone, hint, voiceStop, background, stop, send);
   form.append(chips, input, controls);
   const help = el('p', 'ag-composer-help', matchMedia('(pointer: coarse)').matches ? 'Tap send when you’re ready' : 'Enter to send · Shift + Enter for a new line');
@@ -2086,17 +2272,29 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   const voiceOptions = el('div', 'ag-voice-options');
   const readLabel = el('label', 'switch');
   const readResponses = el('input'); readResponses.type = 'checkbox'; readResponses.setAttribute('role', 'switch');
-  readLabel.append(readResponses, document.createTextNode('Read responses'));
+  readLabel.append(readResponses, document.createTextNode('Read responses')); readLabel.title = 'Read each reply aloud';
   const modeLabel = el('label');
   const conversationMode = el('select'); conversationMode.setAttribute('aria-label', 'Voice conversation mode');
   for (const [value, label] of [['off', 'Off'], ['finish-send', 'Finish & Send'], ['hands-free', 'Hands-free']]) {
     const option = el('option', undefined, label); option.value = value!; conversationMode.append(option);
   }
-  modeLabel.append(document.createTextNode('Conversation'), conversationMode);
-  voiceOptions.append(readLabel, modeLabel);
+  modeLabel.append(document.createTextNode('Conversation'), conversationMode); modeLabel.title = 'Voice conversation mode';
+  // Provider / Model / Effort: what the next message runs on (paintPicker fills them).
+  const pickerRoot = el('div', 'ag-model-picker');
+  pickerRoot.setAttribute('role', 'group'); pickerRoot.setAttribute('aria-label', 'Model settings');
+  pickerRoot.hidden = true;
+  const pick = (text: string, name: string) => {
+    const label = el('label');
+    const select = el('select'); select.setAttribute('aria-label', name);
+    label.append(el('span', 'ag-picker-word', text), select);
+    pickerRoot.append(label);
+    return select;
+  };
+  const picker = { root: pickerRoot, provider: pick('Provider', 'Provider'), model: pick('Model', 'Model'), effort: pick('Effort', 'Reasoning effort') };
+  voiceOptions.append(readLabel, pickerRoot, modeLabel);
   footer.append(questionBox, pendingBox, form, voiceOptions, voiceStatus, help);
   host.append(stage, footer);
-  return { root, visibility, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, readResponses, conversationMode, chips, pendingBox, pendingText, pendingDetails, pendingPatch, questionBox, status, context, jump, follow: true, rendered: [] };
+  return { root, visibility, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, readResponses, conversationMode, picker, chips, pendingBox, pendingText, pendingDetails, pendingPatch, questionBox, status, context, jump, follow: true, rendered: [] };
 }
 
 // ------------------------------------------------------------ shared dialog
@@ -2249,13 +2447,13 @@ async function openHistory(w:WardInstance) {
       list.replaceChildren(el('h3',undefined,chat.title));
       for(const m of chat.messages){const msg=el('div','ag-history-message');msg.append(el('strong',undefined,m.role==='user'?'You':'Rime'),markdown(m.text));list.append(msg);}
       submit.hidden=false;submit.textContent='Continue here';
-      list.append(el('p','muted','Continues a copy here. The original chat and any work running there are preserved.'));
+      list.append(el('p','muted','Opens a copy here. The original stays intact.'));
       form.onsubmit=async(e)=>{e.preventDefault();submit.disabled=true;try{const {ok,data}=await postJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}`,{ward:w.i,key});if(!ok)throw Error(data?.error??'Could not continue chat.');d.close();await renderAgent(w);}catch(e){failure(e);}finally{submit.disabled=false;}};
     };
-    for(const chat of data.chats??[]){const b=el('button','btn ag-history-row');b.type='button';b.append(el('strong',undefined,chat.title),el('small','muted',chat.device));b.onclick=()=>void open(chat.key).catch(failure);list.append(b);}
+    for(const chat of data.chats??[]){const b=el('button','btn ag-history-row');b.type='button';b.title='Open this conversation';b.append(el('strong',undefined,chat.title),el('small','muted',chat.device));b.onclick=()=>void open(chat.key).catch(failure);list.append(b);}
     if(!data.chats?.length)list.append(el('p','muted','Your conversations will appear here.'));
     for(const saved of state?.conflicts??[]){
-      const b=el('button','btn ag-history-row',`Recovered version · ${saved.key}`);b.type='button';list.append(b);
+      const b=el('button','btn ag-history-row',`Recovered version · ${saved.key}`);b.type='button';b.title='Open the recovered version';list.append(b);
       b.onclick=()=>void(async()=>{
         const {data:copy,status}=await getJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}&conflict=${saved.id}`);if(status!==200)throw Error('Recovery version unavailable.');
         const value=JSON.parse(copy.payload);let text='Deleted locally';
@@ -2309,7 +2507,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
     const link = el('a', 'btn', 'Set up your agent');
     link.href = '/account#agent';
     setup.append(mark, el('h3', undefined, 'Meet your workspace agent'),
-      el('p', undefined, data.sync?.server ? `Your Rime files and history are available locally. ${data.sync.error ?? 'The server is offline.'} Connect a local provider in Account to run Rime without the server.` : `Connect ${data.provider === 'codex' ? 'Codex' : 'OpenRouter'} in Account to start a conversation with Rime.`), link, historyButton(w));
+      el('p', undefined, data.sync?.server ? `${data.sync.error ?? 'The server is offline.'} Local files and history remain available. Connect a local provider in Account to keep working.` : `Connect ${data.provider === 'codex' ? 'Codex' : 'OpenRouter'} in Account to start.`), link, historyButton(w));
     b.replaceChildren(setup);
     return;
   }
@@ -2323,6 +2521,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
     st.remote = !!data.busy; // a turn already running when this client loaded
     if (st.remote && !st.items.some(it => it.k === 'thinking' || (it.k === 'step' && it.running))) st.items.push({ k: 'thinking' });
   }
+  void loadCatalog(st); // the footer pickers follow the ward's config; a no-op when it is unchanged
   if (mounted) { paint(st); return; }
 
   // The ward chrome: log + pending bar + composer, body flex-managed.
@@ -2336,7 +2535,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   const fresh = el('button', 'ag-icon-button');
   fresh.type = 'button';
   fresh.dataset.agClear = '';
-  fresh.title = 'New chat · archives the current conversation';
+  fresh.title = 'New chat (archives this one)';
   fresh.setAttribute('aria-label', 'New chat');
   fresh.append(icon('plus'));
   const expand = el('button', 'ag-icon-button');

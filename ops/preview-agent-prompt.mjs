@@ -45,7 +45,7 @@ try {
     '## Child delegation help — agent_help(topic: delegation)',
     detailedInstructions(cfg, user, ward, child, 2, 'delegation'),
     '## Runtime assembly',
-    'runLoop appends an observation-only restriction for monitor-triggered turns and retrieved memory/skill passages to buildInstructions(). This ordinary example has neither. Persona, standing notes, project context, child status and retrieved passages vary by account and turn. Provider adapters send the result as instructions (Codex) or a system message (OpenRouter); tool schemas and conversation messages are separate.',
+    'runLoop appends an observation-only restriction for monitor-triggered turns and retrieved memory/skill passages to buildInstructions(). This ordinary example has neither. Persona, standing notes, project context, child status and retrieved passages vary by account and turn. Provider adapters send the result as instructions (Codex) or a system message (OpenRouter); tool schemas and conversation messages are separate. User messages preload up to five additional tools within a two-second discovery deadline; automatic and explicit discovery retain tool names per conversation across restart and compaction. This script renders the prompt only and does not perform retrieval.',
   ];
   process.stdout.write(`${sections.join('\n\n')}\n`);
 } finally {

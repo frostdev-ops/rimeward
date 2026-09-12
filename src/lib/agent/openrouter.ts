@@ -111,7 +111,7 @@ export function markLast(items: unknown[]): unknown[] {
 }
 
 /** Both chat transports reconstruct the same replay message, including opaque reasoning. */
-function chatStream(onText?: (delta: string) => void) {
+export function chatStream(onText?: (delta: string) => void) {
   const msg: ChatMsg = { role: 'assistant', content: '' };
   const calls = new Map<number, NonNullable<ChatMsg['toolCalls']>[number]>();
   const reasoning = new Map<string, Record<string, any>>();
@@ -131,7 +131,7 @@ function chatStream(onText?: (delta: string) => void) {
         if (!Number.isInteger(tc.index) || tc.index < 0) throw Error('Invalid streamed tool index');
         const item = calls.get(tc.index) ?? { id: '', type: 'function', function: { name: '', arguments: '' } };
         if (tc.id) item.id = tc.id;
-        if (tc.function?.name) item.function.name += tc.function.name;
+        if (tc.function?.name) item.function.name = tc.function.name; // sent whole, some servers repeat it per chunk
         if (tc.function?.arguments) item.function.arguments += tc.function.arguments;
         calls.set(tc.index, item);
       }

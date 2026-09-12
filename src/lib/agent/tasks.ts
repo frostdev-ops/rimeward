@@ -209,7 +209,7 @@ export function fileChildNotice(userId: number, id: string): boolean {
     if (!conv || conv.user_id !== userId) throw Error('the originating thread is gone');
     const text = `[Task status — runtime observation, filed after this thread was archived]\n${noticeText(r)}`;
     appendItems(conv.id, [userItemFor(conv.dialect, text)]);
-    addMessage(conv, { role: 'user', text: `📋 Child run ${r.state}: ${r.reason}${childBrief(r) ? `\n${childBrief(r).trim()}` : ''}`, source: 'agent' });
+    addMessage(conv, { role: 'user', text: `Child run ${r.state}: ${r.reason}${childBrief(r) ? `\n${childBrief(r).trim()}` : ''}`, source: 'agent' });
     return true;
   })();
 }

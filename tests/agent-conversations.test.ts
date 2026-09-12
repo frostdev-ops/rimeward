@@ -105,7 +105,7 @@ test('a turn remembers what produced it, across a reload', () => {
   const conv = activeConversation(u, 'ag1', 'codex');
   addMessage(conv, { role: 'user', text: 'hi' }); // default
   addMessage(conv, { role: 'assistant', text: 'hello', source: 'chat' });
-  addMessage(conv, { role: 'user', text: '⚡ Automation: check the deploy', source: 'automation' });
+  addMessage(conv, { role: 'user', text: 'Automation: check the deploy', source: 'automation' });
   addMessage(conv, { role: 'assistant', text: 'all green', source: 'automation' });
   addMessage(conv, { role: 'assistant', text: 'woke up', source: 'wake' });
   // The ward renders automation output differently from what the user typed,

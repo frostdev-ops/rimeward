@@ -5,7 +5,7 @@ import { getDb } from '../db.ts';
 import { getDashboard, browserWard } from '../dashboard.ts';
 import { isDesktop, subscribeDev } from '../dev/runtime.ts';
 import { projectPath } from '../dev/projects.ts';
-import { readSession } from '../dev/terminals.ts';
+import { readSession, renderedLines } from '../dev/terminals.ts';
 import { onNoteEvent } from '../note-events.ts';
 import { readNote, plainText, getNoteMeta } from '../note.ts';
 import { onObservation } from './observation-events.ts';
@@ -17,6 +17,15 @@ export interface MonitorSource { type:'terminal'|'file'|'browser'|'agent'|'note'
   target?:string; project?:string; path?:string; url?:string; selector?:string; headers?:string[]; fields?:string[]; intervalSeconds?:number; event?:string }
 type Emit = (key:string,data:Record<string,unknown>,baseline?:boolean) => void;
 const hash = (v:unknown) => createHash('sha256').update(typeof v === 'string' ? v : JSON.stringify(v)).digest('hex');
+/** A rendered row's identity across repaints. Rows compare by their exact text (whitespace
+ *  collapsed): "HTTP 500" and "HTTP 200" stay distinct. Only Claude Code / Codex status chrome is
+ *  normalized — a row led by a spinner frame (braille, or Claude's ·✢✳✶✻✽ sparkle) or carrying
+ *  "esc to interrupt" — where the frame glyph and its timers/token counts are what change. */
+const SPINNER = /^[\u2800-\u28FF\u00B7\u2722\u2733\u2736\u273B\u273D]\s/, CHROME = /esc to interrupt/i;
+const stableKey = (line:string) => {
+  const text = line.replace(/\s+/g,' ').trim();
+  return SPINNER.test(text) || CHROME.test(text) ? text.replace(SPINNER,'').replace(/\d+(\.\d+)?/g,'#') : text;
+};
 export function parseMonitorSource(raw:unknown): MonitorSource {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('Monitor source is required.');
   const r = raw as Record<string,unknown>;
@@ -64,14 +73,46 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
   if (s.type === 'terminal') {
     const connection = randomUUID();
     const first = readSession(user,s.target!,undefined,false); emit(`baseline:${randomUUID()}`,{ eventType:'baseline',status:first.session.state,exitCode:first.session.exitCode },true);
-    return subscribeDev(user,event => {
+    // Rendered rows, never raw bytes: by the time an output event fires the headless terminal has
+    // applied the chunk, so rows are read back from it — the viewport plus exactly the rows the
+    // chunk scrolled above it (xterm's scroll count). A row is new when its stable key was not in
+    // the previous frame or on screen within the last 5 s, which drops spinner ticks, status-bar
+    // repaints and clear-then-repaint frames while a genuinely repeated line later still passes.
+    let seen = new Map<string,number>(), scrolled = renderedLines(user,s.target!).scrolled;
+    const fresh:string[] = []; let since = 0, sequence = 0, timer:ReturnType<typeof setTimeout> | undefined;
+    const collect = (lines:string[],now:number) => {
+      const frame = new Map<string,number>();
+      for (const line of lines) { const key = stableKey(line); if (!key) continue; if (!seen.has(key) && !frame.has(key)) { if (!fresh.length) since = now; fresh.push(line); } frame.set(key,now); }
+      for (const [key,at] of seen) if (!frame.has(key) && now-at < 5000) frame.set(key,at);
+      seen = frame;
+    };
+    collect(first.screen.split('\n'),Date.now());
+    fresh.length = 0;
+    const flush = () => {
+      clearTimeout(timer); timer = undefined; if (!fresh.length) return;
+      // Bounded events, nothing dropped: a long burst becomes several 16 kB pages.
+      const pages:string[] = []; let page = '';
+      for (const line of fresh.splice(0)) { const row = line.slice(0,4000); if (page && page.length+row.length+1 > 16000) { pages.push(page); page = ''; } page += (page ? '\n' : '')+row; }
+      if (page) pages.push(page);
+      pages.forEach((text,i) => emit(`${connection}:output:${sequence}:${i}:${hash(text).slice(0,16)}`,{ eventType:'output',target:s.target,text,sequence,...(pages.length > 1 ? { page:i+1,pages:pages.length } : {}) }));
+    };
+    const stop = subscribeDev(user,event => {
       if (event.id !== s.target || !['output','session'].includes(event.type)) return;
       const data = event.data as { data?:string; sequence?:number; state?:string; exitCode?:number } | undefined;
       if (!data) { offline('Terminal is unavailable.'); return; }
-      const text = data.data ?? '';
-      for (let offset = 0; offset < Math.max(1,text.length); offset += 16000)
-        emit(`${connection}:${event.type}:${event.sequence}:${offset}`,{ eventType:event.type,target:s.target,text:text.slice(offset,offset+16000),status:data.state,exitCode:data.exitCode,sequence:data.sequence });
+      if (event.type === 'session') { flush(); emit(`${connection}:session:${event.sequence}`,{ eventType:'session',target:s.target,status:data.state,exitCode:data.exitCode,sequence:data.sequence }); return; }
+      const now = Date.now();
+      sequence = data.sequence ?? sequence;
+      let frame:ReturnType<typeof renderedLines>;
+      try { frame = renderedLines(user,s.target!,scrolled); } catch (e) { offline(e instanceof Error ? e.message : String(e)); return; }
+      scrolled = frame.scrolled;
+      collect(frame.lines,now);
+      if (frame.lost) { if (!fresh.length) since = now; fresh.push(`[monitor: ${frame.lost} rows scrolled out of view before they were read]`); }
+      if (!fresh.length) return;
+      if (fresh.length >= 200 || now-since >= 2000) flush();
+      else if (!timer) timer = setTimeout(flush,300).unref();
     });
+    return () => { clearTimeout(timer); stop(); };
   }
   if (s.type === 'file') {
     const projectRoot = projectPath(user,s.project!); // Never watch an ancestor outside the approved root.
