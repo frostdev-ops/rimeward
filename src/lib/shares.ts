@@ -320,6 +320,18 @@ export function shareAllows(scope: ShareScope, method: string, url: URL): boolea
     if (p === '/api/notion/capture' || p === '/api/notion/upload') return method === 'POST';
     if (p === '/api/notion/users') return get && share.role === 'edit'; // the people picker, for an editor
   }
+  // A shared terminal (view only): its own view, its sessions' listing and snapshots, the event stream and
+  // the runtime's capabilities — every call pinned to the ward; share-dev.ts pins the project and sessions
+  // inside them on the way through the relay. Nothing else of the desktop, and never a write.
+  if (p.startsWith('/api/dev/')) {
+    const w = ward(q.get('_ward'));
+    if (!get || w?.type !== 'terminal') return false;
+    const action = p.slice('/api/dev/'.length);
+    if (action === 'events' || action === 'capabilities') return true;
+    if (action === 'view') return q.get('id') === w.i;
+    if (action === 'sessions') return q.has('project') || q.has('id');
+    return false;
+  }
   if (p.startsWith('/api/bg/') || p.startsWith('/api/icon/')) return get;
   return false;
 }

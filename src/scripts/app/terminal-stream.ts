@@ -1,5 +1,6 @@
 import { LiveEventSource } from './live-stream.ts';
 import type { RuntimeEvent } from "../../lib/dev/types.ts";
+import { shareView } from "./share-view.ts";
 
 /** The input lease identity every terminal on this page shares. */
 const store = typeof sessionStorage === "undefined" ? undefined : sessionStorage; // absent under node's unit tests
@@ -40,7 +41,8 @@ export function terminalEvents(device: string, ward: string, listener: Listener,
   let stream = streams.get(device);
   if (!stream) {
     const relayed = typeof document !== "undefined" && !!document.querySelector('meta[name="rimeward-runtime-base"]');
-    stream = { listeners: new Map(), mode: relayed ? 'sse' : 'ws', connect: () => {} };
+    // A share view's socket would reach the server, which hosts no PTY: straight to the SSE mux, which relays.
+    stream = { listeners: new Map(), mode: relayed || shareView ? 'sse' : 'ws', connect: () => {} };
     streams.set(device, stream);
     const current = stream;
     const down = () => { current.ready = false; for (const receive of current.listeners.keys()) receive(null); };

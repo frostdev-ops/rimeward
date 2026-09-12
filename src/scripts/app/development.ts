@@ -16,6 +16,8 @@ import {
   type TerminalKind,
 } from "../../lib/dev/types.ts";
 import { owner, terminalEvents } from "./terminal-stream.ts";
+// A share's terminal viewer (lib/share-dev.ts): the owner's project and sessions, watched; no control of any kind is offered.
+import { shareView } from "./share-view.ts";
 import { DEFAULT_PREFS, Pane, isMac, readPrefs, savePrefs, type PaneHost, type Prefs } from "./terminal-pane.ts";
 import { MAX_PANES, has, insert, leaves, parseNode, reconcile, remove, swap, type Node, type Side } from "../../lib/dev/terminal-layout.ts";
 import "@xterm/xterm/css/xterm.css";
@@ -134,7 +136,7 @@ async function mount(w: WardInstance) {
     },
   });
   try {
-    const projects: Project[] = await api("projects");
+    const projects: Project[] = shareView ? [] : await api("projects");
     let state: State = await api("view", { id: w.i });
     if (stopped) return;
     state.project ||=
@@ -145,7 +147,7 @@ async function mount(w: WardInstance) {
     picker.add(new Option("Select project", ""));
     for (const p of projects) picker.add(new Option(p.name, p.id));
     picker.value = state.project;
-    const remember = () => api("view", { id: w.i, value: state }, "POST");
+    const remember = () => (shareView ? Promise.resolve() : api("view", { id: w.i, value: state }, "POST"));
     picker.onchange = async () => {
       state = { project: picker.value };
       await remember();
@@ -160,16 +162,16 @@ async function mount(w: WardInstance) {
       states.get(w.i)?.stop();
       await mount(w);
     });
-    bar.append(picker, projectButton, button("Expand", () => expand(host)));
-    const project = projects.find(p => p.id === state.project);
+    bar.append(...(shareView ? [] : [picker, projectButton]), button("Expand", () => expand(host)));
+    const project = shareView ? (state.project ? { id: state.project, name: "Shared terminal", root: "" } : undefined) : projects.find(p => p.id === state.project);
     restoreExpandedWard(w.i, () => expand(host));
     if (!project) {
       if (w.type === "terminal" || w.type === "editor") bar.hidden = true;
       const empty = el("div", "dev-empty");
       const mark = el("span", "dev-empty-icon"); mark.append(icon(w.type === "terminal" ? "code" : "folder"));
-      empty.append(mark, el("h3", undefined, "Your workspace starts here"),
-        el("p", undefined, "Open a folder or create a project to get started. Files and sessions stay on this desktop."));
-      empty.append(projectButton);
+      empty.append(mark, el("h3", undefined, shareView ? "Nothing open yet" : "Your workspace starts here"),
+        el("p", undefined, shareView ? "The owner has not opened a project on this terminal." : "Open a folder or create a project to get started. Files and sessions stay on this desktop."));
+      if (!shareView) empty.append(projectButton);
       content.append(empty);
       return;
     }
@@ -216,8 +218,8 @@ async function mount(w: WardInstance) {
       const expandButton = toolButton("resize", "Expand terminal", () => expand(host));
       expandButton.classList.add("term-expand");
       bar.classList.add("term-toolbar");
-      bar.replaceChildren(sessions, newButton, more, expandButton);
-      footer.append(projectButton, status);
+      bar.replaceChildren(sessions, ...(shareView ? [] : [newButton, more]), expandButton);
+      footer.append(...(shareView ? [] : [projectButton]), status);
       surface.append(panesHost, empty);
       content.replaceChildren(surface, footer);
 
@@ -357,7 +359,7 @@ async function mount(w: WardInstance) {
         if (p) await launch(undefined, p.id);
       });
       restart.className = "term-control";
-      footer.append(rimeControl, take, restart);
+      if (!shareView) footer.append(rimeControl, take, restart);
       const keys = el("div", "term-keys");
       let showKeys = matchMedia("(pointer: coarse)").matches;
       for (const [label, data, direction] of [["Esc", "\x1b"], ["Tab", "\t"], ["Left", "\x1b[D", "180deg"],
@@ -371,7 +373,7 @@ async function mount(w: WardInstance) {
         key.addEventListener("pointerdown", e => e.preventDefault());
         keys.append(key);
       }
-      surface.after(keys);
+      if (!shareView) surface.after(keys);
       function draw() {
         const p = focused(), session = p?.session;
         const writable = !!p && p.writable();

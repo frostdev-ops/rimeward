@@ -5,6 +5,7 @@
 // panes into groups (lib/dev/terminal-layout.ts) and owns everything that is
 // about the session LIST: tabs, launching, control, the footer.
 import { Terminal } from "@xterm/xterm";
+import { shareView } from "./share-view.ts";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -148,7 +149,7 @@ export class Pane {
   }
 
   canType(): boolean {
-    return !this.disposed && !!this.session && this.connected && this.streamReady && this.session.state === "running" &&
+    return !this.disposed && !shareView && !!this.session && this.connected && this.streamReady && this.session.state === "running" &&
       this.session.owner === owner && !this.uncertain;
   }
   writable(): boolean { return this.canType() && !this.host.busy(this); }
@@ -225,7 +226,7 @@ export class Pane {
         const read = () => this.host.api<ReturnType<typeof readSession>>("sessions", { id: this.id, ...(this.sequence === undefined ? {} : { after: this.sequence }) });
         let result = await read();
         if (this.disposed) return;
-        if (terminalNeedsRestore(result.session) && !this.restored) {
+        if (terminalNeedsRestore(result.session) && !this.restored && !shareView) {
           this.restored = true;
           await this.host.api("restart", { id: this.id }, "POST").catch(e => toast(e.message, undefined, true));
           result = await read();
@@ -236,7 +237,8 @@ export class Pane {
         if (result.reset) this.term.reset();
         if (result.data) await new Promise<void>(resolve => this.term.write(result.data, resolve));
         this.sequence = result.session.sequence;
-        if (this.session.state === "running" && !this.session.owner && !this.uncertain)
+        // A share's viewer never claims an unowned session; everyone else does, so typing works at once.
+        if (this.session.state === "running" && !this.session.owner && !this.uncertain && !shareView)
           this.session = await this.host.api<SessionView>("control", { id: this.id }, "POST").catch(e => { if (e.status === 409) return this.session as SessionView; throw e; });
         this.connected = true;
         this.failure = "";

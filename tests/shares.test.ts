@@ -46,6 +46,7 @@ saveDashboard(owner, [
   { i: 'cal', type: 'calendar', size: '2x2', page: 'ctl' },
   { i: 'ndb', type: 'notion-db', size: '3x2', page: 'ctl', config: { db: '0123456789abcdef0123456789abcdef' } },
   { i: 'npg', type: 'notion-page', size: '2x2', page: 'ctl', config: { page: 'fedcba9876543210fedcba9876543210' } },
+  { i: 'term', type: 'terminal', size: '3x3', page: 'ctl', device: '11111111-2222-3333-4444-555555555555' },
 ], [{ id: 'home', title: 'Home' }, { id: 'ops', title: 'Ops' }, { id: 'ctl', title: 'Controls' }]);
 assert.ok(getDashboard(owner).some((w) => w.i === 'web'), 'the browser ward survived validation');
 ensureNotebook(owner, 'book', 'Book');
@@ -372,5 +373,15 @@ test('controls and Notion inside a share: button and timer under edit, the agend
   const view = scopeOf(ctl.share.id);
   assert.ok(!allows(view, 'POST', '/api/button/btn') && !allows(view, 'POST', '/api/timers/tmr') && !allows(view, 'GET', '/api/notion/users'));
   assert.ok(allows(view, 'GET', '/api/timers/tmr') && allows(view, 'GET', '/api/notion/source?ward=ndb&rows=1') && allows(view, 'GET', '/api/calendar'));
+  revokeShare(owner, ctl.share.id);
+});
+
+test('a shared terminal: its own view, its sessions and their stream, the runtime’s capabilities — every call pinned to the ward, never a write', () => {
+  assert.equal(getDashboard(owner).find((w) => w.i === 'term')?.device, '11111111-2222-3333-4444-555555555555', 'the ward keeps its desktop');
+  const ctl = scopeOf(createShare(owner, { kind: 'page', target: 'ctl', email: 'viewer@example.com', role: 'edit' }).share.id);
+  for (const path of ['/api/dev/events?_ward=term', '/api/dev/view?id=term&_ward=term', '/api/dev/sessions?project=p1&_ward=term', '/api/dev/sessions?id=s1&after=3&_ward=term', '/api/dev/capabilities?_ward=term']) assert.ok(allows(ctl, 'GET', path), path);
+  for (const path of ['/api/dev/events', '/api/dev/events?_ward=pad', '/api/dev/view?id=pad&_ward=term', '/api/dev/sessions?_ward=term', '/api/dev/projects?_ward=term', '/api/dev/project-defaults?_ward=term', '/api/dev/session-resources?project=p1&_ward=term', '/api/dev/files?project=p1&path=.&_ward=term', '/api/dev/git?project=p1&_ward=term', '/api/dev/buffer?project=p1&path=x&_ward=term']) assert.ok(!allows(ctl, 'GET', path), path);
+  for (const path of ['/api/dev/input?_ward=term', '/api/dev/control?_ward=term', '/api/dev/sessions?_ward=term', '/api/dev/restart?_ward=term', '/api/dev/view?_ward=term']) assert.ok(!allows(ctl, 'POST', path), `${path} — view only, whatever the role`);
+  assert.ok(!allows(ctl, 'DELETE', '/api/dev/sessions?id=s1&_ward=term'));
   revokeShare(owner, ctl.share.id);
 });
