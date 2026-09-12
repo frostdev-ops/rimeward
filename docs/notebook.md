@@ -167,6 +167,29 @@ Enter while a request is pending cannot submit duplicate calls. Ask is one quest
 conversation. Agent tools expose listing, search, CRUD, backlinks, purge and Ask;
 permanent purge is confirmation gated.
 
+## Collaboration and sharing
+
+A notepad or notebook can be shared with another account of the instance (view or edit) or,
+on a server instance, with anyone holding a link (view only). A share runs as the OWNER
+behind an allowlist of the routes the shared wards need (`lib/shares.ts`); the recipient pins
+it from **Add ward › Shared with me**, where it renders as the share view (`/s/<id>`) in a
+frame, in their own theme. Configure, leylines and Remove stay the owner's.
+
+Free-text documents can be edited collaboratively: `lib/note-room.ts` holds one Yjs
+document per open note for every editor on it and speaks y-websocket's protocol over
+`/api/note/ws/<document>?ward=<host>`. The notes table stays the truth every other surface
+reads — 800 ms after the last change the room serializes the shared document back to HTML
+through the same schema (`lib/note-schema.ts`) and sanitizer as the editor and writes it with
+`writeNote`, then stores the Yjs state beside it (`crdt`, valid while `crdt_rev` = `rev`). A
+write from anywhere else (Rime's `write_note`, a sync install) is reconciled into the live
+document. Structured pages (spreadsheet, slides, drawing, Notion) keep their own editors.
+
+The collaborative editor (`scripts/app/note-editor.ts`, ProseMirror + y-prosemirror, with the
+ribbon in `note-word-pm.ts` and grammar review in `note-proofreading-pm.ts`) is opt-in per
+browser while it is verified: `localStorage['fd-note-editor'] = 'pm'`. Without it the plain
+editor and its rev/409 save path run as before; a share's viewer still sees the other side's
+saves live, and a room that refuses a document drops that editor back to the plain path.
+
 ## Sync and pairing
 
 `note-sync.ts` contributes `note/<id>` and `notebook/<id>` to the existing Rime sync.

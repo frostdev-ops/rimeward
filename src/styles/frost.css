@@ -551,6 +551,13 @@ main[data-share-role='view'] [data-wd-type='timer'] button {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* The plain editor's placeholder rides :empty; ProseMirror always holds one paragraph. */
+.np-doc.ProseMirror:has(> p:only-child > br.ProseMirror-trailingBreak:only-child)::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  color: var(--color-ink-faint);
+  pointer-events: none;
+}
 .np-proof-mark-error {
   text-decoration: underline wavy #ef4444;
   text-underline-offset: 3px;
