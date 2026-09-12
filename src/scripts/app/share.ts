@@ -110,9 +110,10 @@ function bind(d: HTMLDialogElement): void {
     const t = current;
     if (!t) return;
     const r = await postJson('/api/share', { kind: t.kind, target: t.target, expiresIn: Number(q<HTMLSelectElement>('[data-sh-expiry]').value) || 0 });
-    const token = (r.data as { token?: string })?.token;
+    const { token, url } = (r.data ?? {}) as { token?: string; url?: string };
     if (!r.ok || !token) { fail(d, (r.data as { error?: string })?.error ?? 'Could not create a link.'); return; }
-    q<HTMLInputElement>('[data-sh-token-url]').value = `${location.origin}/s/${token}`;
+    // The server names the address (inside the desktop app this document's origin is the loopback runtime).
+    q<HTMLInputElement>('[data-sh-token-url]').value = url ?? `${location.origin}/s/${token}`;
     q('[data-sh-token]').hidden = false;
     q('[data-sh-token-hint]').hidden = false;
     void load(d);

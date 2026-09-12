@@ -385,3 +385,13 @@ test('a shared terminal: its own view, its sessions and their stream, the runtim
   assert.ok(!allows(ctl, 'DELETE', '/api/dev/sessions?id=s1&_ward=term'));
   revokeShare(owner, ctl.share.id);
 });
+
+test('a link comes back as the server’s address, never the caller’s origin', async () => {
+  setSetting('share_links', '1');
+  const res = await sharesPost(ctx(owner, 'https://frostdev.example/api/share', { method: 'POST', body: JSON.stringify({ kind: 'ward', target: 'svc' }), headers: { 'content-type': 'application/json' } }));
+  assert.equal(res.status, 200);
+  const d = (await res.json()) as { share: { id: string }; token: string; url: string };
+  const base = process.env.PUBLIC_BASE_URL?.replace(/\/$/, '') ?? 'https://frostdev.example';
+  assert.equal(d.url, `${base}/s/${d.token}`);
+  revokeShare(owner, d.share.id);
+});
