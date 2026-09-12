@@ -83,7 +83,7 @@ try {
   assert.ok(socket.inputs>0,'keystrokes travel over the terminal socket');
   assert.equal(inputPosts,0,'no POST /api/dev/input while the socket is up');
   const first=(await page.evaluate(()=>fetch('/api/dev/sessions').then(r=>r.json())))[0];
-  assert.equal(first.mode,'human');
+  assert.equal(first.mode,'approvals');
   assert.ok(first.owner?.startsWith('client:'));
   // The ward always fits its box: no scrollbars, nothing out of view.
   assert.equal(await fits(ward.locator('.term-surface')),true,'terminal surface never overflows');
@@ -148,7 +148,7 @@ try {
   await expanded.getByRole('checkbox',{name:'Let Rime control'}).check();
   await expanded.getByText('Shared with Rime',{exact:true}).waitFor();
   let sessions=await page.evaluate(()=>fetch('/api/dev/sessions').then(r=>r.json()));
-  assert.equal(sessions[0].mode,'human');assert.equal(sessions[0].agentInput,true);assert.equal(sessions[0].id,first.id);
+  assert.equal(sessions[0].mode,'approvals');assert.equal(sessions[0].agentInput,true);assert.equal(sessions[0].id,first.id);
   await expanded.getByRole('checkbox',{name:'Let Rime control'}).uncheck();
   await expanded.getByText('You’re in control',{exact:true}).waitFor();
   await expanded.getByRole('button',{name:'Terminal actions'}).click();
@@ -311,7 +311,7 @@ try {
   await ward.getByRole('button',{name:'Resume session',exact:true}).click();
   await ward.getByText('You’re in control',{exact:true}).waitFor();
   sessions=await page.evaluate(()=>fetch('/api/dev/sessions').then(r=>r.json()));
-  assert.equal(sessions.find(s=>s.id===first.id).mode,'human');assert.equal(sessions.find(s=>s.id===first.id).agentInput,false);assert.equal(sessions.length,3);
+  assert.equal(sessions.find(s=>s.id===first.id).mode,'approvals');assert.equal(sessions.find(s=>s.id===first.id).agentInput,false);assert.equal(sessions.length,3);
   assert.deepEqual(errors,[]);
   console.log('Terminal UI passed: project entry, one-click shell + typing over the socket, Shift+Enter, session toolbar, search, expanded menus, launch guidance, switching, split + drag tiling + divider + zoom, settings, uncertain input, phone takeover, permissions, explicit end/restart. No agent CLI or model calls.');
 } finally {

@@ -162,7 +162,7 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
 
 export function cliState(session: string): { phase: CliPhase; lastMessage?: string; pending?: { id: string; tool: string; input: unknown; at: number } } | null {
   const e = registry.get(session);
-  if (!e || !e.phase) return null;
+  if (!e?.phase) return null;
   const first = [...e.pending.values()].sort((a, b) => a.at - b.at)[0];
   return { phase: e.phase, ...(e.lastMessage ? { lastMessage: e.lastMessage } : {}), ...(first ? { pending: { id: first.id, tool: first.tool, input: first.input, at: first.at } } : {}) };
 }
