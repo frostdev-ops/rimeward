@@ -1,6 +1,6 @@
 // Ward and page sharing. A share is one row (migration 031): the OWNER's ward or page,
 // granted to another user of this instance (view or edit) or to anyone holding a link
-// (always view, server instances only). Nothing about ownership changes anywhere else:
+// (view or edit, bounded by the ward's own ceiling, server instances only). Nothing about ownership changes anywhere else:
 // a request inside a share runs AS THE OWNER (middleware swaps `locals.user`) and is
 // restricted to `shareAllows`, a positive allowlist of the routes the shared wards
 // need. The owner's layout stays the registry — `shareWards` reads it on every request,
@@ -207,17 +207,16 @@ export function createShare(owner: number, input: CreateShare): { share: Share; 
     broadcast(u.id, 'share', { id: share.id, kind, title: shareTitle(share, wards, pages), owner: shareOwnerName(owner), role });
     return { share };
   }
-  if (role !== 'view') throw fail(400, 'links are view-only');
+  // A link may carry edit: the ceiling check above (role === 'edit' needs an edit-capable ward) already gates it.
   if (!linksEnabled()) throw fail(403, isDesktop() ? 'public links need a server' : 'public links are turned off for this instance');
   const token = crypto.randomBytes(32).toString('base64url');
   const id = newShareId();
-  db.prepare('INSERT INTO shares (id, owner_id, kind, target, role, token_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, owner, kind, target, 'view', sha256(token), expiresAt);
+  db.prepare('INSERT INTO shares (id, owner_id, kind, target, role, token_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, owner, kind, target, role, sha256(token), expiresAt);
   return { share: resolveShare(id)!, token };
 }
 export function setShareRole(owner: number, id: string, role: ShareRole): Share {
   const share = resolveShare(id);
   if (!share || share.owner !== owner) throw fail(404, 'no such share');
-  if (share.grantee === null && role !== 'view') throw fail(400, 'links are view-only');
   if (role === 'edit' && !shareWards(share).some((w) => shareCeiling(w) === 'edit')) throw fail(400, 'this can only be shared view-only');
   getDb().prepare('UPDATE shares SET role = ? WHERE id = ?').run(role, id);
   return { ...share, role };

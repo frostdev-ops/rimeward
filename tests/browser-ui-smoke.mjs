@@ -202,6 +202,21 @@ try {
   await ward.screenshot({ path: path.join(process.env.RIMEWARD_GOLDEN_DIR ?? temp, 'rimeward-browser-local-phone.png') });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({ path: path.join(process.env.RIMEWARD_GOLDEN_DIR ?? temp, 'rimeward-browser-local.png') });
+  // Configure round-trip: the Sound knob is checked, saved, and still checked on reopen.
+  await ward.click({ button: 'right', position: { x: 20, y: 12 } });
+  await page.getByText('Configure…').click();
+  await page.waitForSelector('dialog[open] #aw-bw-sound', { state: 'attached' });
+  assert.equal(await page.isChecked('dialog[open] #aw-bw-sound'), false, 'sound starts off');
+  await page.check('dialog[open] #aw-bw-sound');
+  await page.click('dialog[open] [data-aw-submit]');
+  await page.waitForTimeout(200);
+  assert.equal(await page.evaluate(() => JSON.parse(document.getElementById('layout-data').textContent).find(w => w.i === 'browser-one')?.config?.sound), true, 'sound persisted to the saved layout');
+  await ward.click({ button: 'right', position: { x: 20, y: 12 } });
+  await page.getByText('Configure…').click();
+  await page.waitForSelector('dialog[open] #aw-bw-sound', { state: 'attached' });
+  assert.equal(await page.isChecked('dialog[open] #aw-bw-sound'), true, 'sound stays checked on reopen');
+  await page.click('dialog[open] [data-aw-close]');
+
   // Removing the SOCKET ward mid-press: its releases go out on the socket before it closes.
   await canvas.click();
   await page.keyboard.down('Alt');

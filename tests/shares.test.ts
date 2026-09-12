@@ -163,8 +163,15 @@ test('shareAllows: only the shared documents and browser, only what the role per
   assert.ok(allows(web, 'POST', '/api/browser/web?rtc=1'), 'an editor answers too');
 });
 
-test('links: view-only, token verified by hash, expiry ends them, off on the desktop or by the admin', () => {
+test('links: role bounded by the ward ceiling, token verified by hash, expiry ends them, off on the desktop or by the admin', () => {
+  // A link may be edit where the ward allows it (note), but never on a view-only ward (services).
   assert.throws(() => createShare(owner, { kind: 'ward', target: 'svc', role: 'edit' }), /view-only/);
+  const editLink = createShare(owner, { kind: 'ward', target: 'pad', role: 'edit' });
+  assert.equal(editLink.share.role, 'edit');
+  assert.equal(editLink.share.grantee, null, 'still an anyone-with-the-link share');
+  assert.ok(editLink.token && SHARE_TOKEN_RE.test(editLink.token));
+  assert.equal(setShareRole(owner, editLink.share.id, 'view').role, 'view', 'a link re-roles to view');
+  assert.equal(setShareRole(owner, editLink.share.id, 'edit').role, 'edit', 'and back to edit');
   const { share, token } = createShare(owner, { kind: 'ward', target: 'svc', expiresIn: 3600 });
   assert.ok(token && SHARE_TOKEN_RE.test(token));
   assert.equal(share.grantee, null);

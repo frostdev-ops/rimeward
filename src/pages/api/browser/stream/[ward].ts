@@ -5,6 +5,7 @@ import { routeBrowser } from '../../../../lib/browser/routing.ts';
 import { shareLive } from '../../../../lib/shares.ts';
 import { REMOTE_FRAME_MS, remoteFrame, type FrameEvent } from '../../../../lib/browser/remote-frame.ts';
 import { rtcIce, rtcIceFromRelay, rtcJoin, withRtcHeader, type RtcMessage } from '../../../../lib/browser/rtc.ts';
+import { secretEqual } from '../../../../lib/dev/native.ts';
 
 export const prerender = false;
 
@@ -31,7 +32,9 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
     'x-accel-buffering': 'no',
   };
   // Beyond the relay (a desktop answering the server's channel): CSS-size frames, fewer of them (remote-frame.ts).
-  const remote = request.headers.get('x-rimeward-relayed') === '1';
+  // The native token is what a channel proxy stamps — without it a viewer could forge `relayed` to feed a
+  // forged `x-rimeward-rtc` (an attacker TURN the capture page would dial) or force server-side re-encoding.
+  const remote = request.headers.get('x-rimeward-relayed') === '1' && secretEqual(request.headers.get('x-rimeward-native-token'), process.env.RIMEWARD_NATIVE_TOKEN);
   // Who watches, for the stream's ICE: the grantee, the owner, or nobody (a link). The server
   // mints it; a request bound for a desktop carries it there (the desktop has no TURN secret).
   const viewer = share ? share.viewer : userId;

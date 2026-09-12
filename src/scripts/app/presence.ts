@@ -23,10 +23,11 @@ window.addEventListener('fd:presence', (e) => {
     // One chip row per SHARE: a ward share and a page share of the same card each keep their own.
     let box = header.querySelector<HTMLElement>(`.wd-presence[data-share="${CSS.escape(d.share)}"]`);
     if (!d.viewers.length) { box?.remove(); continue; }
-    if (!box) { box = el('span', 'wd-presence'); box.dataset.share = d.share; header.querySelector('.wd-status')?.after(box) ?? header.append(box); }
+    if (!box) { box = el('span', 'wd-presence'); box.dataset.share = d.share; box.setAttribute('role', 'group'); header.querySelector('.wd-status')?.after(box) ?? header.append(box); }
     box.textContent = '';
     box.title = `Viewing: ${d.viewers.join(', ')}`;
-    for (const name of d.viewers.slice(0, 5)) box.append(el('span', 'wd-presence-chip', initials(name)));
+    box.setAttribute('aria-label', `${d.viewers.length} viewing: ${d.viewers.join(', ')}`);
+    for (const name of d.viewers.slice(0, 5)) { const chip = el('span', 'wd-presence-chip', initials(name)); chip.title = name; box.append(chip); }
     if (d.viewers.length > 5) box.append(el('span', 'wd-presence-chip', `+${d.viewers.length - 5}`));
   }
 });
