@@ -46,7 +46,7 @@ const BOX_ONLY = /^[─-╿▀-▟\s]+$/;
  *  command name, two spaces, a description), the exit hint, an empty tool marker, and the
  *  status bar (project △ branch ⎪pill⎥ ai ◆ model …), whose cost and clock tick every second. */
 const CHROME_ROW = [
-  /^[▀-▟]/, /^❯(?: Try ".+")?$/, /^⏸ .+\bmode (?:on|off)\b/, /^[◉○] .*\beffort\b/, /^Press Ctrl-C again to exit$/, /^⏺$/,
+  /^[▀-▟]/, /^❯(?: Try ".+")?$/, /^⏸ .+\bmode (?:on|off)\b/, /^[◉○] .*\beffort\b/, /^Press Ctrl-C again to exit$/, /^⏺$/, /^⎿\s+Tip:\s/,
   /^□\s.+\s△\s.+\s⎪[^⎥]*⎥\sai\s◆\s/,
 ];
 const COMPLETION_ROW = /^\s*\/(?:[a-z][\w.:-]*|\S.*?\s\(MCP\))\s{2,}\S/i;
@@ -54,11 +54,12 @@ const COMPLETION_ROW = /^\s*\/(?:[a-z][\w.:-]*|\S.*?\s\(MCP\))\s{2,}\S/i;
  *  preview row ("+17 files edited before this session (show)", "No changes this session"). */
 const STATUS_TAIL = /^(?:No changes this session|[+-]?\d+ files? (?:edited|changed)\b[^()]*(?:\(show\))?)$/;
 /** Claude Code's running tool call, "⏺ Reading the file · 21s" (the glyph blinks away on alternate
- *  frames), and its command preview, "⎿ $ cmd (8s)": the counter ticks every second. */
+ *  frames), and its command preview, "⎿ $ cmd (8s)": the counter ticks every second. The ❯ that
+ *  marks the selected row of a menu moves between rows as the person arrows through it. */
 const TOOL_TICK = new RegExp(String.raw`^(?:⏺\s+)?(.*?)\s*·\s*${DURATION}$`);
 const PREVIEW_TICK = new RegExp(String.raw`^(⎿.*?)\s*\(${DURATION}\)$`);
 function cliKey(text:string): string {
-  return TOOL_TICK.exec(text)?.[1] ?? PREVIEW_TICK.exec(text)?.[1] ?? text.replace(/^⏺\s+/,'');
+  return TOOL_TICK.exec(text)?.[1] ?? PREVIEW_TICK.exec(text)?.[1] ?? text.replace(/^[⏺❯]\s+/,'');
 }
 /** A row split at a run of three or more spaces: the part before is the row, the part after a
  *  right-aligned trailer. Whitespace collapsing loses that signal, so this reads the raw row. */
@@ -152,10 +153,10 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
     // vanished first; rows above the viewport are final by definition.
     const cli = first.session.kind !== 'shell', keyOf = (line:string) => { const key = stableKey(line); return cli ? cliKey(key) : key; };
     // The prompt row is edited for as long as a person types; a streaming line settles within a beat.
-    const holdFor = (key:string) => key.startsWith('❯ ') ? 8000 : 1500;
+    const prompt = (line:string) => /^❯\s/.test(stableKey(line));
     let seen = new Map<string,number>(), scrolled = renderedLines(user,s.target!).scrolled, prevViewport:string[] = [], baselineUntil = 0;
     let size = `${first.session.cols}x${first.session.rows}`, announced = `${first.session.state}:${first.session.exitCode}`;
-    const held = new Map<string,{ line:string; key:string; at:number }>();
+    const held = new Map<string,{ line:string; key:string; at:number; hold:number }>();
     // Rows on screen in the last minute, for the CLI's own full repaints: a re-flowed transcript
     // paints tails of earlier rows as rows of their own ("them then tell me you are done"), and
     // a row that is a piece of one seen recently says nothing new. Short rows are exempt: a
@@ -170,6 +171,9 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
     const queue = (row:{ line:string; key:string },now:number) => { if (fragment(row.key,now)) return; if (!fresh.length) since = now; fresh.push(row); };
     const collect = (lines:string[],above:number,now:number) => {
       const frame = new Map<string,number>(), viewport:string[] = [], rows = terminalContent(lines,cli);
+      // The input line is the last content row on screen (only chrome sits under it); a menu's
+      // selected row never is, and must not wait for a hold it would not survive.
+      const last = rows.findLastIndex(r => r !== null && !!stableKey(r));
       for (let i = 0; i < rows.length; i++) {
         const line = rows[i], key = line === null ? '' : keyOf(line), inView = i >= above;
         if (inView) viewport.push(key);
@@ -179,12 +183,15 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
         if (held.has(key)) { if (!inView) { held.delete(key); queue({ line:line!,key },now); } continue; } // scrolled off = final
         if (known || now < baselineUntil) continue; // after a resize the re-wrapped repaint is the baseline, not news
         const prev = inView ? prevViewport[i-above] : undefined;
-        if (prev && commonPrefix(prev,key) >= Math.max(3,Math.min(prev.length,key.length)-8)) { held.delete(prev); held.set(key,{ line:line!,key,at:now }); }
+        if (prev && (key.startsWith(prev) || commonPrefix(prev,key) >= Math.max(3,Math.min(prev.length,key.length)-8))) { held.delete(prev); held.set(key,{ line:line!,key,at:now,hold:prompt(line!) ? 8000 : 1500 }); }
+        // The first keystroke into an empty prompt has no predecessor to be an edit of; a ❯ row's
+        // first appearance is held a beat too (a menu's selected row settles at once, typing does not).
+        else if (inView && i === last && prompt(line!)) held.set(key,{ line:line!,key,at:now,hold:1500 });
         else queue({ line:line!,key },now);
       }
       // Vanished before it settled = a transient; settled on screen = content. Judged against this
       // frame alone, before the 5 s carry-over would keep a vanished row alive.
-      for (const [key,h] of held) { if (!frame.has(key)) held.delete(key); else if (now-h.at >= holdFor(key)) { held.delete(key); queue(h,now); } }
+      for (const [key,h] of held) { if (!frame.has(key)) held.delete(key); else if (now-h.at >= h.hold) { held.delete(key); queue(h,now); } }
       for (const [key,at] of seen) if (!frame.has(key) && now-at < 5000) frame.set(key,at);
       for (const key of frame.keys()) recent.set(key,now);
       if (recent.size > 2000) for (const [key,at] of recent) { if (now-at >= 60_000 || recent.size > 2000) recent.delete(key); else break; }
@@ -195,8 +202,8 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
     const flush = (final = false) => {
       clearTimeout(timer); timer = undefined;
       const now = Date.now();
-      for (const [key,h] of held) if (final || now-h.at >= holdFor(key)) { held.delete(key); queue(h,now); }
-      if (held.size) timer = setTimeout(flush,Math.max(50,Math.min(...[...held.values()].map(h => holdFor(h.key)-(now-h.at))))).unref();
+      for (const [key,h] of held) if (final || now-h.at >= h.hold) { held.delete(key); queue(h,now); }
+      if (held.size) timer = setTimeout(flush,Math.max(50,Math.min(...[...held.values()].map(h => h.hold-(now-h.at))))).unref();
       if (!fresh.length) return;
       // A row caught mid-paint ("version b") is a prefix of the row it became; the completed row,
       // queued behind it or already on screen, is the one that counts.

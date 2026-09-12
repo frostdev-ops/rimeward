@@ -123,9 +123,12 @@ per-second counter ("⏺ Reading the file · 21s") and its command preview's ("�
 (8s)") are left out of the row's identity only, so the first appearance is emitted and
 the ticks are not; every other digit stays significant. A viewport row that is still
 being written (the same screen row, its text edited at the tail: a prompt being typed,
-a line streaming in) is held until it has stood for 1.5 s (8 s for the prompt row) or
-scrolled off, and dropped if it vanished first; a row that is a piece of a row seen in
-the last minute is a repaint fragment and is dropped too. A burst is read after 300 ms
+a line streaming in) is held until it has stood for 1.5 s (8 s for the prompt row, which
+is also held a beat on its first appearance) or scrolled off, and dropped if it vanished
+first; a row that is a piece of a row seen in the last minute is a repaint fragment and is
+dropped too. The ❯ that marks a menu's selected row is not part of a row's identity, so
+arrowing through a menu repaints nothing. A "rows scrolled out of view" line is added only
+when the scrollback was actually full; a CLI clearing its screen on exit loses nothing. A burst is read after 300 ms
 of quiet (at most 2 s after its first new row), and a row caught mid-paint is dropped
 when the row it became is queued behind it or on screen. Menus, approval choices and a
 draft left sitting in the prompt stay visible. `ops/monitor-harness.mjs` replays a real

@@ -526,13 +526,16 @@ function kittyStacks(term: Headless): { before: string; after: string } {
 }
 /** Rendered rows of the active buffer as plain text: the viewport plus the rows scrolled
  *  above it since `since` (a previous `scrolled` count). `lost` counts main-buffer rows that
- *  scrolled past the 10000 retained; the alternate screen keeps none and is not counted. */
+ *  scrolled past the 10000 retained — only possible once the scrollback is full; a program that
+ *  clears or resets its screen (a CLI on exit) drops rows without losing any, and the alternate
+ *  screen keeps none and is not counted. */
 export function renderedLines(user: number, id: string, since?: number): { lines: string[]; scrolled: number; lost: number } {
   rowOf(user, id);
   const s = live.get(id);
   if (!s) return { lines: [], scrolled: 0, lost: 0 };
   const b = s.term.buffer.active, wanted = since === undefined ? 0 : Math.max(0, s.scrolled - since), above = Math.min(b.baseY, wanted);
-  return { scrolled: s.scrolled, lost: wanted - above, lines: Array.from({ length: above + s.term.rows }, (_, i) => b.getLine(b.baseY - above + i)?.translateToString(true) ?? "") };
+  const full = b.baseY >= (s.term.options.scrollback ?? 0);
+  return { scrolled: s.scrolled, lost: full ? wanted - above : 0, lines: Array.from({ length: above + s.term.rows }, (_, i) => b.getLine(b.baseY - above + i)?.translateToString(true) ?? "") };
 }
 export function readSession(user: number, id: string, after?: number, review = true) {
   const row = rowOf(user, id),

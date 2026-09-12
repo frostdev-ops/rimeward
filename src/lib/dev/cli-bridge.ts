@@ -30,11 +30,14 @@ export const PERMISSION_MODES: readonly PermissionMode[] = ['read-only', 'approv
 /** Rows written before the modes were tied to the agent ward. */
 export const LEGACY_MODES: Record<string, PermissionMode> = { human: 'approvals', rimeward: 'normal' };
 
-interface Pending { id: string; tool: string; input: unknown; at: number; resolve(decision: Record<string, unknown>): void; timer: ReturnType<typeof setTimeout> }
+interface Pending { id: string; tool: string; input: unknown; toolUse: string; at: number; resolve(decision: Record<string, unknown>): void; timer: ReturnType<typeof setTimeout> }
 interface Question { id: string; question: string; options?: string[]; at: number; resolve(answer: string): void; timer: ReturnType<typeof setTimeout> }
 interface Entry {
   user: number; kind: 'claude' | 'codex'; mode: PermissionMode; origin?: CliOrigin;
   token: string; dir: string; phase: CliPhase | ''; lastMessage: string; seq: number;
+  /** rime_report was called in the CURRENT turn: the Stop that follows is the same completion,
+   *  not a second one. Cleared by whatever starts the next turn's work. */
+  reported: boolean;
   pending: Map<string, Pending>;
   /** rime_ask questions parked for terminal_answer (lib/dev/cli-ask.ts decides the waiting). */
   questions: Map<string, Question>;
@@ -74,10 +77,21 @@ let payload = {};
 try { payload = JSON.parse(text); } catch {}
 const permission = payload.hook_event_name === 'PermissionRequest';
 const { RIMEWARD_CLI_URL: url, RIMEWARD_CLI_SESSION: session, RIMEWARD_CLI_TOKEN: token } = process.env;
+const endpoint = url + '/api/cli/' + session + '/hook';
+const headers = { 'content-type': 'application/json', authorization: 'Bearer ' + token };
+if (permission) {
+  // The CLI ends this process when the prompt is cancelled (Esc, interrupt): say which request died,
+  // by its tool_use_id, so the runtime releases exactly that one and nothing else.
+  const cancel = async () => {
+    try { await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ hook_event_name: 'PermissionRequest', cancelled: true, tool_use_id: payload.tool_use_id }), signal: AbortSignal.timeout(2000) }); } catch {}
+    process.exit(0);
+  };
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, cancel);
+}
 try {
-  const res = await fetch(url + '/api/cli/' + session + '/hook', {
+  const res = await fetch(endpoint, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+    headers,
     body: JSON.stringify(payload),
     signal: permission ? undefined : AbortSignal.timeout(10000),
   });
@@ -121,6 +135,7 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
       hooks: {
         PermissionRequest: [{ hooks: [hook(PERMISSION_WAIT_MS / 1000 + 60)] }],
         Notification: [{ hooks: [hook(15)] }],
+        UserPromptSubmit: [{ hooks: [hook(15)] }],
         Stop: [{ hooks: [hook(15)] }],
         SessionStart: [{ hooks: [hook(15)] }],
         SessionEnd: [{ hooks: [hook(5)] }],
@@ -137,6 +152,7 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
     const table = (timeout: number) => `[{hooks=[{type="command",command=${toml(command)},timeout=${timeout}}]}]`;
     args.push(
       '-c', `hooks.PermissionRequest=${table(PERMISSION_WAIT_MS / 1000 + 60)}`,
+      '-c', `hooks.UserPromptSubmit=${table(15)}`,
       '-c', `hooks.Stop=${table(15)}`,
       '-c', `hooks.SessionStart=${table(15)}`,
       '-c', `hooks.SessionEnd=${table(5)}`,
@@ -144,9 +160,12 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
       // Streamable HTTP MCP server; the bearer comes from the env (codex-rs config/src/mcp_types.rs).
       '-c', `mcp_servers.rime.url=${toml(mcpUrl)}`,
       '-c', 'mcp_servers.rime.bearer_token_env_var="RIMEWARD_CLI_TOKEN"',
+      // Codex parks hooks it has not seen behind a "Hooks need review" screen, which an unattended
+      // launch would never pass. The only hooks here are this session's own script in its 0700 dir.
+      '--dangerously-bypass-hook-trust',
     );
   }
-  registry.set(session, { user, kind, mode, origin, token, dir, phase: '', lastMessage: '', seq: 0, pending: new Map(), questions: new Map() });
+  registry.set(session, { user, kind, mode, origin, token, dir, phase: '', lastMessage: '', seq: 0, reported: false, pending: new Map(), questions: new Map() });
   return {
     args,
     // Codex has no system-prompt flag: the preamble rides the task, so an interactive session (no task) gets none.
@@ -203,6 +222,7 @@ export function authenticateCli(session: string, token: string): boolean {
 export async function cliStatus(session: string, message: string): Promise<void> {
   const e = registry.get(session);
   if (!e) throw new DevError('Unknown session.', 401);
+  e.reported = false;
   await setPhase(e, session, e.phase === 'done' || e.phase === 'ended' ? e.phase : 'running', 'status', { message }, message);
 }
 
@@ -210,6 +230,7 @@ export async function cliStatus(session: string, message: string): Promise<void>
 export async function cliReport(session: string, summary: string, files: string[], checks: string[]): Promise<void> {
   const e = registry.get(session);
   if (!e) throw new DevError('Unknown session.', 401);
+  e.reported = true;
   await setPhase(e, session, 'done', 'report', { summary, files, checks }, summary);
   const tail = [files.length ? `Changed: ${files.join(', ')}` : '', checks.length ? `Checked: ${checks.join('; ')}` : ''].filter(Boolean).join('\n');
   notifyCli(e, `${label(e)} session ${session} reports done:\n${summary.slice(0, 2000)}${tail ? `\n${tail}` : ''}`);
@@ -262,11 +283,23 @@ export async function handleCliHook(session: string, token: string, payload: unk
   const event = str(p.hook_event_name, 40) || (p.type === 'agent-turn-complete' ? 'Stop' : '');
   switch (event) {
     case 'PermissionRequest': {
+      const toolUse = str(p.tool_use_id, 200);
+      if (p.cancelled === true) {
+        // The prompt was cancelled at the terminal (Esc, interrupt): release exactly the request
+        // that carried this tool_use_id. Anything else parked stays parked.
+        const parked = toolUse ? [...e.pending.values()].find(x => x.toolUse === toolUse) : undefined;
+        if (parked) release(e, session, parked, 'Cancelled at the terminal.', 'permission-cancelled');
+        return {};
+      }
       const id = randomUUID().slice(0, 8), tool = str(p.tool_name, 200) || 'tool';
+      // A resend of the same tool use (its cancel never arrived) supersedes the parked copy.
+      const stale = toolUse ? [...e.pending.values()].find(x => x.toolUse === toolUse) : undefined;
+      if (stale) release(e, session, stale, 'Superseded by a resend.', 'permission-superseded');
+      e.reported = false;
       const decision = new Promise<Record<string, unknown>>(resolve => {
         const timer = setTimeout(() => { if (e.pending.delete(id)) { resolve(decisionJson('deny', 'No decision within 30 minutes.')); if (!e.pending.size) void setPhase(e, session, 'running', 'timeout', { request: id }); } }, PERMISSION_WAIT_MS);
         timer.unref();
-        e.pending.set(id, { id, tool, input: p.tool_input, at: Date.now(), resolve, timer });
+        e.pending.set(id, { id, tool, input: p.tool_input, toolUse, at: Date.now(), resolve, timer });
       });
       await setPhase(e, session, 'waiting-permission', 'permission', { request: id, tool, input: p.tool_input });
       notifyCli(e, `${label(e)} session ${session} requests permission: ${tool} ${compact(p.tool_input)}\nDecide with terminal_decide {session: "${session}", request: "${id}", decision: "allow" | "deny"}.`);
@@ -275,21 +308,37 @@ export async function handleCliHook(session: string, token: string, payload: unk
     case 'Notification': {
       const type = str(p.notification_type, 40);
       if (type === 'permission_prompt' && !e.pending.size) await setPhase(e, session, 'waiting-permission', 'permission-prompt', { message: str(p.message, 500) });
-      else if (type === 'idle_prompt') { if (await setPhase(e, session, 'waiting-input', 'idle', {})) notifyCli(e, `${label(e)} session ${session} is waiting for input.`); }
+      // Idle means "the turn ended and nobody typed": only a running session becomes waiting; a
+      // finished, ended or prompting one is not regressed, and no notice is raised for it.
+      else if (type === 'idle_prompt' && e.phase === 'running') { if (await setPhase(e, session, 'waiting-input', 'idle', {})) notifyCli(e, `${label(e)} session ${session} is waiting for input.`); }
       return {};
     }
+    case 'UserPromptSubmit': e.reported = false; await setPhase(e, session, 'running', 'prompt', {}); return {};
     case 'Stop': {
       const last = str(p.last_assistant_message ?? p['last-assistant-message'], 8000);
-      if (await setPhase(e, session, 'done', 'stop', { lastMessage: last }, last)) notifyCli(e, `${label(e)} session ${session} finished${last ? `:\n${last.slice(0, 2000)}` : '.'}`);
+      // A permission prompt blocks its turn, so one still parked when the turn stops was cancelled
+      // at the terminal and its cancel never arrived: it belongs to this turn and ends with it.
+      for (const parked of [...e.pending.values()]) release(e, session, parked, 'The turn ended before a decision.', 'permission-cancelled');
+      const reported = e.reported;
+      const changed = await setPhase(e, session, 'done', 'stop', { lastMessage: last, reported }, last);
+      // rime_report already said this; the Stop is the same completion, so the text is kept and nothing is announced twice.
+      if (changed && !reported) notifyCli(e, `${label(e)} session ${session} finished${last ? `:\n${last.slice(0, 2000)}` : '.'}`);
       return {};
     }
-    case 'SessionStart': await setPhase(e, session, 'running', 'start', {}); return {};
+    case 'SessionStart': e.reported = false; await setPhase(e, session, 'running', 'start', {}); return {};
     case 'SessionEnd': settle(e, 'The session ended.'); await setPhase(e, session, 'ended', 'end', { reason: str(p.reason, 60) }); return {};
     default: return {};
   }
 }
 
 const label = (e: Entry) => (e.kind === 'claude' ? 'Claude Code' : 'Codex');
+/** Resolve one parked request (deny with a reason) and return the phase to running when it was the last. */
+function release(e: Entry, session: string, parked: Pending, why: string, eventType: string): void {
+  clearTimeout(parked.timer);
+  e.pending.delete(parked.id);
+  parked.resolve(decisionJson('deny', why));
+  if (!e.pending.size && e.phase === 'waiting-permission') void setPhase(e, session, 'running', eventType, { request: parked.id });
+}
 const compact = (input: unknown) => { try { const s = JSON.stringify(input ?? ''); return s.length > 600 ? `${s.slice(0, 600)}…` : s; } catch { return ''; } };
 
 /** True when the phase (or the message it carries) actually changed. Persists it, announces
@@ -308,9 +357,14 @@ async function setPhase(e: Entry, session: string, phase: CliPhase, eventType: s
  *  idle ward gets a headless turn. Framed as an observation, like a task notice. */
 function notifyCli(e: Entry, text: string): void {
   if (!e.origin) return;
-  const message = `[Terminal session — runtime observation, not a new user instruction]\n${text}`;
   const { user, origin } = e;
-  void import('../agent/core.ts').then(({ wardBusy, steerTurn, queueHeadlessAsk }) => {
+  void Promise.all([import('../agent/core.ts'), import('../agent/conversations.ts')]).then(([{ wardBusy, steerTurn, queueHeadlessAsk }, { activeConversationRow }]) => {
+    // Delivery is per ward (that is what steer and a headless ask address). When the thread that
+    // launched the session is no longer the ward's active one, the notice says so rather than
+    // reading as if it belonged to the current thread.
+    const active = activeConversationRow(user, origin.ward)?.id;
+    const provenance = origin.conv !== undefined && active !== undefined && active !== origin.conv ? ` (started from thread #${origin.conv} of this ward, which is no longer the active thread)` : '';
+    const message = `[Terminal session — runtime observation, not a new user instruction]${provenance}\n${text}`;
     if (wardBusy(user, origin.ward)) steerTurn(user, origin.ward, { text: message, from: 'user' });
     else { const status = queueHeadlessAsk(user, origin.ward, message); if (status !== 'queued') console.error(`[cli] notice not delivered to ${origin.ward}: ${status}`); }
   }).catch(err => console.error('[cli] notice failed:', err));
