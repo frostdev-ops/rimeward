@@ -2,7 +2,8 @@ import http from 'node:http';
 import type net from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { SESSION_COOKIES, getSession } from './auth.ts';
-import { resolveShare, shareAllows, shareCookie, sharePrincipalId, shareScope, type ShareScope } from './shares.ts';
+import { principalAlive, shareAllows, shareCookie, sharePrincipalId, shareScope, shareStillAllows, type ShareScope } from './shares.ts';
+export { principalAlive, shareLive } from './shares.ts';
 import { isDesktop } from './dev/runtime.ts';
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
@@ -16,7 +17,7 @@ export const refuseUpgrade = (socket: net.Socket, status: number) => socket.end(
  *  share's viewer: the principal is the OWNER, `share` says what they may do,
  *  and `id` is what principalAlive re-checks (the share, plus the grantee's
  *  session when there is one). */
-export function upgradeSession(req: http.IncomingMessage): { id: string; userId: number; origin: URL; share?: ShareScope; forward?: string } | number {
+export function upgradeSession(req: http.IncomingMessage): { id: string; userId: number; origin: URL; url: URL; share?: ShareScope; forward?: string } | number {
   let origin: URL;
   try { origin = new URL(req.headers.origin ?? ''); } catch { return 403; }
   const expected = process.env.PUBLIC_BASE_URL;
@@ -28,21 +29,14 @@ export function upgradeSession(req: http.IncomingMessage): { id: string; userId:
   const shareId = url.searchParams.get('share');
   // A desktop judges no share: its own signed-in user opens the socket and every
   // subscription inside it is forwarded to the server (instance-routing.ts).
-  if (shareId && isDesktop()) return row && id ? { id, userId: row.userId, origin, forward: shareId } : 401;
+  if (shareId && isDesktop()) return row && id ? { id, userId: row.userId, origin, url, forward: shareId } : 401;
   if (shareId) {
     const scope = shareScope(shareId, row, cookies.get(shareCookie(shareId)));
     if (typeof scope === 'number') return scope;
     if (!shareAllows(scope, 'GET', url)) return 403;
-    return { id: sharePrincipalId(scope, row && id ? id : undefined), userId: scope.share.owner, origin, share: scope };
+    return { id: sharePrincipalId(scope, row && id ? id : undefined), userId: scope.share.owner, origin, url, share: scope };
   }
-  return row && id ? { id, userId: row.userId, origin } : 401;
-}
-/** Whether the principal a live connection was opened with still stands: a
- *  session, or a share (and its grantee's session) — checked on every heartbeat. */
-export function principalAlive(id: string): boolean {
-  if (!id.startsWith('share:')) return !!getSession(id);
-  const [, share, session] = id.split(':');
-  return !!resolveShare(share) && (!session || !!getSession(session));
+  return row && id ? { id, userId: row.userId, origin, url } : 401;
 }
 
 export function liveUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
@@ -63,7 +57,8 @@ export function liveUpgrade(req: http.IncomingMessage, socket: net.Socket, head:
     };
     let alive = true;
     const heartbeat = setInterval(() => {
-      if (!alive || !principalAlive(session)) { ws.terminate(); return; }
+      // The share's role and reach are re-read too: a revoke or a downgrade ends the socket within one beat.
+      if (!alive || !principalAlive(session) || (auth.share && !shareStillAllows(auth.share.share, 'GET', auth.url))) { ws.terminate(); return; }
       alive = false; ws.ping();
     }, 25000);
     ws.on('pong', () => { alive = true; });

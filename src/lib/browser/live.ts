@@ -18,6 +18,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { browserWard } from '../dashboard.ts';
 import { browserScale } from '../wards.ts';
 import { principalAlive, refuseUpgrade, upgradeSession } from '../live-stream.ts';
+import { shareStillAllows } from '../shares.ts';
 import { browserIsRelayed, resolveBrowserDevice } from './routing.ts';
 import { normalizeCmds, open, pushState, remoteKey, runCmds, subscribe, type BrowserEvent, type Cmd, type HumanOwner, type Session } from './session.ts';
 
@@ -57,16 +58,18 @@ export function browserUpgrade(req: http.IncomingMessage, socket: net.Socket, he
   const readOnly = !!auth.share && auth.share.share.role !== 'edit';
   void resolveBrowserDevice(userId, ward, cfg).then(placement => {
     if (browserIsRelayed(userId, cfg, placement)) { refuseUpgrade(socket, 409); return; }
-    wss.handleUpgrade(req, socket, head, ws => attach(ws, userId, ward, cfg, auth.id, dsf, readOnly));
+    // Every beat asks again: the session, and inside a share its role and reach.
+    const live = () => principalAlive(auth.id) && (!auth.share || shareStillAllows(auth.share.share, 'GET', auth.url));
+    wss.handleUpgrade(req, socket, head, ws => attach(ws, userId, ward, cfg, auth.id, dsf, readOnly, live));
   }, () => refuseUpgrade(socket, 503));
 }
 
-function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<ReturnType<typeof browserWard>>, session: string, dsf: number, readOnly = false): void {
+function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<ReturnType<typeof browserWard>>, session: string, dsf: number, readOnly = false, live: () => boolean = () => principalAlive(session)): void {
   let s: Session | undefined;
   let unsub: (() => void) | undefined;
   let alive = true;
   const heartbeat = setInterval(() => {
-    if (!alive || !principalAlive(session)) { owner.dispose(); ws.terminate(); return; }
+    if (!alive || !live()) { owner.dispose(); ws.terminate(); return; }
     alive = false; ws.ping();
   }, 25_000);
   const owner: Owner = {

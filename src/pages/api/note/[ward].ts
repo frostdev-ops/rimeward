@@ -145,6 +145,11 @@ export const POST: APIRoute = async ({ params, request, url, locals }) => {
     if (body.action === 'transcribe') {
       const image = typeof body.image === 'string' ? body.image : '';
       if (!IMAGE_RE.test(image) || image.length > MAX_IMAGE) return Response.json({ error: 'bad image' }, { status: 400 });
+      // A collaborator's ink rides the owner's hourly model budget, never past it.
+      if (locals.share) {
+        const { takeModelSlot } = await import('../../../lib/logic-engine.ts');
+        try { takeModelSlot(userId); } catch { return Response.json({ error: 'too many model calls this hour' }, { status: 429 }); }
+      }
       const text = await askModel({ userId, provider: cfg.provider, endpoint: cfg.endpoint, model: cfg.model, instructions: TRANSCRIBE, text: 'Transcribe this handwriting.', image });
       return Response.json({ text });
     }

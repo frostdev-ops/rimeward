@@ -2,14 +2,15 @@
 // binary y-websocket frames both ways (lib/note-room.ts speaks the protocol).
 // One socket per editor; a session or a share opens it (live-stream.ts
 // upgradeSession), a share's viewer read-only. A desktop viewing a share is
-// refused (409) — that editor keeps the plain save path.
+// refused (409) — that editor keeps the plain save path. The room opens only
+// once the handshake succeeded: an aborted one must not leave a room nobody joins.
 import http from 'node:http';
 import type net from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { principalAlive, refuseUpgrade, upgradeSession } from './live-stream.ts';
 import { resolveNote } from './note.ts';
 import { ensureNoteRooms, handleMessage, joinRoom, leaveRoom, openRoom, type NoteConn, type Room } from './note-room.ts';
-import { shareAllows } from './shares.ts';
+import { shareAllows, shareStillAllows } from './shares.ts';
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 24 * 1024 * 1024, perMessageDeflate: false });
 const ROUTE = /^\/api\/note\/ws\/([a-z0-9-]{1,32})(?:\?|$)/;
@@ -26,14 +27,19 @@ export function noteUpgrade(req: http.IncomingMessage, socket: net.Socket, head:
   if (auth.share && !shareAllows(auth.share, 'GET', url)) { refuseUpgrade(socket, 403); return; }
   const n = resolveNote(auth.userId, m[1], url.searchParams.has('ward'));
   if (!n) { refuseUpgrade(socket, 404); return; }
-  let room: Room;
-  try { room = openRoom(auth.userId, n.id); }
-  catch (err) { refuseUpgrade(socket, (err as { status?: number }).status ?? 500); return; }
   const readOnly = !!auth.share && auth.share.share.role !== 'edit';
-  wss.handleUpgrade(req, socket, head, (ws) => attach(ws, room, readOnly, auth.id));
+  // Every heartbeat asks again: the session, and inside a share its role and reach (a
+  // revoke, a downgrade or the ward leaving the layout end the socket within one beat).
+  const live = () => principalAlive(auth.id) && (!auth.share || shareStillAllows(auth.share.share, 'GET', url));
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    let room: Room;
+    try { room = openRoom(auth.userId, n.id, n.ward); }
+    catch (err) { ws.close(4000 + ((err as { status?: number }).status ?? 500), (err as Error).message.slice(0, 120)); return; }
+    attach(ws, room, readOnly, auth.id, live);
+  });
 }
 
-function attach(ws: WebSocket, room: Room, readOnly: boolean, principal: string): void {
+function attach(ws: WebSocket, room: Room, readOnly: boolean, principal: string, live: () => boolean): void {
   const conn: NoteConn = {
     readOnly,
     ids: new Set(),
@@ -46,7 +52,7 @@ function attach(ws: WebSocket, room: Room, readOnly: boolean, principal: string)
   };
   let alive = true;
   const heartbeat = setInterval(() => {
-    if (!alive || !principalAlive(principal)) { ws.terminate(); return; }
+    if (!alive || !live()) { ws.terminate(); return; }
     alive = false;
     ws.ping();
   }, 25_000);

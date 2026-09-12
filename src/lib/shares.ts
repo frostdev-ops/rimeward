@@ -6,7 +6,7 @@
 // need. The owner's layout stays the registry — `shareWards` reads it on every request,
 // so a ward leaving the layout ends the share's reach at once.
 import crypto from 'node:crypto';
-import type { Session } from './auth.ts';
+import { getSession, type Session } from './auth.ts';
 import { getDb } from './db.ts';
 import { getDashboard, getPages } from './dashboard.ts';
 import { isDesktop } from './dev/runtime.ts';
@@ -58,6 +58,8 @@ export interface ShareLocals {
   owner: string;
   viewer: number | null;
   viewerName: string | null;
+  /** What a stream re-checks on every beat (live-stream.ts principalAlive): the share, plus the grantee's session. */
+  principal: string;
   wards: WardInstance[];
 }
 
@@ -121,7 +123,8 @@ export function shareTitle(share: Pick<Share, 'owner' | 'kind' | 'target'>, ward
   const w = wards.find((x) => x.i === share.target);
   return w ? wardTitle(w) : 'Ward';
 }
-export const shareOwnerName = (id: number): string => { const u = getUser(id); return u?.display_name || u?.email.split('@')[0] || 'Someone'; };
+/** The owner as the share names them; a link holder (anonymous) never learns the email's local part. */
+export const shareOwnerName = (id: number, anonymous = false): string => { const u = getUser(id); return u?.display_name || (anonymous ? '' : u?.email.split('@')[0]) || 'Someone'; };
 
 export interface ShareView {
   id: string;
@@ -244,12 +247,27 @@ export function sharePrincipal(scope: ShareScope, theme: 'owner' | 'mine'): Sess
   const row = getDb().prepare('SELECT theme FROM users WHERE id = ?').get(owner) as { theme: string | null } | undefined;
   return { userId: owner, email: '', role: 'member', displayName: shareOwnerName(owner), theme: theme === 'mine' && scope.viewer ? scope.viewer.theme : row?.theme ?? null };
 }
-export function shareLocals(scope: ShareScope): ShareLocals {
+export function shareLocals(scope: ShareScope, sessionId?: string): ShareLocals {
   const { share } = scope;
-  return { id: share.id, role: share.role, kind: share.kind, target: share.target, owner: shareOwnerName(share.owner), viewer: scope.viewer?.userId ?? null, viewerName: scope.viewer?.displayName ?? null, wards: scope.wards };
+  return { id: share.id, role: share.role, kind: share.kind, target: share.target, owner: shareOwnerName(share.owner, !scope.viewer), viewer: scope.viewer?.userId ?? null, viewerName: scope.viewer?.displayName ?? null, principal: sharePrincipalId(scope, scope.viewer && sessionId ? sessionId : undefined), wards: scope.wards };
 }
 /** The principal id a live connection re-checks (live-stream.ts): the share, and the grantee's session when there is one. */
 export const sharePrincipalId = (scope: ShareScope, sessionId?: string): string => `share:${scope.share.id}${sessionId ? `:${sessionId}` : ''}`;
+/** Whether a stream's or socket's principal still stands: a session, or a share (and its grantee's session). */
+export function principalAlive(id: string): boolean {
+  if (!id.startsWith('share:')) return !!getSession(id);
+  const [, share, session] = id.split(':');
+  return !!resolveShare(share) && (!session || !!getSession(session));
+}
+/** Would the request that opened a stream or socket pass now, with the role it had? Asked on
+ *  every heartbeat and event: a revoke, an expiry, a role change or the ward leaving the
+ *  owner's layout ends it. */
+export function shareStillAllows(was: Pick<Share, 'id' | 'role'>, method: string, url: URL): boolean {
+  const share = resolveShare(was.id);
+  return !!share && share.role === was.role && shareAllows({ share, wards: shareWards(share), viewer: null }, method, url);
+}
+/** An SSE route's beat inside a share: the principal and the share's reach, re-read. */
+export const shareLive = (share: ShareLocals, url: URL): boolean => principalAlive(share.principal) && shareStillAllows(share, 'GET', url);
 
 const STATUS_TYPES = new Set(['service-group', 'incidents', 'chart']);
 /** The positive allowlist: what a request inside the share may do, by route, method
@@ -262,6 +280,7 @@ export function shareAllows(scope: ShareScope, method: string, url: URL): boolea
   const ward = (id: string | null | undefined) => wards.find((w) => w.i === id);
   let m: RegExpExecArray | null;
   if (p === `/api/share/${share.id}` || p === `/api/share/${share.id}/stream` || p === '/api/me') return get;
+  if (p === '/api/live/stream') return get; // the socket mux (live-stream.ts): every subscription inside it is checked on its own
   if (p === '/api/status' || p === '/api/status/stream' || p === '/api/status/incidents' || p === '/api/status/history') return get && wards.some((w) => STATUS_TYPES.has(w.type));
   if (p === '/api/weather') return get && ward(q.get('ward'))?.type === 'weather';
   if (p === '/api/flow') return get && ward(q.get('ward'))?.type === 'flow';
@@ -336,8 +355,14 @@ export function shareEvent(scope: ShareScope, event: string, data: unknown): { e
     case 'timer':
       return typeof d.ward === 'string' && W.has(d.ward) ? { event, data } : undefined;
     // The owner rearranged: the share view is server-rendered from the layout, so it reloads.
-    case 'layout':
+    case 'layout': {
+      // Only when what THIS share shows changed: a rename or a move elsewhere must not pull
+      // the document out from under a collaborator. The scope follows the layout for the next event.
+      const now = shareWards(share);
+      if (JSON.stringify(now) === JSON.stringify(wards)) return undefined;
+      scope.wards = now;
       return { event: 'reload', data: {} };
+    }
     default:
       return undefined;
   }
@@ -345,16 +370,16 @@ export function shareEvent(scope: ShareScope, event: string, data: unknown): { e
 
 // ------------------------------------------------------------------ presence
 
-interface Present { name: string; send: (data: unknown) => void }
+interface Present { name: string; send: (data: unknown) => void; anonymous: boolean }
 const presence = new Map<string, Map<number, Present>>();
 let presenceSeq = 0;
 /** One live viewer of a share. Every join/leave tells every viewer and the owner who is there. */
-export function joinPresence(scope: ShareScope, name: string, send: (data: unknown) => void): () => void {
+export function joinPresence(scope: ShareScope, name: string, send: (data: unknown) => void, anonymous = false): () => void {
   const id = scope.share.id;
   let room = presence.get(id);
   if (!room) presence.set(id, (room = new Map()));
   const key = ++presenceSeq;
-  room.set(key, { name, send });
+  room.set(key, { name, send, anonymous });
   emitPresence(scope);
   return () => {
     const r = presence.get(id);
@@ -367,6 +392,8 @@ function emitPresence(scope: ShareScope): void {
   const room = presence.get(scope.share.id);
   const viewers = [...new Set([...(room?.values() ?? [])].map((v) => v.name))];
   const data = { share: scope.share.id, kind: scope.share.kind, target: scope.share.target, viewers };
-  for (const v of room?.values() ?? []) v.send(data);
+  // A link holder sees how many are looking, never who: the names stay with signed-in viewers and the owner.
+  const masked = { ...data, viewers: viewers.map(() => 'Viewer') };
+  for (const v of room?.values() ?? []) v.send(v.anonymous ? masked : data);
   broadcast(scope.share.owner, 'presence', data);
 }

@@ -18,6 +18,12 @@ export function plainText(html: string): string {
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
+    // linkedom writes U+00A0 as &#160; where a browser writes &nbsp;: decode numeric references too.
+    .replace(/&#(x[0-9a-f]+|\d+);/gi, (whole, code: string) => {
+      const point = code[0]!.toLowerCase() === 'x' ? parseInt(code.slice(1), 16) : parseInt(code, 10);
+      return point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : whole;
+    })
+    .replace(/\u00a0/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
@@ -55,7 +61,11 @@ const VOID = new Set(['br', 'hr', 'img', 'input']);
 // What the HTML tokenizer treats as markup after a `<`: a letter (a tag), `!`
 // (a comment / declaration), `/` (an end tag), `?` (a bogus comment). Any other
 // `<` is text — "a < b" must survive as text.
-const TAG_RE = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>|<!--[\s\S]*?-->|<[!?/][^>]*>?/g;
+// Attribute values may hold a raw `>` (a browser serializes `data-comment="a > b"`
+// exactly so), so the tag runs to the `>` outside any quotes.
+const TAG_RE = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b((?:"[^"]{0,4000}"|'[^']{0,4000}'|[^>"'])*)>|<!--[\s\S]*?-->|<[!?/][^>]*>?/g;
+/** An attribute value as it is written back: every character the tag scanner or a quote could trip on. */
+const escAttr = (s: string): string => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 function attr(raw: string, name: string): string {
   const m = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(raw);
@@ -127,7 +137,7 @@ export function sanitizeHtml(input: string): string {
       else {
         const rawHref = attr(m[2] ?? '', 'href');
         const href = httpUrl(rawHref) || (/^mailto:[^\s<>]{1,2040}$/i.test(rawHref) ? rawHref : null);
-        if (href) attrs = ` href="${href.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" target="_blank" rel="noreferrer"`;
+        if (href) attrs = ` href="${escAttr(href)}" target="_blank" rel="noreferrer"`;
       }
     }
     const raw = m[2] ?? '';
@@ -135,7 +145,7 @@ export function sanitizeHtml(input: string): string {
       const src = attr(raw, 'src');
       const safe = httpUrl(src) || (/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(src) ? src : '');
       if (!safe) continue;
-      attrs += ` src="${safe.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" alt="${attr(raw, 'alt').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`;
+      attrs += ` src="${escAttr(safe)}" alt="${escAttr(attr(raw, 'alt'))}"`;
     }
     if (name === 'input') {
       if (attr(raw, 'type') !== 'checkbox') continue;
@@ -152,7 +162,7 @@ export function sanitizeHtml(input: string): string {
     }
     for (const key of ['data-comment', 'data-change', 'data-author', 'data-word-page', 'data-word-header', 'data-word-footer', 'data-page-number']) {
       const value = attr(raw, key);
-      if (value) attrs += ` ${key}="${value.slice(0, 4000).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`;
+      if (value) attrs += ` ${key}="${escAttr(value.slice(0, 4000))}"`;
     }
     const style = cleanStyle(attr(raw, 'style'));
     if (style) attrs += ` style="${style}"`;

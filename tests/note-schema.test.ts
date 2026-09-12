@@ -66,6 +66,13 @@ test('legacy shapes normalise: bare inline text becomes paragraphs, thead rows j
   assert.equal(normal(''), '<p></p>');
 });
 
+test('a `>` inside an attribute value is an attribute value, on the way in and on the way out', () => {
+  assert.equal(sanitizeHtml('<p><mark data-comment="a > b" data-author="Ann">x</mark> tail</p>'), '<p><mark data-comment="a &gt; b" data-author="Ann">x</mark> tail</p>');
+  assert.equal(fixed('<p><mark data-comment="a &gt; b" data-author="Ann">x</mark> tail</p>'), '<p><mark data-comment="a &gt; b" data-author="Ann">x</mark> tail</p>');
+  assert.equal(normal('<p><img src="https://example.com/i.png" alt="1 > 0"></p>'), '<p><img src="https://example.com/i.png" alt="1 &gt; 0"></p>');
+  assert.equal(plainText('<p>a&#160;b &#x41;</p>'), 'a b A');
+});
+
 test('a document survives JSON (what the shared Yjs document carries)', () => {
   const html = '<h1>T</h1><p style="text-align:right"><span style="color:#ff0000">red</span> <a data-note="n-1">n</a></p><ul><li><p>x</p></li></ul>';
   const doc = htmlToDoc(html);

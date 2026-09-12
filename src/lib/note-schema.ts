@@ -159,7 +159,8 @@ const marks: Record<string, MarkSpec> = {
     toDOM: (mark) => ['mark', { 'data-comment': mark.attrs.comment as string, 'data-author': mark.attrs.author as string }, 0],
   },
   ins_change: change('ins'),
-  del_change: change('del'),
+  // Typing at the end of a deletion continues the text, not the deletion.
+  del_change: { ...change('del'), inclusive: false },
   /** A run's inline style (font, size, colour…) — the allowlisted rules verbatim; runs may stack. */
   text_style: {
     attrs: { style: {} },

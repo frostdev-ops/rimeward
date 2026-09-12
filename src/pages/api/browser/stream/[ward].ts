@@ -2,6 +2,7 @@ import type { APIRoute } from 'astro';
 import { browserWard } from '../../../../lib/dashboard.ts';
 import { open, pushState, subscribe, type BrowserEvent } from '../../../../lib/browser/session.ts';
 import { routeBrowser } from '../../../../lib/browser/routing.ts';
+import { shareLive } from '../../../../lib/shares.ts';
 
 export const prerender = false;
 
@@ -15,8 +16,9 @@ const FRAME_MS = 50;
 /** The ward's live view: `frame` (jpeg base64 + the viewport it was captured
  *  at), `nav`, `tabs`, `dialog`. Connecting opens the browser if it is not
  *  already running. Same transport rules as /api/status/stream. */
-export const GET: APIRoute = async ({ params, locals, request }) => {
+export const GET: APIRoute = async ({ params, locals, request, url }) => {
   const userId = locals.user!.userId;
+  const share = locals.share;
   const ward = String(params.ward);
   const cfg = browserWard(userId, ward);
   if (!cfg) return Response.json({ error: 'not a browser ward' }, { status: 400 });
@@ -67,16 +69,17 @@ export const GET: APIRoute = async ({ params, locals, request }) => {
         last = Date.now();
         write(ev);
       };
+      const end = () => {
+        unsub();
+        if (ping) clearInterval(ping);
+        if (timer) clearTimeout(timer);
+        try {
+          controller.close();
+        } catch {}
+      };
       const send = (ev: BrowserEvent) => {
-        if (ev.type === 'closed') {
-          unsub();
-          if (ping) clearInterval(ping);
-          if (timer) clearTimeout(timer);
-          try {
-            controller.close();
-          } catch {}
-          return;
-        }
+        // A viewer's share revoked, expired or downgraded: the frames stop at the next one, not when they leave.
+        if (ev.type === 'closed' || (share && !shareLive(share, url))) { end(); return; }
         if (ev.type !== 'frame') {
           write(ev);
           return;
@@ -89,6 +92,7 @@ export const GET: APIRoute = async ({ params, locals, request }) => {
       unsub = subscribe(s, send);
       void pushState(s);
       ping = setInterval(() => {
+        if (share && !shareLive(share, url)) { end(); return; }
         try {
           controller.enqueue(encoder.encode(': ping\n\n'));
         } catch {}

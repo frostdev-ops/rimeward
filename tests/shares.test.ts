@@ -10,9 +10,11 @@ import { createNote, ensureNotebook } from '../src/lib/notebook.ts';
 import { writeNote } from '../src/lib/note.ts';
 import type { Session } from '../src/lib/auth.ts';
 import {
-  SHARE_NOTEBOOK_OPS, SHARE_TOKEN_RE, createShare, findShareByToken, listShares, resolveShare, revokeShare, setShareRole, shareAllows, shareEvent,
-  shareScope, shareSnapshot, shareStatusScope, shareWards, sharedWithMe, verifyShareToken, shareLocals, sharePrincipal, type ShareScope,
+  SHARE_NOTEBOOK_OPS, SHARE_TOKEN_RE, createShare, findShareByToken, joinPresence, listShares, resolveShare, revokeShare, setShareRole, shareAllows, shareEvent,
+  shareOwnerName, shareScope, shareSnapshot, shareStatusScope, shareStillAllows, shareWards, sharedWithMe, verifyShareToken, shareLocals, sharePrincipal, type ShareScope,
 } from '../src/lib/shares.ts';
+import { GET as notebookGet } from '../src/pages/api/notebook/[ward].ts';
+import { POST as browserPost } from '../src/pages/api/browser/[ward].ts';
 import { GET as meGet } from '../src/pages/api/me.ts';
 import { GET as notesGet } from '../src/pages/api/notes.ts';
 import { GET as sharesGet, POST as sharesPost } from '../src/pages/api/share/index.ts';
@@ -203,8 +205,63 @@ test('shareEvent: the share’s wards and documents only; a layout change is a r
   assert.equal(shareEvent(pad, 'notebook', { notebook: 'book' }), undefined);
   assert.deepEqual(shareEvent(pad, 'refresh', { type: 'note', link: 'google' }), { event: 'refresh', data: { type: 'note' } });
   assert.equal(shareEvent(pad, 'refresh', { link: 'google' }), undefined);
-  assert.deepEqual(shareEvent(pad, 'layout', { layout: [] }), { event: 'reload', data: {} });
+  // The owner rearranged: a reload only when what THIS share shows changed — a collaborator mid-sentence is not interrupted for a page rename.
+  assert.equal(shareEvent(pad, 'layout', { layout: [] }), undefined, 'nothing of the share moved');
+  const layout = getDashboard(owner);
+  saveDashboard(owner, layout.map((w) => (w.i === 'pad' ? { ...w, size: '3x2' as const } : w)));
+  assert.deepEqual(shareEvent(pad, 'layout', {}), { event: 'reload', data: {} }, 'the shared ward changed');
+  assert.equal(shareEvent(pad, 'layout', {}), undefined, 'and the scope followed it');
+  saveDashboard(owner, layout);
   for (const ev of ['agent', 'agent-live', 'act', 'packets', 'runs', 'theme']) assert.equal(shareEvent(pad, ev, { ward: 'pad' }), undefined, ev);
+});
+
+test('a stream re-checks its share on every beat: revoke, role change or the ward leaving end it; the mux is allowed in', async () => {
+  const { share } = createShare(owner, { kind: 'ward', target: 'pad', email: 'stranger@example.com', role: 'edit' });
+  const url = new URL('https://x.invalid/api/note/pad?ward=pad');
+  const scope = scopeOf(share.id, strangerS);
+  assert.ok(allows(scope, 'GET', '/api/live/stream'), 'the socket mux; each subscription inside it is checked on its own');
+  assert.ok(!allows(scope, 'POST', '/api/live/stream'));
+  assert.ok(shareStillAllows(share, 'GET', url));
+  setShareRole(owner, share.id, 'view');
+  assert.ok(!shareStillAllows(share, 'GET', url), 'the role it was opened with is gone');
+  assert.ok(shareStillAllows({ id: share.id, role: 'view' }, 'GET', url));
+  const layout = getDashboard(owner);
+  saveDashboard(owner, layout.filter((w) => w.i !== 'pad'));
+  assert.ok(!shareStillAllows({ id: share.id, role: 'view' }, 'GET', url), 'the ward left the layout');
+  saveDashboard(owner, layout);
+  assert.ok(shareStillAllows({ id: share.id, role: 'view' }, 'GET', url));
+  revokeShare(owner, share.id);
+  assert.ok(!shareStillAllows({ id: share.id, role: 'view' }, 'GET', url));
+  // What the SSE routes re-check carries the grantee's session; a link holder's does not.
+  const granted = createShare(owner, { kind: 'ward', target: 'pad', email: 'stranger@example.com', role: 'view' }).share;
+  assert.equal(shareLocals(scopeOf(granted.id, strangerS), 'sid-1').principal, `share:${granted.id}:sid-1`);
+  setSetting('share_links', '1');
+  const link = createShare(owner, { kind: 'ward', target: 'pad' });
+  const anon = scopeOf(link.share.id, null, link.token);
+  assert.equal(shareLocals(anon, 'sid-1').principal, `share:${link.share.id}`);
+  // A link holder learns no email local part and no viewer names; a signed-in viewer and the owner do.
+  assert.equal(shareOwnerName(owner), 'owner');
+  assert.equal(shareOwnerName(owner, true), 'Someone');
+  assert.equal(shareLocals(anon).owner, 'Someone');
+  const seenByVera: unknown[] = [], seenByGuest: unknown[] = [];
+  const leaveVera = joinPresence(anon, 'Vera Viewer', (d) => seenByVera.push(d));
+  const leaveGuest = joinPresence(anon, 'Guest', (d) => seenByGuest.push(d), true);
+  assert.deepEqual((seenByVera.at(-1) as { viewers: string[] }).viewers, ['Vera Viewer', 'Guest']);
+  assert.deepEqual((seenByGuest.at(-1) as { viewers: string[] }).viewers, ['Viewer', 'Viewer']);
+  leaveVera(); leaveGuest();
+  revokeShare(owner, granted.id); revokeShare(owner, link.share.id);
+});
+
+test('inside a share the routes narrow: no browser actions in the body, no other notepads on offer', async () => {
+  const web = createShare(owner, { kind: 'ward', target: 'web', email: 'stranger@example.com', role: 'edit' }).share;
+  const webCtx = (body: unknown) => ({ locals: { user: sharePrincipal(scopeOf(web.id, strangerS), 'owner'), share: shareLocals(scopeOf(web.id, strangerS)) }, params: { ward: 'web' }, url: new URL('https://x.invalid/api/browser/web'), request: new Request('https://x.invalid/api/browser/web', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }) }) as unknown as APIContext;
+  const refused = await browserPost(webCtx({ action: 'download', args: { url: 'https://example.com/x' } }));
+  assert.equal(refused.status, 403, 'an action on the owner’s behalf, even under edit');
+  const book = createShare(owner, { kind: 'ward', target: 'book', email: 'stranger@example.com', role: 'edit' }).share;
+  const res = await notebookGet({ locals: { user: sharePrincipal(scopeOf(book.id, strangerS), 'owner'), share: shareLocals(scopeOf(book.id, strangerS)) }, params: { ward: 'book' }, url: new URL('https://x.invalid/api/notebook/book') } as unknown as APIContext);
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json()).linkable, [], 'the owner’s unshared notepads stay unnamed');
+  revokeShare(owner, web.id); revokeShare(owner, book.id);
 });
 
 test('routes: /api/me and /api/notes inside a share, the share CRUD as owner, grantee and stranger', async () => {

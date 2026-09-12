@@ -265,7 +265,8 @@ function writeNoteTx(userId: number, w: WardInstance | string, patch: NotePatch)
     html = sanitizeHtml(patch.html);
     if (html.length > NOTE_HTML_MAX) throw Object.assign(new Error('the document is too large'), { status: 413 });
     const page = readPageDocument(html), previousPage = readPageDocument(cur.html);
-    const pageMarker = /<[^>]*\bdata-page(?:-state)?\s*=/i;
+    // The marker as an ATTRIBUTE (whitespace before it): a link to `…?data-page=2` is prose, not a page.
+    const pageMarker = /<[a-z][^>]*\sdata-page(?:-state)?\s*=/i;
     // Page engines own one complete wrapper. Legacy append writers must not save
     // trailing paragraphs that the engine would hide and discard on its next edit.
     if (pageMarker.test(patch.html) && (!page || html.indexOf('</div>') !== html.length - 6 || html.indexOf('<div', 1) !== -1)) {

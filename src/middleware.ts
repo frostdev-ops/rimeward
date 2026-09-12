@@ -106,7 +106,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
     }
     if (!pathname.startsWith('/s/') && !shareAllows(scope, context.request.method, context.url)) return json('forbidden', 403);
     context.locals.user = sharePrincipal(scope, context.url.searchParams.get('theme') === 'mine' ? 'mine' : 'owner');
-    context.locals.share = shareLocals(scope);
+    context.locals.share = shareLocals(scope, cookie ?? undefined);
     return (await routeInstance(context)) ?? next();
   }
   if (!session) {

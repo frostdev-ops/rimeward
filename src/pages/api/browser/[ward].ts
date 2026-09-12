@@ -88,6 +88,8 @@ export const POST: APIRoute = async ({ params, request, locals, url }) => {
       });
     }
     const body = await request.json().catch(() => null);
+    // A share drives the page and nothing else: no downloads, snapshots or actions on the owner's behalf.
+    if (locals.share && !Array.isArray(body?.cmds)) return Response.json({ error: 'not in a shared browser' }, { status: 403 });
     if (body && typeof body.action === 'string' && body.args && typeof body.args === 'object' && !Array.isArray(body.args)) {
       return actionResponse(() => runBrowserAction(userId, ward, body.action, body.args));
     }

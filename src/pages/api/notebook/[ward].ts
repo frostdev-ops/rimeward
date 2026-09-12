@@ -73,11 +73,13 @@ export const GET: APIRoute = ({ params, url, locals }) => {
       const note = url.searchParams.get('note');
       const meta = note ? getNoteMeta(userId, note) : null;
       if (!meta || meta.notebook !== id) return Response.json({ error: 'no such note in this notebook' }, { status: 404 });
-      return Response.json({ backlinks: noteBacklinks(userId, meta.id) }, { headers: { 'cache-control': 'no-store' } });
+      // Inside a share, only links from THIS notebook: the owner's other notebooks stay unnamed.
+      return Response.json({ backlinks: noteBacklinks(userId, meta.id).filter((b) => !locals.share || b.notebook === id) }, { headers: { 'cache-control': 'no-store' } });
     }
     const page = listNotes(userId, query(url.searchParams, id));
     if (part === 'list') return Response.json(page, { headers: { 'cache-control': 'no-store' } });
-    return Response.json({ notebook, tags: tagCounts(userId, id), linkable: linkableNoteWards(userId), ...page }, { headers: { 'cache-control': 'no-store' } });
+    // A share sees this notebook only: the owner's other notepads are not on offer to link in.
+    return Response.json({ notebook, tags: tagCounts(userId, id), linkable: locals.share ? [] : linkableNoteWards(userId), ...page }, { headers: { 'cache-control': 'no-store' } });
   } catch (err) {
     return fail(err, 'could not read the notebook');
   }
