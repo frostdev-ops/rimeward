@@ -3,6 +3,7 @@ import { browserWard } from '../../../../lib/dashboard.ts';
 import { open, pushState, subscribe, type BrowserEvent } from '../../../../lib/browser/session.ts';
 import { routeBrowser } from '../../../../lib/browser/routing.ts';
 import { shareLive } from '../../../../lib/shares.ts';
+import { REMOTE_FRAME_MS, remoteFrame, type FrameEvent } from '../../../../lib/browser/remote-frame.ts';
 
 export const prerender = false;
 
@@ -45,11 +46,18 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
   let unsub = () => {};
   let ping: ReturnType<typeof setInterval> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // Beyond the relay (a desktop answering the server's channel): CSS-size frames, fewer of them (remote-frame.ts).
+  const remote = request.headers.get('x-rimeward-relayed') === '1';
+  const frameMs = remote ? REMOTE_FRAME_MS : FRAME_MS;
+  // The share is re-read a few times a minute, not on every frame.
+  let checked = Date.now();
+  const alive = () => { if (!share) return true; if (Date.now() - checked < 5_000) return true; checked = Date.now(); return shareLive(share, url); };
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let pending: BrowserEvent | null = null;
       let last = 0;
+      let busy = false; // one remote re-encode at a time; the latest frame waits, older ones are dropped
       const write = (ev: BrowserEvent) => {
         try {
           controller.enqueue(encoder.encode(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`));
@@ -59,15 +67,20 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
       };
       const flush = () => {
         timer = undefined;
-        if (!pending) return;
+        if (!pending || busy) return;
         if ((controller.desiredSize ?? 0) <= 0) {
-          timer = setTimeout(flush, FRAME_MS);
+          timer = setTimeout(flush, frameMs);
           return;
         }
         const ev = pending;
         pending = null;
         last = Date.now();
-        write(ev);
+        if (!remote) { write(ev); return; }
+        busy = true;
+        void remoteFrame(ev as FrameEvent).then(write, () => write(ev)).finally(() => {
+          busy = false;
+          if (pending && !timer) timer = setTimeout(flush, Math.max(0, frameMs - (Date.now() - last)));
+        });
       };
       const end = () => {
         unsub();
@@ -79,13 +92,13 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
       };
       const send = (ev: BrowserEvent) => {
         // A viewer's share revoked, expired or downgraded: the frames stop at the next one, not when they leave.
-        if (ev.type === 'closed' || (share && !shareLive(share, url))) { end(); return; }
+        if (ev.type === 'closed' || !alive()) { end(); return; }
         if (ev.type !== 'frame') {
           write(ev);
           return;
         }
         pending = ev;
-        const wait = FRAME_MS - (Date.now() - last);
+        const wait = frameMs - (Date.now() - last);
         if (wait <= 0) flush();
         else if (!timer) timer = setTimeout(flush, wait);
       };
