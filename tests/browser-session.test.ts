@@ -212,7 +212,16 @@ test('the capture page: never a tab, frames only while a viewer wants them, view
   }
   const until = async (pred: () => boolean, ms: number, what: string) => { const t0 = Date.now(); while (!pred()) { if (Date.now() - t0 > ms) throw Error(`timed out: ${what}`); await new Promise((r) => setTimeout(r, 50)); } };
   try {
+    // A viewer that arrives before the capture page is up: opening the page must not end its screencast.
+    const earlyFrames: BrowserEvent[] = [];
+    const early = subscribe(s, (e) => { if (e.type === 'frame') earlyFrames.push(e); });
     await until(() => !!s.stream, 15_000, 'capture page');
+    await until(() => earlyFrames.length > 0, 10_000, 'a frame for the early viewer');
+    const seen = earlyFrames.length;
+    // A content change repaints; a resize of a blank MUTED tab does not (Chromium), and the page mutes tabs.
+    await s.page.setContent('<h1>after the capture page opened</h1>');
+    await until(() => earlyFrames.length > seen, 10_000, 'a frame after the capture page opened');
+    early();
     // One more page in the context than the ward has tabs, and it is the extension's.
     assert.equal(s.context.pages().length, s.pages.length + 1);
     assert.ok(s.context.pages().some((p: { url: () => string }) => p.url() === `chrome-extension://${STREAM_EXTENSION.id}/stream.html`));

@@ -277,10 +277,13 @@ export const NOTION_TYPES = new Set([...TASK_WARDS, 'notion-page']);
 export function shareAllows(scope: ShareScope, method: string, url: URL): boolean {
   const { share, wards } = scope;
   const get = method === 'GET' || method === 'HEAD';
-  if (!get && share.role !== 'edit') return false;
   const p = url.pathname, q = url.searchParams;
   const ward = (id: string | null | undefined) => wards.find((w) => w.i === id);
   let m: RegExpExecArray | null;
+  // A viewer's one write: answering the shared browser's WebRTC offer — signaling for its own
+  // connection (rtc.ts validates it), never input; the route runs nothing else under `?rtc=1`.
+  const rtcAnswer = method === 'POST' && q.get('rtc') === '1' && !!(m = /^\/api\/browser\/([^/]+)$/.exec(p)) && ward(m[1])?.type === 'browser' && [...q.keys()].every((k) => k === 'share' || k === 'rtc');
+  if (!get && share.role !== 'edit') return rtcAnswer;
   if (p === `/api/share/${share.id}` || p === `/api/share/${share.id}/stream` || p === '/api/me') return get;
   if (p === '/api/live/stream') return get; // the socket mux (live-stream.ts): every subscription inside it is checked on its own
   if (p === '/api/status' || p === '/api/status/stream' || p === '/api/status/incidents' || p === '/api/status/history') return get && wards.some((w) => STATUS_TYPES.has(w.type));
@@ -305,8 +308,8 @@ export function shareAllows(scope: ShareScope, method: string, url: URL): boolea
   if ((m = /^\/api\/browser\/(stream\/|ws\/)?([^/]+)$/.exec(p))) {
     if (ward(m[2])?.type !== 'browser') return false;
     if (m[1]) return get; // frames
-    // Input only: never the extension, download or restart actions the query selects.
-    return method === 'POST' && [...q.keys()].every((k) => k === 'share');
+    // Input (and the stream's signaling): never the extension, download or restart actions the query selects.
+    return method === 'POST' && [...q.keys()].every((k) => k === 'share' || k === 'rtc');
   }
   // Notion: the shared wards' own pages and lists. The route pins every id it is handed (share-notion.ts);
   // here the reads are pinned to a shared ward and nothing workspace-wide (search, recent, config) passes.

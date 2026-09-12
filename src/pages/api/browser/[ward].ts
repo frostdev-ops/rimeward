@@ -2,6 +2,7 @@ import type { APIRoute } from 'astro';
 import { browserScale } from '../../../lib/wards.ts';
 import { browserWard } from '../../../lib/dashboard.ts';
 import { open, runCmds, closeSession, peek, activate } from '../../../lib/browser/session.ts';
+import { rtcInbound } from '../../../lib/browser/rtc.ts';
 import { EXTENSION_BYTES, extensionRegistry, installExtension, changeExtension, restoreGlaze } from '../../../lib/browser/extensions.ts';
 import { syncAppExtensions } from '../../../lib/browser/app-backend.ts';
 import { browserPresence, routeBrowser } from '../../../lib/browser/routing.ts';
@@ -37,6 +38,13 @@ export const POST: APIRoute = async ({ params, request, locals, url }) => {
   try {
     const routed = await routeBrowser(userId, ward, request);
     if (routed) return routed;
+    if (url.searchParams.get('rtc') === '1') {
+      // WebRTC signaling for the viewer's own connection (its id is the bearer): an answer or a
+      // candidate, never input — the one POST a view-role share may make (shares.ts).
+      const body = await request.json().catch(() => null) as { rtc?: { conn?: unknown } } | null;
+      if (!rtcInbound(body?.rtc?.conn, body?.rtc, peek(userId, ward))) return Response.json({ error: 'bad rtc' }, { status: 400 });
+      return Response.json({ ok: true });
+    }
     const extensionAction = url.searchParams.get('extension');
     if (extensionAction) {
       return actionResponse(async () => {

@@ -153,6 +153,14 @@ test('shareAllows: only the shared documents and browser, only what the role per
   assert.ok(!allows(home, 'GET', '/api/weather?ward=flow1'));
   assert.ok(allows(home, 'GET', '/api/bg/1-photo.webp'));
   assert.ok(!allows(home, 'POST', '/api/browser/web'), 'a view share never drives');
+  // The one write a viewer may make: answering the shared browser's stream offer.
+  assert.ok(allows(home, 'POST', '/api/browser/web?rtc=1'));
+  assert.ok(allows(home, 'POST', `/api/browser/web?rtc=1&share=${home.share.id}`));
+  assert.ok(!allows(home, 'POST', '/api/browser/web?rtc=1&extension=restart'), 'no other query beside it');
+  assert.ok(!allows(home, 'POST', '/api/browser/web?rtc=0'));
+  assert.ok(!allows(home, 'POST', '/api/note/pad?rtc=1&ward=pad'), 'only the browser route');
+  assert.ok(!allows(padView, 'POST', '/api/browser/web?rtc=1'), 'not in this share');
+  assert.ok(allows(web, 'POST', '/api/browser/web?rtc=1'), 'an editor answers too');
 });
 
 test('links: view-only, token verified by hash, expiry ends them, off on the desktop or by the admin', () => {

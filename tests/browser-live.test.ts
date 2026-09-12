@@ -302,3 +302,77 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     server.close();
   }
 });
+
+test('the ward WebSocket: the stream\'s signaling rides each viewer\'s own socket', async (t) => {
+  const direct = process.env.RIMEWARD_RTC_DIRECT;
+  process.env.RIMEWARD_RTC_DIRECT = '1'; // loopback candidates, no TURN: the module reads it at launch/join
+  const uid = seedUser('rtc-live@test');
+  const sid = createSession(uid).id;
+  saveDashboard(uid, [{ i: 'bw', type: 'browser', size: '3x2', config: { backend: 'local' } }]);
+  const server = http.createServer((_req, res) => res.end());
+  server.on('upgrade', browserUpgrade);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  base = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  let s: Session | undefined;
+  const clients: Client[] = [];
+  try {
+    const a = client('bw', sid); clients.push(a);
+    await a.next(m => m.type === 'hello');
+    try { s = await open(uid, 'bw', { backend: 'local' }); }
+    catch (err) {
+      if (existsSync(process.env.BROWSER_EXECUTABLE ?? chromium.executablePath())) throw err;
+      t.skip(`no chromium here: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
+      return;
+    }
+    const view = await a.next(m => m.type === 'view');
+    assert.deepEqual([view.width, view.height], [1280, 800], 'view carries the CSS viewport');
+    // ICE first (nothing here: loopback), the capture page's offer next — for this socket's connection.
+    const ice = await a.next(m => m.type === 'rtc' && 'ice' in m, 20000);
+    assert.deepEqual(ice.ice, []);
+    assert.match(String(ice.conn), /^[0-9a-f]{32}$/);
+    const offer = await a.next(m => m.type === 'rtc' && 'sdp' in m, 15000);
+    assert.equal(offer.conn, ice.conn);
+    assert.match(String(offer.sdp), /a=fingerprint:sha-256 /);
+    assert.ok(String(offer.sdp).includes('m=video ') && String(offer.sdp).includes('m=audio '), 'video and audio offered');
+
+    // A second viewer: its own connection, and none of the first one's messages.
+    const b = client('bw', sid); clients.push(b);
+    await b.next(m => m.type === 'view');
+    const iceB = await b.next(m => m.type === 'rtc' && 'ice' in m, 20000);
+    assert.notEqual(iceB.conn, ice.conn);
+    await b.next(m => m.type === 'rtc' && 'sdp' in m, 15000);
+    assert.ok(a.msgs.filter(m => m.type === 'rtc').every(m => m.conn === ice.conn), 'A hears about A alone');
+    assert.ok(b.msgs.filter(m => m.type === 'rtc').every(m => m.conn === iceB.conn), 'B hears about B alone');
+    // `peers` is stream.js's script-scoped Map: a bare identifier in the page, never a globalThis property.
+    const pagePeers = () => s!.stream!.page.evaluate('peers.size') as Promise<number>;
+    await until(() => pagePeers().then(n => n === 2), 5000, 'two peers on the page');
+
+    // A third viewer on a server host stays on JPEG: two peers per session.
+    const c = client('bw', sid); clients.push(c);
+    await c.next(m => m.type === 'view');
+    c.send([{ t: 'resize', w: 1000, h: 700 }]); // a late viewer sees a frame at the next repaint (the client resizes on connect); the capture must not starve the screencast
+    await c.frame(8000);
+    await sleep(1000);
+    assert.equal(c.msgs.some(m => m.type === 'rtc'), false, 'no stream for the third viewer');
+
+    // An answer the page cannot use fails that peer, and only that peer; a second answer is a protocol error.
+    a.ws.send(JSON.stringify({ rtc: { sdp: 'v=0\r\na=fingerprint:sha-256 AB:CD\r\n' } }));
+    const failed = await a.next(m => m.type === 'rtc' && m.state === 'failed', 10000);
+    assert.equal(failed.conn, ice.conn);
+    assert.equal(b.msgs.some(m => m.type === 'rtc' && m.state === 'failed'), false);
+    a.ws.send(JSON.stringify({ rtc: { sdp: 'v=0\r\na=fingerprint:sha-256 AB:CD\r\n' } }));
+    assert.equal(await a.closed, 1008);
+    // An answer without a fingerprint is refused before it reaches the page.
+    b.ws.send(JSON.stringify({ rtc: { sdp: 'v=0 nothing' } }));
+    assert.equal(await b.closed, 1008);
+    // Gone viewers' peers leave the page.
+    await until(() => pagePeers().then(n => n === 0), 5000, 'peers removed');
+    assert.equal(s.rtc.size, 0);
+  } finally {
+    for (const c of clients) c.ws.close();
+    if (s) await closeSession(s);
+    server.close();
+    if (direct === undefined) delete process.env.RIMEWARD_RTC_DIRECT; else process.env.RIMEWARD_RTC_DIRECT = direct;
+  }
+});

@@ -4,6 +4,7 @@ import { open, pushState, subscribe, type BrowserEvent } from '../../../../lib/b
 import { routeBrowser } from '../../../../lib/browser/routing.ts';
 import { shareLive } from '../../../../lib/shares.ts';
 import { REMOTE_FRAME_MS, remoteFrame, type FrameEvent } from '../../../../lib/browser/remote-frame.ts';
+import { rtcIce, rtcIceFromRelay, rtcJoin, withRtcHeader, type RtcMessage } from '../../../../lib/browser/rtc.ts';
 
 export const prerender = false;
 
@@ -29,9 +30,15 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
     // nginx must not buffer this (the vhost also sets proxy_buffering off).
     'x-accel-buffering': 'no',
   };
+  // Beyond the relay (a desktop answering the server's channel): CSS-size frames, fewer of them (remote-frame.ts).
+  const remote = request.headers.get('x-rimeward-relayed') === '1';
+  // Who watches, for the stream's ICE: the grantee, the owner, or nobody (a link). The server
+  // mints it; a request bound for a desktop carries it there (the desktop has no TURN secret).
+  const viewer = share ? share.viewer : userId;
+  const ice = remote ? rtcIceFromRelay(request) : rtcIce(userId, { userId: viewer });
   let s;
   try {
-    const routed = await routeBrowser(userId, ward, request);
+    const routed = await routeBrowser(userId, ward, remote ? request : withRtcHeader(request, ice));
     if (routed) return routed;
     s = await open(userId, ward, cfg);
   } catch (err) {
@@ -43,11 +50,10 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
   }
 
   const encoder = new TextEncoder();
-  let unsub = () => {};
+  let unsub: ReturnType<typeof subscribe> | undefined;
+  let rtc: ReturnType<typeof rtcJoin>;
   let ping: ReturnType<typeof setInterval> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  // Beyond the relay (a desktop answering the server's channel): CSS-size frames, fewer of them (remote-frame.ts).
-  const remote = request.headers.get('x-rimeward-relayed') === '1';
   const frameMs = remote ? REMOTE_FRAME_MS : FRAME_MS;
   // The share is re-read a few times a minute, not on every frame.
   let checked = Date.now();
@@ -58,7 +64,7 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
       let pending: BrowserEvent | null = null;
       let last = 0;
       let busy = false; // one remote re-encode at a time; the latest frame waits, older ones are dropped
-      const write = (ev: BrowserEvent) => {
+      const write = (ev: BrowserEvent | RtcMessage) => {
         try {
           controller.enqueue(encoder.encode(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`));
         } catch {
@@ -83,7 +89,8 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
         });
       };
       const end = () => {
-        unsub();
+        rtc?.leave(); rtc = null;
+        unsub?.(); unsub = undefined;
         if (ping) clearInterval(ping);
         if (timer) clearTimeout(timer);
         try {
@@ -102,8 +109,10 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
         if (wait <= 0) flush();
         else if (!timer) timer = setTimeout(flush, wait);
       };
-      unsub = subscribe(s, send);
+      const sub = unsub = subscribe(s, send);
       void pushState(s);
+      // The stream, once the capture page is up: `ice` now, the page's offer next; frames stop once the peer connects.
+      void (s.streamOpening ?? Promise.resolve()).then(() => { if (unsub === sub) rtc = rtcJoin(s, ice, write, on => sub.jpeg(!on)); });
       ping = setInterval(() => {
         if (share && !shareLive(share, url)) { end(); return; }
         try {
@@ -112,7 +121,8 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
       }, 25_000);
     },
     cancel() {
-      unsub();
+      rtc?.leave(); rtc = null;
+      unsub?.(); unsub = undefined;
       if (ping) clearInterval(ping);
       if (timer) clearTimeout(timer);
     },

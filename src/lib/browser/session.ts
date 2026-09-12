@@ -288,7 +288,7 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig, dsf
       `--allowlisted-extension-id=${STREAM_EXTENSION.id}`, // tabCapture without a gesture, for that one extension
       ...(restoreDesktop() ? ['--restore-last-session'] : []),
       ...(dsf !== 1 ? [`--force-device-scale-factor=${dsf}`] : []),
-      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', // no unproxied UDP out of ICE
+      ...(process.env.RIMEWARD_RTC_DIRECT === '1' ? [] : ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp']), // no unproxied UDP out of ICE (dev/tests: loopback peers, rtc.ts)
       '--disk-cache-size=52428800', // the profile's size cap, in effect
     ],
   });
@@ -709,8 +709,11 @@ async function openStreamer(s: Session, retry = true): Promise<void> {
   if (s.backend !== 'local' || s.closing) return;
   let mine: Page | undefined;
   try {
+    let flipped = false;
     const page = await quiet(s.context, async () => {
-      const p = mine = await s.context.newPage();
+      // A background target: the ward's tab stays the active one. A foreground tab (the
+      // fallback) hides it for a moment, which stops a running screencast for good.
+      const p = mine = await backgroundPage(s.context).catch(async () => { flipped = true; return s.context.newPage(); });
       try {
         await p.exposeBinding('rwSignal', (source, raw: unknown) => { if (source.frame.url().startsWith(STREAM_EXTENSION.origin)) streamSignal(s, raw); });
         await p.goto(STREAM_EXTENSION.origin + 'stream.html', { timeout: 10_000, waitUntil: 'domcontentloaded' });
@@ -725,7 +728,10 @@ async function openStreamer(s: Session, retry = true): Promise<void> {
       for (const [conn, sink] of s.rtc) sink({ conn, state: 'closed' }); // its peers died with it
       if (retry && !s.closing) s.streamOpening = openStreamer(s, false);
     });
-    await s.page.bringToFront().catch(() => {});
+    if (flipped) {
+      await s.page.bringToFront().catch(() => {});
+      if (s.cast) { await stopCast(s); startCast(s); } // the hidden interval ended the running cast
+    }
     tell(s, { sound: s.sound, size: captureSize(s) });
   } catch (error) {
     if (s.closing) return;
@@ -735,6 +741,24 @@ async function openStreamer(s: Session, retry = true): Promise<void> {
     // A popup that arrived while the event was quiet is a tab like any other.
     for (const p of s.quietPages.splice(0)) if (p !== mine) adopt(s, p);
   }
+}
+/** A new page that does not take the foreground (CDP Target.createTarget background), found
+ *  again by its target id among the pages the context announces. */
+async function backgroundPage(context: BrowserContext): Promise<Page> {
+  const browser = context.browser();
+  if (!browser) throw Error('no browser');
+  const cdp = await browser.newBrowserCDPSession();
+  try {
+    const announced = context.waitForEvent('page', { timeout: 10_000 });
+    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank', background: true });
+    const page = await announced;
+    const own = await context.newCDPSession(page);
+    try {
+      const { targetInfo } = await own.send('Target.getTargetInfo');
+      if (targetInfo.targetId !== targetId) throw Error('another page arrived first');
+    } finally { await own.detach().catch(() => {}); }
+    return page;
+  } finally { await cdp.detach().catch(() => {}); }
 }
 /** A command for the capture page (stream.js rwIn). A gone page is a lost message, never a throw. */
 export function tell(s: Session, msg: Record<string, unknown>): void {

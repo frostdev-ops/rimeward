@@ -21,6 +21,7 @@ import { principalAlive, refuseUpgrade, upgradeSession } from '../live-stream.ts
 import { shareStillAllows } from '../shares.ts';
 import { browserIsRelayed, resolveBrowserDevice } from './routing.ts';
 import { normalizeCmds, open, pushState, remoteKey, runCmds, subscribe, type BrowserEvent, type Cmd, type HumanOwner, type Session } from './session.ts';
+import { rtcIce, rtcInbound, rtcJoin } from './rtc.ts';
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024, perMessageDeflate: false });
 const ROUTE = /^\/api\/browser\/ws\/([a-z0-9-]{1,32})(?:\?|$)/;
@@ -37,6 +38,8 @@ interface Owner extends HumanOwner {
   session: string;
   ready: boolean;
   dispose: () => void;
+  /** This viewer's WebRTC peer on the capture page, while it has one. */
+  rtc?: { conn: string; leave: () => void };
 }
 
 export function browserUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
@@ -56,17 +59,19 @@ export function browserUpgrade(req: http.IncomingMessage, socket: net.Socket, he
   const dsf = browserScale(Number(new URL(req.url!, 'http://localhost').searchParams.get('dsf')));
   // A share's viewer watches the owner's session; only an edit share drives it.
   const readOnly = !!auth.share && auth.share.share.role !== 'edit';
+  // Who watches, for the stream's ICE: the grantee, the owner, or nobody (a link).
+  const viewer = auth.share ? auth.share.share.grantee : auth.userId;
   void resolveBrowserDevice(userId, ward, cfg).then(placement => {
     if (browserIsRelayed(userId, cfg, placement)) { refuseUpgrade(socket, 409); return; }
     // Every beat asks again: the session, and inside a share its role and reach.
     const live = () => principalAlive(auth.id) && (!auth.share || shareStillAllows(auth.share.share, 'GET', auth.url));
-    wss.handleUpgrade(req, socket, head, ws => attach(ws, userId, ward, cfg, auth.id, dsf, readOnly, live));
+    wss.handleUpgrade(req, socket, head, ws => attach(ws, userId, ward, cfg, auth.id, dsf, readOnly, live, viewer));
   }, () => refuseUpgrade(socket, 503));
 }
 
-function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<ReturnType<typeof browserWard>>, session: string, dsf: number, readOnly = false, live: () => boolean = () => principalAlive(session)): void {
+function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<ReturnType<typeof browserWard>>, session: string, dsf: number, readOnly = false, live: () => boolean = () => principalAlive(session), viewer: number | null = userId): void {
   let s: Session | undefined;
-  let unsub: (() => void) | undefined;
+  let unsub: ReturnType<typeof subscribe> | undefined;
   let alive = true;
   const heartbeat = setInterval(() => {
     if (!alive || !live()) { owner.dispose(); ws.terminate(); return; }
@@ -79,6 +84,7 @@ function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<Re
       if (owner.dead) return;
       owner.dead = true; owner.ready = false;
       clearInterval(heartbeat);
+      owner.rtc?.leave(); owner.rtc = undefined;
       unsub?.(); unsub = undefined;
       if (!s) return;
       s.owners.delete(owner);
@@ -101,13 +107,17 @@ function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<Re
   ws.on('message', (raw, isBinary) => {
     if (owner.dead) return;
     if (isBinary || !s || !owner.ready) { fail(1008, 'Not ready'); return; }
+    const message = raw.toString();
+    let body: { cmds?: unknown; rtc?: unknown } | null;
+    try { body = JSON.parse(message) as { cmds?: unknown; rtc?: unknown }; } catch { fail(1008, 'Bad batch'); return; }
+    // WebRTC signaling for this socket's own peer — an answer or a candidate, from any role.
+    if (body && typeof body === 'object' && 'rtc' in body) {
+      if (!owner.rtc || !rtcInbound(owner.rtc.conn, body.rtc, s)) fail(1008, 'Bad rtc');
+      return;
+    }
     if (readOnly) return; // a viewer's input never reaches the page (the client sends none)
     let cmds: Cmd[];
-    const message = raw.toString();
-    try {
-      const body = JSON.parse(message) as { cmds?: unknown };
-      cmds = normalizeCmds(body?.cmds);
-    } catch { fail(1008, 'Bad batch'); return; }
+    try { cmds = normalizeCmds(body?.cmds); } catch { fail(1008, 'Bad batch'); return; }
     if (!principalAlive(session)) { fail(4401, 'Signed out'); return; }
     // Admission: bytes are the whole message's, charged to its first surviving
     // entry — a coalesced move never hides a large text command's cost. A
@@ -153,6 +163,13 @@ function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<Re
     });
     owner.ready = true;
     void pushState(s);
+    // The stream, once the capture page is up (the first viewer arrives while it opens):
+    // `ice` now, the page's offer next, frames off once the peer connects.
+    const jpeg = unsub, sess = s;
+    void (sess.streamOpening ?? Promise.resolve()).then(() => {
+      if (owner.dead || s !== sess) return;
+      owner.rtc = rtcJoin(sess, rtcIce(userId, { userId: viewer }), text, on => jpeg.jpeg(!on)) ?? undefined;
+    });
   }, err => {
     if (owner.dead) return;
     text({ type: 'route', online: false, detail: err instanceof Error ? err.message.split('\n')[0]! : 'browser failed to start' } satisfies BrowserEvent);

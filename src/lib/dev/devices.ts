@@ -244,6 +244,7 @@ export const forwardHeaders = [
   "range",
   "if-range",
   "content-length",
+  "x-rimeward-rtc", // ICE the server minted for a browser stream a desktop hosts (lib/browser/rtc.ts)
 ];
 export function allowedRelayPath(value: string, remote = false, agent = false) {
   if (value.length > 8192 || !value.startsWith("/") || value.startsWith("//"))
