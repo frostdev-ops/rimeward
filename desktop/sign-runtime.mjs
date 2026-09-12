@@ -40,12 +40,25 @@ const options = ["--force", "--sign", identity, "--options", "runtime",
   ...(process.env.RIMEWARD_SIGNING_KEYCHAIN ? ["--keychain", process.env.RIMEWARD_SIGNING_KEYCHAIN] : [])];
 // A framework binary can seal its bundle, so sign all nested code first.
 const code = [...files, ...bundles].sort((a, b) => b.split(path.sep).length - a.split(path.sep).length);
+// macOS re-attaches metadata (com.apple.provenance, Finder info) to files a signing pass
+// itself writes, and codesign refuses a bundle with any such "detritus" inside. So the
+// clear is RECURSIVE over the bundle a file sits in, and a refusal is retried once after
+// clearing again. A pass that stops halfway leaves the shallower files ad-hoc signed —
+// the hardened app then cannot load them (dlopen: code signature invalid), and every
+// route answers 500 (v1.0.8's first local build).
+const clear = (target) => execFileSync("xattr", ["-cr", target], { stdio: "pipe" });
 for (const file of code) {
-  // Finder can restore bundle metadata while a large runtime is being signed.
   const bundle = bundles.find((dir) => file === dir || file.startsWith(dir + path.sep));
-  if (bundle) execFileSync("xattr", ["-c", bundle], { stdio: "pipe" });
-  execFileSync("codesign", [...options, file], { stdio: "pipe" });
+  clear(bundle ?? file);
+  try {
+    execFileSync("codesign", [...options, file], { stdio: "pipe" });
+  } catch (first) {
+    clear(bundle ?? file);
+    try { execFileSync("codesign", [...options, file], { stdio: "pipe" }); }
+    catch { throw new Error(`codesign refused ${file}: ${String(first.stderr ?? first.message).trim()}`); }
+  }
 }
+clear(root);
 for (const file of code) execFileSync("codesign", ["--verify", "--strict", file], { stdio: "pipe" });
 // Signing changes Mach-O bytes; the manifest must describe the files sealed into the app.
 const mediaManifest = path.join(root, "media/manifest.json");
