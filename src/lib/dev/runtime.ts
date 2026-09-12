@@ -73,7 +73,7 @@ export function workDb(): Database.Database {
   }
   db.transaction(() => {
     for (const [table, columns] of [
-      ['terminal_sessions', [['exit_signal', 'INTEGER'], ['termination_reason', 'TEXT'], ['finished_at', 'INTEGER'], ['phase', "TEXT NOT NULL DEFAULT ''"], ['last_message', "TEXT NOT NULL DEFAULT ''"]]],
+      ['terminal_sessions', [['exit_signal', 'INTEGER'], ['termination_reason', 'TEXT'], ['finished_at', 'INTEGER'], ['phase', "TEXT NOT NULL DEFAULT ''"], ['last_message', "TEXT NOT NULL DEFAULT ''"], ['origin_ward', "TEXT NOT NULL DEFAULT ''"], ['origin_conv', 'INTEGER']]],
       ['buffer_copies', [['raw', 'BLOB'], ['mode', 'INTEGER']]],
     ] as const) {
       const existing = new Set((db.pragma(`table_info(${table})`) as { name: string }[]).map(c => c.name));

@@ -53,6 +53,10 @@ type Row = {
   sequence: number;
   phase: string;
   last_message: string;
+  /** The Rime ward (and thread) that launched a CLI session: restored with it, so a session
+   *  brought back after a runtime restart still reports to its coordinator. */
+  origin_ward: string;
+  origin_conv: number | null;
 };
 interface Live {
   pty: IPty;
@@ -404,10 +408,10 @@ export async function startSession(
     });
   } catch (error) { launch?.cleanup(); term.dispose(); throw error; }
   try {
-    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',finished_at=NULL,mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active',phase='',last_message='' WHERE id=? AND user_id=?").run(mode, id, user);
+    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',finished_at=NULL,mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active',phase='',last_message='',origin_ward=COALESCE(?,origin_ward),origin_conv=COALESCE(?,origin_conv) WHERE id=? AND user_id=?").run(mode, opts.origin?.ward ?? null, opts.origin?.conv ?? null, id, user);
     else workDb()
       .prepare(
-        "INSERT INTO terminal_sessions(id,user_id,project,kind,mode,title,state,task,assignment,shell,agent_input,cols,rows,is_command) VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?)",
+        "INSERT INTO terminal_sessions(id,user_id,project,kind,mode,title,state,task,assignment,shell,agent_input,cols,rows,is_command,origin_ward,origin_conv) VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?,?,?)",
       )
       .run(
         id,
@@ -423,6 +427,8 @@ export async function startSession(
         cols,
         rows,
         Number(opts.command !== undefined),
+        opts.origin?.ward ?? '',
+        opts.origin?.conv ?? null,
       );
   } catch (error) {
     pty.kill();
@@ -823,6 +829,7 @@ export function restartSession(user: number, id: string) {
     shell: row.shell || undefined,
     title: row.title,
     assignment: row.assignment,
+    origin: row.origin_ward ? { ward: row.origin_ward, ...(row.origin_conv !== null ? { conv: row.origin_conv } : {}) } : undefined,
   }, row);
 }
 
