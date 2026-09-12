@@ -609,6 +609,14 @@ export function validatePages(raw: unknown): PageDef[] | null {
   if (!Array.isArray(raw) || raw.length > MAX_PAGES) return null;
   const seen = new Set<string>();
   const out: PageDef[] = [];
+/** A page id from its title: lowercase, dashes, 24 chars, `-2`/`-3`… past a taken id. */
+export function pageSlug(title: string, taken: PageDef[]): string {
+  const base = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'page';
+  let id = base;
+  for (let n = 2; taken.some((p) => p.id === id); n++) id = `${base}-${n}`;
+  return id;
+}
+
   for (const item of raw) {
     if (typeof item !== 'object' || item === null) return null;
     const { id, title, icon } = item as Record<string, unknown>;

@@ -6,8 +6,9 @@
 // server-side looks at pages; the engine, the bots and the watchers run every
 // ward on every page.
 
-import { DEFAULT_PAGES, MAX_PAGES, validatePages, type PageDef } from '../../lib/wards.ts';
+import { DEFAULT_PAGES, MAX_PAGES, pageSlug, validatePages, type PageDef } from '../../lib/wards.ts';
 import { el, holdToFire, keyboardInUse, q, reducedMotion, toast } from './dom.ts';
+import { icon } from './icon.ts';
 import { menuItem, openMenu } from './menu.ts';
 import { popoutWard, stageWardView } from './ward-view.ts';
 
@@ -56,11 +57,18 @@ export function restage(): void {
 
 function stamp(): void {
   if (popoutWard) { stageWardView(); return; }
-  for (const n of topCards()) n.toggleAttribute('data-wd-off', (n.dataset.page ?? firstPage()) !== current);
+  for (const n of topCards()) {
+    // A page id nothing knows (an undo of a delete re-stamped it) means the first page.
+    const on = n.dataset.page && pages.some((p) => p.id === n.dataset.page) ? n.dataset.page : firstPage();
+    n.toggleAttribute('data-wd-off', on !== current);
+  }
   for (const b of nav?.querySelectorAll<HTMLElement>('[data-page-tab]') ?? []) {
     if (b.dataset.pageTab === current) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   }
+  const more = nav?.querySelector<HTMLElement>('[data-page-more]');
+  const active = nav?.querySelector<HTMLElement>('[data-page-tab][aria-current]');
+  if (more && active) active.after(more);
   placeInk();
 }
 
@@ -189,6 +197,7 @@ export function renderTabs(): void {
     const menu = (e: { clientX: number; clientY: number }) => openMenu(e.clientX, e.clientY, (m) => pageMenu(m, p, b));
     b.addEventListener('contextmenu', (e) => {
       e.preventDefault();
+      e.stopPropagation(); // edit.ts's grid menu listens on <main> and would replace this one
       if ((e as PointerEvent).pointerType !== 'touch') menu(e);
     });
     holdToFire(b, 400, menu);
@@ -200,7 +209,23 @@ export function renderTabs(): void {
   add.title = 'Add page';
   add.setAttribute('aria-label', 'Add page');
   add.addEventListener('click', () => inlineName(add, '', addPage));
-  nav.append(add, el('span', 'app-page-ink'));
+  // The visible way into the page menu (right-click / hold still work): one
+  // chip that stamp() parks after the active tab.
+  const more = el('button', 'app-page app-page-more') as HTMLButtonElement;
+  more.type = 'button';
+  more.dataset.pageMore = '';
+  more.title = 'Page options';
+  more.setAttribute('aria-label', 'Page options');
+  more.setAttribute('aria-haspopup', 'menu');
+  more.append(icon('more'));
+  more.addEventListener('click', () => {
+    const p = pages.find((x) => x.id === current);
+    const chip = nav?.querySelector<HTMLElement>(`[data-page-tab="${current}"]`);
+    if (!p || !chip) return;
+    const r = more.getBoundingClientRect();
+    openMenu(r.left, r.bottom + 4, (m) => pageMenu(m, p, chip));
+  });
+  nav.append(more, add, el('span', 'app-page-ink'));
   stamp();
 }
 
@@ -209,7 +234,8 @@ function pageMenu(m: HTMLElement, p: PageDef, chip: HTMLElement): void {
   m.append(menuItem('edit', 'Rename', () => inlineName(chip, p.title, (t) => renamePage(p, t))));
   if (i > 0) m.append(menuItem('left', 'Move left', () => movePage(p, -1)));
   if (i < pages.length - 1) m.append(menuItem('right', 'Move right', () => movePage(p, 1)));
-  if (pages.length > 1) m.append(menuItem('close', 'Delete page', () => deletePage(p), true));
+  // "Share page…" (sharing) lands here.
+  if (pages.length > 1) m.append(el('hr', 'ctx-sep'), menuItem('trash', 'Delete page', () => deletePage(p), true));
 }
 
 /** Swap a chip for an input; Enter/blur commit, Escape (or a blank) restores the strip. */
@@ -252,13 +278,6 @@ function changed(): void {
   window.dispatchEvent(new Event('fd:pages-changed'));
 }
 
-function slug(title: string): string {
-  const base = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'page';
-  let id = base;
-  for (let n = 2; pages.some((p) => p.id === id); n++) id = `${base}-${n}`;
-  return id;
-}
-
 /** Absent `data-page` means "the first page" — before the first page can
  *  change (a move, a delete), every card gets its page written out. */
 function materialize(): void {
@@ -275,7 +294,7 @@ function addPage(title: string): void {
     renderTabs();
     return;
   }
-  const id = slug(title);
+  const id = pageSlug(title, pages);
   pages = [...pages, { id, title }];
   changed();
   showPage(id);
@@ -298,17 +317,33 @@ function movePage(p: PageDef, dir: -1 | 1): void {
   changed();
 }
 
-/** Deleting a page never deletes wards: they land on the first page. */
+/** Deleting a page never deletes wards: they land on the first page. The
+ *  toast's Undo puts the page back where it was with the same wards (the
+ *  toolbar's undo stack holds layouts only). */
 function deletePage(p: PageDef): void {
   if (pages.length < 2) return;
   materialize();
+  const at = pages.findIndex((x) => x.id === p.id);
+  const moved = topCards().filter((n) => n.dataset.page === p.id).map((n) => n.dataset.wd!);
   pages = pages.filter((x) => x.id !== p.id);
   for (const n of topCards()) if (n.dataset.page === p.id) delete n.dataset.page;
   normalize();
   changed();
   if (current === p.id) showPage(firstPage(), { replace: true });
   else stamp();
-  toast(`Page removed — its wards are on ${pages[0]!.title}.`);
+  const undo = () => {
+    if (pages.some((x) => x.id === p.id) || pages.length >= MAX_PAGES) return;
+    materialize();
+    pages = [...pages.slice(0, at), p, ...pages.slice(at)];
+    for (const id of moved) {
+      const n = grid?.querySelector<HTMLElement>(`:scope > [data-wd="${id}"]`);
+      if (n) n.dataset.page = p.id;
+    }
+    normalize();
+    changed();
+    showPage(p.id);
+  };
+  toast(`Removed ${p.title} — its wards are on ${pages[0]!.title}.`, { label: 'Undo', fn: undo });
 }
 
 // -------------------------------------------------------------------- boot

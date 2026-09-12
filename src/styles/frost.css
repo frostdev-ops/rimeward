@@ -501,6 +501,11 @@ summary {
   padding-inline: 0.6rem;
   color: var(--color-ink-faint);
 }
+/* The ⋯ chip after the active tab (pages.ts): the page menu's visible door. */
+.app-page-more {
+  padding-inline: 0.4rem;
+  color: var(--color-ink-faint);
+}
 /* A card dragged over a tab (edit.ts): lit until the dwell switches page. */
 .app-page[data-drop-hot] {
   color: var(--color-ink);
@@ -533,7 +538,8 @@ summary {
    hold fires is a scroll, so the cards let pan-y through instead of owning
    every touch. No callout/selection on the hold. */
 @media (pointer: coarse) {
-  [data-wd] {
+  [data-wd],
+  .app-page {
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;

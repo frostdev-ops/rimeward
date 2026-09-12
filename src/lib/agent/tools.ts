@@ -14,7 +14,7 @@ import { getDashboard, getPages, saveDashboard } from '../dashboard.ts';
 import { browserId } from '../browser/routing.ts';
 import { browserCall, browserRequest } from '../browser/request.ts';
 import { DOWNLOAD_BYTES, type BrowserDownload } from '../browser/downloads.ts';
-import { validateLayout, validatePages, wardTitle, AGENT_EFFORTS, AGENT_PROVIDERS, isAgentProvider, CATALOG, MAX_H, MAX_PAGES, MAX_W, type PageDef, type WardInstance, type WardSize } from '../wards.ts';
+import { validateLayout, validatePages, wardTitle, pageSlug, AGENT_EFFORTS, AGENT_PROVIDERS, isAgentProvider, CATALOG, MAX_H, MAX_PAGES, MAX_W, type PageDef, type WardInstance, type WardSize } from '../wards.ts';
 import { validateGraph, CHANNEL_RE, type LogicGraph } from '../logic.ts';
 import {
   broadcast,
@@ -242,13 +242,6 @@ function mutatePages(userId: number, fn: (pages: PageDef[], layout: WardInstance
   broadcast(userId, 'layout', { layout: valid, pages: validPages });
   return { ok: true, pages: validPages };
 }
-
-const pageSlug = (title: string, taken: PageDef[]) => {
-  const base = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'page';
-  let id = base;
-  for (let n = 2; taken.some((p) => p.id === id); n++) id = `${base}-${n}`;
-  return id;
-};
 
 // ---------------------------------------------------------------- browser
 

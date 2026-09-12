@@ -1,7 +1,7 @@
 import './_setup.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CATALOG, DEFAULT_LAYOUT, DEFAULT_PAGES, MAX_H, MAX_PAGES, MAX_W, MAX_WARDS, MAX_WARDS_PER_PAGE, pageOf, shownServiceIds, sizeParts, validateLayout, validatePages, nextUp, timerSteps, wardTitle, monthCells, dateSpan, calendarChips, type CalEventLite, type WardInstance, groupTitle } from '../src/lib/wards.ts';
+import { CATALOG, DEFAULT_LAYOUT, DEFAULT_PAGES, MAX_H, MAX_PAGES, MAX_W, MAX_WARDS, MAX_WARDS_PER_PAGE, pageOf, pageSlug, shownServiceIds, sizeParts, validateLayout, validatePages, nextUp, timerSteps, wardTitle, monthCells, dateSpan, calendarChips, type CalEventLite, type WardInstance, groupTitle } from '../src/lib/wards.ts';
 import { GROUPS, TARGETS } from '../src/lib/targets.ts';
 import { getDashboard, getPages, saveDashboard } from '../src/lib/dashboard.ts';
 import { getDb } from '../src/lib/db.ts';
@@ -317,6 +317,16 @@ test('dateSpan: a day, a range, a datetime, and an end before the start', () => 
   assert.deepEqual(dateSpan({ start: '2026-09-05', end: '2026-09-01' }), ['2026-09-05', '2026-09-05']);
   assert.equal(dateSpan({ start: '' }), null);
   assert.equal(dateSpan(undefined), null);
+});
+
+test('pageSlug: lowercase dashes, numbered past a taken id, junk falls back to "page"', () => {
+  assert.equal(pageSlug('Ops & Alerts!', []), 'ops-alerts');
+  assert.equal(pageSlug('Ops & Alerts!', [{ id: 'ops-alerts', title: 'a' }]), 'ops-alerts-2');
+  assert.equal(pageSlug('Ops & Alerts!', [{ id: 'ops-alerts', title: 'a' }, { id: 'ops-alerts-2', title: 'b' }]), 'ops-alerts-3');
+  assert.equal(pageSlug('!!!', []), 'page');
+  const long = pageSlug('x'.repeat(40) + ' y', []);
+  assert.ok(long.length <= 24, long);
+  assert.ok(validatePages([{ id: long, title: 'Long' }]), 'a slug is always a valid page id');
 });
 
 test('legacy notion ward types still validate but are hidden from the catalog', () => {
