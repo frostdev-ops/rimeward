@@ -17,6 +17,7 @@ import { GET as meGet } from '../src/pages/api/me.ts';
 import { GET as notesGet } from '../src/pages/api/notes.ts';
 import { GET as sharesGet, POST as sharesPost } from '../src/pages/api/share/index.ts';
 import { DELETE as shareDelete, GET as shareGet } from '../src/pages/api/share/[id].ts';
+import { PUT as dashboardPut } from '../src/pages/api/dashboard.ts';
 
 const owner = createUser('owner@example.com', 'pw-owner-1');
 const viewer = createUser('viewer@example.com', 'pw-viewer-1');
@@ -233,4 +234,17 @@ test('routes: /api/me and /api/notes inside a share, the share CRUD as owner, gr
   assert.equal((await sharesGet(ctx(owner, 'https://x.invalid/api/share', undefined, shareLocals(book)))).status, 403, 'never from inside a share');
   assert.ok(revokeShare(owner, book.share.id));
   assert.equal(shareScope(book.share.id, viewerS, undefined), 404);
+});
+
+test('PUT /api/dashboard: a shared ward or page must be one of MY shares; a vanished one keeps its card', async () => {
+  const { share } = createShare(owner, { kind: 'ward', target: 'svc', email: 'viewer@example.com' });
+  const put = (user: number, layout: unknown, pages?: unknown) =>
+    dashboardPut(ctx(user, 'https://x.invalid/api/dashboard', { method: 'PUT', body: JSON.stringify({ layout, pages }) }));
+  const shared = [{ i: 's1', type: 'shared', size: '2x2', config: { share: share.id } }];
+  assert.equal((await put(viewer, shared)).status, 200);
+  assert.equal((await put(stranger, shared)).status, 400, 'somebody else’s share');
+  const pages = [{ id: 'home', title: 'Home' }, { id: 'p', title: 'Theirs', share: share.id }];
+  assert.equal((await put(viewer, [{ i: 'w', type: 'weather', size: '1x1' }], pages)).status, 200);
+  assert.equal((await put(stranger, [{ i: 'w', type: 'weather', size: '1x1' }], pages)).status, 400);
+  assert.equal((await put(viewer, [{ i: 's1', type: 'shared', size: '2x2', config: { share: 'gone00000000' } }])).status, 200, 'revoked: the card says so, the layout still saves');
 });

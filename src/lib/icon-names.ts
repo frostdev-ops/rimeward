@@ -86,6 +86,7 @@ export const ICONS = {
   pen: ['✍️', 'pen-line', 'pencil-line', 'pencil', 'pen', 'edit-note'],
   history: ['🕘', 'history', 'clock-counter-clockwise', 'history', 'history', 'history'],
   link: ['🔗', 'link', 'link', 'link', 'link', 'link'],
+  share: ['📤', 'share-2', 'share-network', 'share', 'share', 'share'],
   globe: ['🌐', 'globe', 'globe', 'world', 'global', 'language'],
   image: ['🖼️', 'image', 'image', 'photo', 'gallery', 'image'],
   radio: ['📡', 'radio-tower', 'broadcast', 'antenna', 'wi-fi-router', 'sensors'],

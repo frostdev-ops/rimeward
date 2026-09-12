@@ -329,6 +329,16 @@ test('pageSlug: lowercase dashes, numbered past a taken id, junk falls back to "
   assert.ok(validatePages([{ id: long, title: 'Long' }]), 'a slug is always a valid page id');
 });
 
+test('shared wards and shared pages: the share id is the config, never a first page, junk refused', () => {
+  assert.deepEqual(validateLayout([{ i: 'a', type: 'shared', size: '2x2', config: { share: 'abc123def456' } }])?.[0]?.config, { share: 'abc123def456' });
+  assert.equal(validateLayout([{ i: 'a', type: 'shared', size: '2x2', config: { share: '../x' } }]), null);
+  assert.equal(validateLayout([{ i: 'a', type: 'shared', size: '2x2' }]), null);
+  assert.equal(validatePages([{ id: 'home', title: 'Home' }, { id: 'x', title: 'Theirs', share: 'abc123def456' }])?.[1]?.share, 'abc123def456');
+  assert.equal(validatePages([{ id: 'x', title: 'Theirs', share: 'abc123def456' }])?.[0]?.share, undefined, 'a shared page is never the first page');
+  assert.equal(validatePages([{ id: 'home', title: 'Home' }, { id: 'x', title: 'T', share: 'nope' }])?.[1]?.share, undefined);
+  assert.ok(CATALOG.shared!.legacy, 'placed from the Shared-with-me list, never the picker');
+});
+
 test('legacy notion ward types still validate but are hidden from the catalog', () => {
   const out = validateLayout([
     { i: 'a', type: 'notion-tasks', size: '2x2' },
@@ -336,13 +346,15 @@ test('legacy notion ward types still validate but are hidden from the catalog', 
     { i: 'c', type: 'embed', size: '2x2', config: { url: 'https://x.dev' } },
   ]);
   assert.ok(out);
-  // The exact legacy set: stored layouts and saved graphs may name these, the add dialog never offers them.
+  // The exact legacy set: stored layouts and saved graphs may name these, the add dialog never
+  // offers them. `shared` rides the flag for the second reason only: it is placed from the
+  // dialog's Shared-with-me list, never picked as a type.
   assert.deepEqual(
     Object.entries(CATALOG)
       .filter(([, c]) => c.legacy)
       .map(([t]) => t)
       .sort(),
-    ['checklist', 'embed', 'notion-tasks']
+    ['checklist', 'embed', 'notion-tasks', 'shared']
   );
   assert.equal(CATALOG['notion-db']!.legacy, undefined);
   // The stock dashboard validates and never spends a slot on a legacy type.

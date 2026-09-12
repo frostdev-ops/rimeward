@@ -6,6 +6,7 @@ import { isCommsType } from '../../lib/comms/types.ts';
 import { getDb } from '../../lib/db.ts';
 import { getNoteMeta } from '../../lib/note.ts';
 import { ensureNotebook, linkNote, notebookIdOf } from '../../lib/notebook.ts';
+import { resolveShare } from '../../lib/shares.ts';
 
 export const prerender = false;
 
@@ -18,6 +19,12 @@ export const PUT: APIRoute = async ({ request, locals }) => {
   const layout = validateLayout(body?.layout, pages ?? getPages(locals.user!.userId));
   if (!layout) return Response.json({ error: 'invalid_layout' }, { status: 400 });
   const userId = locals.user!.userId;
+  // A shared ward or page names a share granted to THIS user. One that vanished
+  // (revoked) stays, so its card can say so; one that is somebody else's is refused.
+  const foreign = (id: unknown) => { const s = resolveShare(id); return !!s && s.grantee !== userId; };
+  if (layout.some((w) => w.type === 'shared' && foreign(w.config?.share)) || (pages ?? []).some((p) => p.share && foreign(p.share))) {
+    return Response.json({ error: 'invalid_share' }, { status: 400 });
+  }
   const moves = body?.noteMoves ?? [];
   if (!Array.isArray(moves) || moves.length > 200 || moves.some(m => !m || typeof m.id !== 'string' || typeof m.notebook !== 'string' || !layout.some(w => w.i === m.notebook && w.type === 'notebook'))) {
     return Response.json({ error: 'invalid_note_moves' }, { status: 400 });

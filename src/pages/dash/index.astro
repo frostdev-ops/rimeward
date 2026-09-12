@@ -13,6 +13,7 @@ import RemoteDesktopDialog from '../../components/dashboard/RemoteDesktopDialog.
 import NoteDialog from '../../components/dashboard/NoteDialog.astro';
 import NotebookDialog from '../../components/dashboard/NotebookDialog.astro';
 import WardThemeDialog from '../../components/dashboard/WardThemeDialog.astro';
+import ShareDialog from '../../components/dashboard/ShareDialog.astro';
 import { getDashboard, getPages } from '../../lib/dashboard.ts';
 import { pageOf, wardTitle } from '../../lib/wards.ts';
 import { getGraph, getRuns } from '../../lib/logic-engine.ts';
@@ -89,6 +90,7 @@ const logicJson = JSON.stringify({
   <NoteDialog />
   <NotebookDialog />
   <WardThemeDialog />
+  <ShareDialog />
 
   <script type="application/json" id="layout-data" set:html={layoutJson} />
   <script type="application/json" id="pages-data" data-active-page={runtimeNavigation(userId).activePage} set:html={pagesJson} />

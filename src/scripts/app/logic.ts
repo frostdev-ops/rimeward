@@ -154,14 +154,14 @@ export function ensureStream(): void {
   on('note', (d: { ward?: string; note?: string; meta?: boolean }) => window.dispatchEvent(new CustomEvent('fd:note', { detail: d })));
   // A notebook changed (a note created, filed, archived…): its wards refresh their lists (notebook.ts).
   on('notebook', (d: { notebook?: string }) => window.dispatchEvent(new CustomEvent('fd:notebook', { detail: d })));
-  // Theme knobs apply straight to <html> — no reload has anything to add. The
-  // derivation is imported on demand: changing the theme from the agent is rare
-  // and every dashboard would otherwise carry theme.ts for it.
   // Who is looking at a shared ward (presence.ts); a share view whose owner rearranged reloads.
   on('presence', (d: unknown) => window.dispatchEvent(new CustomEvent('fd:presence', { detail: d })));
   on('reload', () => { if (shareView) location.reload(); });
   // Someone shared something with this user: point at where it lands.
   on('share', (d: { title?: string; owner?: string }) => toast(`${d?.owner ?? 'Someone'} shared “${d?.title ?? 'a ward'}” with you — Add ward › Shared with me.`));
+  // Theme knobs apply straight to <html> — no reload has anything to add. The
+  // derivation is imported on demand: changing the theme from the agent is rare
+  // and every dashboard would otherwise carry theme.ts for it.
   on('theme', (d: unknown) => {
     void Promise.all([import('../../lib/theme.ts'), import('./theme-live.ts')]).then(([t, live]) =>
       live.applyThemeLive(t.normalizeTheme(d as Record<string, unknown>))

@@ -30,6 +30,7 @@ const groups = (Object.keys(CATEGORIES) as Category[])
       <div class="aw-cats" data-aw-cats role="group" aria-label="Category">
         <button type="button" class="aw-cat" data-cat="" aria-pressed="true">All</button>
         {groups.map(([cat]) => <button type="button" class="aw-cat" data-cat={cat} aria-pressed="false">{CATEGORIES[cat]}</button>)}
+        <button type="button" class="aw-cat" data-cat="shared" aria-pressed="false">Shared with me</button>
       </div>
       <div class="aw-catalog" data-aw-catalog>
         {groups.map(([cat, es]) => (
@@ -44,6 +45,9 @@ const groups = (Object.keys(CATEGORIES) as Category[])
             ))}
           </>
         ))}
+        {/* Wards and pages other users shared with this one (lib/shares.ts): edit.ts fills the list on open. */}
+        <p class="aw-group" data-cat="shared">Shared with me</p>
+        <div class="contents" data-aw-shared data-cat="shared"></div>
       </div>
     </div>
 

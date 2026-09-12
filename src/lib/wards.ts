@@ -112,15 +112,15 @@ export interface CatalogEntry {
   /** Has per-type config: validateLayout stores the rebuilt config, the card
    *  gets a ⚙ and the context menu a Configure… entry. */
   configurable?: true;
+  /** The most this type may be shared as (lib/shares.ts): `edit` = a collaborator may
+   *  write (a document) or drive (a browser); `view` = watch only; absent = never shared. */
+  share?: 'view' | 'edit';
   /** Add-dialog group. */
   category: Category;
   /** SEMANTIC vocabulary — what a person might call it or want from it:
    *  synonyms, tasks, moods. Searched with title + blurb (catalog-search.ts). */
   concepts: string[];
   /** FUNCTIONAL vocabulary — what the ward DOES: data read/written, verbs, the
-  /** The most this type may be shared as (lib/shares.ts): `edit` = a collaborator may
-   *  write (a document) or drive (a browser); `view` = watch only; absent = never shared. */
-  share?: 'view' | 'edit';
    *  logic it offers. The trigger/action labels anchored on the type and its
    *  link provider are appended by the caller (registryDoes): never hand-write
    *  a registry label such as "reset" here — the test proves the wiring with it. */
@@ -147,13 +147,13 @@ export const CATALOG: Record<string, CatalogEntry> = {
   terminal: { title: 'Terminal', defaultSize: '3x3', icon: 'bot', blurb: 'A live shell, Codex, or Claude Code session on your desktop.', multi: true, category: 'rime', concepts: ['shell','console','terminal','codex','claude','command'], does: ['run commands','control sessions','inspect output'] },
   changes: { title: 'Changes', defaultSize: '2x3', icon: 'folders', blurb: 'Git status, diffs, and worktrees for a desktop project.', multi: true, category: 'rime', concepts: ['git','diff','changes','worktree','branch','repository'], does: ['review changes','inspect status','manage worktrees'] },
   weather: {
+    share: 'view',
     title: 'Weather', defaultSize: '2x1', icon: 'weather', blurb: 'Now and 3 days for a place you pick; at 2x2 the next 24 hours and the week.', multi: true, configurable: true, category: 'glance',
     concepts: ['forecast', 'temperature', 'rain', 'snow', 'sun', 'clouds', 'wind', 'humidity', 'outlook', 'today', 'tomorrow', 'umbrella', 'cold', 'hot', 'conditions', '3 day', 'week', 'location', 'city', 'place'],
     does: ['reads the open-meteo forecast', 'shows current conditions and a three-day outlook', 'triggers logic when the weather turns', 'daily weather report', 'temperature crosses a threshold'],
   },
   mail: {
     title: 'Inbox', defaultSize: '1x1', icon: 'mail', blurb: 'Every linked mailbox in one ward — 1x1 is the unread count, taller is the inbox with reader and compose.', multi: true, configurable: true, category: 'mail',
-    share: 'view',
     concepts: ['inbox', 'email', 'e-mail', 'messages', 'unread', 'gmail', 'google mail', 'outlook', 'microsoft', 'zoho', 'imap', 'pop3', 'smtp', 'mailbox', 'compose', 'reply', 'archive', 'sender', 'subject', 'badge', 'count', 'unified', 'all accounts'],
     does: ['reads every linked mailbox in one list', 'counts unread mail', 'opens and reads a message', 'composes replies and sends mail', 'archives a message', 'fires logic when new mail arrives', 'filters by account'],
   },
@@ -188,76 +188,76 @@ export const CATALOG: Record<string, CatalogEntry> = {
     does: ['lists recently edited notion pages', 'opens a page', 'fires logic when any page is created or edited'],
   },
   applink: {
+    share: 'view',
     title: 'Launcher', defaultSize: '1x1', icon: 'link', blurb: 'One link, or up to twelve: icon, host, live status dot each.', multi: true, configurable: true, category: 'glance',
     concepts: ['launcher', 'link', 'shortcut', 'bookmark', 'app', 'url', 'website', 'icon', 'dock', 'favourites', 'favorites', 'quick access', 'open', 'jump', 'status dot', 'uptime'],
     does: ['opens a url in a new tab', 'shows an icon per link', 'shows a live status dot from a monitored service', 'holds up to twelve links'],
   },
   browser: {
+    share: 'edit',
     title: 'Browser', defaultSize: '3x3', icon: 'globe', blurb: 'A real browser you and Rime both drive — logins stick.', multi: true, configurable: true, category: 'rime',
-    share: 'view',
     concepts: ['browser', 'chromium', 'chrome', 'web', 'website', 'page', 'tab', 'tabs', 'login', 'session', 'cookies', 'remote', 'headless', 'browse', 'surf', 'url', 'address bar', 'rime drives it'],
     does: ['drives a real headless chromium', 'keeps logins per ward', 'rime reads and acts on the same page', 'opens tabs and navigates', 'types clicks and scrolls', 'expands to a desktop-sized page', 'runs on this server or browserbase', 'runs on your computer through the rimeward app', 'egresses from your home ip'],
   },
   embed: {
     title: 'Embed', defaultSize: '2x2', icon: 'image', blurb: 'Any http(s) page in a sandboxed frame.', multi: true, legacy: true, configurable: true, category: 'rime',
-    share: 'edit',
     concepts: ['embed', 'iframe', 'frame', 'web page', 'website', 'url', 'external', 'ward', 'view'],
     does: ['shows any http page in a sandboxed frame', 'no login persistence', 'sites that refuse embedding stay blank'],
   },
   'service-group': {
+    share: 'view',
     title: 'Services', defaultSize: '3x2', icon: 'folders', blurb: 'A group or custom set — wards, or a dots wall. Host cpu/mem/disk can be members.', multi: true, configurable: true, category: 'glance',
     concepts: ['services', 'status', 'uptime', 'monitor', 'health', 'up', 'down', 'latency', 'processes', 'containers', 'pm2', 'docker', 'systemd', 'group', 'board', 'dots', 'what is down'],
     does: ['shows a group or custom set of monitored services', 'shows up down and latency live', 'sparklines of latency', 'fires logic when any service in the group changes', 'host metrics as rows'],
   },
   incidents: {
-    title: 'Incidents', defaultSize: '1x1', icon: 'incident', blurb: 'What went down and came back — live changes and the last 24h of outages.', category: 'glance',
     share: 'view',
+    title: 'Incidents', defaultSize: '1x1', icon: 'incident', blurb: 'What went down and came back — live changes and the last 24h of outages.', category: 'glance',
     concepts: ['incidents', 'outages', 'downtime', 'went down', 'came back', 'flapping', 'history', 'last 24 hours', 'status', 'uptime', 'reliability', 'postmortem', 'alerts', 'what broke', 'sla'],
     does: ['lists what went down and came back', 'shows live status changes', 'sums downtime over the last 24 hours', 'reads status history'],
   },
   chart: {
-    title: 'Chart', defaultSize: '2x2', icon: 'chart', blurb: 'Plot any data source over time.', multi: true, configurable: true, category: 'glance',
     share: 'view',
+    title: 'Chart', defaultSize: '2x2', icon: 'chart', blurb: 'Plot any data source over time.', multi: true, configurable: true, category: 'glance',
     concepts: ['chart', 'graph', 'plot', 'line', 'area', 'bars', 'history', 'trend', 'over time', 'latency', 'uptime', 'cpu', 'memory', 'disk', 'temperature', 'rain', 'sparkline', 'analytics', 'metrics'],
     does: ['plots service latency or uptime history', 'plots host cpu memory or disk', 'plots the weather forecast', 'line area or bar chart', 'picks a lookback window'],
   },
   timer: {
-    title: 'Timer', defaultSize: '1x1', icon: 'timer', blurb: 'Server-side countdown — fires logic when done.', multi: true, configurable: true, category: 'logic',
     share: 'view',
+    title: 'Timer', defaultSize: '1x1', icon: 'timer', blurb: 'Server-side countdown — fires logic when done.', multi: true, configurable: true, category: 'logic',
     concepts: ['timer', 'countdown', 'stopwatch', 'alarm', 'pomodoro', 'focus', 'break', 'minutes', 'seconds', 'remind', 'reminder', 'routine', 'interval', 'schedule', 'every', 'clock', 'delay', 'wait'],
     does: ['counts down on the server', 'fires logic when it finishes', 'starts pauses and restarts from logic', 'runs every n minutes', 'runs at a time of day', 'keeps going with the tab closed'],
   },
   button: {
     title: 'Button', defaultSize: '1x1', icon: 'button', blurb: 'One tap fires your logic — wire it up in Logic mode.', multi: true, configurable: true, category: 'logic',
-    share: 'view',
     concepts: ['button', 'switch', 'trigger', 'tap', 'press', 'click', 'manual', 'start', 'go', 'run', 'panel', 'remote', 'hotkey', 'launch', 'kick off', 'one tap'],
     does: ['fires logic when pressed', 'one tap fires your automations', 'press and hold on touch', 'shows the wired rules and the last run'],
   },
   note: {
+    share: 'edit',
     title: 'Notepad', defaultSize: '2x2', icon: 'note', blurb: 'Write or draw; Rime reads your handwriting. Expand it into a full editor.', multi: true, configurable: true, category: 'write',
     concepts: ['notepad', 'note', 'notes', 'scratch', 'scratchpad', 'write', 'writing', 'draw', 'drawing', 'sketch', 'ink', 'pen', 'handwriting', 'stylus', 'journal', 'memo', 'editor', 'rich text', 'markdown', 'paper', 'doodle', 'whiteboard'],
     does: ['stores rich text and ink strokes', 'pen and eraser drawing', 'rime transcribes handwriting to text', 'runs writing commands on the text', 'expands into a full editor', 'anchors schedules every n minutes or at a time of day'],
   },
   notebook: {
-    title: 'Notebook', defaultSize: '2x2', icon: 'notebook', blurb: 'Notes in sections with tags, pins, saved views and search — the notepad, organized.', multi: true, configurable: true, category: 'write',
     share: 'edit',
+    title: 'Notebook', defaultSize: '2x2', icon: 'notebook', blurb: 'Notes in sections with tags, pins, saved views and search — the notepad, organized.', multi: true, configurable: true, category: 'write',
     concepts: ['notebook', 'notes', 'journal', 'diary', 'wiki', 'knowledge base', 'zettelkasten', 'second brain', 'sections', 'chapters', 'tags', 'pinned', 'archive', 'trash', 'search', 'writing', 'documents', 'binder', 'collection', 'organize', 'outline', 'index'],
     does: ['organizes notes into sections and tags', 'searches titles text and tags', 'pins and orders notes by hand', 'saves filtered sorted views as list table or cards', 'archives and trashes notes with restore and delete forever', 'links an existing notepad document', 'generates an index of the notebook', 'opens a full editor for each note', 'links notes to each other and lists backlinks', 'defines typed properties per notebook', 'starts notes from templates', 'answers questions from the notes', 'syncs notes between the server and paired desktops'],
   },
   checklist: {
     title: 'Checklist', defaultSize: '2x2', icon: 'check', blurb: 'Same list, compact — a second view of any database.', link: 'notion', multi: true, legacy: true, configurable: true, category: 'notion',
-    share: 'edit',
     concepts: ['checklist', 'tasks', 'todo', 'tick', 'done', 'list'],
     does: ['reads a notion database as a checklist', 'checks off items', 'fires logic when an item is checked'],
   },
   flow: {
+    share: 'view',
     title: 'Flow', defaultSize: '2x2', icon: 'flow', blurb: 'Packets travel ward to ward through your logic.', multi: true, category: 'logic',
     concepts: ['flow', 'packets', 'pipeline', 'queue', 'channel', 'kanban', 'stages', 'inbox outbox', 'workflow', 'routing', 'items', 'cards', 'conveyor', 'sorter', 'tickets', 'messages'],
     does: ['holds packets in channels', 'emits packets from logic', 'moves packets ward to ward', 'fires logic when a packet arrives or passes', 'passes waiting packets along', 'completes and annotates packets', 'sorts packets with a model'],
   },
   agent: {
     title: 'Rime', defaultSize: '2x4', icon: 'rime', blurb: 'Rime — an AI with real tools over your wards, logic and Notion.', multi: true, configurable: true, category: 'rime',
-    share: 'view',
     concepts: ['rime', 'ai', 'assistant', 'agent', 'chat', 'bot', 'llm', 'gpt', 'model', 'openrouter', 'codex', 'ask', 'talk', 'help', 'automation', 'tools', 'shell', 'web search', 'browse'],
     does: ['chats with a model that has real tools', 'reads and edits your wards and logic', 'reads and writes notion', 'runs shell commands in a sandbox', 'searches the web', 'drives the browser ward', 'wakes on a schedule or a trigger', 'answers a question from logic', 'confirms before sending mail'],
   },
@@ -312,19 +312,26 @@ export const CATALOG: Record<string, CatalogEntry> = {
     does: ['reads your teams chats or a team\'s channels through microsoft graph', 'posts as you in a chat or channel', 'polls the watched conversations every minute', 'replies in a channel thread', 'creates a channel sets a chat topic adds a member', 'soft-deletes a message', 'rime reads and answers your teams chats'],
   },
   spacer: {
+    share: 'view',
     title: 'Spacer', defaultSize: '1x1', icon: 'square', blurb: 'An empty slot — invisible, or glass, a lens, an aurora, a scene; or a labelled rule between sections.', multi: true, configurable: true, category: 'layout',
     concepts: ['spacer', 'gap', 'blank', 'empty', 'padding', 'placeholder', 'glass', 'lens', 'magnify', 'aurora', 'scene', 'decoration', 'effect', 'layout', 'align'],
     does: ['takes a grid slot with no data', 'wears glass a lens an aurora or an animated scene', 'pushes wards into place', 'shows the page background through it'],
   },
+  shared: {
+    // Not superseded: `legacy` keeps it out of the picker grid and the search — a shared
+    // ward is placed from the dialog's "Shared with me" list (edit.ts), never chosen as a type.
+    title: 'Shared with me', defaultSize: '2x2', icon: 'share', blurb: 'A ward someone shared with you — theirs to arrange, yours to place.', multi: true, legacy: true, category: 'layout',
+    concepts: ['shared', 'share', 'collaborate', 'someone else', 'friend', 'household', 'team', 'guest', 'their ward', 'invite'],
+    does: ['shows a ward another user shared', 'stays live like theirs', 'moves and resizes on your page', 'never changes what is theirs'],
+  },
   container: {
-    // configurable with no knobs: the ⚙ is how a group is renamed (the title field).
     share: 'view',
+    // configurable with no knobs: the ⚙ is how a group is renamed (the title field).
     title: 'Group', defaultSize: '2x1', icon: 'folder', blurb: 'A folder of wards — tap to open it over the board.', multi: true, configurable: true, category: 'layout',
     concepts: ['group', 'folder', 'container', 'nest', 'bundle', 'collection', 'stack', 'collapse', 'fold', 'tidy', 'organise', 'organize', 'popover', 'drawer', 'category'],
     does: ['holds other wards', 'opens as a popover over the board', 'drag wards in and out', 'logic wires reach the wards inside', 'keeps its own size'],
   },
 };
-    share: 'view',
 
 /** The looks a spacer can wear. none = no chrome at all; the rest
  *  give it a surface (glass), a lens over the page background (magnify), the
@@ -620,16 +627,15 @@ export interface PageDef {
   project?: string;
   /** The computer that owns this project's files. No filesystem path is shared. */
   device?: string;
+  /** A page someone else shared with this user (lib/shares.ts): the tab shows THEIR page;
+   *  none of this user's wards live on it, and it is never the first page. */
+  share?: string;
 }
+/** The id shape of a share (lib/shares.ts SHARE_ID_RE, repeated here: this module stays db-free). */
+const SHARE_RE = /^[a-z0-9]{12}$/;
 /** What an empty stored page list means. */
 export const DEFAULT_PAGES: PageDef[] = [{ id: 'home', title: 'Home' }];
 
-/** The page list as stored: null on anything malformed, DEFAULT_PAGES for an
- *  empty list (the column default). An unknown icon is dropped, not refused. */
-export function validatePages(raw: unknown): PageDef[] | null {
-  if (!Array.isArray(raw) || raw.length > MAX_PAGES) return null;
-  const seen = new Set<string>();
-  const out: PageDef[] = [];
 /** A page id from its title: lowercase, dashes, 24 chars, `-2`/`-3`… past a taken id. */
 export function pageSlug(title: string, taken: PageDef[]): string {
   const base = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'page';
@@ -638,6 +644,12 @@ export function pageSlug(title: string, taken: PageDef[]): string {
   return id;
 }
 
+/** The page list as stored: null on anything malformed, DEFAULT_PAGES for an
+ *  empty list (the column default). An unknown icon is dropped, not refused. */
+export function validatePages(raw: unknown): PageDef[] | null {
+  if (!Array.isArray(raw) || raw.length > MAX_PAGES) return null;
+  const seen = new Set<string>();
+  const out: PageDef[] = [];
   for (const item of raw) {
     if (typeof item !== 'object' || item === null) return null;
     const { id, title, icon } = item as Record<string, unknown>;
@@ -647,9 +659,12 @@ export function pageSlug(title: string, taken: PageDef[]): string {
     const p: PageDef = { id, title: title.trim() };
     if (typeof (item as PageDef).device === 'string' && /^[a-f0-9-]{36}$/.test((item as PageDef).device!)) p.device = (item as PageDef).device;
     if (typeof (item as PageDef).project === 'string' && /^[\w-]{1,80}$/.test((item as PageDef).project!)) p.project = (item as PageDef).project;
+    if (typeof (item as PageDef).share === 'string' && SHARE_RE.test((item as PageDef).share!)) p.share = (item as PageDef).share;
     if (typeof icon === 'string' && icon in ICONS) p.icon = icon as IconId;
     out.push(p);
   }
+  // Absent `page` on a ward means the first page: a shared page there would swallow them.
+  if (out[0]?.share) delete out[0].share;
   return out.length ? out : DEFAULT_PAGES;
 }
 
@@ -810,6 +825,9 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
       const url = httpUrl(raw.url);
       return url ? { url } : null;
     }
+    // Someone else's ward on this dashboard (lib/shares.ts): the share id IS the config.
+    case 'shared':
+      return typeof raw.share === 'string' && SHARE_RE.test(raw.share) ? { share: raw.share } : null;
     // A place: both coordinates, in range — else no place, and the ward uses
     // the instance fallback if there is one (lib/weather.ts). Never null: an
     // unplaced weather ward is still a ward. `name` is what the title shows.
@@ -1025,7 +1043,7 @@ export function validateLayout(raw: unknown, pages?: PageDef[]): WardInstance[] 
     if (tt) w.theme = tt;
     const cfg = validateConfig(type, typeof config === 'object' && config !== null ? (config as Record<string, unknown>) : {});
     if (cfg === null) return null;
-    if (CATALOG[type].configurable) w.config = cfg;
+    if (CATALOG[type].configurable || type === 'shared') w.config = cfg;
     out.push(w);
   }
   // Nesting is one level: a pointer at anything but a container (a removed

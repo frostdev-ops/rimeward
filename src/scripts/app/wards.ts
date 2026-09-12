@@ -448,6 +448,37 @@ function renderEmbed(w: WardInstance): void {
   b.classList.remove('overflow-y-auto');
 }
 
+/** A ward another user shared (lib/shares.ts): the share view, in a frame, in this
+ *  user's theme. ponytail: one app instance per pinned share; render shares in the
+ *  grid natively if a dashboard ever pins a dozen. */
+function renderShared(w: WardInstance): void {
+  const b = body(w.i);
+  if (!b) return;
+  const id = typeof w.config?.share === 'string' ? w.config.share : '';
+  void getJson(`/api/share/${encodeURIComponent(id)}`).then(({ status, data }) => {
+    if (body(w.i) !== b) return;
+    if (status !== 200) { note(w.i, 'This share was revoked.'); return; }
+    const info = data as { title: string; owner: string; role: string };
+    const head = document.querySelector(`[data-wd="${CSS.escape(w.i)}"] [data-wd-title]`);
+    if (head && !w.title) head.textContent = `${info.title} · ${info.owner}`;
+    b.textContent = '';
+    const bar = el('div', 'flex items-center justify-end gap-2 text-[10px] text-ink-faint');
+    const open = el('a', 'link', 'Open') as HTMLAnchorElement;
+    open.href = `/s/${id}`;
+    open.target = '_blank';
+    open.rel = 'noopener';
+    bar.append(el('span', undefined, `from ${info.owner} · can ${info.role}`), open);
+    const frame = document.createElement('iframe');
+    frame.className = 'min-h-0 w-full flex-1 rounded border-0';
+    frame.title = `${info.title} — shared by ${info.owner}`;
+    frame.setAttribute('loading', 'lazy');
+    frame.src = `/s/${id}?theme=mine&embed=1`;
+    b.append(bar, frame);
+    b.classList.add('flex', 'flex-col');
+    b.classList.remove('overflow-y-auto');
+  });
+}
+
 // --------------------------------------------------------- spacer / group
 
 /** Live scene canvases by ward id — destroyed on repaint and on unboot: a
@@ -546,6 +577,7 @@ export const RENDERERS: Record<string, Renderer> = {
   'notion-recent': { intervalMs: 5 * 60_000, render: (w) => renderNotionRecent(w.i, rowsOf(w)) },
   applink: { render: renderApplink },
   embed: { render: renderEmbed },
+  shared: { render: renderShared },
   spacer: { render: renderFx, stop: stopScene },
   // A group's body IS the nested grid — Ward.astro and edit.ts build it,
   // and nothing here may ever wipe it (see rerenderInstance).

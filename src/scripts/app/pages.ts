@@ -10,12 +10,15 @@ import { DEFAULT_PAGES, MAX_PAGES, pageSlug, validatePages, type PageDef } from 
 import { el, holdToFire, keyboardInUse, q, reducedMotion, toast } from './dom.ts';
 import { icon } from './icon.ts';
 import { menuItem, openMenu } from './menu.ts';
+import { canShare, openShareDialog } from './share.ts';
 import { popoutWard, stageWardView } from './ward-view.ts';
 
 let pages: PageDef[] = DEFAULT_PAGES;
 let current = '';
 let nav: HTMLElement | null = null;
 let grid: HTMLElement | null = null;
+/** The stage of a page shared WITH this user: their page, in a frame (lib/shares.ts). */
+let frame: HTMLIFrameElement | null = null;
 const pageStorageKey = () => `fd-page:${document.querySelector<HTMLMetaElement>('meta[name="rimeward-runtime-base"]')?.content ?? "server"}`;
 const subs = new Set<(id: string, prev: string) => void>();
 
@@ -57,10 +60,19 @@ export function restage(): void {
 
 function stamp(): void {
   if (popoutWard) { stageWardView(); return; }
+  // A shared page is someone else's: none of these cards is on it.
+  const shared = pages.find((p) => p.id === current)?.share ?? '';
   for (const n of topCards()) {
     // A page id nothing knows (an undo of a delete re-stamped it) means the first page.
     const on = n.dataset.page && pages.some((p) => p.id === n.dataset.page) ? n.dataset.page : firstPage();
-    n.toggleAttribute('data-wd-off', on !== current);
+    n.toggleAttribute('data-wd-off', !!shared || on !== current);
+  }
+  if (frame) {
+    frame.hidden = !shared;
+    if (frame.dataset.share !== shared) {
+      frame.dataset.share = shared;
+      frame.src = shared ? `/s/${shared}?theme=mine&embed=1` : 'about:blank';
+    }
   }
   for (const b of nav?.querySelectorAll<HTMLElement>('[data-page-tab]') ?? []) {
     if (b.dataset.pageTab === current) b.setAttribute('aria-current', 'page');
@@ -234,8 +246,13 @@ function pageMenu(m: HTMLElement, p: PageDef, chip: HTMLElement): void {
   m.append(menuItem('edit', 'Rename', () => inlineName(chip, p.title, (t) => renamePage(p, t))));
   if (i > 0) m.append(menuItem('left', 'Move left', () => movePage(p, -1)));
   if (i < pages.length - 1) m.append(menuItem('right', 'Move right', () => movePage(p, 1)));
-  // "Share page…" (sharing) lands here.
-  if (pages.length > 1) m.append(el('hr', 'ctx-sep'), menuItem('trash', 'Delete page', () => deletePage(p), true));
+  if (p.share) m.append(menuItem('share', 'Open shared page', () => window.open(`/s/${p.share}`, '_blank', 'noopener')));
+  else {
+    const item = menuItem('share', 'Share page…', () => openShareDialog({ kind: 'page', target: p.id, title: p.title })) as HTMLButtonElement;
+    if (!canShare()) { item.disabled = true; item.title = 'Sharing needs a server'; }
+    m.append(item);
+  }
+  if (pages.length > 1) m.append(el('hr', 'ctx-sep'), menuItem('trash', p.share ? 'Remove page' : 'Delete page', () => deletePage(p), true));
 }
 
 /** Swap a chip for an input; Enter/blur commit, Escape (or a blank) restores the strip. */
@@ -300,6 +317,16 @@ function addPage(title: string): void {
   showPage(id);
 }
 
+/** A page someone shared with this user becomes a tab of their page (never the first). */
+export function addSharedPage(title: string, share: string): void {
+  if (pages.length >= MAX_PAGES) { toast(`Up to ${MAX_PAGES} pages.`, undefined, true); return; }
+  if (pages.some((p) => p.share === share)) { showPage(pages.find((p) => p.share === share)!.id); return; }
+  const id = pageSlug(title, pages);
+  pages = [...pages, { id, title, share }];
+  changed();
+  showPage(id);
+}
+
 function renamePage(p: PageDef, title: string): void {
   pages = pages.map((x) => (x.id === p.id ? { ...x, title } : x));
   changed();
@@ -312,6 +339,7 @@ function movePage(p: PageDef, dir: -1 | 1): void {
   materialize();
   const next = [...pages];
   [next[i], next[j]] = [next[j]!, next[i]!];
+  if (next[0]!.share) { toast('A shared page cannot be your first page.', undefined, true); return; }
   pages = next;
   normalize();
   changed();
@@ -322,10 +350,14 @@ function movePage(p: PageDef, dir: -1 | 1): void {
  *  toolbar's undo stack holds layouts only). */
 function deletePage(p: PageDef): void {
   if (pages.length < 2) return;
+  if (!p.share && pages.filter((x) => !x.share).length < 2) { toast('Keep at least one page of your own.', undefined, true); return; }
   materialize();
   const at = pages.findIndex((x) => x.id === p.id);
   const moved = topCards().filter((n) => n.dataset.page === p.id).map((n) => n.dataset.wd!);
   pages = pages.filter((x) => x.id !== p.id);
+  // The first page must be this user's own (absent data-page means the first page).
+  const own = pages.findIndex((x) => !x.share);
+  if (own > 0) pages = [pages[own]!, ...pages.filter((_, k) => k !== own)];
   for (const n of topCards()) if (n.dataset.page === p.id) delete n.dataset.page;
   normalize();
   changed();
@@ -352,6 +384,10 @@ export function bootPages(): void {
   grid = q('#wd-grid');
   nav = q('#wd-pages');
   if (!grid) return;
+  frame = el('iframe', 'wd-share-frame') as HTMLIFrameElement;
+  frame.hidden = true;
+  frame.title = 'Shared page';
+  grid.after(frame);
   try {
     pages = validatePages(JSON.parse(q('#pages-data')?.textContent ?? '[]')) ?? DEFAULT_PAGES;
   } catch {

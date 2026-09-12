@@ -1,0 +1,39 @@
+---
+// Share one ward or page (lib/shares.ts): who holds it and what they may do, and
+// the anyone-with-the-link section when the instance allows it. Wired by
+// scripts/app/share.ts, opened from a ward's or a page tab's menu.
+import Icon from '../Icon.astro';
+---
+
+<dialog id="share-dialog" class="fd-dialog">
+  <form method="dialog" class="flex flex-col gap-3 p-4" data-sh-form>
+    <div class="flex items-center justify-between gap-2">
+      <h2 class="section-title truncate" data-sh-title>Share</h2>
+      <button type="button" class="btn min-h-0 px-2 py-1 text-xs" data-sh-close aria-label="Close"><Icon id="close" /></button>
+    </div>
+    <p class="text-xs text-ink-faint">People you share with see it live, in their own dashboard. You keep the layout, the settings and the leylines.</p>
+
+    <div class="flex flex-col gap-1" data-sh-people></div>
+    <div class="flex items-end gap-2">
+      <label class="flex-1 text-[10px] text-ink-faint">Email of an account here<input data-sh-email type="email" class="input" placeholder="name@example.com" autocomplete="off" spellcheck="false" /></label>
+      <label class="text-[10px] text-ink-faint">Can<select data-sh-role class="input"><option value="view">view</option><option value="edit">edit</option></select></label>
+      <button type="button" class="btn min-h-0 px-2 py-1 text-xs" data-sh-add>Add</button>
+    </div>
+
+    <div class="flex flex-col gap-2" data-sh-links>
+      <p class="label">Anyone with the link <span class="text-ink-faint">(view only)</span></p>
+      <div class="flex flex-col gap-1" data-sh-link-rows></div>
+      <div class="flex items-end gap-2">
+        <label class="text-[10px] text-ink-faint">Expires<select data-sh-expiry class="input"><option value="0">never</option><option value="86400">in a day</option><option value="604800">in a week</option><option value="2592000">in 30 days</option></select></label>
+        <button type="button" class="btn min-h-0 px-2 py-1 text-xs" data-sh-link>Create link</button>
+      </div>
+      <div class="flex items-center gap-2" data-sh-token hidden>
+        <input type="text" class="input flex-1 text-xs" readonly data-sh-token-url aria-label="Share link" />
+        <button type="button" class="btn min-h-0 px-2 py-1 text-xs" data-sh-copy>Copy</button>
+      </div>
+      <p class="text-[10px] text-ink-faint" data-sh-token-hint hidden>Copy it now — the link is shown once. Revoke it here any time.</p>
+    </div>
+    <p class="text-xs text-ink-faint" data-sh-links-off hidden></p>
+    <p class="text-xs text-err" data-sh-err hidden></p>
+  </form>
+</dialog>

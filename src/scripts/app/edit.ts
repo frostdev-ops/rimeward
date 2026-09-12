@@ -16,8 +16,9 @@ import { ACTIONS, TRIGGERS } from '../../lib/logic.ts';
 import { registryDoes, searchCatalog } from '../../lib/catalog-search.ts';
 import { TAB_ID, bootInstance, readLayout, refreshWardView, rerenderInstance, unbootInstance } from './wards.ts';
 import { el, getJson, holdToFire, keyboardInUse, newId, normalizeUrl, postJson, q, reducedMotion, toast } from './dom.ts';
+import { canShare, openShareDialog } from './share.ts';
 import { closeMenu, menuItem, openMenu } from './menu.ts';
-import { currentPage, firstPage, pageOfCard, publishPages, readPages, restage, showPage } from './pages.ts';
+import { currentPage, firstPage, pageOfCard, publishPages, readPages, restage, showPage, addSharedPage } from './pages.ts';
 import type { PageDef } from '../../lib/wards.ts';
 import { popOutWard } from './ward-window.ts';
 import { popoutWard } from './ward-view.ts';
@@ -445,6 +446,7 @@ function moveInto(node: HTMLElement, parent: HTMLElement): void {
 
 /** Another page: restamp, restage (the card leaves this stage), commit. */
 function moveToPage(node: HTMLElement, page: string): void {
+  if (readPages().find((p) => p.id === page)?.share) { toast('That page is shared with you — its owner arranges it.', undefined, true); return; }
   flip(() => {
     stampPage(node, page === firstPage() ? undefined : page);
     restage();
@@ -1479,6 +1481,11 @@ function wardMenu(x: number, y: number, node: HTMLElement, w: WardInstance): voi
       }
     }
     if (CATALOG[w.type]?.configurable) m.append(menuItem('settings', 'Configure…', () => openDialog(w)));
+    if (CATALOG[w.type]?.share) {
+      const item = menuItem('share', 'Share…', () => openShareDialog({ kind: 'ward', target: w.i, title: wardTitle(w) })) as HTMLButtonElement;
+      if (!canShare()) { item.disabled = true; item.title = 'Sharing needs a server'; }
+      m.append(item);
+    }
     m.append(menuItem('eye', w.hidden ? 'Show on dashboard' : 'Hide (Edit/Logic only)', () => toggleHidden(node, w)));
     m.append(menuItem('palette', 'Theme…', () => openThemeDialog(node, w)));
     if (!isEditing()) m.append(menuItem('route', 'Leylines…', () => window.dispatchEvent(new CustomEvent('fd:leylines', { detail: { ward: w.i } }))));
@@ -2237,6 +2244,7 @@ function openDialog(existing?: WardInstance, into: HTMLElement | null = null): v
   // Search + chips + grid hide together on the configure path (which also
   // keeps the box's autofocus unreachable there).
   q('[data-aw-picker]', els.dialog)!.hidden = !!existing;
+  if (!existing) void loadShared(els.dialog);
   resetPicker();
   if (existing) {
     selectCard(els.dialog, existing.type);
@@ -2463,6 +2471,11 @@ function bootDialog(): void {
   npPage?.addEventListener('change', () => void loadPageProps(dialog, npPage.value, []));
 
   q('[data-aw-submit]', dialog)!.addEventListener('click', () => {
+    if (!editingId && readPages().find((p) => p.id === currentPage())?.share) {
+      err.textContent = 'This page is shared with you — its owner arranges it. Switch to one of your pages first.';
+      err.classList.remove('hidden');
+      return;
+    }
     const t = editingId ? state.get(editingId)!.type : type.value;
     const cfg = readConfig(dialog, t);
     if (cfg === null) {
@@ -2502,23 +2515,57 @@ function bootDialog(): void {
       if (title.value.trim()) w.title = title.value.trim();
       if (Object.keys(cfg).length > 0) w.config = cfg;
       if (Object.keys(secrets).length) pendingSecrets.set(w.i, secrets);
-      if (currentPage() !== firstPage()) w.page = currentPage(); // layoutOf strips it again if it lands in a group
-      state.set(w.i, w);
-      const shell = newShell(w);
-      if (shell) {
-        // Groups do not nest: one lands on the page grid whatever asked for it.
-        const into = addInto?.isConnected && t !== 'container' ? addInto : grid;
-        flip(() => into.append(shell));
-        applyTitle(w);
-        revealShell(shell);
-        dialog.close();
-        commitThenRender(() => bootInstance(w));
-        return;
-      }
+      if (placeNew(w, dialog)) return;
     }
     dialog.close();
     commit();
   });
+}
+
+/** Land a freshly built ward on the stage (the current page, or the group the
+ *  dialog was opened from) and save. False = no shell could be made. */
+function placeNew(w: WardInstance, dialog: HTMLDialogElement): boolean {
+  if (currentPage() !== firstPage()) w.page = currentPage(); // layoutOf strips it again if it lands in a group
+  state.set(w.i, w);
+  const shell = newShell(w);
+  if (!shell) return false;
+  // Groups do not nest: one lands on the page grid whatever asked for it.
+  const into = addInto?.isConnected && w.type !== 'container' ? addInto : grid;
+  flip(() => into.append(shell));
+  applyTitle(w);
+  revealShell(shell);
+  dialog.close();
+  commitThenRender(() => bootInstance(w));
+  return true;
+}
+
+interface IncomingShare { id: string; kind: 'ward' | 'page'; title: string; type: string; size: string | null; owner: string; role: string }
+/** The dialog's "Shared with me" list (lib/shares.ts sharedWithMe): a ward lands
+ *  as a `shared` card on this page, a page as a new tab. */
+async function loadShared(dialog: HTMLDialogElement): Promise<void> {
+  const host = q<HTMLElement>('[data-aw-shared]', dialog);
+  if (!host) return;
+  host.textContent = '';
+  const { status, data } = await getJson('/api/share?incoming=1');
+  const list: IncomingShare[] = status === 200 && Array.isArray(data?.shares) ? data.shares : [];
+  if (!list.length) {
+    host.append(el('p', 'aw-b text-ink-faint', status === 200 ? 'Nothing shared with you yet.' : 'Sharing needs a server.'));
+    return;
+  }
+  for (const s of list) {
+    const c = el('button', 'aw-card') as HTMLButtonElement;
+    c.type = 'button';
+    c.dataset.share = s.id;
+    const ic = el('span', 'aw-ic');
+    ic.append(icon(s.kind === 'page' ? 'folder' : (CATALOG[s.type]?.icon ?? 'share')));
+    c.append(ic, el('span', 'aw-t', s.title), el('span', 'aw-b', `${s.kind === 'page' ? 'Page' : CATALOG[s.type]?.title ?? s.type} · from ${s.owner} · can ${s.role}`));
+    c.addEventListener('click', () => {
+      if (s.kind === 'page') { addSharedPage(s.title, s.id); dialog.close(); return; }
+      const size = /^[1-6]x(?:[1-9]|1[0-2])$/.test(s.size ?? '') ? (s.size as WardInstance['size']) : '2x2';
+      placeNew({ i: newId('w'), type: 'shared', size, title: `${s.title} · ${s.owner}`, config: { share: s.id } }, dialog);
+    });
+    host.append(c);
+  }
 }
 
 // ---------------------------------------------------------------- toolbar

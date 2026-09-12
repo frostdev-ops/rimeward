@@ -534,6 +534,15 @@ main[data-share-role='view'] [data-wd-type='timer'] button {
 .np[data-readonly] .np-ink {
   pointer-events: none;
 }
+/* A page shared WITH this user (pages.ts): their page, in a frame, where the grid would be. */
+.wd-share-frame {
+  width: 100%;
+  height: calc(100dvh - 12rem);
+  min-height: 24rem;
+  margin-bottom: 2rem;
+  border: 0;
+  border-radius: var(--radius-md);
+}
 /* Who is looking at a shared ward (scripts/app/presence.ts). */
 .wd-presence {
   display: inline-flex;
