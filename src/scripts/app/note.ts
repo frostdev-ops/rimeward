@@ -26,6 +26,7 @@ import { RENDERERS, body } from './wards.ts';
 import { el, newId, postJson, toast } from './dom.ts';
 import { shareReadOnly } from './share-view.ts';
 import { createDocumentEditor, type DocumentEditor } from './note-editor.ts';
+import { attachWordRibbon } from './note-word-pm.ts';
 import { icon, relabel } from './icon.ts';
 import { askText, confirmAction } from './workspace-dialogs.ts';
 import { pageDocument, readPageDocument, type NotebookPageType } from '../../lib/notebook-pages.ts';
@@ -78,6 +79,8 @@ interface State {
   proof: ReturnType<typeof attachProofreading> | null;
   /** The collaborative editor over this document, when PM is on and the room took us. */
   editor: DocumentEditor | null;
+  /** The ribbon over it (note-word-pm.ts). */
+  ribbon: { destroy(): void } | null;
   /** The room refused this document once: the plain editor for the rest of this open. */
   pmFailed: boolean;
   target: EditorTarget | null;
@@ -206,7 +209,7 @@ function build(owner: string, expandable: boolean): State {
   width.setAttribute('aria-label', 'Pen width');
 
   const st: State = {
-    owner, pageEngine: null, pageType: null, replacePage: false, engineHost, format, word: null, proof: null, editor: null, pmFailed: false, target: null, rev: 0, loaded: false, loadGen: 0, gen: 0, chain: Promise.resolve(), opening: Promise.resolve(), docSeq: 0, inkSeq: 0, docFlight: null, inkFlight: null, conflict: false, saving: 0,
+    owner, pageEngine: null, pageType: null, replacePage: false, engineHost, format, word: null, proof: null, editor: null, ribbon: null, pmFailed: false, target: null, rev: 0, loaded: false, loadGen: 0, gen: 0, chain: Promise.resolve(), opening: Promise.resolve(), docSeq: 0, inkSeq: 0, docFlight: null, inkFlight: null, conflict: false, saving: 0,
     root, page, doc, canvas, status, err, count, exportStatus, btn: {}, color, width, ai: null, sel: null,
     strokes: [], cur: null, fresh: new Set(), tool: 'text', penSeen: false,
     docTimer: 0, inkTimer: 0, liveTimer: 0, docDirty: false, inkDirty: false, busy: false,
@@ -331,6 +334,7 @@ function connectEditor(st: State): void {
     onFail: () => { if (st.editor !== editor) return; st.pmFailed = true; disconnectEditor(st); void load(st, true); },
   });
   st.editor = editor;
+  st.ribbon = attachWordRibbon({ editor, tools: st.root.querySelector<HTMLElement>('.np-tools')!, changed: () => markDoc(st), title: () => st.target?.title ?? 'Document' });
   // Ink is a shared list too: whatever anyone draws lands here.
   editor.ink.observe(() => {
     if (st.editor !== editor) return;
@@ -347,6 +351,7 @@ function disconnectEditor(st: State): void {
   const e = st.editor;
   if (!e) return;
   st.editor = null;
+  st.ribbon?.destroy(); st.ribbon = null;
   delete st.root.dataset.pm;
   e.destroy();
   attachLegacyTools(st);
@@ -1438,7 +1443,7 @@ export function createNoteEditor(owner: string): NoteEditor {
     full: (on) => { st.root.toggleAttribute('data-full', on); fit(st); },
     destroy: () => {
       if (picker?.st === st) closePicker();
-      st.editor?.destroy(); st.editor = null;
+      st.ribbon?.destroy(); st.editor?.destroy(); st.editor = null;
       st.pageEngine?.destroy(); st.word?.destroy(); st.proof?.destroy();
       st.ro.disconnect();
       clearTimeout(st.liveTimer);
@@ -1543,7 +1548,7 @@ RENDERERS.note = {
     if (!st) return;
     void flushDoc(st);
     void flushInk(st);
-    st.editor?.destroy(); st.editor = null;
+    st.ribbon?.destroy(); st.editor?.destroy(); st.editor = null;
     st.pageEngine?.destroy(); st.word?.destroy(); st.proof?.destroy();
     st.ro.disconnect();
     clearTimeout(st.liveTimer);

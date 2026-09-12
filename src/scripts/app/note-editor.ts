@@ -6,7 +6,8 @@
 // document: open another and this one is destroyed.
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
-import { EditorState, TextSelection, type Command, type Transaction } from 'prosemirror-state';
+import { EditorState, Plugin, TextSelection, type Command, type Transaction } from 'prosemirror-state';
+import { ReplaceAroundStep, ReplaceStep } from 'prosemirror-transform';
 import { EditorView } from 'prosemirror-view';
 import { DOMParser as PMDOMParser, Fragment, Slice, type Node as PMNode } from 'prosemirror-model';
 import { keymap } from 'prosemirror-keymap';
@@ -14,15 +15,20 @@ import { baseKeymap, chainCommands, lift, setBlockType, toggleMark, wrapIn } fro
 import { liftListItem, sinkListItem, splitListItem, wrapInList } from 'prosemirror-schema-list';
 import { inputRules, textblockTypeInputRule, wrappingInputRule } from 'prosemirror-inputrules';
 import { tableEditing } from 'prosemirror-tables';
-import { initProseMirrorDoc, prosemirrorToYXmlFragment, redo, undo, yCursorPlugin, ySyncPlugin, yUndoPlugin } from 'y-prosemirror';
+import { initProseMirrorDoc, prosemirrorToYXmlFragment, redo, undo, yCursorPlugin, ySyncPlugin, ySyncPluginKey, yUndoPlugin } from 'y-prosemirror';
 import { noteSchema, parseNoteHtml, serializeNoteDoc } from '../../lib/note-schema.ts';
 
 export interface Stroke { id?: string; c: string; w: number; p: [number, number, number][] }
 export type EditorStatus = 'connecting' | 'connected' | 'disconnected';
 
+/** Track changes (the ribbon's Review tab): while on, this author's typing carries an
+ *  insertion mark and what they delete stays as a deletion mark. */
+export interface TrackRef { on: boolean; author: string }
+
 export interface DocumentEditor {
   readonly view: EditorView;
   readonly ink: Y.Array<Stroke>;
+  readonly track: TrackRef;
   /** The socket is open and the first sync is done. */
   readonly connected: boolean;
   /** Local edits made while disconnected that the room has not seen. */
@@ -54,6 +60,63 @@ export interface DocumentEditor {
 }
 
 const s = noteSchema;
+
+/** Copies of a fragment with this author's own tracked insertions dropped (deleting
+ *  what you just inserted is a real delete) and, for the rest, the deletion mark added. */
+function withoutOwnInsertions(frag: Fragment, author: string): Fragment {
+  const out: PMNode[] = [];
+  frag.forEach((node) => {
+    if (node.isText) {
+      const ins = node.marks.find((m) => m.type === s.marks.ins_change);
+      if (ins && ins.attrs.author === author) return;
+      out.push(node);
+    } else if (node.isLeaf) out.push(node);
+    else {
+      const content = withoutOwnInsertions(node.content, author);
+      if (content.size || node.type.spec.content === undefined) out.push(node.copy(content));
+    }
+  });
+  return Fragment.from(out);
+}
+function markDeleted(frag: Fragment, author: string, id: string): Fragment {
+  const del = s.marks.del_change!.create({ id, author });
+  const out: PMNode[] = [];
+  frag.forEach((node) => {
+    if (node.isText || node.isLeaf) out.push(node.isInline && !node.marks.some((m) => m.type === s.marks.del_change) ? node.mark(del.addToSet(node.marks.filter((m) => m.type !== s.marks.ins_change))) : node);
+    else out.push(node.copy(markDeleted(node.content, author, id)));
+  });
+  return Fragment.from(out);
+}
+/** While tracking, every local edit is rewritten in place: insertions marked, deletions kept as marked text. */
+function trackChanges(track: TrackRef): Plugin {
+  return new Plugin({
+    appendTransaction(trs, _old, newState) {
+      if (!track.on) return null;
+      let tr: Transaction | null = null;
+      for (const t of trs) {
+        if (!t.docChanged || t.getMeta('track') || t.getMeta(ySyncPluginKey) || t.getMeta('addToHistory') === false) continue;
+        t.steps.forEach((step, i) => {
+          if (!(step instanceof ReplaceStep) && !(step instanceof ReplaceAroundStep)) return;
+          const { from, to, slice } = step as ReplaceStep;
+          const before = t.docs[i]!;
+          const toFinal = t.mapping.slice(i + 1);
+          tr ??= newState.tr.setMeta('track', true).setMeta('addToHistory', true);
+          const id = Math.random().toString(36).slice(2, 10);
+          if (to > from) {
+            const kept = withoutOwnInsertions(before.slice(from, to).content, track.author);
+            if (kept.size) tr.insert(tr.mapping.map(toFinal.map(from, -1)), markDeleted(kept, track.author, id));
+          }
+          if (slice.size) {
+            const a = tr.mapping.map(toFinal.map(from, -1)), b = tr.mapping.map(toFinal.map(from + slice.size, 1));
+            if (b > a) tr.addMark(a, b, s.marks.ins_change!.create({ id, author: track.author }));
+          }
+        });
+      }
+      return tr;
+    },
+  });
+}
+
 const inList = (state: EditorState, type: string): boolean => {
   const { $from } = state.selection;
   for (let d = $from.depth; d > 0; d--) if ($from.node(d).type.name === type) return true;
@@ -110,8 +173,10 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
   let readOnly = o.readOnly;
   let synced = false;
   let failures = 0;
+  const track: TrackRef = { on: false, author: 'You' };
   const editor = {
     pendingLocal: false,
+    track,
     get connected() { return provider.wsconnected && synced; },
   } as DocumentEditor & { pendingLocal: boolean };
 
@@ -130,6 +195,7 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
         'Shift-Enter': (st, dispatch) => { dispatch?.(st.tr.replaceSelectionWith(s.nodes.hard_break!.create()).scrollIntoView()); return true; },
       }),
       keymap(baseKeymap),
+      trackChanges(track),
       inputRules({ rules: [
         wrappingInputRule(/^\s*([-+*])\s$/, s.nodes.bullet_list!),
         wrappingInputRule(/^(\d+)\.\s$/, s.nodes.ordered_list!, (m) => ({ start: Number(m[1]) }), (m, node) => node.childCount + (node.attrs.start as number) === Number(m[1])),
@@ -161,7 +227,7 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
     if (!synced && ++failures >= 2) o.onFail();
   });
   provider.on('connection-error', () => { if (!synced && ++failures >= 2) o.onFail(); });
-  void whoami().then((user) => provider.awareness.setLocalStateField('user', user));
+  void whoami().then((user) => { provider.awareness.setLocalStateField('user', user); if (track.author === 'You') track.author = user.name; });
 
   const run = (command: Command) => { command(view.state, view.dispatch, view); view.focus(); };
   const toggleList = (list: 'bullet_list' | 'ordered_list') => run(inList(view.state, list) ? liftListItem(s.nodes.list_item!) : wrapInList(s.nodes[list]!));

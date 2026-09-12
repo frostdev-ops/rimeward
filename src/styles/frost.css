@@ -551,7 +551,7 @@ main[data-share-role='view'] [data-wd-type='timer'] button {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.np[data-pm] :is(.np-word, .np-proof-tools, .np-proof-panel) {
+.np[data-pm] :is(.np-proof-tools, .np-proof-panel) {
   display: none;
 }
 .ProseMirror-yjs-cursor {
