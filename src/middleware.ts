@@ -1,6 +1,7 @@
 import { ensureLiveStream } from './lib/live-stream.ts';
 import { ensureBrowserLive } from './lib/browser/live.ts';
 import { ensureDevLive } from './lib/dev/live.ts';
+import { ensureNoteLive } from './lib/note-live.ts';
 import { defineMiddleware } from 'astro:middleware';
 import { SESSION_COOKIES, getSession, sessionId } from './lib/auth.ts';
 import { csrfBlocked } from './lib/csrf.ts';
@@ -31,6 +32,7 @@ ensureDevices();
 ensureLiveStream();
 ensureBrowserLive(); // the browser wards' frame + input WebSocket
 ensureDevLive(); // the terminal wards' output + input WebSocket (desktop runtime only)
+ensureNoteLive(); // the notepads' collaboration WebSocket (lib/note-room.ts)
 ensureRemote();
 ensureTunnel(); // publishes the desktop app's upgrade handler for server.mjs / the dev hook
 ensureUpdateChecks(); // the release lookup every 6 h; installs under the `install` policy

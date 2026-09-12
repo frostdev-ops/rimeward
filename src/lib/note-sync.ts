@@ -1,5 +1,5 @@
 import { getDb } from './db.ts';
-import { NOTE_HTML_MAX, NOTE_ID_RE, NOTE_INK_MAX, indexNote, newNoteId, normalizeTags, normalizeTitle, relinkNote, sanitizeHtml } from './note.ts';
+import { NOTE_HTML_MAX, NOTE_ID_RE, NOTE_INK_MAX, indexNote, newNoteId, normalizeTags, normalizeTitle, notifyNoteWritten, relinkNote, sanitizeHtml } from './note.ts';
 import { excerpt, plainText } from './note-text.ts';
 import { normalizeProps, normalizeSections, normalizeViews } from './notebook.ts';
 
@@ -171,6 +171,7 @@ export function installNote(user: number, id: string, rec: NoteRecord | null): v
     indexNote(user, id, rec.title, text, rec.tags);
     relinkNote(user, id, rec.html);
   })();
+  notifyNoteWritten(user, id, rec ? 'write' : 'gone');
 }
 export function installNotebook(user: number, id: string, rec: NotebookRecord | null): void {
   const db = getDb();

@@ -266,11 +266,13 @@ export function shareAllows(scope: ShareScope, method: string, url: URL): boolea
   if (p === '/api/weather') return get && ward(q.get('ward'))?.type === 'weather';
   if (p === '/api/flow') return get && ward(q.get('ward'))?.type === 'flow';
   if ((m = /^\/api\/timers\/([^/]+)$/.exec(p))) return get && ward(m[1])?.type === 'timer';
-  if ((m = /^\/api\/note\/([^/]+)$/.exec(p))) {
-    // Only THE document of a shared notepad, or a document filed in a shared notebook.
+  if ((m = /^\/api\/note\/(ws\/)?([^/]+)$/.exec(p))) {
+    // Only THE document of a shared notepad, or a document filed in a shared notebook;
+    // the collaboration socket (ws/) is the same document, opened read-only for a viewer.
     const w = ward(q.get('ward'));
-    const doc = m[1]!;
+    const doc = m[2]!;
     const inShare = w?.type === 'note' ? noteIdOf(w) === doc : w?.type === 'notebook' ? getNoteMeta(share.owner, doc)?.notebook === notebookIdOf(w) : false;
+    if (m[1]) return inShare && get;
     return inShare && (get || method === 'PUT' || method === 'POST');
   }
   if ((m = /^\/api\/notebook\/([^/]+)$/.exec(p))) return ward(m[1])?.type === 'notebook' && (get || method === 'POST');

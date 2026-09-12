@@ -238,7 +238,19 @@ export function writeNoteRaw(userId: number, w: WardInstance | string, patch: No
   // so a second handle's save cannot slip between check and write, and the
   // document row never commits without its index row (an index failure rolls
   // the content back and the save reports the failure).
-  return getDb().transaction(() => writeNoteTx(userId, w, patch)).immediate();
+  const out = getDb().transaction(() => writeNoteTx(userId, w, patch)).immediate();
+  notifyNoteWritten(userId, typeof w === 'string' ? w : noteIdOf(w), 'write');
+  return out;
+}
+
+/** Whoever holds a live copy of a document (the collaboration room, lib/note-room.ts)
+ *  hears every write the store commits and every purge — after the transaction. */
+export type NoteWriteHook = (userId: number, id: string, kind: 'write' | 'gone') => void;
+export const noteWriteHooks = new Set<NoteWriteHook>();
+export function notifyNoteWritten(userId: number, id: string, kind: 'write' | 'gone'): void {
+  for (const fn of noteWriteHooks) {
+    try { fn(userId, id, kind); } catch (err) { console.error('[note] hook failed:', err); }
+  }
 }
 function writeNoteTx(userId: number, w: WardInstance | string, patch: NotePatch): { updated: string; rev: number; etag: string } {
   const cur = readNote(userId, w);
@@ -334,6 +346,7 @@ export function purgeNote(userId: number, id: string): void {
     db.prepare("INSERT INTO agent_sync_records(user_id,key,hash,payload) VALUES(?,?,?,'null') ON CONFLICT(user_id,key) DO UPDATE SET hash=excluded.hash,payload=excluded.payload")
       .run(userId, `note/${id}`, crypto.createHash('sha256').update('null').digest('hex'));
   })();
+  notifyNoteWritten(userId, id, 'gone');
 }
 
 /** Store a patch; the saved `updated_at`. */
