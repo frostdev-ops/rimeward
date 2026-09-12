@@ -97,7 +97,7 @@ test("PTY environment excludes backend credentials and permission flags are expl
   assert.equal(env.TOKEN_ENC_KEY, undefined);
   assert.equal(env.OPENAI_API_KEY, undefined);
   assert.equal(env.SECRET_BACKEND_KEY, undefined);
-  assert.deepEqual(cliArgs("codex", "human"), [
+  assert.deepEqual(cliArgs("codex", "approvals"), [
     "--ask-for-approval",
     "on-request",
     "--sandbox",
@@ -117,7 +117,7 @@ test("real terminal attachment, no replay, human control and explicit terminatio
   const s = await startSession(1, {
     project: p.id,
     kind: "shell",
-    mode: "rimeward",
+    mode: "normal",
   });
   try {
     controlSession(1, s.id, "client:one", true);
@@ -147,7 +147,7 @@ test("terminal permissions change live, denied input cannot claim ownership, and
     assert.throws(() => writeSession(1, s.id, "agent:rime", "denied\r"), /Rime control is off/);
     assert.equal(readSession(1, s.id).session.owner, null);
     configureSession(1, s.id, { agentInput: true });
-    assert.equal(readSession(1, s.id).session.mode, "human", "native CLI launch permissions are independent");
+    assert.equal(readSession(1, s.id).session.mode, "normal", "native CLI launch permissions are independent");
     writeSession(1, s.id, "agent:rime", "");
     controlSession(1, s.id, "client:one", true);
     t.mock.timers.enable({ apis: ["Date"] });
@@ -432,7 +432,7 @@ test('task receipts survive reads and mark changed evidence stale', async () => 
   fs.writeFileSync(path.join(dir, 'reviewed.txt'), 'reviewed');
   const project = addProject(1, dir);
   await git(1, project.id, ['init', '-q']);
-  const session = await startSession(1, { project: project.id, kind: 'shell', mode: 'human' });
+  const session = await startSession(1, { project: project.id, kind: 'shell', mode: 'approvals' });
   try {
     const receipt = await DEV_TOOLS.terminal_task!.run({ runtime: 'desktop', session: session.id, state: 'done', review: 'Inspected saved file; checks not run.' + '"'.repeat(7000), files: ['reviewed.txt'], checks: [] }, { userId: 1, ward: 'reviewer', conv: 0 });
     assert.ok(JSON.stringify(receipt).length < 1000);

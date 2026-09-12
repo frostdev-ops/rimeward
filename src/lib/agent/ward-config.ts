@@ -4,6 +4,9 @@ import { defaultAgentProvider, isAgentProvider, DEFAULT_MODELS, AGENT_EFFORTS, t
 
 export const HEADLESS_PER_HOUR = 6; // per ward — the agent.ask ↔ agent-replied loop brake
 export type ApprovalsPolicy = 'outbound' | 'all' | 'off';
+/** How a coding CLI (Claude Code, Codex) that this ward launches handles permissions. */
+export const CLI_PERMISSIONS = ['read-only', 'approvals', 'normal', 'yolo'] as const;
+export type CliPermissions = (typeof CLI_PERMISSIONS)[number];
 
 export interface AgentWardConfig {
   provider: AgentProviderId;
@@ -13,6 +16,9 @@ export interface AgentWardConfig {
   persona: string;
   tools: 'all' | 'read-only';
   approvals: ApprovalsPolicy;
+  /** Permissions for the coding CLIs this ward launches (terminal_start). Always set by agentWardConfig;
+   *  optional only so hand-built configs (tests, forks) read as 'normal'. */
+  permissions?: CliPermissions;
   effort: AgentEffort;
   /** Unattended runs per hour on this ward (agent.ask, agent-to-agent, chat bots); 0 = no cap. */
   headlessCap: number;
@@ -34,6 +40,7 @@ export function agentWardConfig(userId: number, ward: string): AgentWardConfig |
     persona: typeof c.persona === 'string' ? c.persona : '',
     tools: c.tools === 'read-only' ? 'read-only' : 'all',
     approvals: c.approvals === 'all' || c.approvals === 'off' ? c.approvals : 'outbound',
+    permissions: (CLI_PERMISSIONS as readonly unknown[]).includes(c.permissions) ? (c.permissions as CliPermissions) : 'normal',
     effort: (AGENT_EFFORTS as readonly string[]).includes(c.effort as string) ? (c.effort as AgentEffort) : 'medium',
     headlessCap: Number.isInteger(c.headlessCap) && (c.headlessCap as number) >= 0 ? (c.headlessCap as number) : HEADLESS_PER_HOUR,
     ...(Number.isInteger(c.rounds) && (c.rounds as number) >= 0 ? { rounds: c.rounds as number } : {}),

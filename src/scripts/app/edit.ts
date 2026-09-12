@@ -2012,6 +2012,7 @@ const FIELDS: Record<string, Field[]> = {
     { sel: '#aw-ag-persona', key: 'persona' },
     { sel: '#aw-ag-tools', key: 'tools', def: 'all' },
     { sel: '#aw-ag-approvals', key: 'approvals', def: 'outbound' },
+    { sel: '#aw-ag-permissions', key: 'permissions', def: 'normal' },
     { sel: '#aw-ag-effort', key: 'effort', def: 'medium' },
     { sel: '#aw-ag-cap', key: 'headlessCap', def: 6 }, // text on purpose: a cleared box is absent, never 0 (= no cap)
     { sel: '#aw-ag-rounds', key: 'rounds' },

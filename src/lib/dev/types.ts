@@ -1,5 +1,10 @@
 // Shared desktop contracts. This module is safe to import in the browser.
-export type PermissionMode = "human" | "rimeward" | "yolo";
+/** How a CLI Rime launches may act: read-only (plan / read-only sandbox), approvals (every
+ *  prompt goes to Rime through the PermissionRequest hook), normal (the CLI's auto mode),
+ *  yolo (skip permissions). Read from the agent ward's config, not per terminal. */
+export type PermissionMode = "read-only" | "approvals" | "normal" | "yolo";
+/** A Rime-launched CLI's lifecycle as its hooks report it (lib/dev/cli-bridge.ts). */
+export type CliPhase = "running" | "waiting-permission" | "waiting-input" | "done" | "ended";
 export type TerminalKind = "shell" | "codex" | "claude";
 export interface Project {
   id: string;
@@ -42,6 +47,10 @@ export interface SessionView {
   review?: string;
   evidence?: { reviewer: string; at: string; sequence: number; diff: string | null; files: { path: string; hash: string | null }[]; checks: { command: string; exitCode: number | null }[]; stale?: boolean };
   taskState: "active" | "needs-attention" | "done" | "cancelled";
+  /** Hook-reported phase of a Rime-launched CLI; absent for shells and CLIs started by hand. */
+  phase?: CliPhase;
+  /** The CLI's last assistant message once it stopped. */
+  lastMessage?: string;
 }
 export interface SessionResourceView extends SessionView {
   pid: number | null;

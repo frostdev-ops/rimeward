@@ -111,10 +111,25 @@ separate from `source.intervalSeconds`, which paces polling.
 Terminal sources observe rendered screen rows, never raw bytes: after each output
 flush the headless terminal's viewport, plus exactly the rows that flush scrolled
 above it, is read back, and only rows not in the previous frame or on screen in the
-last 5 s are emitted. Rows compare by exact text; only Claude Code / Codex status
-chrome (a spinner-led row, or one carrying "esc to interrupt") has its frame glyph
-and counters normalized, so spinner ticks, timers and status-bar repaints drop while
-new progress, questions, results, failures and exit state pass. Long bursts arrive
+last 5 s are emitted. Rows compare by exact text. For Claude Code / Codex sessions
+(never a shell) recognized chrome is dropped by shape, not by word: the activity
+spinner (a frame glyph, one gerund, an ellipsis, optionally a parenthetical of short
+metadata such as elapsed, token counts, "esc to interrupt" or "running stop hook"),
+counter-only rows, box-border and logo rows, the empty prompt and its placeholder, the
+mode and effort lines, slash-command completion rows, the exit hint and the status bar;
+a right-aligned session-status trailer ("+17 files edited before this session", "No
+changes this session") is cut off the row it decorates. A running tool call's
+per-second counter ("⏺ Reading the file · 21s") and its command preview's ("⎿ $ cmd
+(8s)") are left out of the row's identity only, so the first appearance is emitted and
+the ticks are not; every other digit stays significant. A viewport row that is still
+being written (the same screen row, its text edited at the tail: a prompt being typed,
+a line streaming in) is held until it has stood for 1.5 s (8 s for the prompt row) or
+scrolled off, and dropped if it vanished first; a row that is a piece of a row seen in
+the last minute is a repaint fragment and is dropped too. A burst is read after 300 ms
+of quiet (at most 2 s after its first new row), and a row caught mid-paint is dropped
+when the row it became is queued behind it or on screen. Menus, approval choices and a
+draft left sitting in the prompt stay visible. `ops/monitor-harness.mjs` replays a real
+recording through this pipeline. Long bursts arrive
 as several 16 kB pages; rows that scrolled out of an unretained buffer before they
 were read add an explicit "rows scrolled out of view" line. `terminal_read` and
 `terminal_wait` return the rendered screen by default (an exited session's retained

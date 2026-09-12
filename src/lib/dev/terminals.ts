@@ -1,4 +1,5 @@
 import { terminalEnv } from "./environment.ts";
+import { LEGACY_MODES, PERMISSION_MODES, cliPermissions, prepareCliLaunch, type CliLaunch, type CliOrigin } from "./cli-bridge.ts";
 export { terminalEnv } from "./environment.ts";
 import fs from "node:fs";
 import path from "node:path";
@@ -50,6 +51,8 @@ type Row = {
   cols: number;
   rows: number;
   sequence: number;
+  phase: string;
+  last_message: string;
 };
 interface Live {
   pty: IPty;
@@ -76,6 +79,8 @@ interface Live {
   flush?: ReturnType<typeof setTimeout>;
   user: number;
   id: string;
+  /** The ephemeral hook plugin of a Rime-launched CLI (cli-bridge.ts); removed at exit. */
+  launch?: CliLaunch;
 }
 const live = new Map<string, Live>();
 function stopPty(s: Live, reason?: Live['terminationReason']) {
@@ -141,21 +146,13 @@ export function cliArgs(
   // The task is the CLI's positional prompt: a leading dash would be parsed as an option and could
   // re-add the bypass flags this mode omits.
   if (/^\s*-/.test(task)) throw new DevError("A task cannot start with '-'.");
-  if (kind === "codex")
-    return [
-      ...(resume ? ["resume"] : []),
-      ...(mode === "yolo"
-        ? ["--dangerously-bypass-approvals-and-sandbox"]
-        : ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"]),
-      ...(task ? [task] : []),
-    ];
-  return [
-    ...(resume ? ["--resume"] : []),
-    ...(mode === "yolo"
-      ? ["--dangerously-skip-permissions"]
-      : ["--permission-mode", "default"]),
-    ...(task ? [task] : []),
-  ];
+  mode = LEGACY_MODES[mode as string] ?? mode;
+  // read-only: plan / read-only sandbox. approvals: the CLI asks and the PermissionRequest hook
+  // (cli-bridge.ts) carries it to Rime. normal: the CLI's own auto mode. yolo: no prompts at all.
+  const flags = kind === "codex"
+    ? { "read-only": ["--sandbox", "read-only", "--ask-for-approval", "never"], approvals: ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"], normal: ["--full-auto"], yolo: ["--dangerously-bypass-approvals-and-sandbox"] }[mode]
+    : { "read-only": ["--permission-mode", "plan"], approvals: ["--permission-mode", "default"], normal: ["--permission-mode", "auto"], yolo: ["--dangerously-skip-permissions"] }[mode];
+  return [...(resume ? [kind === "codex" ? "resume" : "--resume"] : []), ...flags, ...(task ? [task] : [])];
 }
 function rowOf(user: number, id: string): Row {
   const row = workDb()
@@ -195,6 +192,7 @@ function view(r: Row, inspect = false): SessionView {
     task: r.task,
     assignment: r.assignment,
     taskState: r.task_state,
+    ...(r.phase ? { phase: r.phase as SessionView["phase"], ...(r.last_message ? { lastMessage: r.last_message } : {}) } : {}),
     ...(inspect ? { review: r.review } : {}),
     ...(evidence ? { evidence } : {}),
   };
@@ -217,7 +215,7 @@ export function listSessions(user: number, project?: string): SessionView[] {
     workDb()
       .prepare(
         // Everything but the snapshot (multi-MB per session): the list never shows it.
-        "SELECT id,user_id,project,kind,mode,title,shell,next_mode,human_control,review,state,exit_code,exit_signal,termination_reason,task,assignment,task_state,cols,rows,sequence,agent_input,is_command FROM terminal_sessions WHERE user_id=? AND (? IS NULL OR project=?) ORDER BY rowid DESC",
+        "SELECT id,user_id,project,kind,mode,title,shell,next_mode,human_control,review,state,exit_code,exit_signal,termination_reason,task,assignment,task_state,cols,rows,sequence,agent_input,is_command,phase,last_message FROM terminal_sessions WHERE user_id=? AND (? IS NULL OR project=?) ORDER BY rowid DESC",
       )
       .all(user, project ?? null, project ?? null) as Row[]
   ).map(r => view(r));
@@ -299,16 +297,18 @@ export async function startSession(
     command?: string;
     assignment?: string;
     title?: string;
+    /** The Rime ward (and thread) that started a CLI session: where its hooks report. */
+    origin?: CliOrigin;
   },
   saved?: Row,
 ): Promise<SessionView> {
   requireDesktop();
   const p = projectOf(user, opts.project),
     kind = opts.kind ?? "shell",
-    mode = opts.mode ?? "human";
+    mode = LEGACY_MODES[opts.mode as string] ?? opts.mode ?? cliPermissions(user, opts.origin?.ward);
   if (
     !["shell", "codex", "claude"].includes(kind) ||
-    !["human", "rimeward", "yolo"].includes(mode) ||
+    !PERMISSION_MODES.includes(mode) ||
     (opts.agentInput !== undefined && typeof opts.agentInput !== "boolean")
   )
     throw new DevError("Invalid terminal configuration.");
@@ -355,6 +355,13 @@ export async function startSession(
   // argv is passed directly to the executable, never concatenated into a shell command.
   let program = command,
     args = cliArgs(kind, mode, task, !!saved);
+  // A CLI gets its session-only hook plugin (before the positional task) and the env its hooks use.
+  let launch: CliLaunch | undefined;
+  if (kind !== "shell") {
+    try { launch = prepareCliLaunch(user, id, kind, mode, opts.origin, task); } catch (error) { term.dispose(); throw error; }
+    args.splice(args.length - (task ? 1 : 0), 0, ...launch.args);
+    if (task && launch.task) args[args.length - 1] = launch.task; // Codex: the coordination preamble rides the task
+  }
   if (kind === "shell" && process.platform !== "win32") args = ["-l"];
   if (opts.command !== undefined) {
     args = process.platform === "win32"
@@ -393,11 +400,11 @@ export async function startSession(
       cwd: projectPath(user, p.id),
       cols,
       rows,
-      env: terminalEnv(),
+      env: { ...terminalEnv(), ...(launch?.env ?? {}) },
     });
-  } catch (error) { term.dispose(); throw error; }
+  } catch (error) { launch?.cleanup(); term.dispose(); throw error; }
   try {
-    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',finished_at=NULL,mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active' WHERE id=? AND user_id=?").run(mode, id, user);
+    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',finished_at=NULL,mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active',phase='',last_message='' WHERE id=? AND user_id=?").run(mode, id, user);
     else workDb()
       .prepare(
         "INSERT INTO terminal_sessions(id,user_id,project,kind,mode,title,state,task,assignment,shell,agent_input,cols,rows,is_command) VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?)",
@@ -419,6 +426,7 @@ export async function startSession(
       );
   } catch (error) {
     pty.kill();
+    launch?.cleanup();
     term.dispose();
     throw error;
   }
@@ -442,6 +450,7 @@ export async function startSession(
     paused: false,
     user,
     id,
+    launch,
   };
   live.set(id, s);
   // Main buffer only: the alternate screen keeps no scrollback (its viewport is the content) and fires per line feed.
@@ -474,9 +483,10 @@ export async function startSession(
       // A cancellation can arrive while xterm drains the final output.
       const reason = s.terminationReason ?? (exitSignal ? 'signal' : null);
       persist(s);
+      s.launch?.cleanup(); // denies any parked permission request; removes the hook plugin
       workDb()
         .prepare(
-          "UPDATE terminal_sessions SET state='exited',exit_code=?,exit_signal=?,termination_reason=?,finished_at=?,task_state=CASE WHEN ?='cancelled' THEN 'cancelled' WHEN task_state='active' THEN 'needs-attention' ELSE task_state END WHERE id=?",
+          "UPDATE terminal_sessions SET state='exited',exit_code=?,exit_signal=?,termination_reason=?,finished_at=?,task_state=CASE WHEN ?='cancelled' THEN 'cancelled' WHEN task_state='active' THEN 'needs-attention' ELSE task_state END,phase=CASE WHEN phase='' THEN '' ELSE 'ended' END WHERE id=?",
         )
         .run(reason ? null : exitCode, exitSignal, reason, Date.now(), reason, id);
       live.delete(id);
@@ -688,6 +698,10 @@ export function resizeSession(
 export function interruptSession(user: number, id: string, owner: string) {
   writeSession(user, id, owner, "\x03");
 }
+/** Re-broadcast a session's view: the CLI bridge calls it when a hook moves the phase. */
+export function announceSession(user: number, id: string): void {
+  emitDev(user, "session", id, view(rowOf(user, id)));
+}
 export function closeSession(user: number, id: string, reason: 'cancelled' | 'closed' = 'closed') {
   rowOf(user, id);
   const s = live.get(id);
@@ -708,7 +722,8 @@ export function configureSession(
   },
 ) {
   rowOf(user, id);
-  if (opts.mode && !["human", "rimeward", "yolo"].includes(opts.mode)) throw new DevError("Invalid permission mode.");
+  if (opts.mode) opts.mode = LEGACY_MODES[opts.mode as string] ?? opts.mode;
+  if (opts.mode && !PERMISSION_MODES.includes(opts.mode)) throw new DevError("Invalid permission mode.");
   if (opts.taskState && !["active", "needs-attention", "done", "cancelled"].includes(opts.taskState)) throw new DevError("Invalid task state.");
   if (opts.title !== undefined && (typeof opts.title !== "string" || !opts.title.trim() || opts.title.length > 100)) throw new DevError("Enter a session name (up to 100 characters).");
   if (opts.assignment !== undefined && typeof opts.assignment !== "string") throw new DevError("Invalid assignment.");

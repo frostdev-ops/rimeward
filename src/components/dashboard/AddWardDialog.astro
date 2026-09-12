@@ -610,6 +610,16 @@ const groups = (Object.keys(CATEGORIES) as Category[])
           <input id="aw-ag-rounds" name="ag-rounds" type="number" class="input" min="0" max="500" placeholder="account" />
         </div>
       </div>
+      <div>
+        <label class="label" for="aw-ag-permissions">Coding CLI permissions</label>
+        <select id="aw-ag-permissions" name="ag-permissions" class="input">
+          <option value="read-only">Read-only (plan / read-only sandbox)</option>
+          <option value="approvals">Approvals (every permission goes to Rime)</option>
+          <option value="normal" selected>Normal (auto)</option>
+          <option value="yolo">YOLO (skip all permissions)</option>
+        </select>
+        <p class="mt-1 text-[10px] text-ink-faint">How the Claude Code and Codex sessions Rime launches handle permission prompts.</p>
+      </div>
       <p class="mt-1 text-[10px] text-ink-faint">Credentials live in Account → Agent. Changing the provider starts a fresh conversation.</p>
     </div>
 

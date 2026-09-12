@@ -73,7 +73,7 @@ export function workDb(): Database.Database {
   }
   db.transaction(() => {
     for (const [table, columns] of [
-      ['terminal_sessions', [['exit_signal', 'INTEGER'], ['termination_reason', 'TEXT'], ['finished_at', 'INTEGER']]],
+      ['terminal_sessions', [['exit_signal', 'INTEGER'], ['termination_reason', 'TEXT'], ['finished_at', 'INTEGER'], ['phase', "TEXT NOT NULL DEFAULT ''"], ['last_message', "TEXT NOT NULL DEFAULT ''"]]],
       ['buffer_copies', [['raw', 'BLOB'], ['mode', 'INTEGER']]],
     ] as const) {
       const existing = new Set((db.pragma(`table_info(${table})`) as { name: string }[]).map(c => c.name));
@@ -83,6 +83,10 @@ export function workDb(): Database.Database {
       termination_reason=COALESCE(termination_reason,'runtime-interrupted'),
       task_state=CASE WHEN task_state='active' THEN 'needs-attention' ELSE task_state END WHERE state IN ('running','interrupted')`);
     db.prepare("UPDATE terminal_sessions SET finished_at=? WHERE state!='running' AND finished_at IS NULL").run(Date.now());
+    // Permission modes moved from the terminal to the agent ward: human → approvals, rimeward → normal.
+    db.exec(`UPDATE terminal_sessions SET mode=CASE mode WHEN 'human' THEN 'approvals' WHEN 'rimeward' THEN 'normal' ELSE mode END,
+      next_mode=CASE next_mode WHEN 'human' THEN 'approvals' WHEN 'rimeward' THEN 'normal' ELSE next_mode END
+      WHERE mode IN ('human','rimeward') OR next_mode IN ('human','rimeward')`);
   })();
   database = db;
   return db;

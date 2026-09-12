@@ -44,6 +44,7 @@ ensureKnowledge();
 // land on them; each one re-checks the session itself), and static assets.
 const PUBLIC_PREFIXES = [
   '/login',
+  '/api/cli/', // a Rime-launched CLI's hooks: loopback + per-session bearer, checked in the route
   '/api/login',
   '/api/devices/preview',
   '/api/devices/claim',
