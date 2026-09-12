@@ -21,6 +21,8 @@ import { openMenu, menuItem, closeMenu } from './menu.ts';
 import type { BrowserDownload } from '../../lib/browser/downloads.ts';
 import { LocalDriver, type Transport } from './browser-cdp.ts';
 import { LiveEventSource } from './live-stream.ts';
+import { rtcViewer, type RtcViewer } from './browser-rtc.ts';
+import type { RtcMessage } from '../../lib/browser/rtc.ts';
 import { browserScale, type BrowserConfig, type WardInstance } from '../../lib/wards.ts';
 import type { BrowserEvent, Cmd } from '../../lib/browser/session.ts';
 import type { BrowserExtension } from '../../lib/browser/extensions.ts';
@@ -35,6 +37,12 @@ interface Mount {
   view: HTMLElement;
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
+  /** The stream once a peer connects: the picture, under the canvas, which stays the input surface. */
+  video: HTMLVideoElement;
+  unmute: HTMLButtonElement;
+  rtc?: RtcViewer;
+  /** The remote's CSS viewport (`view`): what input maps against while the video shows. */
+  viewport?: { width: number; height: number };
   url: HTMLInputElement;
   expand: HTMLButtonElement;
   tabs: HTMLElement;
@@ -99,8 +107,8 @@ function connect(m: Mount): void {
   // at mount may have landed before the ward was saved, or on a browser since
   // closed and relaunched at the default.
   es.onopen = () => { if (m.es === es) scheduleResize(m); };
-  for (const type of ['frame', 'nav', 'tabs', 'dialog', 'route', 'download', 'view'] as const) {
-    es.addEventListener(type, (e) => { if (m.es === es) onEvent(m, JSON.parse((e as MessageEvent).data) as BrowserEvent); });
+  for (const type of ['frame', 'nav', 'tabs', 'dialog', 'route', 'download', 'view', 'rtc'] as const) {
+    es.addEventListener(type, (e) => { if (m.es === es) onEvent(m, JSON.parse((e as MessageEvent).data) as BrowserEvent | RtcMessage); });
   }
   es.onerror = () => {
     if (m.es !== es) return;
@@ -132,12 +140,14 @@ function connectWs(m: Mount): void {
   ws.onmessage = (e) => {
     if (!mine()) return;
     if (e.data instanceof Blob) { stats(m, e.data.size); void onFrame(m, e.data); return; }
-    let ev: BrowserEvent | { type: 'hello' } | { type: 'error'; message: string };
+    let ev: BrowserEvent | RtcMessage | { type: 'hello' } | { type: 'error'; message: string };
     try { ev = JSON.parse(String(e.data)); } catch { ws.close(); return; }
     if (ev.type === 'hello') { m.hello = true; m.wsRefused = 0; return; }
     if (ev.type === 'error') { flash(m, ev.message, 5000); return; }
+    if (ev.type === 'rtc') { rtcOf(m).handle(ev); return; }
     if (ev.type === 'view') {
       m.dsf = ev.dsf;
+      if (ev.width && ev.height) m.viewport = { width: ev.width, height: ev.height };
       // `view` also rides every tab switch's state push: the viewport is
       // negotiated once per socket, not once per tab click.
       if (!m.ready) { m.ready = true; scheduleResize(m); void flush(m); }
@@ -160,6 +170,8 @@ function connectWs(m: Mount): void {
 
 function disconnect(m: Mount): void {
   if (m.closing) return;
+  m.rtc?.close(); m.rtc = undefined; m.viewport = undefined;
+  showVideo(m, false);
   m.epoch++;
   m.opening = false;
   m.es?.close();
@@ -215,10 +227,13 @@ function disconnect(m: Mount): void {
 }
 
 /** Every event either path produces, handled once. */
-function onEvent(m: Mount, ev: BrowserEvent): void {
+function onEvent(m: Mount, ev: BrowserEvent | RtcMessage): void {
   switch (ev.type) {
     case 'frame':
       void onFrame(m, ev);
+      break;
+    case 'rtc':
+      rtcOf(m).handle(ev);
       break;
     case 'nav':
       if (document.activeElement !== m.url) m.url.value = ev.url === 'about:blank' ? '' : ev.url;
@@ -234,6 +249,7 @@ function onEvent(m: Mount, ev: BrowserEvent): void {
       break;
     case 'view':
       m.dsf = ev.dsf;
+      if (ev.width && ev.height) m.viewport = { width: ev.width, height: ev.height };
       break;
     case 'download':
       flash(m, ev.file.status === 'ready' ? `${ev.file.name} saved — open Downloads to save a copy. Rime can inspect it.`
@@ -352,6 +368,27 @@ async function onFrame(m: Mount, f: Blob | Extract<BrowserEvent, { type: 'frame'
   }
 }
 
+/** The stream's picture on (the canvas stays, transparent, as the input surface) or the frames back. */
+function showVideo(m: Mount, on: boolean): void {
+  m.video.hidden = !on;
+  m.canvas.classList.toggle('bw-input-only', on);
+  m.unmute.hidden = !on;
+  setMuted(m, on ? m.video.muted : true);
+}
+function setMuted(m: Mount, muted: boolean): void {
+  m.video.muted = muted;
+  m.unmute.replaceChildren(icon(muted ? 'volume-off' : 'volume'));
+  m.unmute.title = muted ? 'Unmute' : 'Mute';
+  m.unmute.setAttribute('aria-label', m.unmute.title);
+  if (!muted && !m.video.hidden) void m.video.play().catch(() => {});
+}
+/** This mount's peer, created on the first rtc message; its answers ride the mount's transport. */
+function rtcOf(m: Mount): RtcViewer {
+  return (m.rtc ??= rtcViewer(m.video,
+    (msg) => { if (m.mode === 'ws') m.ws?.send(JSON.stringify(msg)); else void postJson(`/api/browser/${m.w.i}?rtc=1`, msg); },
+    (on) => showVideo(m, on)));
+}
+
 // A measurement proxy behind localStorage['fd-bw-debug']: frames painted and
 // bytes per second, and ms from the last local input to the NEXT painted
 // frame — which is the response only on a page that emits no frames by
@@ -449,11 +486,14 @@ async function send(m: Mount, cmds: Cmd[], driver?: LocalDriver): Promise<void> 
 }
 
 /** Canvas pixel → remote viewport CSS px: the frame is viewport × dsf pixels
- *  drawn object-fit:contain, so it may be letterboxed inside the canvas. */
+ *  drawn object-fit:contain, so it may be letterboxed inside the canvas. While
+ *  the video shows, the viewport `view` announced is the picture's size — the
+ *  encoder may be sending fewer pixels than that at any moment. */
 function toPage(m: Mount, e: { clientX: number; clientY: number }): { x: number; y: number } {
   const r = m.canvas.getBoundingClientRect();
-  const cw = (m.canvas.width || 1) / m.dsf;
-  const ch = (m.canvas.height || 1) / m.dsf;
+  const live = !m.video.hidden ? m.viewport : undefined;
+  const cw = live ? live.width : (m.canvas.width || 1) / m.dsf;
+  const ch = live ? live.height : (m.canvas.height || 1) / m.dsf;
   const scale = Math.min(r.width / cw, r.height / ch) || 1;
   const ox = (r.width - cw * scale) / 2;
   const oy = (r.height - ch * scale) / 2;
@@ -721,12 +761,21 @@ function build(w: WardInstance): Mount {
   expand.title = 'Expand';
   expand.setAttribute('aria-label', 'Expand');
   const view = el('div', 'bw-view');
+  // The stream, under the canvas: the canvas keeps focus and input while the picture is the video.
+  const video = el('video', 'bw-video');
+  video.autoplay = true; video.playsInline = true; video.muted = true; video.hidden = true;
+  video.setAttribute('aria-hidden', 'true');
   const canvas = el('canvas');
   canvas.tabIndex = 0;
   canvas.setAttribute('aria-label', 'Remote browser — click to focus, then type');
   const toast = el('div', 'bw-toast');
   toast.hidden = true;
-  view.append(canvas, toast);
+  // Autoplay with sound needs a gesture: the stream starts muted; this, or a click on the view, unmutes.
+  const unmute = el('button', 'bw-unmute');
+  unmute.type = 'button'; unmute.hidden = true;
+  unmute.addEventListener('click', (e) => { e.stopPropagation(); setMuted(m, !m.video.muted); });
+  canvas.addEventListener('pointerdown', () => { if (!m.video.hidden && m.video.muted) setMuted(m, false); }, true);
+  view.append(video, canvas, toast, unmute);
 
   const m: Mount = {
     w,
@@ -734,6 +783,8 @@ function build(w: WardInstance): Mount {
     root,
     view,
     canvas,
+    video,
+    unmute,
     // Opaque, and free to skip a vsync of compositor sync: the frame is the whole picture.
     ctx: canvas.getContext('2d', { alpha: false, desynchronized: true })!,
     url,
@@ -900,7 +951,8 @@ document.addEventListener('fd:layout-saved', () => {
   for (const m of mounts.values()) connect(m);
 });
 document.addEventListener('visibilitychange', () => {
-  for (const m of mounts.values()) if (document.hidden) disconnect(m); else connect(m);
+  // A hidden tab keeps a connected stream (a movie's sound outlives a tab switch); frames-only viewers pause.
+  for (const m of mounts.values()) if (document.hidden) { if (!m.rtc?.connected) disconnect(m); } else connect(m);
 });
 window.addEventListener('blur', () => {
   for (const m of mounts.values()) if (document.activeElement === m.canvas) m.canvas.blur();

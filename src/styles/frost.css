@@ -1744,6 +1744,39 @@ dialog.fd-dialog-full {
 .bw-view canvas:focus-visible {
   box-shadow: inset 0 0 0 2px var(--color-accent);
 }
+/* The stream: the video fills the same box under the canvas, which stays on top
+   (positioned, later sibling) as the input surface and goes transparent. */
+.bw-view canvas {
+  position: relative;
+}
+.bw-view canvas.bw-input-only {
+  opacity: 0;
+}
+.bw-view .bw-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.bw-unmute {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.6);
+  color: #fff;
+  cursor: pointer;
+}
+.bw-unmute:hover {
+  background: rgb(0 0 0 / 0.85);
+}
 .bw-toast {
   position: absolute;
   left: 0.5rem;

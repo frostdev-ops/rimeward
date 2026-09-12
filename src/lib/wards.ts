@@ -202,7 +202,7 @@ export const CATALOG: Record<string, CatalogEntry> = {
     share: 'edit',
     title: 'Browser', defaultSize: '3x3', icon: 'globe', blurb: 'A real browser you and Rime both drive — logins stick.', multi: true, configurable: true, category: 'rime',
     concepts: ['browser', 'chromium', 'chrome', 'web', 'website', 'page', 'tab', 'tabs', 'login', 'session', 'cookies', 'remote', 'headless', 'browse', 'surf', 'url', 'address bar', 'rime drives it'],
-    does: ['drives a real headless chromium', 'keeps logins per ward', 'rime reads and acts on the same page', 'opens tabs and navigates', 'types clicks and scrolls', 'expands to a desktop-sized page', 'runs on this server or browserbase', 'runs on your computer through the rimeward app', 'egresses from your home ip'],
+    does: ['drives a real headless chromium', 'keeps logins per ward', 'rime reads and acts on the same page', 'opens tabs and navigates', 'types clicks and scrolls', 'expands to a desktop-sized page', 'streams video and sound to viewers', 'runs on this server or browserbase', 'runs on your computer through the rimeward app', 'egresses from your home ip'],
   },
   embed: {
     title: 'Embed', defaultSize: '2x2', icon: 'image', blurb: 'Any http(s) page in a sandboxed frame.', multi: true, legacy: true, configurable: true, category: 'rime',
