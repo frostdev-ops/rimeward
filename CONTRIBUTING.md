@@ -31,7 +31,29 @@ routes, tables and CSS classes keep their engineering names (`WardInstance`, log
 - Nothing instance-specific in the tree: names, domains, addresses and the monitor list are
   settings, environment or `data/` (see `.env.example`, `src/lib/site.ts`, `src/lib/brand-files.ts`,
   the admin monitor registry).
-- `npm run lint:desktop`, `npm test`, `npm run typecheck`, and `npm run build` green; the Tests workflow runs these on Linux and Windows on every push. Keep the test glob double-quoted so Windows runs the suite. Desktop lint treats warnings as failures and covers the native launcher, runtime, APIs, editor/terminal UI, and development styles.
+- `npm run lint:desktop`, `npm test`, `npm run typecheck`, and `npm run build` green; the Tests workflow runs these on Linux and Windows for pushes to `main` and `dev/**`, and for pull requests. Keep the test glob double-quoted so Windows runs the suite. Desktop lint treats warnings as failures and covers the native launcher, runtime, APIs, editor/terminal UI, and development styles.
+
+## Release branches
+
+Prepare each release on `dev/<version>` (for example, `dev/1.0.14`), branched from
+current `main`. Keep release changes there until validation is complete. Pushes
+run Tests, the server tarball/image build, and desktop validation on macOS,
+Windows, and Linux. Branch builds do not publish releases, container images, or
+updater manifests; the desktop job builds native applications and Linux packages.
+
+Before promotion, keep the package and desktop version files consistent, run the
+applicable local checks, and wait for all three workflows to pass on the final
+branch commit. Regenerate and inspect goldens for UI changes, then run the remote
+workspace smoke check. Review the release diff and merge into `main`; a
+fast-forward keeps the validated commit intact. If integrating newer `main`
+changes alters the release, validate the resulting branch commit again.
+
+After `main` CI passes, deploy from its clean committed revision and create the
+matching `v<version>` server and `desktop-v<version>` desktop tags when publishing
+those distributions. Tag workflows verify that the version matches and the
+commit belongs to `main`. Desktop installers remain a draft until every platform
+passes and the release is published. Never move a published tag. Delete only the
+merged release branch after promotion is complete.
 
 ## Desktop and remote workspaces
 

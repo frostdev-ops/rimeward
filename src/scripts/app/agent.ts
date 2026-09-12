@@ -21,6 +21,7 @@ import { AGENT_EFFORTS, CATALOG, pageOf, wardTitle, type AgentEffort, type Agent
 import { RENDERERS, body, note, readLayout } from './wards.ts';
 import { el, getJson, postJson, tapToast, toast } from './dom.ts';
 import { icon } from './icon.ts';
+import { popupFrame, popupLayer, popupViewport } from './popup-layer.ts';
 import { currentPage, readPages } from './pages.ts';
 import { activeMentions, mentionPattern, tagMentionMessage, plainMentionText, MAX_WARD_MENTIONS, type WardMention } from '../../lib/agent/mentions.ts';
 import { dialog } from './workspace-dialogs.ts';
@@ -864,13 +865,18 @@ function reconcileLog(log: HTMLElement, previous: Ui['rendered'], entries: { key
 }
 
 const WORKING_WORDS = ['Contemplating…', 'Gathering the threads…', 'Weaving a plan…', 'Consulting the runes…'];
-function thinking(label?: string): HTMLElement {
-  const node = el('div', 'ag-thinking'), mark = el('span', 'ag-working-mark'); mark.append(icon('rime'));
+/** The cycling words, or the server's label ("Still thinking · 35s"). Swapped whole on a
+ *  label change — patching span by span would `arrive()` every word at once. */
+function workingText(label?: string): HTMLElement {
   const words = el('span', label ? 'ag-working-label' : 'ag-working-words');
   words.setAttribute('aria-hidden', 'true');
   if (label) words.textContent = label;
   else WORKING_WORDS.forEach((word, i) => { const phrase = el('span', undefined, word); phrase.style.setProperty('--ag-word-delay', `${i ? (i - 4) * 6 : 0}s`); words.append(phrase); });
-  node.append(mark, words); return node;
+  return words;
+}
+function thinking(label?: string): HTMLElement {
+  const node = el('div', 'ag-thinking'), mark = el('span', 'ag-working-mark'); mark.append(icon('rime'));
+  node.append(mark, workingText(label)); return node;
 }
 
 /** One scroll writer for compact, expanded and child logs. */
@@ -907,11 +913,15 @@ function followLog(log: HTMLElement, jump: HTMLElement, view: { follow: boolean 
     if (!writing || Math.abs(top - written) > 1) { view.follow = near(); if (!view.follow) cancel(); }
     writing = false; show();
   }, { passive: true });
-  jump.onclick = () => { view.follow = true; update(true); };
-  const resize = new ResizeObserver(() => update()); resize.observe(log);
+  jump.onclick = () => { view.follow = true; update(); }; // eased like the follow itself; reduced motion snaps
+  // A box change (the composer growing, a ward resize, the page coming on stage) re-anchors
+  // the bottom before paint: eased, it read as the transcript bouncing on every wrapped line.
+  const resize = new ResizeObserver(() => update(true)); resize.observe(log);
+  const wake = () => { if (!document.hidden) update(true); }; // a tick that bailed while hidden never re-armed
+  document.addEventListener('visibilitychange', wake);
   log.addEventListener('load', () => update(), true);
   log.addEventListener('toggle', () => update(), true);
-  return { update, dispose() { cancel(); resize.disconnect(); } };
+  return { update, dispose() { cancel(); resize.disconnect(); document.removeEventListener('visibilitychange', wake); } };
 }
 
 function buildLog(st: State, ui: LogUi): void {
@@ -932,6 +942,7 @@ function buildLog(st: State, ui: LogUi): void {
     const key = it.k === 'msg' ? `msg:${it.id ?? `${i}:${it.role}`}` : it.k === 'step' ? `steps:${it.step.id ?? i}` : it.k === 'thinking' ? 'thinking' : `note:${i}`;
     entries.push({ key, signature: JSON.stringify([label, group.length ? group : it]),
       ...(it.k === 'msg' && it.role === 'assistant' ? { update: (node: HTMLElement) => updateBubble(node, it, st, ui.live === true) } : {}),
+      ...(it.k === 'thinking' ? { update: (node: HTMLElement) => node.querySelector('.ag-working-words, .ag-working-label')?.replaceWith(workingText(it.label)) } : {}),
       create: () => {
         let node: HTMLElement;
         if (it.k === 'msg') { node = bubble(it.role, it.text); updateBubble(node, it, st, false); }
@@ -1373,6 +1384,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
   // frames to paint status from, so the wait is announced here.
   if (typeof payload.message === 'string' && /^\/(compact|summari[sz]e)\b/.test(payload.message.trim()))
     st.items.push({ k: 'thinking', label: 'compacting the older part of this thread…' });
+  for (const ui of st.uis) ui.live = true; // the message just pushed transitions in like the reply will
   paint(st);
   const restore: Restore = { text: typeof payload.message === 'string' ? payload.message : '', ...back };
   const running = newRun();
@@ -1914,8 +1926,14 @@ async function addFiles(st: State, picked: FileList | File[]): Promise<void> {
 // ----------------------------------------------------------------- composer
 
 function autoGrow(input: HTMLTextAreaElement): void {
+  // Measuring at height:auto collapses the composer for one layout, and that layout clamps the
+  // log's scroll offset above it — the transcript jumped on every keystroke and, past 64px,
+  // the follow disengaged. The composer keeps its size until the new height is known.
+  const box = input.parentElement;
+  if (box) box.style.minHeight = `${box.offsetHeight}px`;
   input.style.height = 'auto';
   input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+  if (box) box.style.minHeight = '';
 }
 
 /**
@@ -1937,24 +1955,57 @@ function mentionSummary(type: string): string {
 
 function wireCommandMenu(ui: Ui, run: () => void, cur: () => State | undefined): void {
   const anchor = ui.input.parentElement!;
-  anchor.style.position = 'relative'; // set here, not as a class — this is the one thing that needs it
-  const menu = el('div', 'fd-cmd hidden');
+  // The menu is hosted in the popup layer, not under the composer: the footer scrolls
+  // (overflow:auto), so a child popping above it was clipped away. Inside the open dialog
+  // the layer sits in its top layer and focus scope; on the page it is body-hosted.
+  const menu = el('div', 'fd-cmd');
   menu.setAttribute('role', 'listbox');
   menu.id = 'ag-commands-' + crypto.randomUUID();
   ui.input.setAttribute('aria-controls', menu.id);
   ui.input.setAttribute('aria-autocomplete', 'list');
   ui.input.setAttribute('aria-expanded', 'false');
-  anchor.append(menu);
 
+  let layer: HTMLElement | null = null;
   let items: (CommandSpec | WardInstance)[] = [];
   let mentionStart = -1;
   let active = 0;
-  const isOpen = () => !menu.classList.contains('hidden');
+  const isOpen = () => !!layer;
+  // While open the menu follows the composer: it grows with the draft and chips, the page
+  // scrolls, the on-screen keyboard resizes the viewport.
+  const followed = [window, window.visualViewport] as (EventTarget | null)[];
+  const watch = new ResizeObserver(() => place());
+
+  function open(): void {
+    if (layer) return;
+    layer = popupLayer((ui.input.closest('dialog[open]') ?? document.body) as HTMLElement);
+    layer.append(menu);
+    for (const target of followed) for (const type of ['scroll', 'resize']) target?.addEventListener(type, place, { capture: true, passive: true });
+    watch.observe(anchor);
+  }
 
   function close(): void {
-    menu.classList.add('hidden');
+    if (layer) {
+      for (const target of followed) for (const type of ['scroll', 'resize']) target?.removeEventListener(type, place, { capture: true });
+      watch.disconnect();
+      layer.remove(); layer = null;
+    }
     ui.input.setAttribute('aria-expanded', 'false');
     ui.input.removeAttribute('aria-activedescendant');
+  }
+
+  /** Above the composer, spanning it; below when the page is scrolled so far that there is
+   *  clearly more room under it. Never off the visible viewport. */
+  function place(): void {
+    if (!layer) return;
+    if (!anchor.isConnected) { close(); return; }
+    const r = anchor.getBoundingClientRect(), frame = popupFrame(layer), viewport = popupViewport();
+    const above = r.top - viewport.top - 14, below = viewport.bottom - r.bottom - 14;
+    const up = above >= Math.min(208, below);
+    menu.style.left = `${(r.left - frame.x) / frame.scale}px`;
+    menu.style.width = `${r.width / frame.scale}px`;
+    menu.style.maxHeight = `${Math.max(48, Math.min(208, up ? above : below)) / frame.scale}px`;
+    const top = up ? r.top - 6 - menu.offsetHeight * frame.scale : r.bottom + 6;
+    menu.style.top = `${(top - frame.y) / frame.scale}px`;
   }
 
   function paint(): void {
@@ -1981,7 +2032,7 @@ function wireCommandMenu(ui: Ui, run: () => void, cur: () => State | undefined):
         if (c.args) row.append(el('span', 'fd-cmd-args', c.args));
         row.append(el('span', 'fd-cmd-desc', c.summary));
       }
-      // mousedown, not click: the textarea must not lose focus before we act.
+      // pointerdown, not click: the textarea must not lose focus before we act.
       row.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         active = i;
@@ -1990,7 +2041,8 @@ function wireCommandMenu(ui: Ui, run: () => void, cur: () => State | undefined):
       menu.append(row);
     });
     ui.input.setAttribute('aria-activedescendant', `${menu.id}-${active}`);
-    menu.scrollTop = 0;
+    open();
+    place();
     menu.children[active]?.scrollIntoView({ block: 'nearest' });
   }
 
@@ -2053,7 +2105,7 @@ function wireCommandMenu(ui: Ui, run: () => void, cur: () => State | undefined):
     } else items = completeCommand(ui.input.value) ?? [];
     if (!items.length) { close(); return; }
     active = 0;
-    menu.classList.remove('hidden');
+    menu.scrollTop = 0; // a fresh list starts at its top; arrow moves keep the list where it is
     ui.input.setAttribute('aria-expanded', 'true');
     paint();
   }

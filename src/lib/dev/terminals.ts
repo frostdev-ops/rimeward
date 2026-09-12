@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
 import type { IPty } from "node-pty";
 import type { Socket } from "node:net";
@@ -52,6 +53,9 @@ type Row = {
 };
 interface Live {
   pty: IPty;
+  /** Every input writer invalidates a pending model-added Enter. */
+  inputSequence: number;
+  pendingSend?: boolean;
   input?: Socket;
   exited: Promise<void>;
   term: Headless;
@@ -423,6 +427,7 @@ export async function startSession(
   const exited = Promise.withResolvers<void>();
   const s: Live = {
     pty,
+    inputSequence: 0,
     exited: exited.promise,
     term,
     serializer,
@@ -588,10 +593,76 @@ export function writeSession(
 ) {
   const s = running(user, id),
     row = rowOf(user, id);
+  if (typeof data !== 'string') throw new DevError("Input must be a string.");
   if (Buffer.byteLength(data) > 64 * 1024)
     throw new DevError("Input is too large.");
   claimInput(row, owner);
+  s.inputSequence++;
   s.pty.write(binary ? Buffer.from(data, "latin1") : data);
+}
+/** Model-facing insertion/submission. UI/live input and explicit control workflows
+ *  keep using raw writeSession; a PTY write is not acknowledgement from the CLI. */
+export async function inputSession(
+  user: number,
+  id: string,
+  owner: string,
+  data: string,
+  send = true,
+  signal?: AbortSignal,
+) {
+  if (typeof send !== 'boolean') throw new DevError("send must be a boolean.");
+  if (typeof data !== 'string') throw new DevError("Input must be a string.");
+  if (Buffer.byteLength(data) > 64 * 1024) throw new DevError("Input is too large.");
+  signal?.throwIfAborted();
+  const s = running(user, id);
+  claimInput(rowOf(user, id), owner);
+
+  // A single explicit trailing CR is the caller's Enter, not a second submission.
+  // CRLF text is conventional multiline input; bare interior CR and all other
+  // control/escape sequences remain exact rather than acquiring an approval key.
+  const explicitEnter = /\r\n?$/.test(data);
+  const text = (explicitEnter ? data.replace(/\r\n?$/, '') : data).replace(/\r\n/g, '\n');
+  const plainText = /[^\s]/u.test(text) && !/\p{Cc}/u.test(text.replace(/[\t\n]/g, ''));
+  if (!send || !plainText) {
+    writeSession(user, id, owner, data);
+    return { sent: true, inputMode: 'raw', submission: 'caller-controlled', enterAdded: false };
+  }
+
+  if (s.pendingSend) throw new DevError("Another input is still settling. Nothing was written; read the terminal after its receipt before continuing.", 409);
+  const paste = s.term.modes.bracketedPasteMode;
+  if (!paste && /[\n\t]/.test(text)) throw new DevError(
+    "Multiline or tabbed text needs bracketed-paste support. Nothing was written. Read the ready prompt and retry, or use send:false only for intentional raw input (newlines can execute commands).",
+  );
+  const input = paste ? `\x1b[200~${text}\x1b[201~` : text;
+  s.pendingSend = true;
+  try {
+    // Keep the same per-write size cap, including any paste framing.
+    writeSession(user, id, owner, input);
+    const sequence = s.inputSequence;
+    const receipt = { sent: true, inputMode: paste ? 'bracketed-paste' : 'text', enterAdded: false };
+    try {
+      // Claude/Ink commits a paste through a render/effect before handling Enter;
+      // writing text+CR in one PTY chunk can leave CR inside that paste. A separate
+      // write after a short settling window also avoids CLI burst-paste detection.
+      // This is bounded input pacing, not evidence that the application is ready.
+      await delay(250, undefined, { signal });
+      signal?.throwIfAborted();
+      if (running(user, id) !== s) throw new DevError("The terminal process changed.");
+      claimInput(rowOf(user, id), owner);
+      if (s.inputSequence !== sequence) throw new DevError("Other input arrived while the text was settling.");
+      if (s.term.modes.bracketedPasteMode !== paste) throw new DevError("The terminal input mode changed while the text was settling.");
+    } catch (error) {
+      return { ...receipt, submission: 'withheld', detail: `${error instanceof Error ? error.message : 'Input cancelled.'} Text was already written; no Enter was added. Read the same terminal before continuing; do not replay the text.` };
+    }
+    try {
+      writeSession(user, id, owner, '\r');
+      return { ...receipt, submission: 'enter-written', enterAdded: !explicitEnter };
+    } catch (error) {
+      return { ...receipt, submission: 'unknown', enterAdded: explicitEnter ? false : null, detail: `${error instanceof Error ? error.message : 'Enter write failed.'} Text was already written; Enter delivery is uncertain. Read the same terminal before continuing; do not replay input.` };
+    }
+  } finally {
+    s.pendingSend = false;
+  }
 }
 function dimensions(cols: number, rows: number) {
   if (!Number.isFinite(cols) || !Number.isFinite(rows))
@@ -615,9 +686,7 @@ export function resizeSession(
   emitDev(user, "session", id, view(rowOf(user, id)));
 }
 export function interruptSession(user: number, id: string, owner: string) {
-  const s = running(user, id);
-  claimInput(rowOf(user, id), owner);
-  s.pty.write("\x03");
+  writeSession(user, id, owner, "\x03");
 }
 export function closeSession(user: number, id: string, reason: 'cancelled' | 'closed' = 'closed') {
   rowOf(user, id);
@@ -647,6 +716,9 @@ export function configureSession(
   if (opts.agentInput !== undefined) {
     if (typeof opts.agentInput !== "boolean") throw new DevError("Invalid Rime control setting.");
     workDb().prepare("UPDATE terminal_sessions SET agent_input=? WHERE id=?").run(Number(opts.agentInput), id);
+    // Off cancels a pending Enter even if the user switches back on before it fires.
+    const s = live.get(id);
+    if (!opts.agentInput && s) s.inputSequence++;
   }
   if (opts.title !== undefined) {
     workDb().prepare("UPDATE terminal_sessions SET title=? WHERE id=?").run(opts.title.trim(), id);

@@ -299,8 +299,10 @@ export async function instanceRequest(user: number, path: string, request: Reque
   headers.set('origin', pair.server);
   const body = !['GET', 'HEAD'].includes(request.method) ? request.body : undefined;
   // This deadline includes uploading the request body, not just establishing the connection.
+  // Embeddings can spend up to two minutes starting a model and serving a batch.
+  const embedding = /^\/(?:api\/agent|runtime\/[a-f0-9-]{36}\/api\/dev)\/embeddings$/i.test(path);
   const connect = new AbortController(), timeout = setTimeout(() => connect.abort(),
-    body && path.startsWith('/api/remote-desktop/sessions/') ? 120000 : 15000);
+    body && (embedding || path.startsWith('/api/remote-desktop/sessions/')) ? 120000 : 15000);
   let response: Response;
   try {
     response = await fetch(`${pair.server}${path}`, {

@@ -17,15 +17,44 @@ export interface MonitorSource { type:'terminal'|'file'|'browser'|'agent'|'note'
   target?:string; project?:string; path?:string; url?:string; selector?:string; headers?:string[]; fields?:string[]; intervalSeconds?:number; event?:string }
 type Emit = (key:string,data:Record<string,unknown>,baseline?:boolean) => void;
 const hash = (v:unknown) => createHash('sha256').update(typeof v === 'string' ? v : JSON.stringify(v)).digest('hex');
-/** A rendered row's identity across repaints. Rows compare by their exact text (whitespace
- *  collapsed): "HTTP 500" and "HTTP 200" stay distinct. Only Claude Code / Codex status chrome is
- *  normalized — a row led by a spinner frame (braille, or Claude's ·✢✳✶✻✽ sparkle) or carrying
- *  "esc to interrupt" — where the frame glyph and its timers/token counts are what change. */
-const SPINNER = /^[\u2800-\u28FF\u00B7\u2722\u2733\u2736\u273B\u273D]\s/, CHROME = /esc to interrupt/i;
-const stableKey = (line:string) => {
-  const text = line.replace(/\s+/g,' ').trim();
-  return SPINNER.test(text) || CHROME.test(text) ? text.replace(SPINNER,'').replace(/\d+(\.\d+)?/g,'#') : text;
-};
+/** Content identity stays exact (apart from whitespace), including digits and bullet rows.
+ *  Normalizing chrome's numbers was not filtering it: new thinking labels and repaints after
+ *  the recent-frame window still emitted notices, while numeric progress could be hidden. */
+const stableKey = (line:string) => line.replace(/\s+/g,' ').trim();
+const CLAUDE_SPINNER = /^[\u2800-\u28FF\u00B7\u2722\u2733\u2736\u273B\u273D]\s+([A-Za-z][A-Za-z-]*ing)(?:…|\.{3})(?:\s+\(([^()]*)\))?$/;
+const CODEX_SPINNER = /^[\u2800-\u28FF\u2022]\s+(Working|Thinking)(?:…|\.{3})?\s+\(([^()]*)\)$/i;
+const SPINNER_DETAIL = /^(?:(?:\d+(?:\.\d+)?[hms]\s*)+|esc to interrupt|(?:thinking(?: (?:some )?more)?|still thinking|almost done thinking)(?: with (?:low|medium|high|xhigh|max) effort)?|thought for (?:\d+(?:\.\d+)?[hms]\s*)+|[↑↓↕]?\s*[\d,.]+[km]? tokens)$/i;
+function spinnerChrome(text:string): boolean {
+  const match = CLAUDE_SPINNER.exec(text) ?? CODEX_SPINNER.exec(text);
+  if (!match) return false;
+  // Bare generic activity labels carry no progress; other bare ellipsis lines are content.
+  if (match[2] === undefined) return /^(?:Churning|Thinking|Working)$/i.test(match[1]!);
+  return match[2].split(/[·•]/).every(part => SPINNER_DETAIL.test(part.trim()));
+}
+/** Only recognize CLI-owned chrome, never arbitrary prose containing an ellipsis or a hint.
+ *  A wrapped spinner is removed only when the complete joined row matches the same grammar.
+ *  Unknown/partial rows, queued input and prompts stay visible: indentation or ❯ alone cannot
+ *  distinguish an input repaint from a substantive question, code or progress report. */
+function terminalContent(lines:string[],cli:boolean): string[] {
+  if (!cli) return lines;
+  const content:string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const text = stableKey(lines[i]!);
+    if (spinnerChrome(text) || /^□\s.+\s△\s.+\s⎪[●○]+⎥\sai\s◆\s/.test(text) || text === '❯ Press up to edit queued messages') continue;
+    if (/^[\u2800-\u28FF\u00B7\u2022\u2722\u2733\u2736\u273B\u273D]\s/.test(text) && text.includes('(') && !text.includes(')')) {
+      let joined = text, end = i;
+      // Terminal rows are physical, not logical lines. Bound lookahead and fail open if a
+      // narrow viewport split anything other than the recognized spinner metadata.
+      while (end+1 < lines.length && end-i < 2 && !joined.includes(')')) {
+        joined += ' '+stableKey(lines[++end]!);
+        if (spinnerChrome(joined)) { i = end; break; }
+      }
+      if (i === end && spinnerChrome(joined)) continue;
+    }
+    content.push(lines[i]!);
+  }
+  return content;
+}
 export function parseMonitorSource(raw:unknown): MonitorSource {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('Monitor source is required.');
   const r = raw as Record<string,unknown>;
@@ -76,13 +105,13 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
     // Rendered rows, never raw bytes: by the time an output event fires the headless terminal has
     // applied the chunk, so rows are read back from it — the viewport plus exactly the rows the
     // chunk scrolled above it (xterm's scroll count). A row is new when its stable key was not in
-    // the previous frame or on screen within the last 5 s, which drops spinner ticks, status-bar
-    // repaints and clear-then-repaint frames while a genuinely repeated line later still passes.
+    // the previous frame or on screen within the last 5 s. Recognized CLI chrome is discarded
+    // before deduplication; clear-then-repaint content is quiet, but repeated content later passes.
     let seen = new Map<string,number>(), scrolled = renderedLines(user,s.target!).scrolled;
     const fresh:string[] = []; let since = 0, sequence = 0, timer:ReturnType<typeof setTimeout> | undefined;
     const collect = (lines:string[],now:number) => {
       const frame = new Map<string,number>();
-      for (const line of lines) { const key = stableKey(line); if (!key) continue; if (!seen.has(key) && !frame.has(key)) { if (!fresh.length) since = now; fresh.push(line); } frame.set(key,now); }
+      for (const line of terminalContent(lines,first.session.kind !== 'shell')) { const key = stableKey(line); if (!key) continue; if (!seen.has(key) && !frame.has(key)) { if (!fresh.length) since = now; fresh.push(line); } frame.set(key,now); }
       for (const [key,at] of seen) if (!frame.has(key) && now-at < 5000) frame.set(key,at);
       seen = frame;
     };

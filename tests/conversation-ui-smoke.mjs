@@ -157,6 +157,7 @@ try {
   await emit({type:'thinking'});
   assert.equal(await dialog.locator('.ag-activity').evaluate(el=>el.open),true);
   await dialog.getByRole('button',{name:'Latest'}).click();
+  await page.waitForFunction(el=>el.scrollHeight-el.scrollTop-el.clientHeight<70,await log.elementHandle(),{timeout:2000});
   assert.ok(await log.evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight<70));
   await emit({type:'pending',pending:{confirmId:'review',summary:'Send the prepared update to the project channel?'}});
   assert.equal(await dialog.getByRole('button',{name:'Confirm',exact:true}).isVisible(),true);

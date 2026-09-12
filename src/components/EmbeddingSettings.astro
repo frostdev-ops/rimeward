@@ -21,14 +21,14 @@
       </label>
     </div>
     <fieldset class="min-w-0 rounded-xl border border-line p-3" data-runtimes hidden>
-      <legend class="px-1 text-sm">Priority</legend>
-      <p class="text-xs text-ink-muted">The first computer that answers is used; when it goes offline the next one takes over. Every computer serves the same model variant.</p>
-      <ol class="mt-2 grid gap-1" data-runtime-list></ol>
+      <legend class="px-1 text-sm">Computer priority</legend>
+      <p class="text-xs text-ink-muted">Enable the computers to use, in order. If one is unavailable, the next takes over.</p>
+      <ol class="mt-3 grid" data-runtime-list aria-label="Embedding computer priority"></ol>
     </fieldset>
     <p class="text-xs text-ink-muted" data-selection-help></p>
-    <label class="flex items-start gap-2 text-sm" data-sharing hidden>
-      <input class="mt-1" type="checkbox" name="sharing" />
-      <span>Let my other computers use this one’s model</span>
+    <label class="switch justify-between gap-4 rounded-xl border border-line p-3" data-sharing hidden>
+      <span class="grid gap-1"><span>Share this computer’s model</span><span class="text-xs text-ink-muted">Let your other computers use it for search.</span></span>
+      <input type="checkbox" role="switch" name="sharing" aria-label="Share this computer’s model" />
     </label>
     <div class="flex flex-wrap items-center gap-2" data-unsaved hidden>
       <button class="btn-primary" type="submit">Save changes</button>
@@ -88,13 +88,19 @@
   [data-embedding-settings] dd, [data-error] { overflow-wrap: anywhere; }
   [data-status][data-tone="ready"] [data-state] { color: var(--color-ok); }
   [data-status][data-tone="error"] [data-state] { color: var(--color-err); }
-  [data-runtime-list] li { display: flex; align-items: center; gap: .5rem; min-width: 0; padding: .35rem .25rem; border-radius: .5rem; }
-  [data-runtime-list] li:hover { background: var(--color-surface-2); }
-  [data-runtime-list] label { display: flex; flex: 1; min-width: 0; align-items: center; gap: .5rem; font-size: .85rem; cursor: pointer; }
-  [data-runtime-list] label > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  [data-runtime-list] small { color: var(--color-ink-muted); }
-  [data-runtime-list] li[data-ready="true"] small { color: var(--color-ok); }
-  [data-runtime-list] .btn { padding: .15rem .5rem; font-size: .7rem; }
+  /* Runtime rows are created in the browser and do not have Astro's scope attribute. */
+  [data-runtime-list] :global(li) { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; min-width: 0; padding: .75rem 0; }
+  [data-runtime-list] :global(li + li) { border-top: 1px solid var(--color-line); }
+  [data-runtime-list] :global(label) { flex: 1; min-width: 0; justify-content: space-between; gap: .75rem; }
+  [data-runtime-list] :global(.runtime-copy) { display: grid; gap: .2rem; min-width: 0; overflow-wrap: anywhere; }
+  [data-runtime-list] :global(small) { font-size: .75rem; color: var(--color-ink-muted); }
+  [data-runtime-list] :global(li[data-ready="true"] small) { color: var(--color-ok); }
+  [data-runtime-list] :global(.runtime-order) { display: flex; flex: none; gap: .25rem; }
+  [data-runtime-list] :global(.btn) { width: 2rem; height: 2rem; padding: 0; }
+  [data-runtime-list] :global(.runtime-setup) { display: grid; gap: .5rem; width: 100%; }
+  [data-runtime-list] :global(.runtime-setup .btn) { width: fit-content; height: auto; padding: .4rem .75rem; font-size: .75rem; }
+  [data-runtime-list] :global(progress) { width: 100%; }
+  [data-runtime-list] :global(input:focus-visible), [data-sharing] input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 4px; }
   progress { display: block; height: .45rem; appearance: none; border: 0; border-radius: 1rem; overflow: hidden; background: var(--color-line); }
   progress::-webkit-progress-bar { background: var(--color-line); }
   progress::-webkit-progress-value { background: var(--color-accent); }
@@ -102,11 +108,13 @@
 </style>
 
 <script>
+  import { icon } from '../scripts/app/icon.ts';
   import type { EmbeddingConfig } from '../lib/agent/embedding-profiles.ts';
   import type { localEmbeddingStatus } from '../lib/agent/embedding-local.ts';
   import type { KnowledgeStatus } from '../lib/agent/knowledge.ts';
   type Device = { id:string; name:string; online:boolean; inference?:{ sharing:boolean; ready:boolean; quantization:string; queryMs?:number } | null };
-  type ServerHost = { hosting:boolean; ready:boolean; quantization:string; location?:string; models:{ quantization:string; installed:boolean }[] } | null;
+  type ServerHost = { hosting:boolean; ready:boolean; quantization:string; location?:string;
+    runtime?:ReturnType<typeof localEmbeddingStatus>['runtime']; models:ReturnType<typeof localEmbeddingStatus>['models'] } | null;
   type Status = { config:EmbeddingConfig; desktop:boolean; local:ReturnType<typeof localEmbeddingStatus>; server:ServerHost;
     holds:Record<string,string>; index:Partial<KnowledgeStatus>; devices:Device[]; timing?:{ queryMs:number; runtime?:string } | null };
   /** One selectable runtime, as the priority list and the status card both read it. */
@@ -176,28 +184,74 @@
       const known = candidates(data,draft.quantization);
       for (const c of known) if (!order.includes(c.id)) order.push(c.id);
       const rows = order.map(id => known.find(c => c.id === id) ?? { id,name:'Unpaired desktop',ready:false,note:'no longer paired',blocker:'' });
-      const signature = JSON.stringify([rows,[...chosen],!initialized || !!pendingAction]);
+      const signature = JSON.stringify([rows,[...chosen],!initialized || !!pendingAction,draft.quantization,data.server,statusError]);
       if (signature === listSignature) return;
       listSignature = signature;
-      const list = element<HTMLOListElement>('runtime-list'); list.replaceChildren();
+      const list = element<HTMLOListElement>('runtime-list');
+      const focused = document.activeElement as HTMLElement | null;
+      const focusedRow = focused?.closest('li');
+      const focusId = focusedRow && list.contains(focusedRow) ? focusedRow.dataset.runtime : undefined;
+      const focusIndex = focusedRow ? [...focusedRow.querySelectorAll('input,button')].indexOf(focused!) : -1;
+      list.replaceChildren();
       rows.forEach((c,i) => {
-        const li = document.createElement('li'); li.dataset.ready = String(c.ready);
+        const li = document.createElement('li'); li.dataset.ready = String(c.ready); li.dataset.runtime = c.id;
         const label = document.createElement('label'), box = document.createElement('input');
+        label.className = 'switch'; box.setAttribute('role','switch');
         box.type = 'checkbox'; box.checked = chosen.has(c.id); box.disabled = !initialized || !!pendingAction;
-        box.title = box.checked ? 'Remove from the list' : 'Add to the list';
+        box.setAttribute('aria-label','Use ' + c.name + ' for embeddings');
+        box.title = box.checked ? 'Disable this computer' : 'Enable this computer';
         box.onchange = () => { if (box.checked) chosen.add(c.id); else chosen.delete(c.id); message(''); render(); };
+        const copy = document.createElement('span'); copy.className = 'runtime-copy';
         const name = document.createElement('span'); name.textContent = c.name;
         const note = document.createElement('small'); note.textContent = c.note;
-        label.append(box,name,note);
+        copy.append(name,note); label.append(copy,box);
+        const moves = document.createElement('span'); moves.className = 'runtime-order';
         const up = document.createElement('button'), down = document.createElement('button');
         up.type = down.type = 'button'; up.className = down.className = 'btn';
-        up.textContent = 'Up'; down.textContent = 'Down';
-        up.title = 'Try this computer earlier'; down.title = 'Try this computer later';
+        up.append(icon('up')); down.append(icon('down'));
+        up.title = 'Try ' + c.name + ' earlier'; down.title = 'Try ' + c.name + ' later';
+        up.setAttribute('aria-label',up.title); down.setAttribute('aria-label',down.title);
         up.disabled = i === 0 || !initialized || !!pendingAction; down.disabled = i === rows.length-1 || !initialized || !!pendingAction;
         up.onclick = () => { [order[i-1],order[i]] = [order[i]!,order[i-1]!]; message(''); render(); };
         down.onclick = () => { [order[i+1],order[i]] = [order[i]!,order[i+1]!]; message(''); render(); };
-        li.append(label,up,down); list.append(li);
+        moves.append(up,down); li.append(label,moves);
+        if (c.id === 'server' && data!.server) {
+          const server = data!.server, runtime = server.runtime;
+          const model = server.models.find(m => m.quantization === draft.quantization);
+          const downloading = server.models.find(m => m.download && !m.download.done);
+          const installing = !!runtime?.install && !runtime.install.done;
+          const setup = document.createElement('div'); setup.className = 'runtime-setup';
+          if (installing || downloading) {
+            const label = document.createElement('small'), progress = document.createElement('progress');
+            progress.setAttribute('aria-label','Paired server model setup progress');
+            label.textContent = installing ? 'Installing server runtime · ' + (runtime!.install!.received/1e6).toFixed(0) + ' MB'
+              : 'Downloading ' + downloading!.quantization + ' on server · ' + (downloading!.download!.received/1e9).toFixed(2) + ' / ' + (downloading!.bytes/1e9).toFixed(2) + ' GB';
+            if (downloading) { progress.max = downloading.bytes; progress.value = downloading.download!.received; }
+            setup.append(label,progress);
+          }
+          const error = runtime?.install?.error || model?.download?.error;
+          if (error) { const label = document.createElement('small'); label.className = 'text-err'; label.textContent = error; setup.append(label); }
+          if (downloading || !installing && !model?.installed && (server.hosting || runtime?.installable)) {
+            const install = document.createElement('button'); install.type = 'button'; install.className = 'btn';
+            install.disabled = !initialized || !!pendingAction || !!statusError;
+            install.textContent = downloading ? 'Cancel server download' : 'Install ' + draft.quantization + ' on server · ' + (draft.quantization === 'Q4_K_M' ? '4.68 GB' : '8.05 GB');
+            install.onclick = () => void action(downloading ? 'cancel' : 'download',(downloading?.quantization as EmbeddingConfig['quantization'] | undefined) ?? draft.quantization,'server').catch(() => {});
+            setup.append(install);
+          } else if (!runtime && !server.hosting) {
+            const label = document.createElement('small'); label.textContent = 'Update the server to install its model from this app.'; setup.append(label);
+          } else if (!server.hosting && !runtime?.installable) {
+            const label = document.createElement('small'); label.textContent = 'Model installation is unavailable on this server platform.'; setup.append(label);
+          }
+          if (setup.childElementCount) li.append(setup);
+        }
+        list.append(li);
       });
+      if (focusId) {
+        const row = [...list.children].find(row => (row as HTMLElement).dataset.runtime === focusId);
+        const controls = row?.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button');
+        const next = controls?.[focusIndex];
+        (next?.disabled ? controls?.[0] : next)?.focus({ preventScroll:true });
+      }
     };
     const render = () => {
       for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('select,input[name]')) control.disabled = !initialized;
@@ -317,12 +371,12 @@
       })().finally(() => { refreshing = undefined; render(); });
       render(); return refreshing;
     };
-    const action = async (name:string,quantization = config().quantization) => {
+    const action = async (name:string,quantization = config().quantization,target = 'local') => {
       if (pendingAction) return;
       const value = config(); pendingAction = name; revision++; message(''); render();
       try {
         const response = await fetch('/api/account/embeddings',{ method:'POST',headers:{ 'content-type':'application/json' },
-          body:JSON.stringify({ action:name,quantization,config:value }),signal:AbortSignal.timeout(15000) });
+          body:JSON.stringify({ action:name,quantization,config:value,target }),signal:AbortSignal.timeout(15000) });
         const result = await response.json(); if (!response.ok) throw Error(result.error ?? 'Retrieval action failed.');
         if (name === 'save') settled = fingerprint(result.config);
         if (name === 'save') message('Settings saved.');

@@ -48,7 +48,12 @@ and each query uses the first one that answers, so a laptop going offline hands
 over to the next computer without any change of settings. Every runtime in the
 list serves the same model variant; a runtime that fails is skipped for thirty
 seconds, an offline desktop costs nothing. The selection is stored per runtime:
-a server has its own list, and a server can host the model itself (Account →
+a server has its own list. Until a list is saved, it tries its own model then
+its owner's paired desktops (up to seven); each desktop still enforces inference
+sharing and the requested model variant. Saving a list makes that selection
+explicit, including local-only or disabled desktops. Relayed inference allows
+the same two-minute model startup and batch deadline as local inference.
+A server can host the model itself (Account →
 Semantic retrieval installs the pinned llama.cpp build into its data directory
 and downloads the weights). Cloud providers are never switched to automatically;
 they are a different vector profile. Cloud providers use the existing sealed
@@ -61,6 +66,13 @@ Settings separate provider selection from the current search status. Save and
 discard appear only for unsaved changes; downloads, cancellation and unloading
 appear only when applicable. Active downloads show their own progress, including
 when selecting another provider. Index rebuilding is under **Index maintenance**.
+Computer switches enable each host; arrow buttons set the order in which enabled
+hosts are tried. Each host shows its availability beneath its name. The separate
+sharing switch lets paired computers use this computer's model.
+In the desktop app, the paired server's row can install its runtime and the
+selected model variant in one click, with download progress, cancellation and
+setup errors shown there. The server must also be enabled in the priority list
+to serve this desktop's searches. Installation does not change saved priorities.
 The status identifies setup, download, indexing, ready, unloaded and offline
 states. Model files live in application data and survive application updates.
 

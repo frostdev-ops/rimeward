@@ -11,7 +11,7 @@ export const GET:APIRoute = ({ locals }) => {
   if (isDesktop()) return Response.json({ error:'This is a desktop.' },{ status:400 });
   const c = embeddingConfig(locals.user.userId), status = localEmbeddingStatus();
   return Response.json({ hosting:!!status.runtime.binary,quantization:c.quantization,location:status.location,
-    models:status.models.map(m => ({ quantization:m.quantization,installed:m.installed })),ready:!!status.runtime.binary && status.models.some(m => m.installed),
+    runtime:status.runtime,models:status.models,ready:!!status.runtime.binary && status.models.some(m => m.installed),
     startupMs:status.startupMs,queryMs:status.queryMs },{ headers:{ 'cache-control':'no-store' } });
 };
 /** A paired desktop explicitly selects a cloud provider (the user's sealed key stays on the server) or the server's own model. */

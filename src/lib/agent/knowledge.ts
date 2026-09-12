@@ -60,6 +60,7 @@ export function indexKnowledge(user:number): void {
       if (backgroundConfig.provider === 'local' && !backgroundConfig.runtimes.length) throw Error('Local model is unloaded. Keyword indexing continues; the next retrieval request can load it again.');
       const vectors = await embed(user,batch.map(c => c.text),false,undefined,backgroundConfig);
       await request(user,'vectors',{ profile:profile.id,values:batch.map((c,i) => ({ id:c.id,revision:c.revision,vector:vectors[i] })) });
+      errors.delete(user);
     }
   })().catch(e => errors.set(user,e instanceof Error ? e.message : String(e))).finally(() => {
     indexing.delete(user);

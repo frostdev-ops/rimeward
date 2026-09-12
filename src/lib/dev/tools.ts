@@ -26,7 +26,7 @@ import {
   restartSession,
   listSessions,
   readSession,
-  writeSession,
+  inputSession,
   waitSession,
   interruptSession,
   closeSession,
@@ -312,18 +312,16 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ), backgroundable: true, cancellable: true },
   terminal_input: wrap(
     "write",
-    "Send exact input to a session with Let Rime control on (agentInput:true, the default). If off, the user can turn on the terminal's toggle; no restart or separate handoff is needed. Read the latest screen first. Never blindly replay uncertain input or guess approval keys; turning the toggle off stops Rime input.",
+    "Insert text and send it with one Enter by default (send:true). Read the latest screen first; Let Rime control must be on (agentInput:true). send:false writes exact raw input without adding Enter; supplied control keys still act. Pure control/mixed control sequences stay raw, without an extra Enter. A trailing CR on ordinary text is submitted once, not twice. Multiline text needs bracketed-paste support. Receipts report PTY writes and whether Enter was written or withheld, not CLI acceptance or task completion. Never replay uncertain input or guess approval keys. Sending does not authorize prompt approval; turning the toggle off stops Rime input.",
     schema(
       {
         ...session,
-        data: str("Exact text / control characters; Enter is carriage return"),
+        data: str("Text to insert; send defaults true. For exact text/control bytes use send:false; Enter is carriage return (\\r)."),
+        send: { type: "boolean", default: true, description: "Insert ordinary text then press Enter once (default true). false writes exact raw data with no added key; embedded CR/LF/control keys can still submit or act." },
       },
       ["runtime", "session", "data"],
     ),
-    (a, c) => {
-      writeSession(c.userId, a.session, owner(c), a.data);
-      return { sent: true };
-    },
+    (a, c) => inputSession(c.userId, a.session, owner(c), a.data, a.send, c.signal),
   ),
   terminal_interrupt: wrap(
     "write",

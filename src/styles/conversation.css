@@ -166,6 +166,8 @@ dialog.fd-dialog.ag-child-dialog { width:min(52rem,94vw); height:min(88dvh,54rem
   .ag-child-dialog .ag-message { font-size:.9rem; }
   .ag-child-dialog .ag-footer { padding-bottom:max(.75rem,env(safe-area-inset-bottom)); }
 }
+/* The / and @ menu rides the popup layer (the footer scrolls, so it can't hang under the composer); agent.ts places it. */
+.fd-popup-layer > .fd-cmd { position:fixed; right:auto; bottom:auto; }
 .ag-mention-row { align-items: center; }
 .ag-mention-label { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 0.125rem; }
 .ag-mention-label .fd-cmd-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; }
@@ -227,7 +229,7 @@ dialog.fd-dialog.ag-child-dialog { width:min(52rem,94vw); height:min(88dvh,54rem
 .ag-working-words { display:grid; min-width:0; }
 .ag-working-words > span { grid-area:1/1; opacity:0; animation:ag-word 24s linear infinite; animation-delay:var(--ag-word-delay); }
 .ag-working-mark { animation:ag-breathe 6s ease-in-out infinite; }
-@keyframes ag-word { 0%,24.1% { opacity:1; } 25%,99.1% { opacity:0; } 100% { opacity:1; } }
+@keyframes ag-word { 0%,25%,100% { opacity:0; } 2%,23% { opacity:1; } }
 @keyframes ag-breathe { 0%,100% { opacity:.82; } 50% { opacity:.92; } }
 .ag-timeline { position:relative; padding-left:.25rem; }
 .ag-timeline::before { content:''; position:absolute; left:.9rem; top:.8rem; bottom:.8rem; width:1px; background:var(--color-line-strong); }
