@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { runModel } from './provider.ts';
 import os from 'node:os';
 import { liveTurn, trackTurn, type LiveTurn } from './live-turn.ts';
 import { siteInfo } from '../site.ts';
@@ -94,7 +95,7 @@ export interface PendingConfirm {
 export type AgentEvent =
   | { type: 'question'; question: PendingQuestion | null }
   | { type: 'task'; task: import('./tasks.ts').AgentTask }
-  | { type: 'thinking'; round: number; label?: string }
+  | { type: 'thinking'; round: number; id?: string; label?: string; detail?: string }
   | { type: 'text_delta'; id: string; delta: string; offset: number }
   | { type: 'says'; text: string; id?: string; incomplete?: boolean }
   /** A status line for the log (compaction happened) — not model output.
@@ -1067,10 +1068,19 @@ async function loop(
     const messageId = randomUUID();
     partial = { id: messageId, text: '' };
     const waitingSince = Date.now();
-    const waitTimer = setInterval(() => emit?.({ type: 'thinking', round,
-      label: partial?.text ? 'Writing…' : Date.now() - waitingSince >= 30_000 ? `Still thinking · ${Math.floor((Date.now() - waitingSince) / 1000)}s` : undefined }), 5000);
+    let thinking: { tokens?: number; estimated?: boolean } | undefined;
+    let thinkingDetail = '', thinkingTruncated = false;
+    let lastProgress = 0;
+    const showProgress = () => {
+      lastProgress = Date.now();
+      const tokens = thinking?.tokens;
+      const count = tokens === undefined ? 'token count unavailable' : `${thinking?.estimated ? '~' : ''}${tokens.toLocaleString('en-US')} thinking tokens`;
+      emit?.({ type: 'thinking', round, id: messageId, ...(thinkingDetail ? { detail: thinkingDetail + (thinkingTruncated ? '\n\n[Showing the first 32,000 characters.]' : '') } : {}), label: `${partial?.text ? 'Receiving response…' : thinking ? `Thinking… · ${count}` : `Waiting for ${model}`} · ${Math.floor((Date.now() - waitingSince) / 1000)}s` });
+    };
+    showProgress();
+    const waitTimer = setInterval(showProgress, 5000);
     try {
-      result = await cfg.provider.run({
+      result = await runModel(cfg.provider, {
         userId: cfg.conv.user_id,
         model,
         effort,
@@ -1082,7 +1092,17 @@ async function loop(
         items,
         tools,
         cacheKey: `conv:${cfg.conv.id}`,
-        signal: ac.signal,
+        signal: ctx.signal,
+        onThinking: progress => {
+          if (ctx.signal?.aborted || !progress) return;
+          const tokens = progress.tokens;
+          if (typeof progress.detailDelta === 'string') {
+            thinkingTruncated ||= thinkingDetail.length + progress.detailDelta.length > 32_000;
+            thinkingDetail = (thinkingDetail + progress.detailDelta).slice(0, 32_000);
+          }
+          thinking = { ...(thinking ?? {}), ...(typeof tokens === 'number' && Number.isSafeInteger(tokens) && tokens >= 0 ? { tokens, estimated: progress.estimated === true } : {}) };
+          if (Date.now() - lastProgress >= 500) showProgress();
+        },
         onTextDelta: delta => {
           if (!delta || ac.signal.aborted) return;
           const offset = partial!.text.length;
@@ -1090,6 +1110,7 @@ async function loop(
           emit?.({ type: 'text_delta', id: messageId, delta, offset });
         },
       });
+      if (thinkingDetail) showProgress();
     } catch (err) {
       // An aborted call has no items to bank: the turn simply ends here and
       // the next message follows the last answered round.
@@ -1099,8 +1120,9 @@ async function loop(
       throw err;
     } finally {
       clearInterval(waitTimer);
-      aborts.delete(key);
     }
+    // Keep the round's controller armed through tool execution as well as inference.
+    if (!result.calls.length && interrupts.has(key)) return interrupted()!;
     recordContextUsage(cfg.conv.id, cfg.provider.id, model, items, instructions, tools, result.usage, result.items);
     if (cfg.monitorGuard && !cfg.monitorGuard()) return done({ reply:'skipped — monitor cancelled or permissions changed during inference',steps });
     items.push(...result.items);

@@ -332,7 +332,7 @@ const batchKey = (seq: number | string, round: unknown) => (typeof round === 'nu
 type Item =
   | { k: 'msg'; role: 'user' | 'assistant'; text: string; src?: TurnSource; id?: string; streaming?: boolean; incomplete?: boolean }
   | StepItem
-  | { k: 'thinking'; label?: string }
+  | { k: 'thinking'; id?: string; label?: string; detail?: string; done?: boolean }
   | { k: 'note'; text: string; err?: boolean; icon?: string; src?: TurnSource };
 
 /** One attached view of a ward's conversation (the ward, or the dialog). */
@@ -399,6 +399,8 @@ interface State {
   revision: number;
   refresh: number;
   abort: AbortController | null;
+  stopping?: boolean;
+  recoveryTimer?: ReturnType<typeof setTimeout>;
   attachments: { id: string; name: string }[];
   uploading: number;
   draft: string;
@@ -962,9 +964,22 @@ function workingText(label?: string): HTMLElement {
   else WORKING_WORDS.forEach((word, i) => { const phrase = el('span', undefined, word); phrase.style.setProperty('--ag-word-delay', `${i ? (i - 4) * 6 : 0}s`); words.append(phrase); });
   return words;
 }
-function thinking(label?: string): HTMLElement {
-  const node = el('div', 'ag-thinking'), mark = el('span', 'ag-working-mark'); mark.append(icon('rime'));
-  node.append(mark, workingText(label)); return node;
+function updateThinking(node: HTMLElement, item: Extract<Item, { k: 'thinking' }>): void {
+  const summary = node.querySelector('summary')!;
+  const label = item.done ? (item.label ?? 'Thinking').replace(/Thinking…|Receiving response…/, 'Thought') : item.label;
+  summary.replaceChildren(workingText(label));
+  summary.setAttribute('aria-label', label ?? 'Waiting for the model');
+  summary.tabIndex = item.detail ? 0 : -1;
+  node.classList.toggle('ag-thinking-expandable', !!item.detail);
+  node.querySelector('pre')!.textContent = item.detail ?? '';
+  if (!item.detail) (node as HTMLDetailsElement).open = false;
+}
+function thinking(item: Extract<Item, { k: 'thinking' }>): HTMLElement {
+  const node = el('details', 'ag-thinking'), summary = el('summary');
+  summary.addEventListener('click', event => { if (!node.classList.contains('ag-thinking-expandable')) event.preventDefault(); });
+  node.append(summary, el('pre', 'ag-thinking-detail'));
+  updateThinking(node, item);
+  return node;
 }
 
 /** One scroll writer for compact, expanded and child logs. */
@@ -1026,7 +1041,7 @@ function buildLog(st: State, ui: LogUi): void {
   let prev: TurnSource = 'chat';
   for (let i = 0; i < st.items.length; i++) {
     const it = st.items[i]!;
-    if (it.k === 'thinking' && (st.pending || currentQuestion(st)?.wait || st.items.some(x => x.k === 'msg' && x.streaming))) continue;
+    if (it.k === 'thinking' && !it.done && (st.pending || currentQuestion(st)?.wait || st.items.some(x => x.k === 'msg' && x.streaming))) continue;
     if (it.k === 'note' && it.src === 'monitor') {
       // Routine monitor traffic folds into one collapsed block; Tasks keeps every raw match.
       const notes = [it], start = i;
@@ -1047,10 +1062,10 @@ function buildLog(st: State, ui: LogUi): void {
       group.push(it);
       while (st.items[i + 1]?.k === 'step' && (st.items[i + 1] as StepItem).src === it.src) group.push(st.items[++i] as StepItem);
     }
-    const key = it.k === 'msg' ? `msg:${it.id ?? `${i}:${it.role}`}` : it.k === 'step' ? `steps:${it.step.id ?? i}` : it.k === 'thinking' ? 'thinking' : `note:${i}`;
+    const key = it.k === 'msg' ? `msg:${it.id ?? `${i}:${it.role}`}` : it.k === 'step' ? `steps:${it.step.id ?? i}` : it.k === 'thinking' ? `thinking:${it.id ?? i}` : `note:${i}`;
     entries.push({ key, signature: JSON.stringify([label, group.length ? group : it]),
       ...(it.k === 'msg' && it.role === 'assistant' ? { update: (node: HTMLElement) => updateBubble(node, it, st, ui.live === true) } : {}),
-      ...(it.k === 'thinking' ? { update: (node: HTMLElement) => node.querySelector('.ag-working-words, .ag-working-label')?.replaceWith(workingText(it.label)) } : {}),
+      ...(it.k === 'thinking' ? { update: (node: HTMLElement) => updateThinking(node, it) } : {}),
       create: () => {
         let node: HTMLElement;
         if (it.k === 'msg') { node = bubble(it.role, it.text); updateBubble(node, it, st, false); }
@@ -1063,7 +1078,7 @@ function buildLog(st: State, ui: LogUi): void {
             }
             node.append(stepCard(item.step, item.running, st.w.i));
           }
-        } else if (it.k === 'thinking') node = thinking(it.label);
+        } else if (it.k === 'thinking') node = thinking(it);
         else {
           node = el('div', `ag-notice${it.err ? ' ag-error' : ''}`);
           if (it.icon || it.err) node.append(icon(it.icon ?? 'warning'), document.createTextNode(' '));
@@ -1315,7 +1330,7 @@ function paint(st: State): void {
     const working = st.busy || st.remote;
     const paused = !!st.pending || !!currentQuestion(st)?.wait;
     ui.root.dataset.paused = String(paused);
-    const status = st.placementBlocked ?? (st.pending?.question ? 'Waiting for your answer' : st.pending ? 'Approval needed' : st.clearing ? 'Starting a new chat…' : working ? 'Working' : st.sharedStatus || 'Rimeward agent');
+    const status = st.placementBlocked ?? (st.stopping ? 'Requesting stop…' : st.pending?.question ? 'Waiting for your answer' : st.pending ? 'Approval needed' : st.clearing ? 'Starting a new chat…' : working ? 'Working' : st.sharedStatus || 'Rimeward agent');
     if (ui.status.textContent !== status) ui.status.textContent = status;
     paintContext(ui.context, st.context);
     ui.root.dataset.working = String(working);
@@ -1325,6 +1340,8 @@ function paint(st: State): void {
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-clear]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-history]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
     ui.stop.classList.toggle('hidden', !st.busy && !st.remote); // server-side stop — any client, any turn
+    ui.stop.disabled = !!st.stopping;
+    ui.stop.setAttribute('aria-label', st.stopping ? 'Requesting stop' : 'Stop');
     ui.background.classList.toggle('hidden', !st.busy && !st.remote && !st.tasks.some(t => t.state === 'running' && !t.background));
     const running = st.tasks.filter(taskActive).length, waiting = st.tasks.filter(t => t.waiting && t.state === 'running').length;
     const breakdown = [running ? `${running} running` : '', waiting ? `${waiting} waiting for your answer` : ''].filter(Boolean).join(' · ');
@@ -1353,7 +1370,7 @@ async function refetch(st: State, settled = false): Promise<void> {
   if (!st.uis.size) return; // The initial render owns mounting; a reconnect must not supersede it.
   const revision = st.revision;
   const refresh = ++st.refresh;
-  const { status, data } = await getJson(`/api/agent/${encodeURIComponent(st.w.i)}`).catch(() => ({ status: 0, data: null }));
+  const { status, data } = await getJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { signal: AbortSignal.timeout(10_000) }).catch(() => ({ status: 0, data: null }));
   if (status !== 200 || !data) {
     if (data?.transition) { st.newChatRequest = data.transition; st.placementBlocked = data.error ?? 'Reconcile the new conversation before continuing.'; paint(st); }
     return;
@@ -1374,10 +1391,22 @@ async function refetch(st: State, settled = false): Promise<void> {
   if (settled) flushPendingLayout();
 }
 
+/** Recover missed terminal events after a dropped stream without resending the message. */
+function recover(st: State): void {
+  if (st.recoveryTimer) return;
+  st.recoveryTimer = setTimeout(async () => {
+    st.recoveryTimer = undefined;
+    if (!st.uis.size || st.busy || !st.remote) return;
+    await refetch(st);
+    if (st.remote && !st.busy) recover(st);
+  }, 5000);
+}
+
 // --------------------------------------------------------------- turn flow
 
 function endTurn(st: State): void {
   st.busy = false;
+  st.stopping = false;
   // A stream that ends mid-call must not leave spinners running forever.
   for (const it of st.items) {
     if (it.k === 'step') it.running = false;
@@ -1387,7 +1416,8 @@ function endTurn(st: State): void {
 }
 
 function dropThinking(st: State): void {
-  st.items = st.items.filter((it) => it.k !== 'thinking');
+  st.items = st.items.filter(it => it.k !== 'thinking' || !!it.detail);
+  for (const it of st.items) if (it.k === 'thinking') it.done = true;
 }
 
 /** What a send that didn't land puts back. */
@@ -1434,11 +1464,13 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource, replay = fals
       if (skip < e.delta.length) item.text += e.delta.slice(skip);
       return true;
     }
-    case 'thinking':
-      if (st.items.some(x => x.k === 'msg' && x.streaming)) return true;
-      dropThinking(st);
-      st.items.push({ k: 'thinking', ...(typeof e.label === 'string' ? { label: e.label } : {}) });
+    case 'thinking': {
+      const previous = st.items.find(it => it.k === 'thinking' && (e.id ? it.id === e.id : !it.done));
+      const item = { k: 'thinking' as const, id: typeof e.id === 'string' ? e.id : undefined, label: typeof e.label === 'string' ? e.label : undefined, detail: typeof e.detail === 'string' ? e.detail : undefined };
+      if (previous) Object.assign(previous, item);
+      else { dropThinking(st); st.items.push(item); }
       return true;
+    }
     case 'note':
       dropThinking(st);
       // Only the server's own stamp folds a note into the monitor block; the turn's source never does.
@@ -1522,7 +1554,8 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
   // Hold off any server-side layout reload until this turn is done — the
   // agent's own edits broadcast 'layout' mid-stream.
   reloadHolds.add(st.w.i);
-  st.abort = new AbortController();
+  const controller = new AbortController();
+  st.abort = controller;
   // /compact is a model round-trip that answers as plain JSON — no stream
   // frames to paint status from, so the wait is announced here.
   if (typeof payload.message === 'string' && /^\/(compact|summari[sz]e)\b/.test(payload.message.trim()))
@@ -1540,9 +1573,11 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
     st.items.push({ k: 'note', text: 'Connection lost. Reconnecting…' });
     paint(st);
     void refetch(st);
+    recover(st);
   };
 
   const dispatch = (e: any): void => {
+    if (completed || st.abort !== controller) return;
     if (!applyEvent(st, running, e)) {
       if (e.type === 'done') {
         completed = true;
@@ -1566,7 +1601,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
       body: JSON.stringify(payload),
-      signal: st.abort.signal,
+      signal: controller.signal,
     });
 
     // Error paths (busy, not-configured) and slash commands answer plain JSON.
@@ -1603,8 +1638,8 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
     }
 
     accepted = true;
-    // One bad frame must not end the stream (it did not before streaming either).
-    await readSse(res.body!, payload => { if (payload !== '[DONE]') try { dispatch(JSON.parse(payload)); } catch {} });
+    // A malformed stream recovers from the stored transcript instead of silently losing events.
+    await readSse(res.body!, payload => { if (payload !== '[DONE]') dispatch(JSON.parse(payload)); }, undefined, controller.signal);
     if (!completed) reconnect();
   } catch (err) {
     if (accepted && !completed) { reconnect(); return; }
@@ -1617,7 +1652,7 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
     }
     fail(st, err instanceof Error ? err.message : 'network error', restore);
   } finally {
-    st.abort = null;
+    if (st.abort === controller) st.abort = null;
     if (!st.remote) reloadHolds.delete(st.w.i);
     flushPendingLayout(); // a layout broadcast that landed mid-turn can go now
   }
@@ -1682,10 +1717,19 @@ async function steer(st: State, text: string, mentions: WardMention[] = []): Pro
   fail(st, data?.error ?? 'could not reach the agent', { text, mentions });
 }
 
-/** The Stop button: the server ends the turn at its next round boundary. */
+/** Acknowledge the click immediately; only the server can confirm that work stopped. */
 async function interrupt(st: State): Promise<void> {
-  const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'interrupt' });
-  if (status !== 200) fail(st, data?.error ?? 'could not stop the agent', {});
+  if (st.stopping) return;
+  st.stopping = true;
+  paint(st);
+  const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'interrupt' }, 'POST', { signal: AbortSignal.timeout(10_000) });
+  st.stopping = false;
+  if (status !== 200) toast(data?.error ?? 'Could not confirm Stop. Check the connection and try again.');
+  else {
+    toast(data?.interrupted === false ? 'The turn has already ended.' : 'Stop requested.');
+    if (!st.busy) { void refetch(st); recover(st); }
+  }
+  paint(st);
 }
 
 async function background(st: State): Promise<void> {

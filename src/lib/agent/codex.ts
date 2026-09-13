@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { readSse } from './stream.ts';
+import { readSse, thinkingCounter } from './stream.ts';
 import { getSetting, setSetting, deleteSetting } from '../settings.ts';
 import { openToken } from '../crypto.ts';
 import { cached } from '../cache.ts';
@@ -448,6 +448,7 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
 
   type Completed = { output?: OutputItem[]; usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } } };
   const streamed: OutputItem[] = [];
+  const thinking = thinkingCounter(call.onThinking);
   let completed: Completed | undefined;
   try {
     if (!res.body) throw Error('missing response stream');
@@ -455,13 +456,16 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
       if (payload === '[DONE]') return;
       let ev: any;
       try { ev = JSON.parse(payload); } catch { return; } // a non-JSON frame is skipped, as before streaming
+      if (ev.type === 'response.reasoning_text.delta' && typeof ev.delta === 'string') thinking.text(ev.delta);
+      else if (ev.type === 'response.reasoning_summary_text.delta' && typeof ev.delta === 'string') call.onThinking?.({ detailDelta: ev.delta });
+      thinking.usage(ev.response?.usage?.output_tokens_details?.reasoning_tokens);
       if (ev.type === 'response.output_text.delta' || ev.type === 'response.refusal.delta') {
         if (typeof ev.delta === 'string' && ev.delta) call.onTextDelta?.(ev.delta);
       } else if (ev.type === 'response.output_item.done' && ev.item) streamed.push(ev.item);
       else if (ev.type === 'response.completed') completed = ev.response;
       else if (ev.type === 'response.failed' || ev.type === 'response.incomplete' || ev.type === 'error')
         throw Error(JSON.stringify(ev.response?.error ?? ev.error ?? ev.message ?? ev.response?.incomplete_details ?? 'incomplete response').slice(0, 300));
-    }, call.onProgress);
+    }, call.onProgress, call.signal);
     // An EOF is not completion: an unfinished tool call must never execute.
     if (!completed) throw Error('response stream ended before completion');
   } catch (err) {

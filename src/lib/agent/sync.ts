@@ -387,9 +387,10 @@ export async function sharedModel(
         if (payload === '[DONE]') return;
         const event = JSON.parse(payload);
         if (event.type === 'text_delta' && typeof event.delta === 'string') call.onTextDelta?.(event.delta);
+        else if (event.type === 'thinking') call.onThinking?.(event.progress);
         else if (event.type === 'result') parsed = event.result;
         else if (event.type === 'error') parsed = event;
-      }, call.onProgress);
+      }, call.onProgress, call.signal);
       if (!parsed) throw Error('Model relay ended before completion.');
     } else {
       // Older servers send whitespace heartbeats and one final JSON document.

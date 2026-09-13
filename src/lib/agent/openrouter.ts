@@ -5,7 +5,7 @@ import { getSetting, setSetting } from '../settings.ts';
 import { agentKey, endpointOf, normalizeEndpoint } from './accounts.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { pinnedRequest } from './shell.ts';
-import { sseParser } from './stream.ts';
+import { sseParser, thinkingCounter } from './stream.ts';
 import {
   isTransient,
   recordAgentStatus,
@@ -111,7 +111,8 @@ export function markLast(items: unknown[]): unknown[] {
 }
 
 /** Both chat transports reconstruct the same replay message, including opaque reasoning. */
-export function chatStream(onText?: (delta: string) => void) {
+export function chatStream(onText?: (delta: string) => void, onThinking?: ProviderCall['onThinking']) {
+  const thinking = thinkingCounter(onThinking);
   const msg: ChatMsg = { role: 'assistant', content: '' };
   const calls = new Map<number, NonNullable<ChatMsg['toolCalls']>[number]>();
   const reasoning = new Map<string, Record<string, any>>();
@@ -119,10 +120,18 @@ export function chatStream(onText?: (delta: string) => void) {
   return {
     push(chunk: any) {
       if (chunk.error) throw Error(chunk.error.message ?? JSON.stringify(chunk.error));
-      if (chunk.usage) usage = chunk.usage;
+      if (chunk.usage) {
+        usage = chunk.usage;
+      }
       const choice = chunk.choices?.[0];
-      if (!choice) return;
+      if (!choice) { thinking.usage(usage?.completionTokensDetails?.reasoningTokens ?? usage?.completion_tokens_details?.reasoning_tokens); return; }
       const delta = choice.delta ?? {};
+      // Providers may send both representations of the same reasoning; count one.
+      const reasoningText = delta.reasoning ?? delta.reasoning_content;
+      thinking.text(typeof reasoningText === 'string' && reasoningText ? reasoningText :
+        (delta.reasoningDetails ?? delta.reasoning_details ?? []).filter((d: any) => d.type === 'reasoning.text').map((d: any) => typeof d.text === 'string' ? d.text : '').join(''), true);
+      for (const detail of delta.reasoningDetails ?? delta.reasoning_details ?? [])
+        if (detail.type === 'reasoning.summary' && typeof detail.summary === 'string') onThinking?.({ detailDelta: detail.summary });
       const text = delta.content ?? delta.refusal;
       if (typeof text === 'string' && text) { msg.content = String(msg.content) + text; onText?.(text); }
       if (typeof delta.reasoning === 'string') msg.reasoning = (msg.reasoning ?? '') + delta.reasoning;
@@ -143,6 +152,7 @@ export function chatStream(onText?: (delta: string) => void) {
           if (typeof old?.[field] === 'string' && typeof detail[field] === 'string') next[field] = old[field] + detail[field];
         reasoning.set(key, next);
       }
+      if (chunk.usage) thinking.usage(usage.completionTokensDetails?.reasoningTokens ?? usage.completion_tokens_details?.reasoning_tokens);
       const finish = choice.finishReason ?? choice.finish_reason;
       if (finish) {
         if (!['stop', 'tool_calls', 'function_call'].includes(finish)) throw Error(`Incomplete response (${finish})`);
@@ -169,7 +179,7 @@ async function callOpenRouter(call: ProviderCall, retried = false): Promise<Prov
   if (!key) throw new Error('openrouter: no API key — add one under Account → Agent');
   const or = new OpenRouter({ apiKey: key });
   let result: any;
-  let visible = false;
+  let accepted = false;
   try {
     result = await or.chat.send(
       {
@@ -200,14 +210,15 @@ async function callOpenRouter(call: ProviderCall, retried = false): Promise<Prov
       { timeoutMs: TIMEOUT_MS, retries: { strategy: 'none' as const }, ...(call.signal ? { fetchOptions: { signal: AbortSignal.any([call.signal, AbortSignal.timeout(TIMEOUT_MS)]) } } : {}) }
     );
     if (result?.[Symbol.asyncIterator]) {
-      const stream = chatStream(delta => { visible = true; call.onTextDelta?.(delta); });
+      accepted = true; // Reasoning/tool input is inference too, even before visible prose.
+      const stream = chatStream(call.onTextDelta, call.onThinking);
       for await (const chunk of result) { call.onProgress?.(); stream.push(chunk); }
       result = stream.result();
     }
   } catch (err) {
     if (call.signal?.aborted) throw new Error('openrouter: interrupted');
     const e = new Error(`openrouter: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
-    if (!visible && !call.relayRequestId && !retried && isTransient(e)) {
+    if (!accepted && !call.relayRequestId && !retried && isTransient(e)) {
       await new Promise((r) => setTimeout(r, 1200));
       return callOpenRouter(call, true);
     }
@@ -361,7 +372,7 @@ async function callCompat(endpoint: string, call: ProviderCall): Promise<Provide
   if (call.backend && normalizeEndpoint(target.url) !== call.backend)
     throw new Error(`endpoint "${endpoint}" now points at ${normalizeEndpoint(target.url) || 'nothing'}; this conversation was admitted on ${call.backend} and is not sent anywhere else. Point "${endpoint}" back at it, or start a new chat on the endpoint as it stands.`);
   if (!call.model) throw new Error(`compat: pick a model for "${endpoint}" (list_models shows what it serves)`);
-  const stream = chatStream(call.onTextDelta), decoder = new TextDecoder();
+  const stream = chatStream(call.onTextDelta, call.onThinking), decoder = new TextDecoder();
   let streaming = false;
   const parser = sseParser(payload => { if (payload !== '[DONE]') stream.push(JSON.parse(payload)); });
   const res = await pinnedRequest(`${target.url}/chat/completions`, {

@@ -3,6 +3,7 @@ import { getAgentAccount, agentKey, endpointOf } from './accounts.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { sharedRime, sharedModel, sharedCodexModels } from './sync.ts';
 import type { ModelContext } from './context.ts';
+import type { ThinkingProgress } from './stream.ts';
 import { AGENT_PROVIDERS, isAgentProvider, type AgentProviderId } from '../wards.ts';
 
 // The provider contract. Two wire DIALECTS, one interface: the Responses API
@@ -62,6 +63,7 @@ export interface ProviderCall {
   /** An interrupt (core.interruptTurn) aborts the call in flight through this. */
   signal?: AbortSignal;
   onProgress?: () => void;
+  onThinking?: (progress: ThinkingProgress) => void;
   /** Display-only text; replay and tools use the completed result. */
   onTextDelta?: (delta: string) => void;
   /** Native relay calls retain metadata only and never retry uncertain inference. */
@@ -227,10 +229,58 @@ async function withChildSlot<T>(fn: () => Promise<T>, signal?: AbortSignal): Pro
     });
   }
   childSlotsBusy++;
+  let released = false;
+  const release = () => { if (!released) { released = true; childSlotsBusy--; childSlotQueue.shift()?.(); } };
+  signal?.addEventListener('abort', release, { once: true });
   try {
     if (signal?.aborted) throw new Error('interrupted before the model call');
     return await fn();
-  } finally { childSlotsBusy--; childSlotQueue.shift()?.(); }
+  } finally { signal?.removeEventListener('abort', release); release(); }
+}
+
+/** Enforce the lifetime independently of SDK/fetch cancellation. Late output cannot re-enter a turn. */
+export async function runModel(provider: AgentProvider, call: ProviderCall): Promise<ProviderResult> {
+  call.signal?.throwIfAborted();
+  const controller = new AbortController();
+  const signal = call.signal ? AbortSignal.any([call.signal, controller.signal]) : controller.signal;
+  const timeoutMs = !isDesktop() && provider.id === 'openrouter' ? 120_000 : 330_000;
+  const timer = setTimeout(() => controller.abort(new DOMException('Model response timed out.', 'TimeoutError')), timeoutMs);
+  let rejectAbort: () => void = () => {};
+  const cancelled = new Promise<never>((_, reject) => {
+    rejectAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', rejectAbort, { once: true });
+  });
+  let active = true;
+  const record: Record<string, unknown> = { id: call.relayRequestId ?? crypto.randomUUID(), provider: provider.id, model: call.model, conversation: call.cacheKey, startedAt: Date.now(), state: 'running' };
+  const startedAt = Date.now();
+  const save = () => {
+    try {
+      const key = `agent_model_calls:${call.userId}`;
+      const rows = JSON.parse(getSetting(key) ?? '[]');
+      setSetting(key, JSON.stringify([...(Array.isArray(rows) ? rows.filter(r => r.id !== record.id).slice(-39) : []), record]));
+    } catch { /* Diagnostic metadata must never block a model call. */ }
+  };
+  save();
+  try {
+    const result = await Promise.race([provider.run({
+      ...call, signal,
+      onTextDelta: delta => { if (active && !signal.aborted) { record.firstTextMs ??= Date.now() - startedAt; call.onTextDelta?.(delta); } },
+      onProgress: () => { if (active && !signal.aborted) call.onProgress?.(); },
+      onThinking: progress => { if (active && !signal.aborted) { record.firstThinkingMs ??= Date.now() - startedAt; record.thinking = { tokens: progress.tokens, estimated: progress.estimated }; call.onThinking?.(progress); } },
+    }), cancelled]);
+    record.state = 'completed';
+    return result;
+  } catch (error) {
+    record.state = call.signal?.aborted ? 'cancelled' : signal.aborted ? 'timeout' : 'failed';
+    throw error;
+  } finally {
+    active = false;
+    record.durationMs = Date.now() - startedAt;
+    save();
+    clearTimeout(timer);
+    signal.removeEventListener('abort', rejectAbort);
+    controller.abort();
+  }
 }
 
 export async function getProvider(id: AgentProviderId, endpoint?: string | null): Promise<AgentProvider> {

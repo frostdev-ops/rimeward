@@ -29,7 +29,8 @@ export const GET: APIRoute = async ({ params, locals, url }) => {
       return Response.json(id ? readTask(ctx, id, Number(url.searchParams.get('cursor') ?? 0), url.searchParams.get('output') !== 'true') : { tasks: listTasks(ctx, url.searchParams.get('history') === 'true') }, { headers: { 'cache-control': 'no-store' } });
     } catch (err) { return Response.json({ error: err instanceof Error ? err.message : 'Task unavailable' }, { status: 400 }); }
   }
-  await syncRime(userId);
+  // Repainting a live turn must not wait for file/account reconciliation.
+  void syncRime(userId).catch(() => {});
   const surface = await wardSurface(userId, String(params.ward));
   // 400, not 404 — the ward helpers map 404 to a Connect chip.
   if (!surface) return Response.json({ error: 'not an agent ward' }, { status: 400 });

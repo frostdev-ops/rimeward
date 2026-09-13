@@ -14,6 +14,7 @@ import { isDesktop } from "../../../../lib/dev/runtime.ts";
 import {
   agentConfigured,
   getProvider,
+  runModel,
   isAgentProvider,
   AGENT_PROVIDERS,
   type ProviderCall,
@@ -234,10 +235,11 @@ export const ALL: APIRoute = async ({
             };
             const send = (event: unknown) => push(`data: ${JSON.stringify(event)}\n\n`);
             if (streaming) call.onTextDelta = delta => send({ type: 'text_delta', delta });
+            if (streaming) call.onThinking = progress => send({ type: 'thinking', progress });
             push(streaming ? ': connected\n\n' : '\n');
             const beat = setInterval(() => push(streaming ? ': heartbeat\n\n' : "\n"), 15_000);
             try {
-              const result = await provider.run(call);
+              const result = await runModel(provider, call);
               if (streaming) send({ type: 'result', result });
               else push(JSON.stringify(result));
             } catch (e) {

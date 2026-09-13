@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAttachment, attachmentDataUrl } from './attachments.ts';
 import { appendTurn, historyDir } from './history.ts';
-import { dialectOf, providerDialect, type AgentProvider, type AgentProviderId, type Dialect } from './provider.ts';
+import { dialectOf, providerDialect, runModel, type AgentProvider, type AgentProviderId, type Dialect } from './provider.ts';
 import { estimateTokens, type ContextUsage } from './context.ts';
 import { retireMonitors } from './monitors.ts';
 import { knowledgeChanged } from './observation-events.ts';
@@ -396,7 +396,7 @@ export async function compactIfNeeded(
   }
   if (!plain.trim()) return false;
 
-  const result = await provider.run({
+  const result = await runModel(provider, {
     userId: conv.user_id,
     model,
     // Compaction reads this thread's own text: the same backend pin the turn itself runs under.

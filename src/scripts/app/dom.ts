@@ -114,8 +114,8 @@ export function normalizeUrl(raw: string): string {
 
 // ------------------------------------------------------------------- fetch
 
-export async function getJson(url: string): Promise<{ status: number; data: any }> {
-  const res = await fetch(url, { headers: { accept: 'application/json' } });
+export async function getJson(url: string, init: RequestInit = {}): Promise<{ status: number; data: any }> {
+  const res = await fetch(url, { ...init, headers: { accept: 'application/json', ...init.headers } });
   return { status: res.status, data: await res.json().catch(() => null) };
 }
 
