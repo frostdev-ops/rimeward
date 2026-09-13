@@ -112,12 +112,16 @@ export async function agentPlacement(user: number, ward: string, refreshOwn = fa
   const saved = record(user, ward), own = await currentRuntimeId(user);
   if (saved?.transition_id) return saved;
   const connected = isDesktop() ? await rimeConnection(user).catch(() => undefined) : undefined;
-  if (saved?.runtime_id === own && !refreshOwn) {
-    if (!saved.directory_version && connected) await publishAgentBirth(user, ward, own);
-    return record(user, ward) ?? saved;
-  }
+  // An unpublished migration hint is not proof that an existing shared chat was born here.
+  if (saved?.runtime_id === own && !refreshOwn && (saved.directory_version || !connected)) return saved;
   if (!isDesktop() || connected) {
-    const canonical = await directoryRequest(user, { action: 'directory-read', ward });
+    let canonical: Directory;
+    try { canonical = await directoryRequest(user, { action: 'directory-read', ward }); }
+    catch (error) {
+      if (saved?.runtime_id !== own || saved.directory_version || !(error instanceof DevError) || error.status !== 404) throw error;
+      await publishAgentBirth(user, ward, own);
+      return record(user, ward) ?? saved;
+    }
     if (saved && canonical.version < saved.directory_version) return saved; // A confirmed source retirement may be waiting for publication.
     if (saved && canonical.version === saved.directory_version && canonical.runtime_id !== saved.runtime_id) throw new DevError('Conflicting agent owner records need reconciliation.', 409);
     getDb().prepare('INSERT INTO agent_placements(user_id,ward,runtime_id,directory_version,last_transition_id) VALUES(?,?,?,?,?) ON CONFLICT(user_id,ward) DO UPDATE SET runtime_id=excluded.runtime_id,directory_version=excluded.directory_version,last_transition_id=excluded.last_transition_id WHERE agent_placements.transition_id IS NULL').run(user, ward, canonical.runtime_id, canonical.version, canonical.transition_id);
