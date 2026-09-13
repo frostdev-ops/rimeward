@@ -9,8 +9,9 @@ import {
 } from "./settings.ts";
 import { sealToken, openToken } from "./crypto.ts";
 import { getDb } from "./db.ts";
-import { createUser, getUserByEmail, getUser } from "./users.ts";
-import { accountEmail } from "./account-access.ts";
+import { cached } from "./cache.ts";
+import { adminCount, createUser, getUserByEmail, getUser } from "./users.ts";
+import { accountEmail, takeAction } from "./account-access.ts";
 
 export interface IdentityConnector {
 	id: string;
@@ -19,6 +20,9 @@ export interface IdentityConnector {
 	clientId: string;
 	clientSecret: string;
 	enabled: boolean;
+	/** The issuer only ever hands out addresses it controls, so a missing
+	 *  email_verified claim (Microsoft Entra never sends one) still counts. */
+	trustEmail?: boolean;
 }
 export function identityConnectors(): IdentityConnector[] {
 	const custom = JSON.parse(getSetting("identity_connectors") ?? "[]") as Omit<
@@ -32,8 +36,7 @@ export function identityConnectors(): IdentityConnector[] {
 			issuer: "https://accounts.google.com",
 			clientId: config("GOOGLE_CLIENT_ID"),
 			clientSecret: config("GOOGLE_CLIENT_SECRET"),
-			enabled:
-				config("GOOGLE_SSO_ENABLED") === "true" && !!config("GOOGLE_CLIENT_ID"),
+			enabled: identityEnabled("google"),
 		},
 		{
 			id: "microsoft",
@@ -42,6 +45,9 @@ export function identityConnectors(): IdentityConnector[] {
 			clientId: config("MS_CLIENT_ID"),
 			clientSecret: config("MS_CLIENT_SECRET"),
 			enabled: identityEnabled("microsoft"),
+			trustEmail: !["common", "organizations", "consumers"].includes(
+				config("MS_TENANT_ID"),
+			),
 		},
 	];
 	return [
@@ -53,7 +59,21 @@ export function identityConnectors(): IdentityConnector[] {
 	];
 }
 export function saveIdentityConnector(c: IdentityConnector, actor: number, clearSecret = false) {
-	if (config("PASSWORD_LOGIN") === "false")
+	// The client id is stored and compared, and the settings form posts the field raw: an
+	// untrimmed stray space would both be sent as client_id and read as a repoint.
+	c = { ...c, clientId: c.clientId.trim() };
+	const existing = identityConnectors().find((x) => x.id === c.id);
+	// With passwords off an EXISTING connector may still be maintained (secret rotation,
+	// name, enabled, trustEmail) — that is repair, not a new way in. Adding a connector or
+	// pointing one at another issuer or client is a new way in, and needs passwords back —
+	// unless nobody can sign in at all, where adding one is a repair, not a way in.
+	if (
+		config("PASSWORD_LOGIN") === "false" &&
+		adminCount() > 0 &&
+		(!existing ||
+			existing.issuer !== c.issuer ||
+			existing.clientId !== c.clientId)
+	)
 		throw new Error("Re-enable password login before changing SSO connectors");
 	if (
 		!/^[a-z][a-z0-9-]{1,39}$/.test(c.id) ||
@@ -71,7 +91,11 @@ export function saveIdentityConnector(c: IdentityConnector, actor: number, clear
 		throw new Error("Issuer must use HTTPS");
 	if (!c.name.trim() || !c.clientId.trim())
 		throw new Error("Name and client ID are required");
+	// A connector's issuer may mint `sub` per application too, so pointing one at another
+	// client orphans the rows it left behind exactly as repointing the issuer does.
+	const dead = existing && existing.clientId !== c.clientId ? c.id : undefined;
 	getDb().transaction(() => {
+		const before = adminCount();
 		const list = JSON.parse(getSetting("identity_connectors") ?? "[]") as Omit<
 			IdentityConnector,
 			"clientSecret"
@@ -85,37 +109,90 @@ export function saveIdentityConnector(c: IdentityConnector, actor: number, clear
 		);
 		deleteSetting("identity_admin_verified");
 		audit(actor, "identity.configured", c.id);
+		if (before > 0 && adminCount(undefined, dead) === 0)
+			throw new Error("This would lock out every administrator");
 	})();
 }
-async function client(c: IdentityConnector) {
-	// Discovery and every subsequent server request share the existing pinned transport.
-	const { pinnedRequest } = await import("./agent/shell.ts");
-	const result = await oidc.discovery(
-		new URL(c.issuer),
-		c.clientId,
-		c.clientSecret,
-		c.clientSecret ? oidc.ClientSecretPost(c.clientSecret) : oidc.None(),
-		{
-			[oidc.customFetch]: async (url, options) => {
-				const u = new URL(String(url));
-				if (u.protocol !== "https:")
-					throw new Error("Identity endpoints require HTTPS");
-				const r = await pinnedRequest(u.toString(), {
-					method: options?.method,
-					headers: Object.fromEntries(new Headers(options?.headers)),
-					body: options?.body ? String(options.body) : undefined,
-					signal: options.signal,
-				});
-				return new Response(r.text, { status: r.status, headers: r.headers });
-			},
-			timeout: 15,
+/** Sign-in rows for a removed connector stay: they are inert without it and revive if it returns. */
+export function deleteIdentityConnector(id: string, actor: number) {
+	// The builtins are configured through CONFIG, never through the connector list.
+	if (
+		!/^[a-z][a-z0-9-]{1,39}$/.test(id) ||
+		["google", "microsoft"].includes(id)
+	)
+		throw new Error("Unknown connector");
+	getDb().transaction(() => {
+		const before = adminCount();
+		const list = JSON.parse(getSetting("identity_connectors") ?? "[]") as Omit<
+			IdentityConnector,
+			"clientSecret"
+		>[];
+		setSetting(
+			"identity_connectors",
+			JSON.stringify(list.filter((x) => x.id !== id)),
+		);
+		deleteSetting(`identity_secret:${id}`);
+		deleteSetting("identity_admin_verified");
+		audit(actor, "identity.removed", id);
+		if (before > 0 && adminCount() === 0)
+			throw new Error("This would lock out every administrator");
+	})();
+}
+/** One discovery per (issuer, client, secret) for five minutes, single-flight. Starting a
+ *  sign-in is public and unauthenticated — GET /api/auth/identity/<id> is in PUBLIC_PREFIXES
+ *  — so a fresh round trip per call is an amplifier aimed at the issuer, and a limiter cannot
+ *  help: behind a reverse proxy every visitor shares one address, and keying it on the
+ *  connector would throttle real sign-ins. A rotated secret changes the key and misses. */
+export const discoveryKey = (c: IdentityConnector) =>
+	`identity:discovery:${c.issuer}\u0000${c.clientId}\u0000${c.clientSecret}`;
+/** Test seam, like the comms fetchImpl seams. The default reaches the pinned transport
+ *  lazily so starting a sign-in is what pulls the sandbox module in. */
+export const discoveryTransport = {
+	request: async (
+		url: string,
+		options: {
+			method?: string;
+			headers?: Record<string, string>;
+			body?: string;
+			signal?: AbortSignal;
 		},
-	);
-	oidc.enableNonRepudiationChecks(result);
-	return result;
+	) => (await import("./agent/shell.ts")).pinnedRequest(url, options),
+};
+function client(c: IdentityConnector) {
+	// cached() is TTL + single-flight: ten concurrent starts share one round trip, and a
+	// rejection is never stored, so a failed discovery is retried rather than remembered.
+	return cached(discoveryKey(c), 300000, async () => {
+		const result = await oidc.discovery(
+			new URL(c.issuer),
+			c.clientId,
+			c.clientSecret,
+			c.clientSecret ? oidc.ClientSecretPost(c.clientSecret) : oidc.None(),
+			{
+				[oidc.customFetch]: async (url, options) => {
+					const u = new URL(String(url));
+					if (u.protocol !== "https:")
+						throw new Error("Identity endpoints require HTTPS");
+					const r = await discoveryTransport.request(u.toString(), {
+						method: options?.method,
+						headers: Object.fromEntries(new Headers(options?.headers)),
+						body: options?.body ? String(options.body) : undefined,
+						signal: options.signal,
+					});
+					return new Response(r.text, { status: r.status, headers: r.headers });
+				},
+				timeout: 15,
+			},
+		);
+		oidc.enableNonRepudiationChecks(result);
+		return result;
+	});
 }
 function identityRedirectUri(id:string){return `${publicOrigin()}/api/auth/${id==='google'?'google/callback':`identity/${id}/callback`}`;}
-export async function beginIdentity(id: string, linkUser?: number) {
+export async function beginIdentity(
+	id: string,
+	linkUser?: number,
+	inviteToken?: string,
+) {
 	const c = identityConnectors().find((c) => c.id === id && c.enabled);
 	if (!c) throw new Error("Sign-in is not configured");
 	sweepSettings("identity_pending:", 900000);
@@ -133,7 +210,14 @@ export async function beginIdentity(id: string, linkUser?: number) {
 	setSetting(
 		`identity_pending:${state}`,
 		sealToken(
-			JSON.stringify({ id, nonce, verifier, linkUser, at: Date.now() }),
+			JSON.stringify({
+				id,
+				nonce,
+				verifier,
+				linkUser,
+				invite: inviteToken,
+				at: Date.now(),
+			}),
 		),
 	);
 	return { state, url: url.toString() };
@@ -165,6 +249,19 @@ export async function finishIdentity(
 		idTokenExpected: true,
 	});
 	const claims = tokens.claims()!;
+	const verified = identityEmailVerified(c, claims);
+	if (p.invite)
+		return {
+			linked: false,
+			user: acceptInvite(
+				String(p.invite),
+				id,
+				String(claims.iss),
+				String(claims.sub),
+				claims.email ? String(claims.email) : undefined,
+				verified,
+			),
+		};
 	if (p.linkUser) {
 		if (
 			sessionUser !== p.linkUser ||
@@ -184,8 +281,50 @@ export async function finishIdentity(
 		String(claims.iss),
 		String(claims.sub),
 		String(claims.email ?? ""),
-		claims.email_verified === true,
+		verified,
 	)};
+}
+/** xms_edov is Microsoft's own claim, and only Microsoft's: no other issuer's claim of
+ *  that name may stand in for email_verified. */
+export function identityEmailVerified(
+	c: IdentityConnector,
+	claims: Record<string, unknown>,
+): boolean {
+	return (
+		claims.email_verified === true ||
+		(c.id === "microsoft" && claims.xms_edov === true) ||
+		!!c.trustEmail
+	);
+}
+/** An invitation is the account's proof of ownership: the first identity to arrive with
+ *  the token becomes its sign-in method, no password anywhere in the flow. The token is
+ *  what activates the account; the identity's own address is only ever believed when the
+ *  issuer says it verified it, and when it is the address that was invited. */
+export function acceptInvite(
+	token: string,
+	connector: string,
+	issuer: string,
+	subject: string,
+	email: string | undefined,
+	verified: boolean,
+): number {
+	return getDb().transaction(() => {
+		const action = takeAction(token);
+		if (action.purpose !== "invite")
+			throw new Error("This link is invalid or expired");
+		if (email && accountEmail(email) !== getUser(action.user_id)?.email)
+			throw new Error("Sign in with the address this invitation was sent to");
+		getDb()
+			.prepare(
+				"INSERT INTO login_identities(connector,issuer,subject,user_id) VALUES(?,?,?,?)",
+			)
+			.run(connector, issuer, subject, action.user_id);
+		getDb()
+			.prepare("UPDATE users SET email_verified=?,status='active' WHERE id=?")
+			.run(email && verified ? 1 : 0, action.user_id);
+		audit(action.user_id, "identity.invited", connector);
+		return action.user_id;
+	})();
 }
 export function resolveIdentity(
 	connector: string,

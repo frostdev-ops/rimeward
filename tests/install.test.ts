@@ -9,6 +9,8 @@ import { allowedOrigin, csrfBlocked } from '../src/lib/csrf.ts';
 import { migrationsDir } from '../src/lib/db.ts';
 import { chromiumSpec } from '../src/lib/tunnel.ts';
 import { coords } from '../src/lib/weather.ts';
+import { config, saveConfig } from '../src/lib/app-config.ts';
+import { getSetting } from '../src/lib/settings.ts';
 
 test('allowedOrigin: the base URL origin and loopback, nothing else', () => {
   assert.ok(allowedOrigin('https://example.com', 'https://example.com'));
@@ -62,4 +64,15 @@ test('sessionId reads the new cookie name, then the legacy one', async () => {
   assert.equal(sessionId(jar({ [SESSION_COOKIE]: 'new', [LEGACY_SESSION_COOKIE]: 'old' })), 'new');
   assert.equal(sessionId(jar({ [LEGACY_SESSION_COOKIE]: 'old' })), 'old');
   assert.equal(sessionId(jar({})), undefined);
+});
+
+// Blank stores "": publicOrigin() is then "" and allowedOrigin() refuses every non-loopback
+// form post, including the one that would put the URL back.
+test('a blank public URL is refused; a reset to the environment is not', () => {
+  saveConfig('PUBLIC_BASE_URL', 'https://example.com', null);
+  assert.throws(() => saveConfig('PUBLIC_BASE_URL', '', null), /required/);
+  assert.throws(() => saveConfig('PUBLIC_BASE_URL', '   ', null), /required/);
+  assert.equal(config('PUBLIC_BASE_URL'), 'https://example.com');
+  saveConfig('PUBLIC_BASE_URL', null, null);
+  assert.equal(getSetting('config:PUBLIC_BASE_URL'), null);
 });

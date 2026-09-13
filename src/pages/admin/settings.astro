@@ -1,6 +1,6 @@
 ---
 import { verifyMail } from '../../lib/account-access.ts';
-import { identityConnectors, saveIdentityConnector } from '../../lib/identity.ts';
+import { identityConnectors, saveIdentityConnector, deleteIdentityConnector } from '../../lib/identity.ts';
 import BaseLayout from '../../layouts/BaseLayout.astro';
 import { CONFIG, configView, saveConfig, type ConfigKey } from '../../lib/app-config.ts';
 import { getDb } from '../../lib/db.ts';
@@ -10,7 +10,8 @@ if (Astro.request.method === 'POST') {
   try {
     const form = await Astro.request.formData();
     if (form.get('action') === 'email-test') { await verifyMail(Astro.locals.user!.email); return Astro.redirect('/admin/settings?mail=ok',303); }
-    if (form.get('action') === 'identity') { saveIdentityConnector({id:String(form.get('id')),name:String(form.get('name')),issuer:String(form.get('issuer')),clientId:String(form.get('clientId')),clientSecret:String(form.get('clientSecret')??''),enabled:form.get('enabled')==='on'},Astro.locals.user!.userId,form.get('clearSecret')==='on'); return Astro.redirect('/admin/settings',303); }
+    if (form.get('action') === 'identity') { saveIdentityConnector({id:String(form.get('id')),name:String(form.get('name')),issuer:String(form.get('issuer')),clientId:String(form.get('clientId')),clientSecret:String(form.get('clientSecret')??''),enabled:form.get('enabled')==='on',trustEmail:form.get('trustEmail')==='on'},Astro.locals.user!.userId,form.get('clearSecret')==='on'); return Astro.redirect('/admin/settings',303); }
+    if (form.get('action') === 'identity-delete') { deleteIdentityConnector(String(form.get('id')),Astro.locals.user!.userId); return Astro.redirect('/admin/settings',303); }
     const key = String(form.get('key')) as ConfigKey;
     if (!Object.hasOwn(CONFIG,key)) throw new Error('Unknown setting');
     saveConfig(key,form.get('action') === 'reset' ? null : form.get('action') === 'clear' ? '' : String(form.get('value')??''),Astro.locals.user!.userId);
@@ -35,8 +36,8 @@ const events = getDb().prepare('SELECT event,target,created_at FROM auth_audit O
       <div class="flex gap-2"><button class="btn" name="action" value="save">Save</button><button class="btn" name="action" value="reset" formnovalidate>Use environment value</button>{f.secret&&<button class="btn" name="action" value="clear" formnovalidate>Clear credential</button>}</div>
     </form>)}</section>)}
     <section class="card p-4 mb-4"><h2 class="section-title">Email delivery check</h2><p>A test email will be sent to your administrator email.</p><form method="post"><button class="btn" name="action" value="email-test">Send test email</button></form>{Astro.url.searchParams.get('mail')==='ok'&&<p role="status">Test email accepted by your mail server.</p>}</section>
-    <section class="card p-4 mb-4"><h2 class="section-title">SSO connectors</h2>{identityConnectors().map(c=><p>{c.name} · {c.enabled?'enabled':'disabled'} · Callback: {`${configView('PUBLIC_BASE_URL').value}/api/auth/${c.id==='google'?'google/callback':`identity/${c.id}/callback`}`}</p>)}
-    <form method="post" class="grid gap-3 mt-4"><input type="hidden" name="action" value="identity"/>{['id','name','issuer','clientId','clientSecret'].map(k=><label>{k}<input class="input" name={k} type={k==='clientSecret'?'password':'text'} required={k!=='clientSecret'} autocomplete="off"/></label>)}<label><input name="enabled" type="checkbox" checked/> Enabled</label><label><input name="clearSecret" type="checkbox"/> Remove saved client secret</label><button class="btn">Save OIDC connector</button></form></section>
+    <section class="card p-4 mb-4"><h2 class="section-title">SSO connectors</h2>{identityConnectors().map(c=><p>{c.name} · {c.enabled?'enabled':'disabled'} · Callback: {`${configView('PUBLIC_BASE_URL').value}/api/auth/${c.id==='google'?'google/callback':`identity/${c.id}/callback`}`}{!['google','microsoft'].includes(c.id)&&<form method="post" class="inline"><input type="hidden" name="id" value={c.id}/><button class="btn" name="action" value="identity-delete">Delete</button></form>}</p>)}
+    <form method="post" class="grid gap-3 mt-4"><input type="hidden" name="action" value="identity"/>{['id','name','issuer','clientId','clientSecret'].map(k=><label>{k}<input class="input" name={k} type={k==='clientSecret'?'password':'text'} required={k!=='clientSecret'} autocomplete="off"/></label>)}<label><input name="enabled" type="checkbox" checked/> Enabled</label><label><input name="clearSecret" type="checkbox"/> Remove saved client secret</label><label><input name="trustEmail" type="checkbox"/> Trust the email addresses this issuer sends (it controls every address in its directory)</label><button class="btn">Save OIDC connector</button></form></section>
     <section class="card p-4"><h2 class="section-title">Recent administration activity</h2>{events.map(e=><p class="text-sm">{e.created_at} · {e.event} · {e.target}</p>)}</section>
   </main>
 </BaseLayout>

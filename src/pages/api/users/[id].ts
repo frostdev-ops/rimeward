@@ -1,7 +1,7 @@
 import type { APIRoute } from 'astro';
 import { getDb } from '../../../lib/db.ts';
-import { audit, config } from '../../../lib/app-config.ts';
-import { getUser, setUserRole, setUserPassword, deleteUser, generatePassword, setUserStatus, revokeUserAccess, setDisplayName } from '../../../lib/users.ts';
+import { audit, config, identityEnabled } from '../../../lib/app-config.ts';
+import { adminCount, getUser, setUserRole, setUserPassword, deleteUser, generatePassword, setUserStatus, revokeUserAccess, setDisplayName } from '../../../lib/users.ts';
 import { sessionId, type Role } from '../../../lib/auth.ts';
 import { setSetting } from '../../../lib/settings.ts';
 
@@ -21,9 +21,16 @@ export const POST: APIRoute = async ({ params, request, cookies, redirect, local
       case 'unlink-identity': {
         getDb().transaction(()=>{
           const user=getUser(id)!;
-          const count=(getDb().prepare('SELECT count(*) AS n FROM login_identities WHERE user_id=?').get(id) as {n:number}).n;
-          if((!user.has_password||config('PASSWORD_LOGIN')!=='true')&&count<=1)throw new Error('Set up account recovery before removing the last sign-in identity');
+          // Rows that OPEN something, not rows: one on a disabled or repointed connector is
+          // not a way back in, so a row count says this user keeps a way in while the row
+          // being removed is the only one that works. Differential like the guard below, so
+          // an account already at zero can still have its dead rows cleaned up.
+          const live=()=>(getDb().prepare('SELECT connector,issuer FROM login_identities WHERE user_id=?').all(id) as {connector:string;issuer:string}[]).filter(i=>identityEnabled(i.connector,i.issuer)).length;
+          const wasLive=live();
+          const before=adminCount();
           getDb().prepare('DELETE FROM login_identities WHERE user_id=? AND connector=? AND issuer=? AND subject=?').run(id,String(form.get('connector')),String(form.get('issuer')),String(form.get('subject')));
+          if(before>0&&adminCount()===0)throw new Error('This would lock out every administrator');
+          if((!user.has_password||config('PASSWORD_LOGIN')!=='true')&&wasLive>0&&live()===0)throw new Error('Set up account recovery before removing the last sign-in identity');
           audit(locals.user!.userId,'identity.unlinked',String(id));
         })();return redirect('/admin/users',303);
       }

@@ -2,6 +2,7 @@ import { isDesktop } from "./dev/runtime.ts";
 import { getDb } from "./db.ts";
 import { getSetting, setSetting, deleteSetting } from "./settings.ts";
 import { sealToken, openToken } from "./crypto.ts";
+import { adminCount } from "./users.ts";
 
 type Field = {
 	label: string;
@@ -183,9 +184,12 @@ export function saveConfig(
 	if (!field) throw new Error("Unknown setting");
 	if (key === "PUBLIC_BASE_URL" && isDesktop())
 		throw new Error("The desktop owns its local URL");
+	// Differential like the guard below: with nobody able to sign in there is no
+	// administrator left to lock out, and this is the repair path.
 	if (
 		key !== "PASSWORD_LOGIN" &&
 		config("PASSWORD_LOGIN") === "false" &&
+		adminCount() > 0 &&
 		(key.startsWith("GOOGLE_") ||
 			key.startsWith("MS_") ||
 			key === "SSO_WORKSPACE_DOMAIN")
@@ -206,6 +210,11 @@ export function saveConfig(
 		if (value.length > 8192) throw new Error("Setting is too long");
 		if (field.choices && !field.choices.includes(value))
 			throw new Error("Invalid setting value");
+		// Blank stores "": publicOrigin() is then "" and allowedOrigin() refuses every
+		// non-loopback form post, including the one that would repair it. A null reset is
+		// fine, it falls back to env or the default, neither of which is blank.
+		if (key === "PUBLIC_BASE_URL" && !value)
+			throw new Error("The public URL is required");
 		if (["PUBLIC_BASE_URL", "OAUTH_BROKER_URL"].includes(key) && value) {
 			const url = new URL(value);
 			if (
@@ -247,7 +256,16 @@ export function saveConfig(
 		)
 			throw new Error("Verify email delivery first");
 	}
+	const signIn =
+		key === "PASSWORD_LOGIN" ||
+		key.startsWith("GOOGLE_") ||
+		key.startsWith("MS_");
+	// The EFFECTIVE client id, not the posted string: a reset (value === null) falls back to
+	// process.env, so comparing the posted "" against the stored row calls an identical
+	// environment value a repoint and refuses a write that changes nothing.
+	const was = key === "MS_CLIENT_ID" ? config("MS_CLIENT_ID") : "";
 	getDb().transaction(() => {
+		const before = signIn ? adminCount() : 0;
 		if (value === null) {
 			deleteSetting(`config:${key}`);
 			deleteSetting(`secret:${key}`);
@@ -260,13 +278,34 @@ export function saveConfig(
 		)
 			deleteSetting("identity_admin_verified");
 		if (key.startsWith("SMTP_")) deleteSetting("smtp_verified");
+		// Rolls the write back: no sign-in change may TAKE AWAY the last administrator
+		// able to reach the installation. Differential on purpose — an installation
+		// already at zero must still be able to configure its way back in.
+		// Entra mints `sub` per application, so repointing Microsoft at another client orphans
+		// every row it left behind while the issuer stays the same. Google's `sub` is the
+		// account id and survives a client change, which is why only Microsoft is listed.
+		const dead =
+			key === "MS_CLIENT_ID" && config("MS_CLIENT_ID") !== was
+				? "microsoft"
+				: undefined;
+		if (signIn && before > 0 && adminCount(undefined, dead) === 0)
+			throw new Error("This would lock out every administrator");
 		audit(actor, "config.changed", key);
 	})();
 }
 
-export function identityEnabled(id:string):boolean {
-  if(id==='google')return config('GOOGLE_SSO_ENABLED')==='true' && !!config('GOOGLE_CLIENT_ID');
-  if(id==='microsoft')return config('MS_SSO_ENABLED')==='true' && !!config('MS_CLIENT_ID');
-  const connectors=JSON.parse(getSetting('identity_connectors')??'[]') as {id:string;enabled:boolean}[];
-  return connectors.some(c=>c.id===id&&c.enabled);
+/** `issuer`, when given, is the one stored on a sign-in row: resolveIdentity matches
+ *  connector AND issuer, so a connector repointed at another issuer no longer opens the
+ *  rows it left behind and they must not count as a way in. */
+export function identityEnabled(id:string,issuer?:string):boolean {
+  const matches=(current:string)=>!issuer||issuer===current;
+  // Both builtins are confidential clients — Google's web client and Entra both refuse a
+  // tokenless exchange — so a cleared secret ends every sign-in through them.
+  if(id==='google')return config('GOOGLE_SSO_ENABLED')==='true' && !!config('GOOGLE_CLIENT_ID') && !!config('GOOGLE_CLIENT_SECRET') && matches('https://accounts.google.com');
+  // A multi-tenant registration (common/organizations/consumers) mints id_tokens whose `iss`
+  // carries the SIGNING-IN user's own tenant GUID, so only the tenant family can be matched;
+  // a single tenant keeps the exact match.
+  if(id==='microsoft'){const tenant=config('MS_TENANT_ID');return config('MS_SSO_ENABLED')==='true' && !!config('MS_CLIENT_ID') && !!config('MS_CLIENT_SECRET') && (['common','organizations','consumers'].includes(tenant)?!issuer||/^https:\/\/login\.microsoftonline\.com\/[\w.-]+\/v2\.0$/.test(issuer):matches(`https://login.microsoftonline.com/${tenant}/v2.0`));}
+  const connectors=JSON.parse(getSetting('identity_connectors')??'[]') as {id:string;enabled:boolean;issuer:string}[];
+  return connectors.some(c=>c.id===id&&c.enabled&&matches(c.issuer));
 }

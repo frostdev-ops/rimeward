@@ -38,9 +38,15 @@ export function userCount(): number {
   return (getDb().prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n;
 }
 
-function adminCount(except?:number): number {
+export function adminCount(except?:number, dead?:string): number {
   const admins=getDb().prepare("SELECT id,password_hash IS NOT NULL AS password FROM users WHERE role='admin' AND status='active'").all() as {id:number;password:number}[];
-  return admins.filter(user => user.id!==except && ((user.password && config('PASSWORD_LOGIN')==='true') || (getDb().prepare('SELECT connector FROM login_identities WHERE user_id=?').all(user.id) as {connector:string}[]).some(identity=>identityEnabled(identity.connector)) || (identityEnabled('google') && !!getDb().prepare('SELECT 1 FROM legacy_google_users WHERE user_id=?').get(user.id)))).length;
+  // The stored issuer is part of the key the sign-in is looked up by, so a row whose issuer
+  // the connector no longer presents is not a way in, however enabled that connector is.
+  // `dead` names a connector whose CLIENT is being repointed: an issuer that mints the
+  // subject per application (Entra, and any connector that may) hands out different
+  // subjects to a different client, so its rows are not a way in either — and nothing on
+  // the row records the client it was minted for.
+  return admins.filter(user => user.id!==except && ((user.password && config('PASSWORD_LOGIN')==='true') || (getDb().prepare('SELECT connector,issuer FROM login_identities WHERE user_id=?').all(user.id) as {connector:string;issuer:string}[]).some(identity=>identity.connector!==dead&&identityEnabled(identity.connector,identity.issuer)) || (identityEnabled('google') && !!getDb().prepare('SELECT 1 FROM legacy_google_users WHERE user_id=?').get(user.id)))).length;
 }
 
 /** The last admin cannot be demoted — there would be nobody left to undo it. */
@@ -49,7 +55,7 @@ export function setUserRole(id: number, role: Role): void {
   db.transaction(() => {
     const current = getUser(id);
     if (!current) throw new Error('no such user');
-    if (current.role === 'admin' && current.status === 'active' && role !== 'admin' && adminCount(id) === 0)
+    if (current.role === 'admin' && role !== 'admin' && adminCount(id) === 0)
       throw new Error('cannot demote the only admin');
     db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, id);
     // getSession joins users, so a demotion takes effect on the next request.
@@ -114,7 +120,7 @@ export function deleteUser(id: number): void {
   db.transaction(() => {
     if (userCount() <= 1) throw new Error('cannot delete the only user');
     const victim = getUser(id);
-    if (victim?.role === 'admin' && victim.status === 'active' && adminCount(id) === 0) throw new Error('cannot delete the only admin');
+    if (victim?.role === 'admin' && adminCount(id) === 0) throw new Error('cannot delete the only admin');
     db.prepare('DELETE FROM users WHERE id = ?').run(id);
   })();
 }
@@ -124,7 +130,7 @@ export function setUserStatus(id: number, status: User['status'], actor: number)
   getDb().transaction(() => {
     const user = getUser(id);
     if (!user) throw new Error('Unknown user');
-    if (user.role === 'admin' && user.status === 'active' && status !== 'active' && adminCount(id) === 0) throw new Error('Cannot suspend the only active administrator');
+    if (user.role === 'admin' && status !== 'active' && adminCount(id) === 0) throw new Error('Cannot suspend the only active administrator');
     getDb().prepare('UPDATE users SET status=? WHERE id=?').run(status,id);
     if (status !== 'active') revokeUserAccess(id,actor);
     audit(actor,'user.status',`${id}:${status}`);

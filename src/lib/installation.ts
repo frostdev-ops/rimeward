@@ -5,11 +5,15 @@ import crypto from "node:crypto";
 import { DATA_DIR, getDb } from "./db.ts";
 import { createUser, userCount } from "./users.ts";
 import { audit, saveConfig } from "./app-config.ts";
-import { setSetting } from "./settings.ts";
+import { getSetting, setSetting } from "./settings.ts";
 
 const file = () => path.join(DATA_DIR, "setup-token");
 export function needsSetup() {
 	return !isDesktop() && userCount() === 0;
+}
+/** The wizard has run to the end; until then /setup is reachable over a LAN address. */
+export function setupDone() {
+	return getSetting("setup_done") !== null;
 }
 /** Created once with exclusive permissions; only the installer can read it. */
 export function ensureSetupToken() {

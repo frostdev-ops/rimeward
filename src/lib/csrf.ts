@@ -1,11 +1,14 @@
 import { publicOrigin, configuredOrigin } from './app-config.ts';
+import { setupDone } from './installation.ts';
 // CSRF for form posts. Astro's own check (security.checkOrigin) compares the
 // Origin header with the request URL, which behind a reverse proxy is the
 // proxy's address — so it is off in astro.config.mjs and this runs instead,
 // against PUBLIC_BASE_URL. Same rule Astro applies: state-changing methods
-// with a form content type. A request without an Origin header (curl, a
-// script) is not a browser and passes; a cross-site JSON post never gets past
-// the browser's CORS preflight, which is why only form types are checked.
+// with a form content type, plus a POST that declares no type at all — a
+// bodyless cross-site fetch() sends none and is still a CORS simple request.
+// A request without an Origin header (curl, a script) is not a browser and
+// passes; a cross-site JSON post never gets past the browser's CORS preflight,
+// which is why a declared non-form type is not checked.
 const METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const FORM_TYPES = ['application/x-www-form-urlencoded', 'multipart/form-data', 'text/plain'];
 
@@ -28,7 +31,7 @@ export function allowedOrigin(origin: string, base = publicOrigin()): boolean {
 export function csrfBlocked(request: Request): boolean {
   if (!METHODS.has(request.method)) return false;
   const url = new URL(request.url);
-  if(url.pathname==='/setup'&&!configuredOrigin()){
+  if(url.pathname==='/setup'&&!setupDone()){
     const origin=request.headers.get('origin');if(!origin)return false;
     try{return new URL(origin).host!==(request.headers.get('host')??url.host);}catch{return true;}
   }
@@ -37,7 +40,7 @@ export function csrfBlocked(request: Request): boolean {
     try{return configuredOrigin()?new URL(origin).origin!==new URL(configuredOrigin()!).origin:new URL(origin).host!==(request.headers.get('host')??url.host);}catch{return true;}
   }
   const type = (request.headers.get('content-type') ?? '').toLowerCase();
-  if (!FORM_TYPES.some((t) => type.startsWith(t))) return false;
+  if (type && !FORM_TYPES.some((t) => type.startsWith(t))) return false;
   const origin = request.headers.get('origin');
   return !!origin && !allowedOrigin(origin);
 }

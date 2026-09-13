@@ -9,6 +9,7 @@ import {
 	getUser,
 	setUserPassword,
 } from "./users.ts";
+import type { Role } from "./auth.ts";
 
 const digest = (value: string) =>
 	crypto.createHash("sha256").update(value).digest("hex");
@@ -115,27 +116,49 @@ export async function recoverAccount(email: string) {
 			user.status === "active" || user.email_verified ? "reset" : "verify",
 		);
 }
-export async function inviteAccount(email: string, actor: number) {
+export async function inviteAccount(
+	email: string,
+	actor: number,
+	role: Role = "member",
+) {
 	email = accountEmail(email);
 	if (getUserByEmail(email)) throw new Error("Account already exists");
-	const id = createUser(email, null);
+	const id = createUser(email, null, role);
 	getDb().prepare("UPDATE users SET status='pending' WHERE id=?").run(id);
 	await sendAction(id, "invite");
 	audit(actor, "user.invited", String(id));
 }
+/** The link's action row, without spending it: what a public route checks before it
+ *  does any work on an unauthenticated caller's behalf. */
+export function peekAction(
+	token: string,
+): { user_id: number; purpose: string } | null {
+	const action = getDb()
+		.prepare("SELECT * FROM account_actions WHERE digest=? AND expires_at>?")
+		.get(digest(token), Date.now()) as
+		| { user_id: number; purpose: string }
+		| undefined;
+	if (!action || getUser(action.user_id)?.status === "suspended") return null;
+	return action;
+}
+/** Spends a link: every action row for that user goes. Both callers run inside a
+ *  transaction, so the row is only really spent once that transaction commits — a
+ *  later throw puts the link back. */
+export function takeAction(token: string): {
+	user_id: number;
+	purpose: string;
+} {
+	const action = peekAction(token);
+	if (!action) throw new Error("This link is invalid or expired");
+	getDb()
+		.prepare("DELETE FROM account_actions WHERE user_id=?")
+		.run(action.user_id);
+	return action;
+}
 export function redeemAction(token: string, password: string) {
 	accountPassword(password);
 	return getDb().transaction(() => {
-		const action = getDb()
-			.prepare("SELECT * FROM account_actions WHERE digest=? AND expires_at>?")
-			.get(digest(token), Date.now()) as
-			| { user_id: number; purpose: string }
-			| undefined;
-		if (!action || getUser(action.user_id)?.status === "suspended")
-			throw new Error("This link is invalid or expired");
-		getDb()
-			.prepare("DELETE FROM account_actions WHERE user_id=?")
-			.run(action.user_id);
+		const action = takeAction(token);
 		setUserPassword(action.user_id, password);
 		const status =
 			action.purpose === "reset"

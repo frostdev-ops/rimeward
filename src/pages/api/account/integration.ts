@@ -5,7 +5,7 @@ import {
 	cancelIntegration,
  integrationURL,
 } from "../../../lib/broker-client.ts";
-import { sessionId } from "../../../lib/auth.ts";
+import { attemptSession } from "../../../lib/oauth-attempts.ts";
 import { isDesktop } from "../../../lib/dev/runtime.ts";
 import {
 	nativeDesktop,
@@ -23,8 +23,7 @@ export const POST: APIRoute = async ({ request, locals, cookies }) => {
 			status: 403,
 		});
 	try {
-		const session =
-			request.headers.get("x-rimeward-oauth-binding") ?? sessionId(cookies);
+		const session = attemptSession(request, cookies);
 		if (!session) throw new Error("Sign in first");
 		const b = await request.json(),
 			user = locals.user!.userId;

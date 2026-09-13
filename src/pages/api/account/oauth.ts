@@ -1,6 +1,5 @@
 import { getSetting, setSetting } from "../../../lib/settings.ts";
 import type { APIRoute } from "astro";
-import { sessionId } from "../../../lib/auth.ts";
 import {
 	codexOauthStart,
 	codexOauthFinish,
@@ -9,6 +8,7 @@ import {
 } from "../../../lib/agent/codex.ts";
 import {
 	attemptOf,
+	attemptSession,
 	attemptView,
 	failAttempt,
 } from "../../../lib/oauth-attempts.ts";
@@ -34,7 +34,7 @@ export const ALL: APIRoute = async ({ request, url, locals, cookies }) => {
 			status: 403,
 		});
 	const user = locals.user!.userId,
-		session = request.headers.get("x-rimeward-oauth-binding") ?? sessionId(cookies);
+		session = attemptSession(request, cookies);
 	if (!session) return new Response("Sign in required", { status: 401 });
 	const json = (v: unknown) =>
 		Response.json(v, { headers: { "cache-control": "no-store" } });

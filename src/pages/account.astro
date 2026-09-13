@@ -990,7 +990,7 @@ const TABS = [
           </div>
           {codexAccount && <form method="post" action="/api/account/agent"><button name="action" value="codex-disconnect" class="btn">Disconnect</button></form>}
         </div>
-        <section class="space-y-2 py-3"><h3>Sign-in identities</h3>{identityConnectors().filter(c=>c.enabled).map(c=><p><a class="link" href={`/api/auth/identity/${c.id}?link=1`}>Link {c.name} for sign-in</a></p>)}</section>
+        <section class="space-y-2 py-3"><h3>Sign-in identities</h3>{identityConnectors().filter(c=>c.enabled).map(c=><form method="post" action={`/api/auth/identity/${c.id}/link`}><button class="btn">Link {c.name} for sign-in</button></form>)}</section>
         <section data-codex-connect class="space-y-2 border-b border-line py-3">
           <a data-local-settings hidden class="link" href="/desktop/settings">This desktop’s settings</a>
           <label data-destination hidden>Connect to<select class="input" data-target><option value="default">Connected server</option><option value="local">This desktop only</option></select></label>

@@ -10,9 +10,11 @@ import {
 	claimInstallation,
 	needsSetup,
 } from "../src/lib/installation.ts";
-import { createUser, setUserStatus } from "../src/lib/users.ts";
+import { adminCount, createUser, getUser, setUserStatus } from "../src/lib/users.ts";
 import { createSession, getSession } from "../src/lib/auth.ts";
+import { csrfBlocked } from "../src/lib/csrf.ts";
 import {
+	attemptSession,
 	startAttempt,
 	claimAttempt,
 	completeAttempt,
@@ -31,7 +33,8 @@ import {
 	refreshBroker,
 	cancelBroker,
 } from "../src/lib/oauth-broker.ts";
-import { resolveIdentity,saveIdentityConnector,identityConnectors } from "../src/lib/identity.ts";
+import { acceptInvite,beginIdentity,discoveryTransport,resolveIdentity,saveIdentityConnector,deleteIdentityConnector,identityConnectors,identityEmailVerified } from "../src/lib/identity.ts";
+import { POST as identityPost } from "../src/pages/api/auth/identity/[...action].ts";
 
 test("installer must prove ownership and cannot replay setup", () => {
 	ensureSetupToken();
@@ -235,4 +238,297 @@ test('Microsoft broker consent preserves explicit limited and Teams access',()=>
   assert.ok(limitedScopes.includes('Mail.Read'));assert.ok(!limitedScopes.includes('Mail.Send'));
   const teams=beginBroker('microsoft',user,{teams:true});
   assert.ok(new URL(authorizeBroker(teams.code,user)).searchParams.get('scope')!.includes('Chat.ReadWrite'));
+});
+
+const formPost=(url:string,origin:string,host?:string)=>new Request(url,{method:"POST",headers:{origin,"content-type":"application/x-www-form-urlencoded",...(host?{host}:{})}});
+const identityCtx=(action:string,fields?:Record<string,string>)=>{
+	const url=`https://own.example/api/auth/identity/${action}`;
+	return {
+		url:new URL(url),
+		params:{action},
+		cookies:{get:()=>undefined,set(){},delete(){}},
+		redirect:(location:string,status=302)=>new Response(null,{status,headers:{location}}),
+		request:new Request(url,{method:"POST",body:new URLSearchParams(fields??{})}),
+		clientAddress:"203.0.113.9",
+	} as unknown as Parameters<typeof identityPost>[0];
+};
+test("link and invite starts are form posts a foreign origin cannot make",async()=>{
+	saveConfig("PUBLIC_BASE_URL","https://own.example",null);
+	assert.equal(typeof identityPost,"function");
+	for(const path of ["link","invite"]){
+		const url=`https://own.example/api/auth/identity/google/${path}`;
+		assert.equal(csrfBlocked(formPost(url,"https://evil.invalid")),true);
+		assert.equal(csrfBlocked(formPost(url,"https://own.example")),false);
+		// A bodyless cross-site fetch() declares no content type and is still a simple request.
+		assert.equal(csrfBlocked(new Request(url,{method:"POST",headers:{origin:"https://evil.invalid"}})),true);
+		assert.equal(csrfBlocked(new Request(url,{method:"POST"})),false);
+	}
+	assert.equal((await identityPost(identityCtx("google/link"))).status,401);
+	// A tokenless invite is refused before any identity provider is contacted. The 400 is
+	// the proof: the connector's own discovery does not go through globalThis.fetch, so a
+	// counter on it would see nothing, and the catch-all 303 would hide a live round trip.
+	assert.equal((await identityPost(identityCtx("google/invite"))).status,400);
+	// Six of them: a stranger must not be able to spend a rate window that a real
+	// invitee needs — the window is keyed on the invitation, not on the caller.
+	for(let i=0;i<6;i++)
+		assert.equal((await identityPost(identityCtx("google/invite",{token:`not-an-invitation-${i}`}))).status,400);
+});
+test("a browser session cannot supply its own attempt binding",()=>{
+	const user=createUser("binding@example.com",null);
+	const browser=createSession(user),relay=createSession(user);
+	getDb().prepare("INSERT INTO devices(id,user_id,name,platform,protocol,token_hash) VALUES('dev-1',?,'Mac','darwin',1,'hash')").run(user);
+	getDb().prepare("INSERT INTO device_sessions(device_id,session_id) VALUES('dev-1',?)").run(relay.id);
+	const cookies=(id:string)=>({get:(name:string)=>name==="rimeward_session"?{value:id}:undefined});
+	const named=new Request("https://own.example/api/account/oauth",{headers:{"x-rimeward-oauth-binding":"relay-binding"}});
+	assert.equal(attemptSession(named,cookies(browser.id)),browser.id);
+	assert.equal(attemptSession(named,cookies(relay.id)),"relay-binding");
+	assert.equal(attemptSession(new Request("https://own.example/api/account/oauth"),cookies(relay.id)),relay.id);
+});
+test("single-tenant Microsoft trusts the tenant's email; common does not",()=>{
+	const microsoft=()=>identityConnectors().find(c=>c.id==="microsoft")!;
+	for(const tenant of ["common","organizations","consumers"]){
+		saveConfig("MS_TENANT_ID",tenant,null);
+		assert.equal(microsoft().trustEmail,false,tenant);
+	}
+	saveConfig("MS_TENANT_ID","6babcaad-604b-40ac-a9d7-9fd97c0b779f",null);
+	assert.equal(microsoft().trustEmail,true);
+});
+test("an invitation can be accepted by a new SSO identity without a password",()=>{
+	const user=createUser("invited@example.com",null);
+	getDb().prepare("UPDATE users SET status='pending' WHERE id=?").run(user);
+	const token=actionToken(user,"invite");
+	// No email in the identity: the token activates the account, nothing verifies the address.
+	assert.equal(acceptInvite(token,"google","https://accounts.google.com","invited-subject",undefined,true),user);
+	assert.equal(getUser(user)!.status,"active");
+	assert.equal(getUser(user)!.email_verified,0);
+	assert.ok(getDb().prepare("SELECT 1 FROM login_identities WHERE user_id=?").get(user));
+	assert.throws(()=>acceptInvite(token,"google","https://accounts.google.com","invited-subject",undefined,true),/invalid or expired/);
+});
+test("disabling the only administrator's sign-in method is refused",()=>{
+	const admin=(getDb().prepare("SELECT id FROM users WHERE role='admin' AND status='active'").get() as {id:number}).id;
+	setSetting("identity_admin_verified",`${admin}:google`);
+	assert.throws(()=>saveConfig("PASSWORD_LOGIN","false",admin),/lock out/);
+	assert.equal(config("PASSWORD_LOGIN"),"true");
+});
+test("setup posts from the request's own host pass until finished; foreign origins never",()=>{
+	const own=()=>formPost("http://10.0.0.5:4321/setup","http://10.0.0.5:4321","10.0.0.5:4321");
+	const foreign=()=>formPost("http://10.0.0.5:4321/setup","https://evil.invalid","10.0.0.5:4321");
+	assert.equal(csrfBlocked(own()),false);
+	assert.equal(csrfBlocked(foreign()),true);
+	setSetting("setup_done","true");
+	assert.equal(csrfBlocked(own()),true);
+	assert.equal(csrfBlocked(foreign()),true);
+});
+
+test("an invitation is bound to the address it was sent to",()=>{
+	const user=createUser("bound@example.com",null);
+	getDb().prepare("UPDATE users SET status='pending' WHERE id=?").run(user);
+	const token=actionToken(user,"invite");
+	assert.throws(()=>acceptInvite(token,"google","https://accounts.google.com","other-subject","someone@else.example",true),/address this invitation was sent to/);
+	// The refusal rolled the whole transaction back, so the invitation is still spendable.
+	assert.equal(getUser(user)!.status,"pending");
+	assert.equal(acceptInvite(token,"google","https://accounts.google.com"," bound-subject","  Bound@Example.com ",true),user);
+	assert.equal(getUser(user)!.status,"active");
+	assert.equal(getUser(user)!.email_verified,1);
+});
+test("an invitation redeemed by an unverified address activates without verifying it",()=>{
+	const user=createUser("unverified@example.com",null);
+	getDb().prepare("UPDATE users SET status='pending' WHERE id=?").run(user);
+	const token=actionToken(user,"invite");
+	assert.equal(acceptInvite(token,"custom","https://issuer.example","unverified-subject","unverified@example.com",false),user);
+	assert.equal(getUser(user)!.status,"active");
+	assert.equal(getUser(user)!.email_verified,0);
+});
+test("only Microsoft's own xms_edov stands in for email_verified",()=>{
+	const google=identityConnectors().find(c=>c.id==="google")!;
+	const microsoft=()=>identityConnectors().find(c=>c.id==="microsoft")!;
+	saveConfig("MS_TENANT_ID","common",null);
+	assert.equal(identityEmailVerified(google,{email_verified:true}),true);
+	assert.equal(identityEmailVerified(google,{email_verified:false}),false);
+	assert.equal(identityEmailVerified(google,{xms_edov:true}),false);
+	assert.equal(identityEmailVerified(microsoft(),{xms_edov:true}),true);
+	assert.equal(identityEmailVerified(microsoft(),{}),false);
+	saveConfig("MS_TENANT_ID","6babcaad-604b-40ac-a9d7-9fd97c0b779f",null);
+	assert.equal(identityEmailVerified(microsoft(),{}),true);
+	assert.equal(identityEmailVerified({...google,trustEmail:true},{}),true);
+	assert.equal(identityEmailVerified({...google,id:"custom"},{xms_edov:true}),false);
+});
+test("only real connector IDs can be deleted",()=>{
+	for(const id of ["google","microsoft","Bad","../evil",""])
+		assert.throws(()=>deleteIdentityConnector(id,1),/Unknown connector/);
+});
+test("an installation with no administrator left can still configure its way back in",()=>{
+	const admin=(getDb().prepare("SELECT id FROM users WHERE role='admin'").get() as {id:number}).id;
+	getDb().prepare("UPDATE users SET password_hash=NULL WHERE id=?").run(admin);
+	assert.equal(adminCount(),0);
+	// The shape that loses every administrator is the SSO-only one, where passwords are
+	// off: the refusal guarding SSO changes must stand aside there too.
+	setSetting("config:PASSWORD_LOGIN","false");
+	saveConfig("GOOGLE_CLIENT_ID","repair-client",null);
+	assert.equal(config("GOOGLE_CLIENT_ID"),"repair-client");
+	saveIdentityConnector({id:"repair-oidc",name:"Repair",issuer:"https://repair.example",clientId:"client",clientSecret:"secret",enabled:true},admin);
+	assert.ok(identityConnectors().some(c=>c.id==="repair-oidc"));
+	saveConfig("PASSWORD_LOGIN","true",admin);
+	deleteIdentityConnector("repair-oidc",admin);
+	getDb().prepare("UPDATE users SET password_hash='restored' WHERE id=?").run(admin);
+	assert.equal(adminCount(),1);
+});
+test("with passwords off a connector may be rotated but never added or repointed",()=>{
+	// Somebody must still be able to sign in, or the refusal has no administrator to protect.
+	const admin=(getDb().prepare("SELECT id FROM users WHERE role='admin'").get() as {id:number}).id;
+	getDb().prepare("INSERT INTO login_identities(connector,issuer,subject,user_id) VALUES('google','https://accounts.google.com','rotate-subject',?)").run(admin);
+	const connector={id:"rotate-oidc",name:"Rotate",issuer:"https://rotate.example",clientId:"client",clientSecret:"secret",enabled:true};
+	saveIdentityConnector(connector,1);
+	setSetting("config:PASSWORD_LOGIN","false");
+	try{
+		saveIdentityConnector({...connector,name:"Rotated",clientSecret:"new-secret",enabled:false},1);
+		assert.equal(identityConnectors().find(c=>c.id==="rotate-oidc")?.clientSecret,"new-secret");
+		assert.throws(()=>saveIdentityConnector({...connector,clientId:"other-client"},1),/Re-enable password login/);
+		assert.throws(()=>saveIdentityConnector({...connector,issuer:"https://elsewhere.example"},1),/Re-enable password login/);
+		assert.throws(()=>saveIdentityConnector({...connector,id:"fresh-oidc"},1),/Re-enable password login/);
+	}finally{setSetting("config:PASSWORD_LOGIN","true");}
+	deleteIdentityConnector("rotate-oidc",1);
+});
+test("repointing the connector the only administrator signs in through is refused",()=>{
+	const admin=createUser("repoint@example.com",null,"admin");
+	getDb().prepare("UPDATE users SET status='active' WHERE id=?").run(admin);
+	// Sealed while the installation's own administrator still has a password: a builtin
+	// without its client secret is no longer a way in, and saveConfig refuses a write that
+	// leaves nobody able to sign in.
+	saveConfig("MS_CLIENT_SECRET","ms-secret",null);
+	// This administrator's SSO row must be the only way into the installation, or the
+	// differential guard has another administrator to fall back on.
+	getDb().prepare("DELETE FROM login_identities");
+	getDb().prepare("DELETE FROM legacy_google_users");
+	getDb().prepare("UPDATE users SET password_hash=NULL WHERE role='admin' AND id<>?").run(admin);
+	// Passwords stay ON: this administrator simply has none, so the SSO row is the way in
+	// and the earlier "re-enable password login" refusal is not what is being tested.
+	setSetting("config:GOOGLE_SSO_ENABLED","false");
+	setSetting("config:MS_SSO_ENABLED","true");setSetting("config:MS_CLIENT_ID","app-a");setSetting("config:MS_TENANT_ID","tenant-a");
+	getDb().prepare("INSERT INTO login_identities(connector,issuer,subject,user_id) VALUES('microsoft','https://login.microsoftonline.com/tenant-a/v2.0','sub-a',?)").run(admin);
+	setSetting("config:PASSWORD_LOGIN","true");
+	try{
+		// A tenant is part of the issuer, and a sign-in row is looked up by connector AND
+		// issuer: repointing it strands every row without ever touching "enabled".
+		assert.equal(adminCount(),1);
+		assert.throws(()=>saveConfig("MS_TENANT_ID","tenant-b",null),/lock out/);
+		assert.equal(config("MS_TENANT_ID"),"tenant-a");
+		// Entra mints `sub` per application, so pointing the connector at another client
+		// strands every stored row while the issuer stays character for character the same.
+		assert.throws(()=>saveConfig("MS_CLIENT_ID","app-b",null),/lock out/);
+		assert.equal(config("MS_CLIENT_ID"),"app-a");
+		// "Use environment value" posts a reset, and the environment here carries the SAME
+		// client id: nothing is repointed and the write must go through.
+		process.env.MS_CLIENT_ID="app-a";
+		saveConfig("MS_CLIENT_ID",null,null);
+		assert.equal(config("MS_CLIENT_ID"),"app-a");
+		setSetting("config:MS_CLIENT_ID","app-a");
+		delete process.env.MS_CLIENT_ID;
+		// A multi-tenant registration (common/organizations/consumers) mints id_tokens whose
+		// `iss` carries the SIGNING-IN user's own tenant GUID: compared against .../common/v2.0
+		// every stored row is unequal, adminCount() reports 0 and the guard stops firing.
+		setSetting("config:MS_TENANT_ID","common");
+		getDb().prepare("UPDATE login_identities SET issuer='https://login.microsoftonline.com/72f988bf-86f1-41af-91ab-2d7cd011db47/v2.0' WHERE user_id=?").run(admin);
+		assert.equal(adminCount(),1);
+		assert.throws(()=>saveConfig("MS_CLIENT_ID","app-b",null),/lock out/);
+		assert.equal(config("MS_CLIENT_ID"),"app-a");
+		assert.throws(()=>saveConfig("MS_SSO_ENABLED","false",null),/lock out/);
+		assert.equal(config("MS_SSO_ENABLED"),"true");
+		// The family is that one host, not any issuer at all.
+		getDb().prepare("UPDATE login_identities SET issuer='https://evil.example/v2.0' WHERE user_id=?").run(admin);
+		assert.equal(adminCount(),0);
+		setSetting("config:MS_TENANT_ID","tenant-a");
+		getDb().prepare("UPDATE login_identities SET issuer='https://login.microsoftonline.com/tenant-a/v2.0' WHERE user_id=?").run(admin);
+		// The same blindness through a custom connector.
+		setSetting("config:MS_SSO_ENABLED","false");
+		getDb().prepare("DELETE FROM login_identities WHERE user_id=?").run(admin);
+		const connector={id:"repoint-oidc",name:"Repoint",issuer:"https://repoint.example",clientId:"c1",clientSecret:"secret",enabled:true};
+		saveIdentityConnector(connector,admin);
+		getDb().prepare("INSERT INTO login_identities(connector,issuer,subject,user_id) VALUES('repoint-oidc','https://repoint.example','sub-b',?)").run(admin);
+		assert.equal(adminCount(),1);
+		assert.throws(()=>saveIdentityConnector({...connector,issuer:"https://elsewhere.example"},admin),/lock out/);
+		assert.equal(identityConnectors().find(c=>c.id==="repoint-oidc")?.issuer,"https://repoint.example");
+		assert.throws(()=>saveIdentityConnector({...connector,clientId:"c2"},admin),/lock out/);
+		assert.equal(identityConnectors().find(c=>c.id==="repoint-oidc")?.clientId,"c1");
+		// A stray space in the client ID field is the same client, not a repoint.
+		saveIdentityConnector({...connector,clientId:" c1 "},admin);
+		assert.equal(identityConnectors().find(c=>c.id==="repoint-oidc")?.clientId,"c1");
+		// Both rotations are ordinary maintenance the moment somebody else can get in.
+		getDb().prepare("UPDATE users SET password_hash='restored' WHERE role='admin' AND id<>?").run(admin);
+		saveIdentityConnector({...connector,clientId:"c2"},admin);
+		assert.equal(identityConnectors().find(c=>c.id==="repoint-oidc")?.clientId,"c2");
+		setSetting("config:MS_SSO_ENABLED","true");
+		saveConfig("MS_CLIENT_ID","app-b",null);
+		assert.equal(config("MS_CLIENT_ID"),"app-b");
+	}finally{
+		delete process.env.MS_CLIENT_ID;
+		setSetting("config:PASSWORD_LOGIN","true");
+		setSetting("config:MS_SSO_ENABLED","false");
+		getDb().prepare("DELETE FROM login_identities");
+		getDb().prepare("DELETE FROM users WHERE id=?").run(admin);
+		if(identityConnectors().some(c=>c.id==="repoint-oidc"))deleteIdentityConnector("repoint-oidc",1);
+	}
+});
+test("clearing a builtin's client secret cannot take the last administrator's sign-in away",()=>{
+	const admin=createUser("secret@example.com",null,"admin");
+	getDb().prepare("UPDATE users SET status='active' WHERE id=?").run(admin);
+	saveConfig("MS_CLIENT_SECRET","ms-secret",null);
+	getDb().prepare("DELETE FROM login_identities");
+	getDb().prepare("DELETE FROM legacy_google_users");
+	getDb().prepare("UPDATE users SET password_hash=NULL WHERE role='admin' AND id<>?").run(admin);
+	setSetting("config:GOOGLE_SSO_ENABLED","false");
+	setSetting("config:MS_SSO_ENABLED","true");setSetting("config:MS_CLIENT_ID","app-a");setSetting("config:MS_TENANT_ID","tenant-a");
+	getDb().prepare("INSERT INTO login_identities(connector,issuer,subject,user_id) VALUES('microsoft','https://login.microsoftonline.com/tenant-a/v2.0','sub-a',?)").run(admin);
+	setSetting("config:PASSWORD_LOGIN","true");
+	try{
+		assert.equal(adminCount(),1);
+		// A blank secret makes the app a public client, which neither Google's web client nor
+		// Entra accepts: the code exchange fails and nobody signs in again. The settings page
+		// clears with "" and resets with null, and both must be refused here.
+		assert.throws(()=>saveConfig("MS_CLIENT_SECRET","",null),/lock out/);
+		assert.throws(()=>saveConfig("MS_CLIENT_SECRET",null,null),/lock out/);
+		assert.equal(config("MS_CLIENT_SECRET"),"ms-secret");
+		assert.equal(adminCount(),1);
+		getDb().prepare("UPDATE users SET password_hash='restored' WHERE role='admin' AND id<>?").run(admin);
+		saveConfig("MS_CLIENT_SECRET","",null);
+		assert.equal(config("MS_CLIENT_SECRET"),"");
+		saveConfig("MS_CLIENT_SECRET","ms-secret",null);
+		saveConfig("MS_CLIENT_SECRET",null,null);
+		assert.equal(config("MS_CLIENT_SECRET"),"");
+	}finally{
+		setSetting("config:MS_SSO_ENABLED","false");
+		getDb().prepare("DELETE FROM login_identities");
+		getDb().prepare("DELETE FROM users WHERE id=?").run(admin);
+	}
+});
+test("concurrent sign-in starts share one discovery round trip",async()=>{
+	saveConfig("PUBLIC_BASE_URL","https://own.example",null);
+	const connector={id:"cached-oidc",name:"Cached",issuer:"https://cached.example",clientId:"client",clientSecret:"secret",enabled:true};
+	saveIdentityConnector(connector,1);
+	const real=discoveryTransport.request;
+	let calls=0;
+	discoveryTransport.request=async()=>{
+		calls++;
+		return {status:200,headers:{"content-type":"application/json"},text:JSON.stringify({
+			issuer:connector.issuer,
+			authorization_endpoint:`${connector.issuer}/authorize`,
+			token_endpoint:`${connector.issuer}/token`,
+			jwks_uri:`${connector.issuer}/jwks`,
+			response_types_supported:["code"],
+			subject_types_supported:["public"],
+			id_token_signing_alg_values_supported:["RS256"],
+		})};
+	};
+	try{
+		// Starting a sign-in is public and unauthenticated, so ten callers at once on a cold
+		// cache must not become ten requests aimed at the issuer.
+		const starts=await Promise.all(Array.from({length:10},()=>beginIdentity("cached-oidc")));
+		assert.equal(calls,1);
+		for(const start of starts)assert.ok(start.url.startsWith("https://cached.example/authorize?"),start.url);
+		for(let i=0;i<10;i++)await beginIdentity("cached-oidc");
+		assert.equal(calls,1);
+	}finally{
+		discoveryTransport.request=real;
+		deleteIdentityConnector("cached-oidc",1);
+	}
 });

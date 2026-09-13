@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { getDb } from "./db.ts";
+import { sessionId } from "./auth.ts";
 import { sealToken, openToken } from "./crypto.ts";
 import { sweepSettings } from "./settings.ts";
 let cleanup: ReturnType<typeof setInterval> | undefined;
@@ -99,6 +100,22 @@ export function attemptOf(user: number, id: string, session?: string): Attempt {
 		row.private_enc = "";
 	}
 	return row;
+}
+/** The binding an attempt is pinned to. Only the desktop relay may name its own —
+ *  it reaches us on a session minted by /api/devices/session, which a browser never holds. */
+export function attemptSession(
+    request: Request,
+    cookies: { get(name: string): { value: string } | undefined },
+): string | undefined {
+    const own = sessionId(cookies),
+        named = request.headers.get("x-rimeward-oauth-binding");
+    if (
+        named &&
+        own &&
+        getDb().prepare("SELECT 1 FROM device_sessions WHERE session_id=?").get(own)
+    )
+        return named;
+    return own;
 }
 export function attemptData<T>(row: Attempt): T {
 	return JSON.parse(openToken(row.private_enc)) as T;
