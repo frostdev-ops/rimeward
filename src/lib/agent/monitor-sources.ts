@@ -28,15 +28,35 @@ const SPARKLE = '[\\u2800-\\u28FF\\u00B7\\u2022\\u2722\\u2733\\u2736\\u273B\\u27
  *  · — elapsed, token counts, "esc to interrupt", "thinking some more with xhigh effort", "running
  *  stop hook" — each a short run of words and numbers with no sentence punctuation. */
 const CLAUDE_SPINNER = new RegExp(`^${SPARKLE}\\s+(\\p{Lu}\\p{L}*ing)(?:…|\\.{3})(?:\\s+\\(([^()]*)\\))?$`,'u');
-const CODEX_SPINNER = /^[⠀-⣿•]\s+(Working|Thinking)(?:…|\.{3})?\s+\(([^()]*)\)$/i;
+const CODEX_SPINNER = /^[⠀-⣿•◦]\s+(Working|Thinking)(?:…|\.{3})?\s+\(([^()]*)\)$/i;
+const DURATION = String.raw`(?:\d+(?:\.\d+)?[hms]\s*)+`;
+// Codex also uses a changing activity title instead of Working/Thinking. Match its
+// elapsed/interrupt footer, not the title, and only its known background-terminal tail.
+const CODEX_ACTIVITY = new RegExp(String.raw`^[⠀-⣿•◦]\s+[^()\r\n]{1,160}\s+\(${DURATION}[·•]\s*esc to interrupt\)(.*)$`, 'u');
+function codexActivity(text:string): boolean {
+  const match = CODEX_ACTIVITY.exec(text);
+  if (!match) return false;
+  const tail = match[1]!.trim();
+  if (!tail) return true;
+  const truncated = /(?:…|\.{3})$/.test(tail), prefix = tail.replace(/(?:…|\.{3})$/,'').trimEnd();
+  // Even a trailer cut immediately after its separator is recognizable here: the
+  // complete elapsed/interrupt invariant above must already have matched.
+  if (truncated && prefix === '·') return true;
+  const background = /^· \d+(?: (.*))?$/.exec(prefix);
+  if (!background) return false;
+  const value = background[1] ?? '';
+  // Accept only prefixes of the known trailer, never an unrelated right-hand column.
+  return ['background terminal running','background terminals running'].some(status =>
+    [status,`${status} · /ps to view`].some(full => truncated ? full.startsWith(value) : value === full));
+}
 const SPINNER_DETAIL = /^(?:[↑↓↕]\s*)?(?:\d+(?:\.\d+)?[hms%k]?|\p{L}+)(?:\s(?:\d+(?:\.\d+)?[hms%k]?|\p{L}+)){0,7}$/u;
 function spinnerChrome(text:string): boolean {
+  if (codexActivity(text)) return true;
   const match = CLAUDE_SPINNER.exec(text) ?? CODEX_SPINNER.exec(text);
   if (!match) return false;
   if (match[2] === undefined) return true;
   return match[2].split(/[·•]/).every(part => SPINNER_DETAIL.test(part.trim()));
 }
-const DURATION = String.raw`(?:\d+(?:\.\d+)?[hms]\s*)+`;
 /** A row that is only a counter: the wrapped tail of a tool row ("· 21s") or preview ("(8s)"). */
 const COUNTER_ONLY = new RegExp(String.raw`^(?:·\s*${DURATION}|\(${DURATION}\))$`);
 /** Frame rows of the CLI's boxes and logo: box-drawing and block characters only. */
@@ -72,24 +92,24 @@ function splitTail(raw:string): { main:string; tail:string } {
  *  whose right-aligned trailer is session status keeps its left part. A wrapped spinner is removed
  *  only when the complete joined row matches the same grammar. Queued input, prompts and menus
  *  stay visible: indentation or ❯ alone cannot distinguish an input repaint from a question. */
-function terminalContent(lines:string[],cli:boolean): (string | null)[] {
+function terminalContent(lines:string[],cli:boolean,wrapped:boolean[]): (string | null)[] {
   if (!cli) return lines;
   const content:(string | null)[] = lines.map(() => null);
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i]!, { main,tail } = splitTail(raw);
     const text = tail && STATUS_TAIL.test(tail) ? main : stableKey(raw);
-    if (!text || spinnerChrome(text) || spinnerChrome(main) || COUNTER_ONLY.test(text) || BOX_ONLY.test(text) || CHROME_ROW.some(re => re.test(text)) || COMPLETION_ROW.test(raw) ||
-        text === '❯ Press up to edit queued messages' || /^\s{40,}\S/.test(raw)) continue;
-    if (/^[⠀-⣿·•✢✳✶✻✽]\s/.test(text) && text.includes('(') && !text.includes(')')) {
-      let joined = text, end = i;
-      // Terminal rows are physical, not logical lines. Bound lookahead and fail open if a
-      // narrow viewport split anything other than the recognized spinner metadata.
-      while (end+1 < lines.length && end-i < 2 && !joined.includes(')')) {
-        joined += ' '+splitTail(lines[++end]!).main;
-        if (spinnerChrome(joined)) { i = end; break; }
+    if (/^[⠀-⣿·•◦✢✳✶✻✽]\s/.test(text)) {
+      let joined = raw, matched = spinnerChrome(text) ? i : -1;
+      // Include a wrapped title, elapsed clock, or background-terminal tail only when
+      // the complete joined text has the same anchored CLI shape. Unrelated rows stay.
+      for (let end = i+1; end < lines.length && end-i <= 4 && wrapped[end] && stableKey(lines[end]!); end++) {
+        joined += lines[end]!;
+        if (spinnerChrome(stableKey(joined))) matched = end;
       }
-      if (i === end && spinnerChrome(joined)) continue;
+      if (matched >= 0) { i = matched; continue; }
     }
+    if (!text || COUNTER_ONLY.test(text) || BOX_ONLY.test(text) || CHROME_ROW.some(re => re.test(text)) || COMPLETION_ROW.test(raw) ||
+        text === '❯ Press up to edit queued messages' || /^\s{40,}\S/.test(raw)) continue;
     content[i] = tail && STATUS_TAIL.test(tail) ? main : raw;
   }
   return content;
@@ -150,65 +170,84 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
     // is quiet, but repeated content later passes. A viewport row that is still being written —
     // the same screen row, its previous text edited at the tail (a prompt being typed, a line
     // streaming in) — is held until it has stood for 1.5 s or scrolled off, and dropped if it
-    // vanished first; rows above the viewport are final by definition.
+    // vanished first. A last-row input is not submitted merely because typing paused.
     const cli = first.session.kind !== 'shell', keyOf = (line:string) => { const key = stableKey(line); return cli ? cliKey(key) : key; };
     // The prompt row is edited for as long as a person types; a streaming line settles within a beat.
     const prompt = (line:string) => /^❯\s/.test(stableKey(line));
-    let seen = new Map<string,number>(), scrolled = renderedLines(user,s.target!).scrolled, prevViewport:string[] = [], baselineUntil = 0;
+    const initial = renderedLines(user,s.target!);
+    let seen = new Map<string,number>(), scrolled = initial.scrolled, prevViewport:string[] = [], baselineUntil = 0;
     let size = `${first.session.cols}x${first.session.rows}`, announced = `${first.session.state}:${first.session.exitCode}`;
-    const held = new Map<string,{ line:string; key:string; at:number; hold:number }>();
-    // Rows on screen in the last minute, for the CLI's own full repaints: a re-flowed transcript
-    // paints tails of earlier rows as rows of their own ("them then tell me you are done"), and
-    // a row that is a piece of one seen recently says nothing new. Short rows are exempt: a
-    // "3. No" or "Done." must never be swallowed by an earlier row that happened to contain it.
-    const recent = new Map<string,number>();
-    const fragment = (key:string,now:number) => {
-      if (!cli || key.length < 12) return false;
-      for (const [other,at] of recent) if (now-at < 60_000 && other.length > key.length && other.includes(key)) return true;
-      return false;
-    };
-    const fresh:{ line:string; key:string }[] = []; let since = 0, sequence = 0, timer:ReturnType<typeof setTimeout> | undefined;
-    const queue = (row:{ line:string; key:string },now:number) => { if (fragment(row.key,now)) return; if (!fresh.length) since = now; fresh.push(row); };
-    const collect = (lines:string[],above:number,now:number) => {
-      const frame = new Map<string,number>(), viewport:string[] = [], rows = terminalContent(lines,cli);
+    const held = new Map<string,{ line:string; key:string; at:number; hold:number; order:number; first:number; position:number; draft:boolean }>();
+    const fresh:{ line:string; key:string; order:number; position?:number }[] = []; let since = 0, sequence = 0, order = 0, timer:ReturnType<typeof setTimeout> | undefined;
+    const queue = (row:{ line:string; key:string; order?:number; position?:number },now:number) => { if (!fresh.length) since = now; fresh.push({ ...row, order: row.order ?? ++order }); };
+    const collect = (lines:string[],above:number,now:number,wrapped:boolean[],displacement=0) => {
+      const frame = new Map<string,number>(), viewport:string[] = [], rows = terminalContent(lines,cli,wrapped);
       // The input line is the last content row on screen (only chrome sits under it); a menu's
       // selected row never is, and must not wait for a hold it would not survive.
       const last = rows.findLastIndex(r => r !== null && !!stableKey(r));
+      let draftStart = last;
+      while (draftStart > above && wrapped[draftStart]) draftStart--;
+      if (draftStart < above || !rows[draftStart] || !prompt(rows[draftStart]!)) draftStart = -1;
+      // An empty input below a transcript prompt proves that the latter is no longer
+      // the editable input. Chrome filtering would otherwise hide this distinction.
+      if (lines.some((line,i) => i > last && /^❯(?:\s|$)/.test(stableKey(line)))) draftStart = -1;
       for (let i = 0; i < rows.length; i++) {
         const line = rows[i], key = line === null ? '' : keyOf(line), inView = i >= above;
+        const position = scrolled+i-above, draft = draftStart >= 0 && i >= draftStart && i <= last;
         if (inView) viewport.push(key);
         if (!key) continue;
         const known = seen.has(key) || frame.has(key);
         frame.set(key,now);
-        if (held.has(key)) { if (!inView) { held.delete(key); queue({ line:line!,key },now); } continue; } // scrolled off = final
+        if (held.has(key)) {
+          const h = held.get(key)!;
+          if (!inView || (h.draft && !draft)) { held.delete(key); queue(h,now); }
+          continue;
+        } // moved out of the input position / scrolled off = final
         if (known || now < baselineUntil) continue; // after a resize the re-wrapped repaint is the baseline, not news
-        const prev = inView ? prevViewport[i-above] : undefined;
-        if (prev && (key.startsWith(prev) || commonPrefix(prev,key) >= Math.max(3,Math.min(prev.length,key.length)-8))) { held.delete(prev); held.set(key,{ line:line!,key,at:now,hold:prompt(line!) ? 8000 : 1500 }); }
-        // The first keystroke into an empty prompt has no predecessor to be an edit of; a ❯ row's
-        // first appearance is held a beat too (a menu's selected row settles at once, typing does not).
-        else if (inView && i === last && prompt(line!)) held.set(key,{ line:line!,key,at:now,hold:1500 });
-        else queue({ line:line!,key },now);
+        const prev = inView ? prevViewport[i-above+displacement] : undefined;
+        const pending = fresh.findIndex(row => row.key === prev && row.position === position);
+        if (prev && (key.startsWith(prev) || commonPrefix(prev,key) >= Math.max(3,Math.min(prev.length,key.length)-8) || (pending >= 0 && commonPrefix(prev,key) >= 12))) {
+          // Same physical row repainted before publication: replace its unfinished contents,
+          // including an old right-hand menu trailer, without filtering real two-column rows.
+          const old = held.get(prev)?.position === position ? held.get(prev) : undefined, queued = pending >= 0 ? fresh.splice(pending,1)[0] : undefined;
+          if (old) held.delete(prev);
+          const first = old?.first ?? now;
+          held.set(key,{ line:line!,key,at:now,hold:Math.min(1500,Math.max(0,2000-(now-first))),order:old?.order ?? queued?.order ?? ++order,first,position,draft });
+        }
+        // Keep the editable input (including soft-wrap tails) out of observations until
+        // it moves into the transcript. It never holds up already submitted output.
+        else if (draft) held.set(key,{ line:line!,key,at:now,hold:1500,order:++order,first:now,position,draft });
+        else queue({ line:line!,key,position },now);
       }
       // Vanished before it settled = a transient; settled on screen = content. Judged against this
       // frame alone, before the 5 s carry-over would keep a vanished row alive.
-      for (const [key,h] of held) { if (!frame.has(key)) held.delete(key); else if (now-h.at >= h.hold) { held.delete(key); queue(h,now); } }
+      for (const [key,h] of held) { if (!frame.has(key)) held.delete(key); else if (!h.draft && now-h.at >= h.hold) { held.delete(key); queue(h,now); } }
       for (const [key,at] of seen) if (!frame.has(key) && now-at < 5000) frame.set(key,at);
-      for (const key of frame.keys()) recent.set(key,now);
-      if (recent.size > 2000) for (const [key,at] of recent) { if (now-at >= 60_000 || recent.size > 2000) recent.delete(key); else break; }
+      // An input may disappear for one paint before returning as a submitted transcript
+      // row. Unpublished drafts must not make that later row look already delivered.
+      for (const [key,h] of held) if (h.draft) frame.delete(key);
       seen = frame; prevViewport = viewport;
     };
-    collect(first.screen.split('\n'),0,Date.now());
+    collect(initial.lines,0,Date.now(),initial.wrapped);
     fresh.length = 0;
     const flush = (final = false) => {
       clearTimeout(timer); timer = undefined;
       const now = Date.now();
-      for (const [key,h] of held) if (final || now-h.at >= h.hold) { held.delete(key); queue(h,now); }
-      if (held.size) timer = setTimeout(flush,Math.max(50,Math.min(...[...held.values()].map(h => h.hold-(now-h.at))))).unref();
+      for (const [key,h] of held) if (final || (!h.draft && now-h.at >= h.hold)) {
+        held.delete(key);
+        // At exit there may be no visible acknowledgment of a submitted prompt. Keep
+        // that uncertain text explicitly labeled instead of silently losing it.
+        queue(h.draft ? { ...h,line:`[Terminal input at exit; submission unverified] ${h.line}` } : h,now);
+      }
+      const pending = [...held.values()].filter(h => !h.draft);
+      if (pending.length) timer = setTimeout(flush,Math.max(50,Math.min(...pending.map(h => h.hold-(now-h.at))))).unref();
       if (!fresh.length) return;
-      // A row caught mid-paint ("version b") is a prefix of the row it became; the completed row,
-      // queued behind it or already on screen, is the one that counts.
-      const queued = fresh.splice(0), longer = (key:string) => (other:string) => other.length > key.length && other.startsWith(key);
-      const rows = queued.filter(({ key },i) => !queued.some((other,j) => j !== i && longer(key)(other.key)) && ![...seen.keys()].some(longer(key)));
+      // A later settled row cannot pass an earlier row still being painted. Holds have a
+      // bounded deadline. Unsent input is held separately and cannot block real output.
+      fresh.sort((a,b) => a.order-b.order);
+      const barrier = Math.min(...pending.map(h => h.order));
+      const end = fresh.findIndex(row => row.order > barrier);
+      const rows = fresh.splice(0,end < 0 ? fresh.length : end);
       // Bounded events, nothing dropped: a long burst becomes several 16 kB pages.
       const pages:string[] = []; let page = '';
       for (const { line } of rows) { const row = line.slice(0,4000); if (page && page.length+row.length+1 > 16000) { pages.push(page); page = ''; } page += (page ? '\n' : '')+row; }
@@ -235,8 +274,9 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
       let frame:ReturnType<typeof renderedLines>;
       try { frame = renderedLines(user,s.target!,scrolled); } catch (e) { offline(e instanceof Error ? e.message : String(e)); return; }
       const above = Math.max(0,frame.scrolled-scrolled-frame.lost);
+      const displacement = frame.scrolled-scrolled;
       scrolled = frame.scrolled;
-      collect(frame.lines,above,now);
+      collect(frame.lines,above,now,frame.wrapped,displacement);
       if (frame.lost) { const line = `[monitor: ${frame.lost} rows scrolled out of view before they were read]`; queue({ line,key:line },now); }
       if (!fresh.length && !held.size) return;
       // Trailing quiet period, capped: a burst settles (its partial rows complete) before it is

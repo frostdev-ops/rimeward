@@ -16,6 +16,7 @@ import {
   syncManifest,
   syncRecord,
   installRecord,
+  validateRecord,
   preserveConflict,
   type SyncRecord,
 } from "./sync-store.ts";
@@ -203,6 +204,7 @@ export function syncRime(user: number, force = false): Promise<void> {
             "INSERT INTO agent_sync_baselines VALUES(?,?,?,?) ON CONFLICT(user_id,profile,key) DO UPDATE SET hash=excluded.hash WHERE agent_sync_baselines.hash!=excluded.hash",
           )
           .run(user, remote.profile, key, hash);
+      let dashboardRecovered = false;
       const receive = (record: SyncRecord) => {
         changed = true;
         if (record.key === INSTANCE_KEY) instanceChanged = true;
@@ -215,6 +217,16 @@ export function syncRime(user: number, force = false): Promise<void> {
           current.hash !== record.hash &&
           current.hash !== bases.get(record.key)
         ) {
+          if (record.key === INSTANCE_KEY) {
+            validateRecord(record);
+            // Neither full dashboard has authority over concurrent local edits.
+            // Keep the incoming copy in History recovery. Acknowledge it as the new base
+            // so the next pass can publish ours; other records continue syncing now.
+            if (!db.prepare('SELECT 1 FROM agent_sync_conflicts WHERE user_id=? AND key=? AND payload=?').get(user, record.key, record.payload)) preserveConflict(user, record);
+            acknowledge(record.key, record.hash);
+            dashboardRecovered = true;
+            return;
+          }
           if (NOTE_KEY.test(record.key)) {
             // Both runtimes edited this note: the newer save wins, the other is
             // kept as a conflict copy beside it (note-sync.ts). When ours is
@@ -276,7 +288,7 @@ export function syncRime(user: number, force = false): Promise<void> {
             );
         }
       }
-      statuses.set(user, { online: true, syncing: false, at: Date.now(), ...(notesPaused ? { error: 'New document formats are saved locally. Update the server to sync them.' } : {}) });
+      statuses.set(user, { online: true, syncing: false, at: Date.now(), ...(dashboardRecovered ? { error: 'Concurrent dashboard changes: local settings kept. Open Rime History → Recovered version · instance/dashboard to review or restore the other version.' } : notesPaused ? { error: 'New document formats are saved locally. Update the server to sync them.' } : {}) });
       if (changed) {
         const { broadcast } = await import("../logic-engine.ts");
         broadcast(user, "refresh", { type: "memory" });

@@ -1,5 +1,5 @@
 import { terminalEnv } from "./environment.ts";
-import { LEGACY_MODES, PERMISSION_MODES, cliPermissions, prepareCliLaunch, type CliLaunch, type CliOrigin } from "./cli-bridge.ts";
+import { LEGACY_MODES, PERMISSION_MODES, cliPermissions, prepareCliLaunch, cliLaunchReady, type CliLaunch, type CliOrigin } from "./cli-bridge.ts";
 export { terminalEnv } from "./environment.ts";
 import fs from "node:fs";
 import path from "node:path";
@@ -408,7 +408,7 @@ export async function startSession(
     });
   } catch (error) { launch?.cleanup(); term.dispose(); throw error; }
   try {
-    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',finished_at=NULL,mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active',phase='',last_message='',origin_ward=COALESCE(?,origin_ward),origin_conv=COALESCE(?,origin_conv) WHERE id=? AND user_id=?").run(mode, opts.origin?.ward ?? null, opts.origin?.conv ?? null, id, user);
+    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',finished_at=NULL,mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active',phase='',last_message='',origin_ward=?,origin_conv=? WHERE id=? AND user_id=?").run(mode, opts.origin?.ward ?? '', opts.origin?.conv ?? null, id, user);
     else workDb()
       .prepare(
         "INSERT INTO terminal_sessions(id,user_id,project,kind,mode,title,state,task,assignment,shell,agent_input,cols,rows,is_command,origin_ward,origin_conv) VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?,?,?)",
@@ -509,6 +509,7 @@ export async function startSession(
     process.once("SIGTERM", shutdownTerminals);
     process.once("SIGINT", shutdownTerminals);
   }
+  await cliLaunchReady(id);
   emitDev(user, "session", id, view(rowOf(user, id)));
   return view(rowOf(user, id));
 }
@@ -535,13 +536,17 @@ function kittyStacks(term: Headless): { before: string; after: string } {
  *  scrolled past the 10000 retained — only possible once the scrollback is full; a program that
  *  clears or resets its screen (a CLI on exit) drops rows without losing any, and the alternate
  *  screen keeps none and is not counted. */
-export function renderedLines(user: number, id: string, since?: number): { lines: string[]; scrolled: number; lost: number } {
+export function renderedLines(user: number, id: string, since?: number): { lines: string[]; wrapped: boolean[]; scrolled: number; lost: number } {
   rowOf(user, id);
   const s = live.get(id);
-  if (!s) return { lines: [], scrolled: 0, lost: 0 };
+  if (!s) return { lines: [], wrapped: [], scrolled: 0, lost: 0 };
   const b = s.term.buffer.active, wanted = since === undefined ? 0 : Math.max(0, s.scrolled - since), above = Math.min(b.baseY, wanted);
   const full = b.baseY >= (s.term.options.scrollback ?? 0);
-  return { scrolled: s.scrolled, lost: full ? wanted - above : 0, lines: Array.from({ length: above + s.term.rows }, (_, i) => b.getLine(b.baseY - above + i)?.translateToString(true) ?? "") };
+  const rows = Array.from({ length: above + s.term.rows }, (_, i) => b.getLine(b.baseY - above + i));
+  return { scrolled: s.scrolled, lost: full ? wanted - above : 0,
+    wrapped: rows.map(line => line?.isWrapped ?? false),
+    // A soft-wrapped line may end in a meaningful space. Retain it for exact rejoining.
+    lines: rows.map((line, i) => line?.translateToString(!rows[i+1]?.isWrapped) ?? "") };
 }
 export function readSession(user: number, id: string, after?: number, review = true) {
   const row = rowOf(user, id),

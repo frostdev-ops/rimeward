@@ -73,7 +73,6 @@ import { isCommsType } from '../comms/types.ts';
 // resumes with "continue", never a silent truncation.
 const OUTPUT_CAP = 12_000;
 const CONFIRM_TTL_MS = 10 * 60_000;
-const TURNS_PER_HOUR = 30; // per user, chat + headless together
 const DOC_INLINE_CHARS = 12_000;
 
 export interface PendingConfirm {
@@ -129,7 +128,6 @@ export interface AskDelivery {
 // ---------------------------------------------------------------- rate caps
 // ponytail: in-memory windows, reset on restart (same as the mail cap).
 
-const turnWindow = new Map<number | string, number[]>();
 const headlessWindow = new Map<number | string, number[]>();
 
 function takeSlot(map: Map<number | string, number[]>, key: number | string, cap: number, label: string): void {
@@ -1364,7 +1362,6 @@ export function runChatTurn(userId: number, ward: string, body: ChatBody, emit: 
   return onChain(userId, ward, async () => {
     const wardCfg = agentWardConfig(userId, ward);
     if (!wardCfg) throw new Error('not an agent ward');
-    takeSlot(turnWindow, userId, TURNS_PER_HOUR, 'agent turn');
     const provider = await getProvider(wardCfg.provider, wardCfg.endpoint);
     const conv = activeConversation(userId, ward, wardCfg.provider, wardCfg.endpoint);
     if (livePendingConfirm(conv)?.name === 'ask_user_question') throw Error('Answer the waiting question before continuing this conversation.');
@@ -1622,7 +1619,6 @@ export function runHeadlessTurn(
     if (livePendingConfirm(conv)) {
       return 'skipped — a confirmation is pending on this ward and an unattended run must not decide it';
     }
-    takeSlot(turnWindow, userId, TURNS_PER_HOUR, 'agent turn');
     const provider = await getProvider(wardCfg.provider, wardCfg.endpoint);
     if (source.valid && !source.valid()) return 'skipped — monitor changed before delivery';
     if (source.kind === 'monitor') takeHeadlessSlot(userId,ward);
@@ -1691,7 +1687,7 @@ export function runHeadlessTurn(
 /** Fire-and-forget entry for the agent.ask logic action — never blocks the
  *  engine queue; the per-ward headless cap is the loop brake (agent.ask →
  *  agent-replied → agent.ask again is legal but bounded). */
-export function queueHeadlessAsk(userId: number, ward: string, prompt: string, delivery?: AskDelivery): string {
+export function queueHeadlessAsk(userId: number, ward: string, prompt: string, delivery?: AskDelivery, conversation?: number): string {
   const wardCfg = agentWardConfig(userId, ward);
   if (!wardCfg) return 'no such agent ward';
   if (!agentConfigured(userId, wardCfg.provider, wardCfg.endpoint)) return `${wardCfg.provider} not configured`;
@@ -1700,7 +1696,7 @@ export function queueHeadlessAsk(userId: number, ward: string, prompt: string, d
   } catch (err) {
     return err instanceof Error ? err.message : 'rate limited';
   }
-  void runHeadlessTurn(userId, ward, prompt, { kind: 'ask', delivery }).catch((err) =>
+  void runHeadlessTurn(userId, ward, prompt, { kind: 'ask', delivery, conversation }).catch((err) =>
     console.error('[agent] headless ask failed:', err)
   );
   return 'queued';
@@ -1746,11 +1742,10 @@ export async function runChildRun(args: Record<string, unknown>, ctx: ToolCtx): 
   if (!sel.model) throw new Error(`${sel.provider} has no default model — name one (list_models)`);
   if (!agentConfigured(userId, sel.provider, sel.endpoint)) throw new Error(`${sel.provider} is not configured`);
   const childCfg: AgentWardConfig = { ...wardCfg, provider: sel.provider, endpoint: sel.endpoint, model: sel.model, effort: sel.effort ?? wardCfg.effort };
-  // Every admission that can refuse — the hourly turn budget, the provider,
-  // the thread — happens BEFORE the handoff detaches: a refused fork is an
+  // Every admission that can refuse — the provider and the thread — happens
+  // BEFORE the handoff detaches: a refused fork is an
   // error to the caller with the parent still running, never a stopped parent
   // and a dead child.
-  takeSlot(turnWindow, userId, TURNS_PER_HOUR, 'agent turn');
   const provider = await getProvider(sel.provider, sel.endpoint);
   const conv = childConversation(userId, ward, sel.provider, sel.endpoint ?? null, job);
   stampJob(job, sel);

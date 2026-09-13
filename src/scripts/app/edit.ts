@@ -1,4 +1,4 @@
-import { readDesktopCheckpoint, saveDesktopState } from "./desktop-state.ts";
+import { readDesktopCheckpoint, readDesktopState, saveDesktopState } from "./desktop-state.ts";
 // Dashboard editing: a pointer drag engine (drag anywhere on a card, works
 // on touch), right-click context menus on wards and the grid, the
 // add/configure catalog dialog, and FLIP animation for every reorder.
@@ -22,6 +22,7 @@ import { currentPage, firstPage, pageOfCard, publishPages, readPages, restage, s
 import type { PageDef } from '../../lib/wards.ts';
 import { popOutWard } from './ward-window.ts';
 import { popoutWard } from './ward-view.ts';
+import { dialog } from './workspace-dialogs.ts';
 
 const state = new Map<string, WardInstance>();
 let grid: HTMLElement;
@@ -386,17 +387,28 @@ function undo(): void {
   toast('Could not undo that right now.', undefined, true);
 }
 
-async function save(): Promise<boolean> {
-  const layout = layoutOf();
+let savedBase: { layout: WardInstance[]; pages: PageDef[] };
+let saving: Promise<boolean> = Promise.resolve(true);
+function save(): Promise<boolean> {
+  // Serialize this tab's saves so an older response cannot become its baseline.
+  saving = saving.then(() => saveDraft(), () => saveDraft());
+  return saving;
+}
+async function saveDraft(): Promise<boolean> {
+  const layout = structuredClone(layoutOf());
   // `from` comes back on the broadcast so our own tabs can tell this edit
   // apart from someone else's and skip re-animating it.
   // Credentials typed into a ward's Configure dialog ride BESIDE the layout —
   // the server seals them; they never enter layout_json or the other tabs.
   const tokens = Object.fromEntries(pendingSecrets);
-  const { ok } = await postJson('/api/dashboard', { layout, pages: readPages(), from: TAB_ID, ...(pendingSecrets.size ? { tokens } : {}), ...(noteMoves.size ? { noteMoves: [...noteMoves.values()] } : {}) }, 'PUT');
+  const moves = new Map(noteMoves);
+  const pages = structuredClone(readPages());
+  const { ok, status, data } = await postJson('/api/dashboard', { layout, pages, base: savedBase, from: TAB_ID, ...(pendingSecrets.size ? { tokens } : {}), ...(moves.size ? { noteMoves: [...moves.values()] } : {}) }, 'PUT');
+  if (status === 409) toast(data.error, undefined, true);
   if (ok) {
-    pendingSecrets.clear();
-    noteMoves.clear();
+    savedBase = structuredClone({ layout, pages });
+    for (const [ward, value] of Object.entries(tokens)) if (pendingSecrets.get(ward) === value) pendingSecrets.delete(ward);
+    for (const [ward, value] of moves) if (noteMoves.get(ward) === value) noteMoves.delete(ward);
     publishLayout(layout);
   }
   return ok;
@@ -775,6 +787,7 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
     .join(' ');
   const after = next.filter((w) => nodes.has(w.i)).map((w) => `${w.in ?? ''}/${w.page ?? ''}/${w.i}`).join(' ');
   if (!gone.length && !added.length && !repaint.length && before === after) {
+    if (!local) savedBase = structuredClone({ layout: next, pages: pages ?? savedBase.pages });
     if (pages) publishPages(pages);
     return true;
   }
@@ -846,6 +859,7 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
     // against readLayout(), which reads the island this writes. The page
     // list and the stage follow, so an added ward on another page boots
     // off stage (its poll waits) rather than painting into thin air.
+    if (!local) savedBase = structuredClone({ layout: next, pages: pages ?? savedBase.pages });
     publishLayout(next);
     if (pages) publishPages(pages);
     restage();
@@ -1510,7 +1524,7 @@ function gridMenu(x: number, y: number): void {
         'Reset to default layout',
         () => {
           if (!confirm('Reset the dashboard to the default layout?')) return;
-          void postJson('/api/dashboard', { layout: DEFAULT_LAYOUT, from: TAB_ID }, 'PUT').then((r) => (r.ok ? location.reload() : toast('Reset failed.', undefined, true)));
+          void postJson('/api/dashboard', { layout: DEFAULT_LAYOUT, base: savedBase, from: TAB_ID }, 'PUT').then((r) => (r.ok ? location.reload() : toast(r.data?.error ?? 'Reset failed.', undefined, true)));
         },
         true
       )
@@ -2585,6 +2599,7 @@ export function bootEdit(): void {
   if (!g || !toolbar) return;
   grid = g;
   for (const w of readLayout()) state.set(w.i, w);
+  savedBase = structuredClone({ layout: readLayout(), pages: readPages() });
   baseline = structuredClone(layoutOf());
   baseKey = layoutKey(baseline);
 
@@ -2656,25 +2671,54 @@ export function bootEdit(): void {
   bootMenu();
   bootDialog();
   bootGroups();
-  const recovered = readDesktopCheckpoint<{ layout: unknown; pages: unknown; undo?: unknown[]; noteMoves?: [string, { id: string; notebook: string }][]; editing: boolean; page?: string }>('layout-draft');
+  const recovered = readDesktopCheckpoint<{ layout: unknown; pages: unknown; base?: typeof savedBase; undo?: unknown[]; noteMoves?: [string, { id: string; notebook: string }][]; editing: boolean; page?: string }>('layout-draft');
   const pages = recovered && validatePages(recovered.pages);
   const layout = pages && validateLayout(recovered?.layout, pages);
+  const basePages = recovered?.base && validatePages(recovered.base.pages);
+  const baseLayout = basePages && validateLayout(recovered?.base?.layout, basePages);
   if (recovered && pages && layout) {
-    if (recovered.editing) {
+    if (recovered.editing && baseLayout && layoutKey(baseLayout) === layoutKey(savedBase.layout) && JSON.stringify(basePages) === JSON.stringify(savedBase.pages)) {
       setEditing(true);
       for (const [ward, move] of recovered.noteMoves ?? []) noteMoves.set(ward, move);
       publishPages(pages);
       applyLayout(layout, new Set(), true);
       if (recovered.page && pages.some(page => page.id === recovered.page)) showPage(recovered.page);
+      undoStack.splice(0, undoStack.length, ...(recovered.undo ?? []).map(value => validateLayout(value, pages)).filter((value): value is WardInstance[] => !!value));
+    } else if (recovered.editing) {
+      const copies = readDesktopState<unknown[]>('layout-recovery') ?? [];
+      if (!copies.some(copy => JSON.stringify(copy) === JSON.stringify(recovered))) copies.push(recovered);
+      saveDesktopState('layout-recovery', copies);
+      saveDesktopState('layout-draft', undefined);
+      toast('The current dashboard was kept. Open Recovered layout drafts in the toolbar to retrieve your earlier draft.', undefined, true);
     }
-    undoStack.splice(0, undoStack.length, ...(recovered.undo ?? []).map(value => validateLayout(value, pages)).filter((value): value is WardInstance[] => !!value));
     syncUndo();
+  }
+  if (readDesktopState<unknown[]>('layout-recovery')?.length) {
+    const recovery = el('button', 'btn', 'Recovered layout drafts');
+    recovery.type = 'button';
+    recovery.onclick = () => {
+      const { d, form, actions, submit } = dialog('Recovered layout drafts');
+      const copies = readDesktopState<unknown[]>('layout-recovery') ?? [];
+      const text = JSON.stringify(copies, null, 2);
+      actions.before(el('p', 'muted', 'These drafts were kept because the stored dashboard changed. Download them before discarding. They will not replace your current layout.'));
+      actions.before(el('pre', 'ag-history-message', text));
+      const download = el('button', 'btn', 'Download drafts'); download.type = 'button';
+      download.onclick = () => {
+        const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+        const link = el('a'); link.href = url; link.download = 'rimeward-layout-drafts.json'; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      actions.prepend(download);
+      submit.textContent = 'Discard recovered drafts';
+      form.onsubmit = e => { e.preventDefault(); if (!confirm('Discard the recovered layout drafts?')) return; saveDesktopState('layout-recovery', undefined); recovery.remove(); d.close(); };
+    };
+    toolbar.append(recovery);
   }
   window.addEventListener('fd:before-workspace-navigation', event => {
     (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(Promise.resolve().then(async () => {
       if (pendingSecrets.size) throw Error('Save the ward credentials with Done before opening macOS permission settings.');
       if (!isEditing() && !(await save())) throw Error('The dashboard could not be saved. Try again before relaunching.');
-      saveDesktopState('layout-draft', { layout: layoutOf(), pages: readPages(), undo: undoStack, noteMoves: [...noteMoves], editing: isEditing(), page: currentPage() });
+      saveDesktopState('layout-draft', { layout: layoutOf(), pages: readPages(), base: savedBase, undo: undoStack, noteMoves: [...noteMoves], editing: isEditing(), page: currentPage() });
     }));
   });
 }

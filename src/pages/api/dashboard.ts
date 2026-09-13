@@ -1,5 +1,6 @@
 import type { APIRoute } from 'astro';
-import { getPages, saveDashboard } from '../../lib/dashboard.ts';
+import { getDashboard, getPages, saveDashboard } from '../../lib/dashboard.ts';
+import { isDeepStrictEqual } from 'node:util';
 import { broadcast, pruneUserLogic } from '../../lib/logic-engine.ts';
 import { validateLayout, validatePages, wardTitle } from '../../lib/wards.ts';
 import { isCommsType } from '../../lib/comms/types.ts';
@@ -19,6 +20,23 @@ export const PUT: APIRoute = async ({ request, locals }) => {
   const layout = validateLayout(body?.layout, pages ?? getPages(locals.user!.userId));
   if (!layout) return Response.json({ error: 'invalid_layout' }, { status: 400 });
   const userId = locals.user!.userId;
+  const current = getDashboard(userId);
+  // Older editing tabs identify themselves with `from` but have no baseline. Refuse
+  // their replacement rather than silently downgrading concurrency protection.
+  // Legacy API callers may still seed layouts; they cannot change an existing agent's
+  // permission policy without supplying the snapshot they read.
+  if (body.base === undefined && (typeof body.from === 'string' || layout.some(w => w.type === 'agent' && current.some(old => old.i === w.i && old.type === 'agent' && (old.config?.permissions ?? 'normal') !== (w.config?.permissions ?? 'normal'))))) {
+    return Response.json({ error: 'Reload this client before changing the dashboard; a current layout snapshot is required.' }, { status: 409 });
+  }
+  // A full-layout edit is only authoritative over the snapshot the editor read.
+  // Keep both the stored dashboard and the unsaved client draft on a conflict.
+  if (body.base !== undefined) {
+    const basePages = validatePages(body.base?.pages);
+    const baseLayout = basePages && validateLayout(body.base?.layout, basePages);
+    if (!baseLayout || !isDeepStrictEqual(baseLayout, current) || !isDeepStrictEqual(basePages, getPages(userId))) {
+      return Response.json({ error: 'The dashboard changed elsewhere. Your draft has not been saved. Reload to review the current layout.' }, { status: 409 });
+    }
+  }
   // A shared ward or page names a share granted to THIS user. One that vanished
   // (revoked) stays, so its card can say so; one that is somebody else's is refused.
   const foreign = (id: unknown) => { const s = resolveShare(id); return !!s && s.grantee !== userId; };

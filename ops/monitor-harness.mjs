@@ -102,7 +102,7 @@ async function replay() {
       clock = r.t;
       if (wait) await sleep(wait);
       if (r.data !== undefined) output(r.data);
-      else if (r.resize) resizeSession(user, session.id, 'monitor-harness', r.resize[0], r.resize[1]);
+      else if (r.resize) resizeSession(user, session.id, 'agent:monitor-harness', r.resize[0], r.resize[1]);
       else if (r.exit !== undefined && !ended) { ended = true; exited({ exitCode: r.exit ?? 0, signal: r.signal ?? 0 }); }
     }
     if (!ended) { ended = true; exited({ exitCode: 0, signal: 0 }); }

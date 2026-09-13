@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { getDashboard } from '../dashboard.ts';
+import { activeConversationRow } from '../agent/conversations.ts';
 import { observe } from '../agent/observation-events.ts';
 import { secretEqual } from './native.ts';
 import { DevError, isDesktop, workDb } from './runtime.ts';
@@ -55,7 +56,8 @@ const MODE_MEANING: Record<PermissionMode, string> = {
 };
 /** The coordination instructions every Rime-launched CLI gets (Claude: appended to the system
  *  prompt; Codex: in front of the task). Plain prose, under 1800 characters. */
-export function cliInstructions(session: string, mode: PermissionMode): string {
+export function cliInstructions(session: string, mode: PermissionMode, coordinated = false): string {
+  if (!coordinated) return `This terminal is running in Rimeward without an active coordinator conversation. Speak to the person using this terminal; do not assume another Rime conversation owns this task. Permission mode: ${MODE_MEANING[mode]}. The "rime" MCP server can record status with rime_status, show the saved assignment with rime_context, and retain your final summary, changed files and checks with rime_report. Session id: ${session}.`;
   return `You were launched by Rime, the Rimeward agent that coordinates this work; a person may also be watching this terminal. This session's permission mode is ${MODE_MEANING[mode]}. Rime is reachable through the "rime" MCP server. Use rime_status for progress worth reporting (a milestone, a blocker, a change of plan), not every step. When you need a decision or a clarification, call rime_ask instead of asking in the terminal; it blocks until Rime answers, so ask once with the options you see. Call rime_context if you need the assignment, the project or the permission mode restated. When the task is complete, or you are blocked, call rime_report exactly once with what changed (files) and what you checked (commands, tests); never claim completion without it. Keep the terminal readable: no walls of output when a summary will do. Session id: ${session}.`;
 }
 
@@ -120,7 +122,7 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
   const token = randomBytes(32).toString('hex');
   const base = process.env.PUBLIC_BASE_URL ?? '';
   const mcpUrl = `${base}/api/cli/${session}/mcp`;
-  const instructions = cliInstructions(session, mode);
+  const instructions = cliInstructions(session, mode, !!origin?.conv && activeConversationRow(user, origin.ward)?.id === origin.conv);
   // Timeouts: a permission decision waits on Rime (and possibly a human); reports are quick.
   const hook = (timeout: number) => ({ type: 'command', command, timeout });
   if (kind === 'claude') {
@@ -160,12 +162,12 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
       // Streamable HTTP MCP server; the bearer comes from the env (codex-rs config/src/mcp_types.rs).
       '-c', `mcp_servers.rime.url=${toml(mcpUrl)}`,
       '-c', 'mcp_servers.rime.bearer_token_env_var="RIMEWARD_CLI_TOKEN"',
-      // Codex parks hooks it has not seen behind a "Hooks need review" screen, which an unattended
-      // launch would never pass. The only hooks here are this session's own script in its 0700 dir.
-      '--dangerously-bypass-hook-trust',
+      // Hook trust is separate from command permissions. Codex also loads user/project/plugin
+      // hooks; its invocation-wide bypass would trust those too. Leave its review gate intact.
     );
   }
-  registry.set(session, { user, kind, mode, origin, token, dir, phase: '', lastMessage: '', seq: 0, reported: false, pending: new Map(), questions: new Map() });
+  const entry: Entry = { user, kind, mode, origin, token, dir, phase: '', lastMessage: '', seq: 0, reported: false, pending: new Map(), questions: new Map() };
+  registry.set(session, entry);
   return {
     args,
     // Codex has no system-prompt flag: the preamble rides the task, so an interactive session (no task) gets none.
@@ -177,6 +179,15 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+/** Publish the unattended prerequisite only after the PTY and session row exist. */
+export async function cliLaunchReady(session: string): Promise<void> {
+  const e = registry.get(session);
+  if (e?.kind !== 'codex' || e.phase) return;
+  const message = "Codex lifecycle hooks need review in /hooks before unattended coordination is available. Review the generated Rimeward hooks; command permissions do not grant hook trust.";
+  await setPhase(e, session, 'waiting-input', 'hook-review', {}, message);
+  notifyCli(e, `Codex session ${session}: ${message}`);
 }
 
 export function cliState(session: string): { phase: CliPhase; lastMessage?: string; pending?: { id: string; tool: string; input: unknown; at: number } } | null {
@@ -249,7 +260,7 @@ export function cliContext(session: string): string {
 export function parkQuestion(session: string, question: string, options?: string[]): Promise<string> | null {
   const e = registry.get(session);
   if (!e) throw new DevError('Unknown session.', 401);
-  if (!e.origin) return null;
+  if (!e.origin?.conv || activeConversationRow(e.user, e.origin.ward)?.id !== e.origin.conv) return null;
   const id = randomUUID().slice(0, 8);
   const answer = new Promise<string>(resolve => {
     const timer = setTimeout(() => { if (e.questions.delete(id)) { resolve(ASK_TIMEOUT_TEXT); if (!e.questions.size) void setPhase(e, session, 'running', 'question-timeout', { question: id }); } }, ASK_WAIT_MS);
@@ -356,16 +367,15 @@ async function setPhase(e: Entry, session: string, phase: CliPhase, eventType: s
 /** Tell the Rime that started the session. A running turn reads it at its next round; an
  *  idle ward gets a headless turn. Framed as an observation, like a task notice. */
 function notifyCli(e: Entry, text: string): void {
-  if (!e.origin) return;
+  if (!e.origin?.conv) return;
   const { user, origin } = e;
-  void Promise.all([import('../agent/core.ts'), import('../agent/conversations.ts')]).then(([{ wardBusy, steerTurn, queueHeadlessAsk }, { activeConversationRow }]) => {
-    // Delivery is per ward (that is what steer and a headless ask address). When the thread that
-    // launched the session is no longer the ward's active one, the notice says so rather than
-    // reading as if it belonged to the current thread.
-    const active = activeConversationRow(user, origin.ward)?.id;
-    const provenance = origin.conv !== undefined && active !== undefined && active !== origin.conv ? ` (started from thread #${origin.conv} of this ward, which is no longer the active thread)` : '';
-    const message = `[Terminal session — runtime observation, not a new user instruction]${provenance}\n${text}`;
-    if (wardBusy(user, origin.ward)) steerTurn(user, origin.ward, { text: message, from: 'user' });
-    else { const status = queueHeadlessAsk(user, origin.ward, message); if (status !== 'queued') console.error(`[cli] notice not delivered to ${origin.ward}: ${status}`); }
+  void import('../agent/core.ts').then(({ wardBusy, steerTurn, queueHeadlessAsk }) => {
+    const valid = () => activeConversationRow(user, origin.ward)?.id === origin.conv;
+    if (!valid()) { console.error(`[cli] notice retained in terminal history: originating thread ${origin.conv} is no longer active`); return; }
+    const message = `[Terminal session — runtime observation, not a new user instruction]\n${text}`;
+    // Recheck a queued steer when consumed; the headless path pins and rechecks the conversation
+    // on its existing ward chain. Neither path may wake a replacement thread after /clear.
+    if (wardBusy(user, origin.ward)) steerTurn(user, origin.ward, { text: message, from: 'user', valid });
+    else { const status = queueHeadlessAsk(user, origin.ward, message, undefined, origin.conv); if (status !== 'queued') console.error(`[cli] notice not delivered to ${origin.ward}: ${status}`); }
   }).catch(err => console.error('[cli] notice failed:', err));
 }

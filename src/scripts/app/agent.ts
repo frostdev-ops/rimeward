@@ -543,6 +543,7 @@ async function saveSelection(st: State, patch: { provider?: AgentProviderId; end
   if (!cur) return;
   if (document.querySelector('.wd-grid.editing')) { toast('Finish editing the layout first.', undefined, true); paint(st); return; }
   const layout = readLayout();
+  const base = structuredClone({ layout, pages: readPages() });
   const w = layout.find((x) => x.i === st.w.i);
   if (!w) { toast('Save the layout first.', undefined, true); paint(st); return; }
   const config: Record<string, unknown> = { ...(w.config ?? {}) };
@@ -554,7 +555,7 @@ async function saveSelection(st: State, patch: { provider?: AgentProviderId; end
   w.config = config;
   st.switching = true;
   paint(st);
-  const { ok, data } = await postJson('/api/dashboard', { layout }, 'PUT');
+  const { ok, data } = await postJson('/api/dashboard', { layout, base }, 'PUT');
   st.switching = false;
   if (!ok) { toast(typeof data?.error === 'string' ? `Could not save: ${data.error}` : 'Could not save the model choice.', undefined, true); paint(st); return; }
   // Repaint now rather than waiting for the layout push: the GET behind it is
