@@ -224,7 +224,7 @@ export function attachWordRibbon({ editor, tools, changed: onChanged, title }: R
     if (empty) { message('Select the passage to comment on.'); return; }
     const value = await askText('Comment');
     if (!value || disposed) return;
-    dispatch(state().tr.addMark(from, to, s.marks.comment!.create({ comment: value.slice(0, 4000), author: editor.track.author }))); view.focus();
+    dispatch(state().tr.addMark(from, to, s.marks.comment!.create({ comment: value, author: editor.track.author }))); view.focus();
   });
   button(review, 'Comments', () => commentsDialog());
   const trackButton = button(review, 'Track changes', () => { editor.track.on = !editor.track.on; trackButton.setAttribute('aria-pressed', String(editor.track.on)); message(editor.track.on ? 'Tracking what you type, paste and delete. Formatting and structural edits apply directly.' : 'Track changes off.'); });

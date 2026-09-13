@@ -142,7 +142,7 @@ async function toWav(blob: Blob): Promise<Blob> {
 }
 
 /** Every channel averaged to one, resampled to SAMPLE_RATE by linear interpolation. */
-function downmix(buffer: AudioBuffer): Float32Array {
+export function downmix(buffer: AudioBuffer): Float32Array {
   const channels = Array.from({ length: buffer.numberOfChannels }, (_, i) => buffer.getChannelData(i));
   const ratio = buffer.sampleRate / SAMPLE_RATE;
   const length = Math.max(1, Math.floor(buffer.length / ratio));
@@ -157,7 +157,8 @@ function downmix(buffer: AudioBuffer): Float32Array {
   return out;
 }
 
-function encodeWav(samples: Float32Array, rate: number): ArrayBuffer {
+/** 16-bit PCM WAV. Exported beside downmix so the encoder can be checked without a browser. */
+export function encodeWav(samples: Float32Array, rate: number): ArrayBuffer {
   const bytes = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(bytes);
   const text = (at: number, value: string) => { for (let i = 0; i < value.length; i++) view.setUint8(at + i, value.charCodeAt(i)); };

@@ -149,9 +149,10 @@ const decodable = (type: string) =>
 /**
  * The bytes of one thing the page loaded. Straight out of the browser when it still holds them —
  * that is a response the page really received, including one no second request could reproduce (a
- * POST result, a one-time URL, a page behind a form). Otherwise it is re-read through the ward's own
- * session, which carries its cookies and is usually served from the browser's cache; that is a fresh
- * request, and the answer says which of the two it was.
+ * POST result, a one-time URL, a page behind a form). Otherwise it is requested again through the
+ * ward's own session, which carries its cookies and proxy but not its stored copy: a fresh request
+ * that can answer differently, or not at all. The answer says which of the two it was, and a failed
+ * re-read reports its own status rather than passing an error page off as the asset.
  */
 export async function readAsset(s: Session, ref: { id?: number; url?: string }): Promise<Record<string, unknown>> {
   const log = logOf(s);
@@ -173,7 +174,12 @@ export async function readAsset(s: Session, ref: { id?: number; url?: string }):
   if (!/^https?:\/\//i.test(url)) throw new Error(`Its body is no longer in the browser and ${url} cannot be re-read.`);
   const again = await s.page.request.get(url, { timeout: 15_000, failOnStatusCode: false });
   const type = (again.headers()['content-type'] ?? '').split(';')[0]!.trim();
-  return { ...shape(url, again.status(), type, await again.body()), source: 're-read through this ward (its cookies, usually its cache)' };
+  const body = await again.body();
+  const source = 're-read through this ward (its cookies and proxy; a fresh request, not the copy the page received)';
+  // The re-read can fail where the original did not — the host is gone, the URL was one-time, the
+  // proxy refused it. That is not the asset, and it is not reported as one.
+  if (again.status() >= 400) return { url, status: again.status(), type, bytes: body.length, source, failed: `The browser no longer holds this response and requesting it again answered ${again.status()}.`, ...(body.length ? { answer: body.toString('utf8').slice(0, 2000) } : {}) };
+  return { ...shape(url, again.status(), type, body), source };
 }
 
 function shape(url: string, status: number, type: string, buffer: Buffer): Record<string, unknown> {

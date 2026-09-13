@@ -58,12 +58,48 @@ const ALLOWED = new Set([
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'hr', 'a', 'div', 'span', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'img', 'input', 'ins', 'del', 'header', 'footer', 'section',
 ]);
 const VOID = new Set(['br', 'hr', 'img', 'input']);
-// What the HTML tokenizer treats as markup after a `<`: a letter (a tag), `!`
-// (a comment / declaration), `/` (an end tag), `?` (a bogus comment). Any other
-// `<` is text — "a < b" must survive as text.
-// Attribute values may hold a raw `>` (a browser serializes `data-comment="a > b"`
-// exactly so), so the tag runs to the `>` outside any quotes.
-const TAG_RE = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b((?:"[^"]{0,4000}"|'[^']{0,4000}'|[^>"'])*)>|<!--[\s\S]*?-->|<[!?/][^>]*>?/g;
+// Scan once, without a per-attribute size limit or a backtracking tag regex.
+// Structured pages and embedded images carry document-sized attributes; their
+// limits belong to the document store, not the tokenizer. A quoted `>` is data.
+function* htmlTags(input: string): Generator<{ start: number; end: number; name: string; raw: string; closing: boolean }> {
+  const head = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b/y;
+  let cursor = 0;
+  while (cursor < input.length) {
+    const start = input.indexOf('<', cursor);
+    if (start < 0) return;
+    if (input.startsWith('<!--', start)) {
+      const close = input.indexOf('-->', start + 4);
+      cursor = close < 0 ? input.length : close + 3;
+      yield { start, end: cursor, name: '', raw: '', closing: false };
+      continue;
+    }
+    head.lastIndex = start;
+    const match = head.exec(input);
+    const name = match?.[1];
+    if (!name) {
+      if ('!?/'.includes(input[start + 1] ?? '\0')) {
+        const close = input.indexOf('>', start + 2);
+        cursor = close < 0 ? input.length : close + 1;
+        yield { start, end: cursor, name: '', raw: '', closing: false };
+      } else cursor = start + 1; // Ordinary `<` stays in the escaped text.
+      continue;
+    }
+    const attrsStart = head.lastIndex;
+    let end = attrsStart, quote = '';
+    for (; end < input.length; end++) {
+      const char = input.charAt(end);
+      if (quote) {
+        if (char === quote) quote = '';
+      } else if (char === '"' || char === "'") quote = char;
+      else if (char === '>') break;
+    }
+    // An incomplete tag is text, never an opportunity to reinterpret markup
+    // inside its unfinished attribute. Do not rescan the same suffix.
+    if (end === input.length) return;
+    cursor = end + 1;
+    yield { start, end: cursor, name: name.toLowerCase(), raw: input.slice(attrsStart, end), closing: input[start + 1] === '/' };
+  }
+}
 /** An attribute value as it is written back: every character the tag scanner or a quote could trip on. */
 const escAttr = (s: string): string => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -108,14 +144,12 @@ export function sanitizeHtml(input: string): string {
   const out: string[] = [];
   const open: string[] = [];
   let i = 0;
-  let m: RegExpExecArray | null;
-  TAG_RE.lastIndex = 0;
-  while ((m = TAG_RE.exec(input))) {
-    out.push(escText(input.slice(i, m.index)));
-    i = m.index + m[0].length;
-    const name = m[1]?.toLowerCase();
+  for (const tag of htmlTags(input)) {
+    out.push(escText(input.slice(i, tag.start)));
+    i = tag.end;
+    const { name, raw } = tag;
     if (!name || !ALLOWED.has(name)) continue; // an unknown tag, a comment, junk: dropped
-    if (m[0].startsWith('</')) {
+    if (tag.closing) {
       if (VOID.has(name)) continue;
       const at = open.lastIndexOf(name);
       if (at < 0) continue; // a close with no open: dropped
@@ -123,24 +157,23 @@ export function sanitizeHtml(input: string): string {
       continue;
     }
     let attrs = '';
-    if (name === 'div' && isNotebookPageType(attr(m[2] ?? '', 'data-page'))) {
+    if (name === 'div' && isNotebookPageType(attr(raw, 'data-page'))) {
       try {
-        const state = JSON.parse(decodeURIComponent(attr(m[2] ?? '', 'data-page-state')));
-        attrs = ` data-page="${attr(m[2] ?? '', 'data-page')}" data-page-state="${encodeURIComponent(JSON.stringify(state)).replace(/'/g, '%27')}"`;
+        const state = JSON.parse(decodeURIComponent(attr(raw, 'data-page-state')));
+        attrs = ` data-page="${attr(raw, 'data-page')}" data-page-state="${encodeURIComponent(JSON.stringify(state)).replace(/'/g, '%27')}"`;
       } catch { /* Invalid structured data is discarded; visible text survives. */ }
     }
     if (name === 'a') {
       // A note link (<a data-note="id">) is an internal reference the editor
       // follows itself; it never carries an href. Anything else is a vetted URL.
-      const note = attr(m[2] ?? '', 'data-note');
+      const note = attr(raw, 'data-note');
       if (NOTE_LINK_RE.test(note)) attrs = ` data-note="${note}"`;
       else {
-        const rawHref = attr(m[2] ?? '', 'href');
+        const rawHref = attr(raw, 'href');
         const href = httpUrl(rawHref) || (/^mailto:[^\s<>]{1,2040}$/i.test(rawHref) ? rawHref : null);
         if (href) attrs = ` href="${escAttr(href)}" target="_blank" rel="noreferrer"`;
       }
     }
-    const raw = m[2] ?? '';
     if (name === 'img') {
       const src = attr(raw, 'src');
       const safe = httpUrl(src) || (/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(src) ? src : '');
@@ -162,7 +195,7 @@ export function sanitizeHtml(input: string): string {
     }
     for (const key of ['data-comment', 'data-change', 'data-author', 'data-word-page', 'data-word-header', 'data-word-footer', 'data-page-number']) {
       const value = attr(raw, key);
-      if (value) attrs += ` ${key}="${escAttr(value.slice(0, 4000))}"`;
+      if (value) attrs += ` ${key}="${escAttr(value)}"`;
     }
     const style = cleanStyle(attr(raw, 'style'));
     if (style) attrs += ` style="${style}"`;

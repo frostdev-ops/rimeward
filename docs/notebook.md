@@ -81,6 +81,12 @@ uses the same document id, revisions, conflict handling, backups and sync. Its
 validated JSON state and searchable text are stored together in one sanitized
 HTML wrapper; ordinary text writers cannot append outside that wrapper or replace
 the page type without explicit conversion. The shared document limit is 16 MiB.
+The sanitizer scans quoted attributes without a separate character cap: encoded
+page state, embedded images and comment metadata must survive beyond 4,000
+characters. It still rebuilds tags and attributes through the same allowlist;
+document-size checks and revision/conflict protection remain in force.
+Free-form review comments also retain their full text through creation, rich-text
+schema conversion and DOCX import rather than silently truncating at 4,000 characters.
 Enhanced formats stay local when paired with an older server; format negotiation
 prevents older sanitizers from stripping page state or rich formatting.
 

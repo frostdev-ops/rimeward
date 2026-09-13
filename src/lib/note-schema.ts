@@ -11,7 +11,9 @@ import { cleanStyle, sanitizeHtml } from './note-text.ts';
 type Attrs = Record<string, unknown>;
 const styleOf = (dom: Element): { style: string } => ({ style: cleanStyle(dom.getAttribute('style') ?? '') });
 const withStyle = (attrs: Attrs, extra: Attrs = {}): Attrs => ({ ...extra, ...(attrs.style ? { style: attrs.style as string } : {}) });
-const text = (dom: Element, name: string, max = 4000): string => (dom.getAttribute(name) ?? '').slice(0, max);
+// Free-form comments must round-trip intact; only explicitly bounded fields
+// (such as author labels and change identifiers) apply a field-specific cap.
+const text = (dom: Element, name: string, max?: number): string => (dom.getAttribute(name) ?? '').slice(0, max);
 const NOTE_LINK_RE = /^[a-z0-9-]{1,32}$/;
 const PAPER_RE = /^(letter|a4)-(portrait|landscape)$/;
 
