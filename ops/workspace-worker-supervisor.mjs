@@ -16,12 +16,12 @@ async function ensure(account){
   if(inflight.has(account))return inflight.get(account);
   const operation=(async()=>{
     const name=`rimeward-u${account}`,home=`/var/lib/rimeward/workers/u${account}`,run=`/run/rimeward-workers/u${account}`;
-    for(const parent of ['/var/lib/rimeward/workers','/run/rimeward-workers']){await fs.mkdir(parent,{recursive:true,mode:0o755});const stat=await fs.lstat(parent);if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==0||(stat.mode&0o022))throw Error('Worker parent directory must be protected and root-owned.');await fs.chmod(parent,0o755);}
+    // Validate the ancestor before touching its children; it may predate worker setup.
+    for(const [parent,mode] of [['/var/lib/rimeward',0o711],['/var/lib/rimeward/workers',0o755],['/var/lib/rimeward/worker-tokens',0o700],['/run/rimeward-workers',0o755]]){await fs.mkdir(parent,{recursive:true,mode});const stat=await fs.lstat(parent);if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==0||(stat.mode&0o022))throw Error('Worker parent directory must be protected and root-owned.');await fs.chmod(parent,mode);}
     let entry;try{entry=(await command('/usr/bin/getent',['passwd',name])).stdout.trim().split(':');}catch{await command('/usr/sbin/useradd',['--system','--create-home','--home-dir',home,'--shell','/bin/sh',name]);entry=(await command('/usr/bin/getent',['passwd',name])).stdout.trim().split(':');}
     const uid=Number(entry[2]);if(!uid||entry[5]!==home)throw Error('Existing OS account does not match the worker allocation.');
     const homeStat=await fs.lstat(home);if(!homeStat.isDirectory()||homeStat.isSymbolicLink()||homeStat.uid!==uid)throw Error('Worker home ownership does not match its OS account.');
     await fs.chmod(home,0o700);await fs.mkdir(run,{recursive:true,mode:0o750});const runStat=await fs.lstat(run);if(!runStat.isDirectory()||runStat.isSymbolicLink())throw Error('Worker runtime directory is invalid.');await fs.chown(run,uid,configuration.webGid);await fs.chmod(run,0o2750);
-    await fs.mkdir('/var/lib/rimeward/worker-tokens',{recursive:true,mode:0o700});
     const credential=`/var/lib/rimeward/worker-tokens/u${account}`;let token;
     try{token=(await fs.readFile(credential,'utf8')).trim();}catch(error){if(error.code!=='ENOENT')throw error;token=crypto.randomBytes(48).toString('base64url');await fs.writeFile(credential,token,{flag:'wx',mode:0o600});}
     try{await fs.writeFile(`${credential}-encryption`,crypto.randomBytes(32).toString('base64'),{flag:'wx',mode:0o600});}catch(error){if(error.code!=='EEXIST')throw error;}
