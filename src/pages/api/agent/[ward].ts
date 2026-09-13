@@ -46,8 +46,11 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     file_ids?: unknown;
     ward_ids?: unknown;
     ward_mentions?: unknown;
-    action?: 'clear' | 'confirm' | 'decline' | 'interrupt' | 'background' | 'cancel-task' | 'message-child' | 'answer-question' | 'monitor';
+    action?: 'clear' | 'confirm' | 'decline' | 'interrupt' | 'background' | 'cancel-task' | 'message-child' | 'answer-question' | 'monitor' | 'resume-task';
     operation?:string;
+    /** resume-task: continuation instructions, and the chat the person is looking at (its report binds there). */
+    instructions?: unknown;
+    conversation?: unknown;
     answer?: unknown;
     task?: string;
     questionId?: unknown;
@@ -74,6 +77,15 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       if (!['pause','resume','delete'].includes(body.operation ?? '')) throw Error('Unsupported monitor action.');
       return Response.json({ monitor:manageMonitor({ userId,ward,conv:conv.id },{ action:body.operation,id:body.task }) });
     } catch (e) { return Response.json({ error:e instanceof Error ? e.message : String(e) },{ status:400 }); }
+  }
+  if (body.action === 'resume-task') {
+    try {
+      const { resumeTaskByUser } = await import('../../../lib/agent/core.ts');
+      const conversation = Number(body.conversation);
+      if (!Number.isSafeInteger(conversation)) return Response.json({ error: 'Reopen Tasks and try again.' }, { status: 400 });
+      const instructions = typeof body.instructions === 'string' ? body.instructions.trim().slice(0, 4000) : '';
+      return Response.json({ task: await resumeTaskByUser(userId, ward, String(body.task ?? ''), instructions || undefined, conversation) });
+    } catch (err) { return Response.json({ error: err instanceof Error ? err.message : 'Could not resume' }, { status: (err as { status?: number })?.status === 409 ? 409 : 400 }); }
   }
   if (body.action === 'background' || body.action === 'cancel-task') {
     try {

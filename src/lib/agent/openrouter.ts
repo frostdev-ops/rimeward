@@ -2,7 +2,7 @@ import { OpenRouter } from '@openrouter/sdk';
 import { cached } from '../cache.ts';
 import { openrouterContext, type ModelContext } from './context.ts';
 import { getSetting, setSetting } from '../settings.ts';
-import { agentKey, endpointOf } from './accounts.ts';
+import { agentKey, endpointOf, normalizeEndpoint } from './accounts.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { pinnedRequest } from './shell.ts';
 import { sseParser } from './stream.ts';
@@ -356,7 +356,10 @@ export function fromWire(msg: { role?: string; content?: unknown; reasoning?: st
 async function callCompat(endpoint: string, call: ProviderCall): Promise<ProviderResult> {
   const target = endpointOf(call.userId, endpoint);
   if (!target) throw new Error(`compat: no endpoint "${endpoint}" — add it under Account → Agent`);
-  if (call.backend && target.url !== call.backend) throw new Error('The model endpoint changed since this conversation was admitted; its history was not sent.');
+  // The last word on where this thread's context goes, taken from the SAME resolution the request is
+  // built from: an alias repointed since the thread was admitted cannot carry it to another server.
+  if (call.backend && normalizeEndpoint(target.url) !== call.backend)
+    throw new Error(`endpoint "${endpoint}" now points at ${normalizeEndpoint(target.url) || 'nothing'}; this conversation was admitted on ${call.backend} and is not sent anywhere else. Point "${endpoint}" back at it, or start a new chat on the endpoint as it stands.`);
   if (!call.model) throw new Error(`compat: pick a model for "${endpoint}" (list_models shows what it serves)`);
   const stream = chatStream(call.onTextDelta), decoder = new TextDecoder();
   let streaming = false;

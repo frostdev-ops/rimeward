@@ -5,9 +5,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
-import { execFileSync } from 'node:child_process';
 import type { IPty } from "node-pty";
 import type { Socket } from "node:net";
 import type { Terminal as Headless } from "@xterm/headless";
@@ -24,7 +24,7 @@ import {
 } from "./runtime.ts";
 import { projectOf, projectPath } from "./projects.ts";
 import { processUsage } from './process-usage.ts';
-import { terminalIsLog } from './types.ts';
+import { narrowerPermission, terminalIsLog } from './types.ts';
 import type { SessionView, SessionResourceView, PermissionMode, TerminalKind } from "./types.ts";
 
 const require = createRequire(import.meta.url);
@@ -156,19 +156,26 @@ export function cliArgs(
   // re-add the bypass flags this mode omits.
   if (/^\s*-/.test(task)) throw new DevError("A task cannot start with '-'.");
   mode = LEGACY_MODES[mode as string] ?? mode;
-  // read-only: plan / read-only sandbox. approvals: the CLI asks and the PermissionRequest hook
-  // (cli-bridge.ts) carries it to Rime. normal: the CLI's own auto mode. yolo: no prompts at all.
+  // read-only: plan / read-only sandbox. approvals: the CLI asks; with a coordinator attached the
+  // PermissionRequest hook (cli-bridge.ts) carries the prompt to Rime, otherwise the TTY shows it.
+  // normal: the CLI's own auto mode (Claude `auto`; Codex `--approve-for-me`, its automatic
+  // approval review over the workspace-write sandbox). yolo: no prompts, no sandbox.
+  // Unsupported input fails here, loudly — never a launch with no permission flags at all.
   const flags = kind === "codex"
     ? { "read-only": ["--sandbox", "read-only", "--ask-for-approval", "never"], approvals: ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"], normal: [codexAutoFlag()], yolo: ["--dangerously-bypass-approvals-and-sandbox"] }[mode]
     : { "read-only": ["--permission-mode", "plan"], approvals: ["--permission-mode", "default"], normal: ["--permission-mode", "auto"], yolo: ["--dangerously-skip-permissions"] }[mode];
+  if (!flags) throw new DevError(`Unsupported permission mode "${String(mode)}"; choose read-only, approvals, normal or yolo.`);
   return [...(resume ? [kind === "codex" ? "resume" : "--resume"] : []), ...flags, ...(task ? [task] : [])];
 }
+/** Codex renamed its auto mode: `--approve-for-me` (0.1xx+, alias --not-so-yolo) replaced
+ *  `--full-auto`, which current builds reject as an unknown option. One `--help` probe per
+ *  process picks the flag the installed binary knows; an unreadable help defaults to the current name. */
 let codexAuto: string | undefined;
 function codexAutoFlag(): string {
   if (codexAuto) return codexAuto;
-  let help = '';
-  try { help = execFileSync(executable('codex') || 'codex', ['--help'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }); } catch { /* Prefer the current flag when discovery is unavailable. */ }
-  codexAuto = !help.includes('--approve-for-me') && help.includes('--full-auto') ? '--full-auto' : '--approve-for-me';
+  let help = "";
+  try { help = execFileSync(executable("codex") || "codex", ["--help"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }); } catch { /* fall through to the current flag */ }
+  codexAuto = !help.includes("--approve-for-me") && help.includes("--full-auto") ? "--full-auto" : "--approve-for-me";
   return codexAuto;
 }
 function rowOf(user: number, id: string): Row {
@@ -841,15 +848,18 @@ export function releaseControl(user: number, id: string, owner: string) {
   return result;
 }
 
-export function restartSession(user: number, id: string) {
+/** `ceiling`: the most a restart by Rime may grant — its ward's setting, so a saved session a
+ *  person once ran wider does not hand that width to the agent (a running session is returned as is). */
+export function restartSession(user: number, id: string, ceiling?: PermissionMode) {
   const row = rowOf(user, id);
   if (live.has(id)) return Promise.resolve(view(row));
   if (row.is_command) throw new DevError("Completed commands stay in task history. Open a shell to continue.", 409);
+  const saved = row.next_mode ?? row.mode;
   // Keep the tab and saved screen. Native CLIs choose a saved conversation; never replay a task.
   return startSession(user, {
     project: row.project,
     kind: row.kind,
-    mode: row.next_mode ?? row.mode,
+    mode: ceiling ? narrowerPermission(saved, ceiling) : saved,
     agentInput: !!row.agent_input,
     cols: row.cols,
     rows: row.rows,

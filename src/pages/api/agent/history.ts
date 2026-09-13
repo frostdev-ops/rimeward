@@ -28,16 +28,28 @@ export const GET: APIRoute = async ({ locals, url }) => {
   }
   const key = url.searchParams.get("key");
   const chats = sharedChats(user);
+  // The ward the person would continue into, so the dialog can say whether the route matches and which model applies.
+  const wardId = url.searchParams.get("ward");
+  const { agentWardConfig } = await import("../../../lib/agent/ward-config.ts");
+  const cfg = wardId ? agentWardConfig(user, wardId) : null;
+  const target = cfg ? { provider: cfg.provider, endpoint: cfg.endpoint ?? null, model: cfg.model } : null;
+  // Why this conversation cannot be continued here, decided by the same code the POST enforces, so the
+  // dialog never offers a button that is going to be refused.
+  const { continueBlocker } = await import("../../../lib/agent/core.ts");
   return Response.json(
     key
-      ? (chats.find((c) => c.key === key) ?? null)
+      ? (() => { const chat = chats.find((c) => c.key === key); return chat ? { ...chat, target, blocked: wardId ? continueBlocker(user, wardId, chat) : 'No ward named.' } : null; })()
       : {
-          chats: chats.map(({ key, title, device, updated }) => ({
+          chats: chats.map(({ key, title, device, updated, provider, endpoint, model }) => ({
             key,
             title,
             device,
             updated,
+            provider,
+            endpoint: endpoint ?? null,
+            model: model ?? null,
           })),
+          target,
           sync: syncStatus(user),
         },
     { headers: { "cache-control": "no-store" } },
@@ -71,7 +83,8 @@ export const POST: APIRoute = async ({ locals, request }) => {
       void syncRime(user, true);
     } else {
       const { continueChat } = await import("../../../lib/agent/core.ts");
-      await continueChat(user, String(body.ward ?? ""), String(body.key ?? ""));
+      const result = await continueChat(user, String(body.ward ?? ""), String(body.key ?? ""), { model: typeof body.model === "string" ? body.model : undefined, acknowledged: body.acknowledged === true });
+      return Response.json({ ok: true, ...result }, { headers: { "cache-control": "no-store" } });
     }
     return Response.json(
       { ok: true },
@@ -80,7 +93,7 @@ export const POST: APIRoute = async ({ locals, request }) => {
   } catch (e) {
     return Response.json(
       { error: e instanceof Error ? e.message : "Could not open history." },
-      { status: 400 },
+      { status: (e as { status?: number })?.status === 409 ? 409 : 400 },
     );
   }
 };

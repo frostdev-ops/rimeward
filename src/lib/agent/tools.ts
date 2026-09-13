@@ -6,6 +6,8 @@ import type { ToolSearch } from './tool-discovery.ts';
 import { manageMonitor, readMonitor } from './monitors.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { sharedTool, serverTool } from './sync.ts';
+import { agentWardConfig, inheritedCliPermissions, type AgentWardConfig, type CliPermissions } from './ward-config.ts';
+import { PERMISSION_MODES } from '../dev/types.ts';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { renderPdfPage } from './docs.ts';
@@ -67,6 +69,9 @@ import { asAccount, mailInbox, sendNow } from '../mail.ts';
 import { normalizeTheme, parseTheme } from '../theme.ts';
 import { getAttachment, listAttachments, readPages, searchAttachment, storeAttachment, attachmentPath } from './attachments.ts';
 import { plainText, readNote, resolveNote, textToHtml, writeNote } from '../note.ts';
+import { sanitizeHtml } from '../note-text.ts';
+import { pageDocument, readPageDocument } from '../notebook-pages.ts';
+import { marked } from 'marked';
 import { askNotebook, createNote, getNotebook, linkNote, listNotebooks, listNotes, noteBacklinks, notebookIndex, notebookWardsOf, purgeNote, unlinkNote, updateNoteMeta } from '../notebook.ts';
 import { getNoteMeta } from '../note.ts';
 import { runShell, shellNetworkEnabled } from './shell.ts';
@@ -94,8 +99,6 @@ export type ToolKind = 'read' | 'write' | 'confirm';
 export const AGENT_HELP_TOPICS = ['general', 'computer', 'browser', 'sandbox', 'wards', 'leylines', 'memory', 'delegation', 'all'] as const;
 
 export interface ToolCtx {
-  /** Run-start ceiling for native CLI launches; supplied by the harness. */
-  cli?: import('./ward-config.ts').CliPermissions;
   /** Immutable run scope, supplied by the harness, never by tool arguments. */
   workspace?: WorkspaceBinding;
   /** Current run policy, including its original ceiling; never a model argument. */
@@ -111,6 +114,9 @@ export interface ToolCtx {
   via?: string[];
   /** Set inside a child run: its agent_jobs id — its identity for messages, and the recursion stop. */
   task?: string;
+  /** The Coding CLI permissions this run started with (the ward's, snapshotted like tools and
+   *  approvals): a terminal a tool launches is capped at it, whatever the ward says now. */
+  cli?: CliPermissions;
   /** Set by runTask on the ctx a backgroundable tool runs with: this call's own job id. */
   job?: string;
   /** Trusted, never a tool argument: the child continues THIS conversation (Ctrl+B),
@@ -120,6 +126,9 @@ export interface ToolCtx {
   /** Set by runTask on a spawn: the child calls it once its arguments and route
    *  have validated — only then does the caller get a task id instead of the error. */
   detach?: () => void;
+  /** Set only by the server on a person's own action (a Resume from the Tasks drawer) — never on a
+   *  model's call. Backend-verified authority; a tool argument can never stand in for it. */
+  user?: true;
   signal?: AbortSignal;
   progress?: (text: string) => void;
 }
@@ -132,6 +141,9 @@ export interface ToolDef {
   cancellable?: boolean;
   /** Starts an independent run (a child): always detached, capped, refused inside a child. */
   spawn?: boolean;
+  /** A resume: args.id names the finished child attempt to continue; runTask admits it in the same
+   *  atomic step as capacity (lineage, provenance, thread), before the row is reserved. */
+  resume?: boolean;
   description: string;
   inputFormat?: 'text';
   requiresWorkspace?: boolean;
@@ -162,6 +174,18 @@ function noteRef(userId: number, a: Record<string, unknown>): { id: string; ward
   if (!n) throw new Error(`no note ward "${a.ward}" — call get_layout for ward ids, or pass a note id as \`note\``);
   return n;
 }
+
+/** The Markdown page editor's own source cap (scripts/app/notebook-markdown.ts load). */
+const MARKDOWN_SOURCE_MAX = 500_000;
+/** A Markdown page's source out of its page state. A fresh page carries `null` (the notebook route
+ *  creates one that way) and is empty; otherwise the state must carry a string `source` — the same
+ *  rule the editor's load() applies — and anything else is malformed: null here, never "empty". */
+const markdownSource = (state: unknown): string | null =>
+  state === null ? '' : typeof state === 'object' && typeof (state as { source?: unknown }).source === 'string' ? (state as { source: string }).source : null;
+const MARKDOWN_MALFORMED = "this Markdown page's stored state is unreadable (no source string) — nothing was changed; the notebook editor refuses it the same way, so ask the user to open it there and restore the page from a backup or Rime sync";
+/** The visible summary a Markdown page carries beside its state — what search, legacy readers and
+ *  read_note on other page types see — derived exactly as the importer derives it. */
+const markdownSummary = (source: string): string => plainText(sanitizeHtml(marked.parse(source, { async: false, gfm: true }) as string));
 
 /** An inbox row as the model reads it. */
 const receipt = (m: InboxRow) => ({
@@ -221,6 +245,48 @@ function pageArg(userId: number, page: unknown): string | undefined | Error {
 
 /** Mutate-validate-save-prune-broadcast, the one path every layout write takes.
  *  fn returns the new layout or an error string. */
+/** The agent-ward knobs a model may narrow but never widen on its own — its tools, which writes
+ *  pause for Confirm, and the Coding CLI mode. Authority grows only where the user turns it:
+ *  the ward's Configure dialog or the chat footer. Compared on EFFECTIVE values, the way a turn
+ *  reads them (an absent `permissions` inherits the paired server Rime's setting, else normal). */
+const AUTHORITY = [
+  { key: 'tools', label: 'tools', order: ['read-only', 'all'] },
+  { key: 'approvals', label: 'approvals', order: ['all', 'outbound', 'off'] },
+  { key: 'permissions', label: 'Coding CLI permissions', order: PERMISSION_MODES },
+] as const satisfies readonly { key: keyof AgentWardConfig; label: string; order: readonly string[] }[];
+/** The ward's config as the store would keep it — the same rebuild validateLayout applies on save. */
+const rebuilt = (userId: number, ward: WardInstance): Record<string, unknown> =>
+  (validateLayout([ward], getPages(userId))?.[0]?.config ?? {}) as Record<string, unknown>;
+function widens(userId: number, before: AgentWardConfig, ward: WardInstance): string | null {
+  const stored = rebuilt(userId, ward);
+  const after: Record<string, unknown> = { ...stored, permissions: stored.permissions ?? inheritedCliPermissions(userId) };
+  for (const { key, label, order } of AUTHORITY) {
+    const was = String(before[key] ?? ''), now = String(after[key] ?? '');
+    if (order.indexOf(now as never) > order.indexOf(was as never)) return `${label} would widen from ${was} to ${now}; only the user can do that, in the ward's Configure dialog or the chat footer`;
+  }
+  return null;
+}
+/** An MCP ward's trust is the KIND the loop admits every tool it serves as — a local label, not a
+ *  sandbox: mcp.ts forwards tools/call unchanged whatever it says. So it ranks by what the loop
+ *  does with the kind under the ward's approvals policy: confirm pauses under "all" and "outbound",
+ *  write only under "all", read never — and read alone passes the read-only gate ("off" pauses nothing). The model may move trust toward confirm, never away from
+ *  it. A ward's identity — url, header, name — is the user's alone at every trust: the sealed token
+ *  rides discovery at the new address (mcp.ts authHeaders) before any tools/call, so lowering the
+ *  label authorizes nothing. A ward the model adds carries no token and starts at confirm; Configure
+ *  is where the user widens either. Both sides are compared as the store keeps them (validateConfig:
+ *  a missing or unknown trust is write). */
+const MCP_RANK = ['confirm', 'write', 'read'] as const; // most restricted first
+const MCP_IDENTITY = ['url', 'header', 'name'] as const;
+function mcpEscalates(userId: number, current: WardInstance | undefined, ward: WardInstance): string | null {
+  const after = rebuilt(userId, ward);
+  if (!current) return after.trust === 'confirm' ? null : `a new MCP ward starts at trust "confirm" (pass trust: "confirm"); the user widens it in the ward's Configure dialog`;
+  const before = rebuilt(userId, current);
+  const moved = MCP_IDENTITY.filter((k) => after[k] !== before[k]);
+  if (moved.length) return `this MCP ward's ${moved.join(', ')} can only be changed by the user, in the ward's Configure dialog (its token follows); keep ${moved.map((k) => `${k}: ${JSON.stringify(before[k])}`).join(', ')}, or add_ward a new mcp ward at trust "confirm"`;
+  if (MCP_RANK.indexOf(after.trust as never) > MCP_RANK.indexOf(before.trust as never)) return `MCP trust would widen from ${String(before.trust)} to ${String(after.trust)} (under the ward's approvals policy confirm pauses, write pauses only under "all", read never); only the user can do that, in the ward's Configure dialog`;
+  return null;
+}
+
 function mutateLayout(userId: number, fn: (layout: WardInstance[]) => WardInstance[] | string): unknown {
   const current = getDashboard(userId);
   const currentPages = getPages(userId);
@@ -491,27 +557,58 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   read_note: {
     kind: 'read',
-    description: 'The text of a note: a notepad ward (type "note", by ward id) or a notebook note (by note id — list_notebooks / search_notes give them; pass it as `note`, never as `ward`). The user\'s own writing, plus whatever their handwriting was transcribed into; ink that was never transcribed is not text.',
+    description: 'The text of a note: a notepad ward (type "note", by ward id) or a notebook note (by note id — list_notebooks / search_notes give them; pass it as `note`, never as `ward`). The user\'s own writing, plus whatever their handwriting was transcribed into; ink that was never transcribed is not text. A Markdown page comes back as its Markdown source (format "markdown"); a spreadsheet, slides, drawing or Notion page as its text summary only (format named, readOnly).',
     parameters: obj({ ward: str('a note ward id (get_layout) — the document that ward shows'), note: str('an exact note id (list_notebooks / search_notes)') }),
     run: (a, ctx) => {
       const n = noteRef(ctx.userId, a);
       const doc = readNote(ctx.userId, n.ward ?? n.id);
-      return { id: doc.id, ward: n.ward?.i, title: n.ward ? wardTitle(n.ward) : doc.title, text: plainText(doc.html), updated: doc.updated, rev: doc.rev, etag: doc.etag };
+      const base = { id: doc.id, ward: n.ward?.i, title: n.ward ? wardTitle(n.ward) : doc.title, updated: doc.updated, rev: doc.rev, etag: doc.etag };
+      const page = readPageDocument(doc.html);
+      if (page?.type === 'markdown') {
+        const source = markdownSource(page.state);
+        if (source === null) return { ...base, format: 'markdown', malformed: true, readOnly: true, text: plainText(doc.html), note: `This Markdown page's stored state is unreadable (no source string); \`text\` is only its last visible summary. write_note refuses it — ${MARKDOWN_MALFORMED.slice(MARKDOWN_MALFORMED.indexOf('the notebook editor'))}.` };
+        return { ...base, format: 'markdown', text: source, note: 'A Markdown page: `text` is its source, byte for byte. write_note takes Markdown for it — append adds your text after one blank line, replace stores your text exactly; the page type stays.' };
+      }
+      if (page) return { ...base, format: page.type, readOnly: true, text: plainText(doc.html), note: `A ${page.type} page has its own editor; this is its text summary. write_note refuses it — the user edits it in the notebook.` };
+      return { ...base, text: plainText(doc.html) };
     },
   },
   write_note: {
     kind: 'write',
-    description: 'Write into a note (a notepad ward id or a note id): append paragraphs to it, or replace the whole document. Plain text; a blank line separates paragraphs. The ink layer is untouched. Pass the rev and etag read_note returned to refuse stale writes, including after sync.',
-    parameters: obj({ ward: str('a note ward id — the document that ward shows'), note: str('an exact note id'), text: str('what to write'), mode: { type: 'string', enum: ['append', 'replace'], description: 'default append' }, rev: num('the rev from read_note — the write fails if the note changed since'), etag: str('the etag from read_note — detects conflicting changes across runtimes') }, ['text']),
+    description: 'Write into a note (a notepad ward id or a note id): append to it, or replace the whole document. A plain document takes plain text (a blank line separates paragraphs). A Markdown page takes Markdown source, stored byte for byte: append puts your text after one blank line, replace stores exactly what you pass (an empty replace is a blank page); the page type, task-list syntax, indentation and line endings all stay. Spreadsheet, slides, drawing and Notion pages are refused — they have their own editors. The ink layer is untouched. Pass the rev and etag read_note returned to refuse stale writes, including after sync.',
+    parameters: obj({ ward: str('a note ward id — the document that ward shows'), note: str('an exact note id'), text: str('what to write — Markdown source on a Markdown page, kept exactly'), mode: { type: 'string', enum: ['append', 'replace'], description: 'default append' }, rev: num('the rev from read_note — the write fails if the note changed since'), etag: str('the etag from read_note — detects conflicting changes across runtimes') }, ['text']),
     run: (a, ctx) => {
       const n = noteRef(ctx.userId, a);
-      const text = String(a.text ?? '').trim();
-      if (!text) throw new Error('nothing to write');
+      const raw = String(a.text ?? '');
       const target = n.ward ?? n.id;
-      const html = a.mode === 'replace' ? textToHtml(text) : readNote(ctx.userId, target).html + textToHtml(text);
-      const { updated, rev, etag } = writeNote(ctx.userId, target, { html, rev: typeof a.rev === 'number' ? a.rev : undefined, etag: typeof a.etag === 'string' ? a.etag : undefined });
+      const cur = readNote(ctx.userId, target);
+      const page = readPageDocument(cur.html);
+      let html: string;
+      if (page?.type === 'markdown') {
+        // The page stays a Markdown page: the same wrapper, state and summary the editor and the
+        // importer write, so the store's page guard, the sync format and search all see one shape.
+        const prev = markdownSource(page.state);
+        if (prev === null) throw new Error(MARKDOWN_MALFORMED);
+        // The source is the user's bytes: nothing is trimmed or renormalized. Replace stores `text` as
+        // given (empty = the editor's own blank page); append keeps the existing source as its exact
+        // prefix and adds one blank line in the page's own line ending before the new text.
+        let source: string;
+        if (a.mode === 'replace') source = raw;
+        else if (!raw.trim()) throw new Error('nothing to write');
+        else source = prev ? `${prev}${prev.includes('\r\n') ? '\r\n\r\n' : '\n\n'}${raw}` : raw;
+        if (source.length > MARKDOWN_SOURCE_MAX) throw new Error(`the Markdown source would exceed ${MARKDOWN_SOURCE_MAX.toLocaleString()} characters`);
+        // Other fields a state may carry ride along untouched; only `source` changes.
+        html = pageDocument('markdown', { ...(page.state as Record<string, unknown> | null), source }, markdownSummary(source));
+      } else if (page) throw new Error(`this is a ${page.type} page — it has its own editor and write_note cannot change it; tell the user what to change`);
+      else {
+        const text = raw.trim();
+        if (!text) throw new Error('nothing to write');
+        html = a.mode === 'replace' ? textToHtml(text) : cur.html + textToHtml(text);
+      }
+      // A write is against the document just read: a save that lands in between is a 409, never a lost update.
+      const { updated, rev, etag } = writeNote(ctx.userId, target, { html, rev: typeof a.rev === 'number' ? a.rev : cur.rev, etag: typeof a.etag === 'string' ? a.etag : undefined });
       broadcast(ctx.userId, 'note', { ward: n.ward?.i, note: n.id }); // the open ward reloads its document
-      return { ok: true, id: n.id, ward: n.ward?.i, updated, rev, etag };
+      return { ok: true, id: n.id, ward: n.ward?.i, ...(page ? { format: page.type } : {}), updated, rev, etag };
     },
   },
   list_notebooks: {
@@ -1071,6 +1168,42 @@ export const TOOLS: Record<string, ToolDef> = {
     ),
     run: async (a, ctx) => browserCall(ctx.userId, browserId(ctx.userId, a.ward), 'act', a, ctx.signal),
   },
+  browser_console: {
+    kind: 'read',
+    description:
+      'What a browser ward\'s pages logged: console messages and uncaught page errors, newest last, from every tab of that ward — the human\'s browsing included. Recording starts when the session does and keeps the most recent 400. level "error" covers uncaught exceptions too; pattern is a case-insensitive regular expression over the text.',
+    parameters: obj({
+      ward: str('the browser ward id — optional when there is exactly one'),
+      level: str('log | debug | info | warning | error | all (default all)'),
+      pattern: str('only messages matching this regular expression'),
+      limit: num('how many of the newest to return (default 50, max 200)'),
+    }),
+    run: async (a, ctx) => browserCall(ctx.userId, browserId(ctx.userId, a.ward), 'console', a, ctx.signal),
+  },
+  browser_network: {
+    kind: 'read',
+    description:
+      'What a browser ward fetched: method, URL, resource type, status, duration and size, newest last, over every tab of that ward. The most recent 400 are kept. status takes an exact code, a class like 4xx, or "failed" for anything that errored or returned 400 and up. Entries with body:true can still be read with browser_asset.',
+    parameters: obj({
+      ward: str('the browser ward id — optional when there is exactly one'),
+      pattern: str('only URLs matching this regular expression'),
+      status: str('an exact status, a class like 4xx, or "failed"'),
+      type: str('resource type: document | stylesheet | script | image | xhr | fetch | font | media | other'),
+      limit: num('how many of the newest to return (default 50, max 200)'),
+    }),
+    run: async (a, ctx) => browserCall(ctx.userId, browserId(ctx.userId, a.ward), 'network', a, ctx.signal),
+  },
+  browser_asset: {
+    kind: 'read',
+    description:
+      'The body of something a browser ward loaded — a script, a stylesheet, a JSON response. Give the id from browser_network (best: it comes out of the browser\'s own copy, so a one-time or POST response is still readable) or a URL, which is re-read through the ward\'s session and so carries its cookies and usually its cache. Text comes back as text and binary is reported as binary; the answer says which of the two sources it used.',
+    parameters: obj({
+      ward: str('the browser ward id — optional when there is exactly one'),
+      id: num('the id of a browser_network entry'),
+      url: str('the URL, when no id is given'),
+    }),
+    run: async (a, ctx) => browserCall(ctx.userId, browserId(ctx.userId, a.ward), 'asset', a, ctx.signal),
+  },
   browser_downloads: {
     kind: 'read',
     description: 'List files downloaded in a browser ward, including downloads started by the user. Ready downloads have an id; use browser_download with that id to inspect the file. Failed and in-progress downloads have explicit status.',
@@ -1115,7 +1248,7 @@ export const TOOLS: Record<string, ToolDef> = {
   add_ward: {
     kind: 'write',
     description:
-      'Add a ward to the dashboard. type must be a catalog key (see your instructions); config must satisfy that type\'s rules.',
+      'Add a ward to the dashboard. type must be a catalog key (see your instructions); config must satisfy that type\'s rules. An mcp ward you add starts at trust "confirm" (its calls pause for the user under the ward\'s approvals policy) and carries no token; the user widens it in Configure.',
     parameters: obj(
       {
         type: str('catalog key, e.g. "timer", "chart", "applink"'),
@@ -1149,13 +1282,20 @@ export const TOOLS: Record<string, ToolDef> = {
           if (!(WORKSPACE_CONSUMERS as readonly string[]).includes(type) || typeof a.workspace !== 'string' || !layout.some(target => target.i === a.workspace && target.type === 'workspace')) return 'Choose an existing Workspace for a filesystem ward.';
           w.workspace = a.workspace;
         }
+        if (type === 'agent') {
+          // A new agent ward is capped at the calling ward's authority: a leyline could hand it work.
+          const mine = agentWardConfig(ctx.userId, ctx.ward);
+          const wider = mine && widens(ctx.userId, mine, w);
+          if (wider) return `a new agent ward's ${wider}`;
+        }
+        if (type === 'mcp') { const wider = mcpEscalates(ctx.userId, undefined, w); if (wider) return wider; }
         layout.push(w);
         return layout;
       }),
   },
   configure_ward: {
     kind: 'write',
-    description: 'Change a ward\'s title, visibility, config, or Workspace Leyline (config replaces the old one wholesale). Workspace changes require the last read revision/fingerprint or link value and refuse active work or unsaved buffers.',
+    description: 'Change a ward\'s title, visibility, config, or Workspace Leyline (config replaces the old one wholesale). Workspace changes require the last read revision/fingerprint or link value and refuse active work or unsaved buffers. On an agent ward, tools, approvals and Coding CLI permissions can be narrowed here but never widened; on an mcp ward, trust can move toward confirm but never back, and its url, header and name are the user\'s to change in Configure.',
     parameters: obj(
       {
         ward: str('the ward id'),
@@ -1205,6 +1345,15 @@ export const TOOLS: Record<string, ToolDef> = {
             if (a.expectedRevision !== before.revision || a.expectedFingerprint !== workspaceFingerprint(before)) return 'Workspace changed or its revision/fingerprint is missing. Read get_layout again.';
             if (after.workspaceId !== before.workspaceId) return 'Preserve the Workspace identity when configuring it.';
             a.config = { ...after, revision: workspaceFingerprint(before) === workspaceFingerprint(after) ? before.revision : before.revision + 1 };
+          }
+          if (w.type === 'agent') {
+            const before = agentWardConfig(ctx.userId, w.i);
+            const wider = before && widens(ctx.userId, before, { ...w, config: a.config as Record<string, unknown> });
+            if (wider) return `this ward's ${wider}`;
+          }
+          if (w.type === 'mcp') {
+            const wider = mcpEscalates(ctx.userId, w, { ...w, config: a.config as Record<string, unknown> });
+            if (wider) return wider;
           }
           w.config = a.config as Record<string, unknown>;
         }
@@ -1564,7 +1713,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   task_list: {
     kind: 'read',
-    description: 'List active tasks and undelivered background results in this chat. Completed logs are hidden by default; history:true includes retained logs (newest 100 for 30 days). Read an exact task with task_output. Tasks stay on their originating runtime.',
+    description: 'List active tasks and undelivered background results in this chat. Completed logs are hidden by default; history:true includes retained logs (tool jobs: the newest 100 for 30 days; child runs are kept with their conversations). Read an exact task with task_output. Tasks stay on their originating runtime.',
     parameters: obj({ cursor: num('Task list offset; default 0'), history: bool('Include retained completed logs; default false') }),
     run: (a, ctx) => {
       const cursor = a.cursor ?? 0;
@@ -1589,7 +1738,22 @@ export const TOOLS: Record<string, ToolDef> = {
     kind: 'confirm',
     description: 'Request cancellation of a cancellable task in this chat. Native commands terminate their terminal process. Stopping is not rollback; inspect files/output for partial changes. Non-cancellable tools must finish.',
     parameters: obj({ id: str('Task ID') }, ['id']),
-    run: (a, ctx) => cancelTask(ctx, String(a.id), ctx.task ? `child run ${ctx.task}` : 'the parent agent (task_cancel)'),
+    run: (a, ctx) => cancelTask(ctx, String(a.id), ctx.task ? `child run ${ctx.task}` : 'the parent agent (task_cancel)', ctx.task ? 'child' : 'agent'),
+  },
+  task_resume: {
+    kind: 'write',
+    backgroundable: true,
+    cancellable: true,
+    spawn: true,
+    resume: true,
+    description:
+      'Continue one of THIS thread’s finished child runs (completed, failed or interrupted) as a linked new attempt: a new task id whose thread begins as a verbatim copy of the earlier attempt’s record, on the same provider, endpoint and model — refused if any of those is no longer available, never swapped — under this ward’s current tools and approvals, capped by your own. Nothing is replayed: tool results in the copy already happened, and a call left unanswered reads as interrupted. Refused for a run the user stopped or whose stop is unrecorded (the user resumes those from Tasks), for a child of another thread, while a later attempt of the same work runs, and inside a child run. The earlier attempt’s record is untouched.',
+    parameters: obj({ id: str('the finished child run’s task id'), instructions: str('what to do next (≤ 4000 chars); default: continue where it stopped without replaying completed or uncertain actions') }, ['id']),
+    run: async (a, ctx) => {
+      const { runChildRun } = await import('./core.ts');
+      // The source was admitted and recorded on the job row by runTask; only the instructions travel.
+      return runChildRun({ ...(typeof a.instructions === 'string' ? { instructions: a.instructions } : {}) }, ctx);
+    },
   },
   inbox: {
     kind: 'read',

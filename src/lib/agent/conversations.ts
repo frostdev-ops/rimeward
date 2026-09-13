@@ -158,21 +158,26 @@ export function copyItems(from: number, to: number): number {
   })();
 }
 
-/** Passive run identity used to keep shared history bound to its recorded backend. */
+/** Record what a thread is being run on — at a run's start and at every set_model switch. The
+ *  endpoint URL is the compat backend's own identity, not the alias name (accounts.ts); it is written
+ *  once, on the first stamp that knows it, so a later repoint of the alias cannot rewrite history. */
 export function stampConversationModel(conversationId: number, model: string, endpointUrl?: string | null): void {
   const db = getDb();
   if (model) db.prepare('UPDATE agent_conversations SET model=? WHERE id=? AND model IS NOT ?').run(model, conversationId, model);
   if (endpointUrl) db.prepare('UPDATE agent_conversations SET endpoint_url=? WHERE id=? AND endpoint_url IS NULL').run(endpointUrl, conversationId);
 }
 
-/** Copy display history without transferring runtime ownership. */
+/** The transcript half of a copy (agent_messages, timestamps kept) — the same ownership boundary
+ *  as copyItems; the disk mirror already holds these lines under the source thread. */
 export function copyTranscript(from: number, to: number): number {
   const db = getDb();
-  if (!db.prepare('SELECT a.id FROM agent_conversations a JOIN agent_conversations b ON b.id=? WHERE a.id=? AND a.user_id=b.user_id AND a.ward=b.ward').get(to, from)) throw Error('copy refused: the source is not this ward’s conversation');
-  return db.prepare('INSERT INTO agent_messages(conversation_id,role,text,steps_json,source,at) SELECT ?,role,text,steps_json,source,at FROM agent_messages WHERE conversation_id=? ORDER BY id').run(to, from).changes;
+  const ok = db.prepare('SELECT a.id FROM agent_conversations a JOIN agent_conversations b ON b.id = ? WHERE a.id = ? AND a.user_id = b.user_id AND a.ward = b.ward').get(to, from);
+  if (!ok) throw new Error('copy refused: the source thread is not this ward’s own');
+  return db.prepare('INSERT INTO agent_messages (conversation_id, role, text, steps_json, source, at) SELECT ?, role, text, steps_json, source, at FROM agent_messages WHERE conversation_id = ? ORDER BY id').run(to, from).changes;
 }
 
-/** A user message in the stored dialect, without loading its provider. */
+/** A user message in the shape a thread's dialect stores — for filing a note
+ *  into a thread without loading its provider. */
 export const userItemFor = (dialect: Dialect, text: string): unknown =>
   dialect === 'codex' ? { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } : { role: 'user', content: text };
 
@@ -393,8 +398,9 @@ export async function compactIfNeeded(
 
   const result = await provider.run({
     userId: conv.user_id,
-    ...(conv.endpoint_url ? { backend: conv.endpoint_url } : {}),
     model,
+    // Compaction reads this thread's own text: the same backend pin the turn itself runs under.
+    ...(conv.endpoint_url ? { backend: conv.endpoint_url } : {}),
     instructions:
       'You are compacting the earlier part of a dashboard-assistant conversation so it can be carried forward in less space. ' +
       'Write a dense factual brief, no preamble. Cover: what the user asked for, what was actually changed (wards, ' +

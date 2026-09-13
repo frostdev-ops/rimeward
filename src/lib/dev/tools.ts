@@ -216,7 +216,7 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ),
   terminal_start: wrap(
     "write",
-    "Reuse an interactive shell, Codex, or Claude Code session in a project, restoring its saved tab if needed. Set newSession:true only when a separate session is wanted. Initial task instructions apply only to new sessions. Read the screen before sending input: a reused session may already be busy, or a restored CLI may show its native conversation picker. Let Rime control is on by default, so you and the user can type in the same session; off blocks only Rime input. A Claude Code or Codex session you launch runs with this ward's Coding CLI permissions; its permission requests, questions and completion arrive as notices (session.phase reports waiting-permission / waiting-input / done), and you answer a permission request with terminal_decide. Such a CLI also has rime_status, rime_ask and rime_report tools of its own; a rime_ask question arrives as a notice and is answered with terminal_answer. Use terminal_exec for routine commands. Never install CLIs or guess credentials. Review output and changes before declaring completion.",
+    "Reuse an interactive shell, Codex, or Claude Code session in a project, restoring its saved tab if needed. Set newSession:true only when a separate session is wanted. Initial task instructions apply only to new sessions. Read the screen before sending input: a reused session may already be busy, or a restored CLI may show its native conversation picker. Let Rime control is on by default, so you and the user can type in the same session; off blocks only Rime input. A Claude Code or Codex session you launch runs with this ward's Coding CLI permissions (read-only, approvals, normal, yolo — the user sets them; you cannot widen them, a saved session you restart is capped at them, and a session already running keeps the mode it started with — check session.mode); its permission requests, questions and completion arrive as notices (session.phase reports waiting-permission / waiting-input / done), and you answer a permission request with terminal_decide. A session a person started from the terminal ward has no coordinator: its prompts show at the terminal, not to you. Such a CLI also has rime_status, rime_ask and rime_report tools of its own; a rime_ask question arrives as a notice and is answered with terminal_answer. Use terminal_exec for routine commands. Never install CLIs or guess credentials. Review output and changes before declaring completion.",
     schema(
       {
         ...context,
@@ -235,14 +235,15 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
         const sessions = listSessions(c.userId, a.project).filter(s => !s.command && s.kind === a.kind);
         const existing = a.session ? sessions.find(s => s.id === a.session) : sessions.find(s => s.state === "running") ?? sessions[0];
         if (a.session && !existing) throw new Error("Session not found in this project for this program.");
-        if (existing) return restartSession(c.userId, existing.id);
+        if (existing) return restartSession(c.userId, existing.id, cliPermissions(c.userId, c.ward, c.cli));
       }
       return startSession(c.userId, {
         project: a.project,
         kind: a.kind,
         task: a.task,
         assignment: a.assignment,
-        mode: cliPermissions(c.userId, c.ward),
+        // The ward's Coding CLI permissions as they stand, never wider than this run started with.
+        mode: cliPermissions(c.userId, c.ward, c.cli),
         origin: { ward: c.ward, conv: c.conv },
       });
     },
@@ -285,7 +286,7 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
         c.signal?.throwIfAborted();
         const shell = process.platform === 'win32' ? executable('pwsh') || executable('powershell') : '/bin/sh';
         if (!shell) throw Error('PowerShell is not installed.');
-        const session = await startSession(c.userId, { project: a.project, kind: 'shell', mode: cliPermissions(c.userId, c.ward), shell,
+        const session = await startSession(c.userId, { project: a.project, kind: 'shell', mode: cliPermissions(c.userId, c.ward, c.cli), shell,
           command: a.command, task: a.command, title: a.title || 'Rime command' });
         const stop = () => { if (listSessions(c.userId).some(s => s.id === session.id && s.state === 'running')) void closeSession(c.userId, session.id, 'cancelled'); };
         c.signal?.addEventListener('abort', stop, { once: true });

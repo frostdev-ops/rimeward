@@ -109,7 +109,11 @@ export const ALL: APIRoute = async ({
           providers,
           endpoints,
           config: { provider, model, effort, ...(provider === 'compat' && typeof endpoint === 'string' ? { endpoint } : {}) },
-          manifest: peerFormat(request.headers.get(CHAT_FORMAT_HEADER)) < CHAT_FORMAT ? syncManifest(user).filter(record => !chatRecordNeedsFormat(syncRecord(user, record.key))) : syncManifest(user),
+          // A client on the older chat format is not shown conversation records it cannot take: they
+          // stay here, whole, for clients that can (no tombstone, no 426 mid-sync for it).
+          manifest: peerFormat(request.headers.get(CHAT_FORMAT_HEADER)) < CHAT_FORMAT
+            ? syncManifest(user).filter((r) => !chatRecordNeedsFormat(syncRecord(user, r.key)))
+            : syncManifest(user),
           noteFormat: NOTE_FORMAT,
           chatFormat: CHAT_FORMAT,
           workspaceFormat: WORKSPACE_FORMAT,

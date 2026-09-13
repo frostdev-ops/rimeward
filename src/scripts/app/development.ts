@@ -11,7 +11,11 @@ import { pageOfCard } from "./pages.ts";
 import { CATALOG, type WardInstance } from "../../lib/wards.ts";
 import {
   DEV_WARDS,
+  PERMISSION_HELP,
+  PERMISSION_LABELS,
+  PERMISSION_MODES,
   terminalExitLabel,
+  type PermissionMode,
   type Project,
   type SessionView,
   type SessionResourceView,
@@ -76,6 +80,14 @@ const select = (label: string, choices: string[]) => {
   const s = el("select", "input text-xs");
   s.setAttribute("aria-label", label);
   for (const c of choices) s.add(new Option(c, c));
+  return s;
+};
+/** The permission mode a Claude Code / Codex session runs with (lib/dev/types.ts names them). */
+const permissionSelect = (value: PermissionMode) => {
+  const s = el("select", "input text-xs");
+  s.setAttribute("aria-label", "Permissions");
+  for (const m of PERMISSION_MODES) s.add(new Option(PERMISSION_LABELS[m], m));
+  s.value = value;
   return s;
 };
 const states = new Map<string, { stop: () => void }>();
@@ -192,6 +204,9 @@ async function mount(w: WardInstance) {
       const footer = el("div", "term-footer");
       const status = el("span", "term-status", "Loading sessions…");
       status.setAttribute("role", "status");
+      // A CLI session's permission mode, and the one queued for its next restart.
+      const modeChip = el("span", "term-mode");
+      modeChip.hidden = true;
       const sessionOwner = el('span', 'workspace-session-owner'); sessionOwner.setAttribute('aria-live', 'polite');
       projectButton.classList.add("term-project");
       const toolButton = (id: string, label: string, fn: () => unknown) => {
@@ -208,7 +223,7 @@ async function mount(w: WardInstance) {
       expandButton.classList.add("term-expand");
       bar.classList.add("term-toolbar");
       bar.replaceChildren(sessions, ...(shareView ? [] : [newButton, more]), expandButton);
-      footer.append(...(shareView ? [] : [projectButton]), sessionOwner, status);
+      footer.append(...(shareView ? [] : [projectButton]), sessionOwner, modeChip, status);
       surface.append(panesHost, empty);
       content.replaceChildren(surface, footer);
 
@@ -399,6 +414,16 @@ async function mount(w: WardInstance) {
         if (status.textContent !== statusText) status.textContent = statusText;
         status.dataset.state = !listOk || !streamReady || (p && (!p.connected || p.uncertain)) ? "attention" : writable ? "active" : "idle";
         status.title = session ? `${names[session.kind]} · ${session.agentInput ? "You and Rime can both type in this session" : "Rime input is off; you can keep typing"}` : "";
+        const cli = !!session && !session.command && session.kind !== "shell";
+        modeChip.hidden = !cli;
+        if (cli) {
+          const queued = session.nextMode !== session.mode;
+          const chip = queued ? `${PERMISSION_LABELS[session.mode]} → ${PERMISSION_LABELS[session.nextMode]}` : PERMISSION_LABELS[session.mode];
+          if (modeChip.textContent !== chip) modeChip.textContent = chip;
+          modeChip.dataset.queued = String(queued);
+          modeChip.title = `Launch permissions · ${PERMISSION_HELP[session.mode]} The CLI may have changed its own mode since launch.${queued ? ` Changes to ${PERMISSION_LABELS[session.nextMode]} when the session restarts.` : ""}`;
+          modeChip.setAttribute("aria-label", modeChip.title);
+        }
       }
       function sessionList() {
         const active = activeGroup();
@@ -508,8 +533,11 @@ async function mount(w: WardInstance) {
         draw();
         try {
           const size = focused()?.term;
+          // A person's session prompts at the terminal (the CLI's own default); the dialog's
+          // Permissions pick overrides it. Sessions Rime starts take the Rime ward's Coding CLI
+          // permissions in terminal_start instead. A shell ignores the mode.
           const s: SessionView = previous ? await api("restart", { id: previous }, "POST") :
-            await api("sessions", { project: state.project, kind: "shell", mode: "human", cols: size?.cols ?? 100, rows: size?.rows ?? 30, ...options }, "POST");
+            await api("sessions", { project: state.project, kind: "shell", mode: "approvals", cols: size?.cols ?? 100, rows: size?.rows ?? 30, ...options }, "POST");
           if (!list.some(x => x.id === s.id)) list.unshift(s);
           if (place && groupOf(place.target) && !groupOf(s.id)) groups = groups.map(g => has(g, place.target) ? insert(g, place.target, s.id, place.side) : g);
           await attach(s.id);
@@ -674,6 +702,12 @@ async function mount(w: WardInstance) {
         task.rows = 3; task.maxLength = 8000;
         task.placeholder = "What would you like the agent to work on?";
         const taskField = field("Initial task (optional)", task);
+        const permissions = permissionSelect("approvals");
+        const permissionsField = field("Permissions", permissions);
+        const permissionsHelp = el("p", "term-help");
+        const syncPermissions = () => { permissionsHelp.textContent = `${PERMISSION_HELP[permissions.value as PermissionMode]} Sessions Rime starts itself use the Rime ward’s Coding CLI permissions instead.`; };
+        permissions.onchange = syncPermissions;
+        syncPermissions();
         const options = el("details", "term-launch-options");
         const shellField = field("Shell", shell);
         options.append(el("summary", undefined, "Shell options"), shellField);
@@ -681,6 +715,7 @@ async function mount(w: WardInstance) {
         const syncProgram = () => {
           const kind = program.value as TerminalKind;
           taskField.hidden = kind === "shell";
+          permissionsField.hidden = permissionsHelp.hidden = kind === "shell";
           shellField.hidden = kind !== "shell";
           options.hidden = kind !== "shell";
           const missing = kind !== "shell" && !launchCaps.agents[kind];
@@ -695,7 +730,7 @@ async function mount(w: WardInstance) {
             availability.append(link);
           }
         };
-        actions.before(field("Program", program), field('Working folder', cwd), folderChoices, taskField, availability, agentField,
+        actions.before(field("Program", program), field('Working folder', cwd), folderChoices, taskField, permissionsField, permissionsHelp, availability, agentField,
           el("p", "term-help", "You can always type. Leave this on for Rime to use the same session with you."), options);
         program.onchange = syncProgram;
         cwd.onchange = async () => {
@@ -716,11 +751,42 @@ async function mount(w: WardInstance) {
           error.hidden = true;
           try {
             const kind = program.value as TerminalKind;
-            await launch({ kind, cwd: workspacePath(cwd.value), agentInput: agentInput.checked, ...(kind === "shell" ? { shell: shell.value } : { task: task.value }),
+            await launch({ kind, cwd: workspacePath(cwd.value), agentInput: agentInput.checked, ...(kind === "shell" ? { shell: shell.value } : { task: task.value, mode: permissions.value }),
               title: `${names[kind]} ${list.filter(s => s.kind === kind && !s.command).length + 1}` });
             d.close();
           } catch (e) {
             error.textContent = (e as Error).message;
+            error.hidden = false;
+          } finally { submit.disabled = false; }
+        };
+        d.onclose = () => { d.remove(); focused()?.focus(); };
+      }
+      /** Queue a permission mode for a CLI session: the server stores it as nextMode and the
+       *  next Resume launches with it; a running CLI keeps the mode it started with. */
+      function permissionsDialog(target: SessionView) {
+        const { d, form, actions, error, submit } = workspaceDialog("Session launch permissions");
+        d.classList.add("term-session-dialog");
+        const pick = permissionSelect(target.nextMode);
+        const row = el("label", undefined, `${names[target.kind]} launch permissions`);
+        row.append(pick);
+        const note = el("p", "term-help");
+        const sync = () => {
+          note.textContent = `${PERMISSION_HELP[pick.value as PermissionMode]} ${target.state === "running" ? "This session keeps its launch mode until it restarts; the change applies then." : "Applies when the session resumes."}`;
+        };
+        pick.onchange = sync;
+        sync();
+        submit.textContent = "Save";
+        actions.before(row, note);
+        form.onsubmit = async e => {
+          e.preventDefault();
+          submit.disabled = true;
+          error.hidden = true;
+          try {
+            await api("configure", { id: target.id, mode: pick.value }, "POST");
+            await refreshList();
+            d.close();
+          } catch (err) {
+            error.textContent = (err as Error).message;
             error.hidden = false;
           } finally { submit.disabled = false; }
         };
@@ -839,6 +905,7 @@ async function mount(w: WardInstance) {
             const title = await askText("Session name");
             if (title?.trim()) { await api("configure", { id: target.id, title }, "POST"); await refreshList(); }
           });
+          if (target.kind !== "shell" && !target.command) action("Permissions…", () => permissionsDialog(target));
           if (target.terminationReason === 'remote-process-unconfirmed') action('Confirm remote process stopped…', () => {
             const { d, form, actions, error, submit } = workspaceDialog('Confirm remote process stopped');
             const check = el('input'); check.type = 'checkbox';

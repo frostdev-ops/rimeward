@@ -8,7 +8,6 @@
 
 import { CATALOG, DEFAULT_PAGES, MAX_PAGES, pageSlug, validatePages, type PageDef } from '../../lib/wards.ts';
 import { el, holdToFire, keyboardInUse, q, reducedMotion, toast } from './dom.ts';
-import { icon } from './icon.ts';
 import { menuItem, openMenu } from './menu.ts';
 import { canShare, openShareDialog } from './share.ts';
 import { popoutWard, stageWardView } from './ward-view.ts';
@@ -78,9 +77,6 @@ function stamp(): void {
     if (b.dataset.pageTab === current) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   }
-  const more = nav?.querySelector<HTMLElement>('[data-page-more]');
-  const active = nav?.querySelector<HTMLElement>('[data-page-tab][aria-current]');
-  if (more && active) active.after(more);
   placeInk();
 }
 
@@ -196,6 +192,7 @@ function exitFlow(): void {
 const isEditing = () => !!grid?.classList.contains('editing');
 
 export function renderTabs(): void {
+  if (tabDrag) endTabDrag(false); // any rebuild ends a live drag — or clears a press that never became one — before the strip is replaced
   if (!nav) return;
   nav.textContent = '';
   // One page = no strip, except in edit mode, where the + chip is how a second
@@ -222,24 +219,7 @@ export function renderTabs(): void {
   add.title = 'Add page';
   add.setAttribute('aria-label', 'Add page');
   add.addEventListener('click', () => inlineName(add, '', addPage));
-  // The visible way into the page menu (right-click / hold still work): one
-  // chip that stamp() parks after the active tab.
-  const more = el('button', 'app-page app-page-more') as HTMLButtonElement;
-  more.type = 'button';
-  more.dataset.pageMore = '';
-  more.title = 'Page options';
-  more.setAttribute('aria-label', 'Page options');
-  more.setAttribute('aria-haspopup', 'menu');
-  more.append(icon('more'));
-  more.addEventListener('click', () => {
-    if (grid?.classList.contains('wiring')) return;
-    const p = pages.find((x) => x.id === current);
-    const chip = nav?.querySelector<HTMLElement>(`[data-page-tab="${current}"]`);
-    if (!p || !chip) return;
-    const r = more.getBoundingClientRect();
-    openMenu(r.left, r.bottom + 4, (m) => pageMenu(m, p, chip));
-  });
-  nav.append(more, add, el('span', 'app-page-ink'));
+  nav.append(add, el('span', 'app-page-ink'));
   stamp();
 }
 
@@ -339,15 +319,25 @@ function renamePage(p: PageDef, title: string): void {
 
 function movePage(p: PageDef, dir: -1 | 1): void {
   const i = pages.findIndex((x) => x.id === p.id);
-  const j = i + dir;
-  if (i < 0 || j < 0 || j >= pages.length) return;
+  if (i >= 0) reorderPage(p, i + dir);
+}
+
+/** Move a page to an index — the menu's Move left / right, and tab drag.
+ *  The same pipeline movePage had: write out implicit first-page wards before
+ *  the first page can change, refuse a shared first page, then publish. */
+function reorderPage(p: PageDef, index: number): boolean {
+  const i = pages.findIndex((x) => x.id === p.id);
+  const j = Math.max(0, Math.min(pages.length - 1, index));
+  if (i < 0 || j === i) return false;
   materialize();
   const next = [...pages];
-  [next[i], next[j]] = [next[j]!, next[i]!];
-  if (next[0]!.share) { toast('A shared page cannot be your first page.', undefined, true); return; }
+  next.splice(i, 1);
+  next.splice(j, 0, p);
+  if (next[0]!.share) { toast('A shared page cannot be your first page.', undefined, true); return false; }
   pages = next;
   normalize();
   changed();
+  return true;
 }
 
 /** Deleting a page never deletes wards: they land on the first page. The
@@ -383,6 +373,177 @@ function deletePage(p: PageDef): void {
   toast(p.share ? `Removed ${p.title}.` : `Removed ${p.title} — its wards are on ${pages[0]!.title}.`, { label: 'Undo', fn: undo });
 }
 
+// ------------------------------------------------------------- tab reorder
+//
+// Drag a chip sideways to reorder pages — mouse and pen; touch scrolls the
+// strip natively (no touch-action override) and reorders through the tab
+// menu's Move left / right via long-press. The feedback is transforms only:
+// the strip's DOM stays put until release, so the ink, edit mode's tab drop
+// targets and a concurrent re-render are untouched. Release never switches
+// pages, the click an armed drag leaves behind is always swallowed (cancelled
+// drags too), and Escape, a scroll, a resize, a blur, a mode change or a
+// re-render cancels. Keyboard users get the menu on Shift+F10 / ContextMenu.
+
+interface TabDrag {
+  p: PageDef;
+  chip: HTMLElement;
+  pointerId: number;
+  pointerType: string;
+  startX: number;
+  startY: number;
+  width: number;
+  from: number;
+  target: number;
+  rest: { el: HTMLElement; mid: number; width: number; from: number; slot: number }[];
+}
+
+let tabDrag: TabDrag | null = null;
+/** Gesture identity of an armed drag whose release click is still owed: the
+ *  pointer that was dragging it. Set when a visibly armed drag ends for any
+ *  reason — release, refusal, cancellation, re-render — and cleared only by
+ *  the drag pointer's own release click or any fresh press, never by a timer,
+ *  so a drag cancelled while its pointer is still held stays suppressed until
+ *  that release, however late. Keyboard activation (a detail-0 click) is
+ *  deliberate input, never a drag's release, and is never swallowed. */
+let tabDragSwallow: { pointerId: number; pointerType: string } | null = null;
+
+const tabDragLive = () => !!nav?.hasAttribute('data-page-drag');
+
+/** End the drag: undo the visuals (the strip's DOM never changed), release the
+ *  capture and clear every sticky bit — then, only if the drag was actually
+ *  armed, optionally commit. The click of an armed release is suppressed no
+ *  matter how it ends; a press that never became a drag leaves clicks alone. */
+function endTabDrag(commit: boolean): void {
+  const d = tabDrag;
+  const live = tabDragLive();
+  tabDrag = null;
+  if (!nav) return;
+  nav.removeAttribute('data-page-drag');
+  if (live) tabDragSwallow = d ? { pointerId: d.pointerId, pointerType: d.pointerType } : null;
+  if (!d) return;
+  if (d.chip.hasPointerCapture?.(d.pointerId)) d.chip.releasePointerCapture(d.pointerId);
+  for (const b of nav.querySelectorAll<HTMLElement>('[data-page-tab]')) {
+    b.classList.remove('app-page-drag');
+    b.style.transform = '';
+  }
+  if (!commit || !live || d.target === d.from) return;
+  if (pages[d.from]?.id !== d.p.id) { renderTabs(); return; } // pages moved underneath
+  // A refused drop (a shared page dragged to the front) just restores the strip.
+  if (!reorderPage(d.p, d.target)) renderTabs();
+}
+
+function setupTabDrag(): void {
+  if (!nav) return;
+  nav.addEventListener(
+    'click',
+    (e) => {
+      // detail 0 is keyboard activation (Enter / Space on a focused tab):
+      // deliberate input that must work even while a release-click is owed.
+      if (e.detail === 0 || !tabDragSwallow) return;
+      tabDragSwallow = null; // one click per ended gesture — the drag pointer's own release
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    true
+  );
+  nav.addEventListener('pointerdown', (e) => {
+    tabDragSwallow = null; // a fresh press is a new gesture: an owed release-click is no longer owed
+    if (tabDrag && !tabDragLive()) tabDrag = null; // a press that never became a drag (released outside the strip) must not block the next one
+    const chip = (e.target as Element).closest<HTMLElement>('[data-page-tab]');
+    // Touch never drags: it scrolls the strip natively and reorders through the
+    // long-press menu (holdToFire); mouse and pen drag.
+    if (!chip || tabDrag || e.button !== 0 || !e.isPrimary || e.pointerType === 'touch') return;
+    // Flow mode lays pages out as headers; an open menu owns the next click.
+    if (pages.length < 2 || grid?.classList.contains('wiring') || document.querySelector('.ctx-menu')) return;
+    const from = pages.findIndex((x) => x.id === chip.dataset.pageTab);
+    if (from < 0) return;
+    tabDrag = { p: pages[from]!, chip, pointerId: e.pointerId, pointerType: e.pointerType, startX: e.clientX, startY: e.clientY, width: 0, from, target: from, rest: [] };
+  });
+  nav.addEventListener(
+    'pointermove',
+    (e) => {
+      const d = tabDrag;
+      const strip = nav; // a closure cannot lean on the narrowing above
+      if (!d || e.pointerId !== d.pointerId || !strip) return;
+      const dx = e.clientX - d.startX;
+      const dy = e.clientY - d.startY;
+      if (!tabDragLive()) {
+        // A wiggle is still a click; a vertical move is a scroll.
+        if (Math.hypot(dx, dy) < 6 || Math.abs(dx) <= Math.abs(dy)) return;
+        // The long-press that opened the tab menu shares this gesture: not a drag.
+        if (document.querySelector('.ctx-menu')) { tabDrag = null; return; }
+        if (!d.chip.isConnected) { tabDrag = null; return; }
+        strip.dataset.pageDrag = '';
+        d.chip.classList.add('app-page-drag');
+        try { d.chip.setPointerCapture(e.pointerId); } catch {}
+        // Cache the other chips' geometry once: our own transforms would
+        // pollute anything measured later.
+        let slot = 0;
+        d.width = d.chip.getBoundingClientRect().width;
+        d.rest = pages
+          .filter((x) => x.id !== d.p.id)
+          .flatMap((x) => {
+            const b = strip.querySelector<HTMLElement>(`[data-page-tab="${x.id}"]`);
+            if (!b) return [];
+            const r = b.getBoundingClientRect();
+            return [{ el: b, mid: r.left + r.width / 2, width: r.width, from: pages.findIndex((y) => y.id === x.id), slot: slot++ }];
+          });
+      }
+      if (!d.chip.isConnected) { endTabDrag(false); return; } // a re-render replaced the strip
+      d.chip.style.transform = `translateX(${dx}px)`;
+      let t = 0;
+      for (const r of d.rest) if (e.clientX > r.mid) t++;
+      d.target = t;
+      // Part the neighbours to show the landing slot.
+      for (const r of d.rest) {
+        const shift = r.from < d.from ? (r.slot >= t ? d.width : 0) : r.slot < t ? -d.width : 0;
+        r.el.style.transform = shift ? `translateX(${shift}px)` : '';
+      }
+    },
+    { passive: true }
+  );
+  nav.addEventListener('pointerup', (e) => {
+    if (!tabDrag || e.pointerId !== tabDrag.pointerId) return;
+    endTabDrag(true); // an ordinary click (never armed) commits nothing and just clears
+  });
+  nav.addEventListener('pointercancel', (e) => {
+    if (!tabDrag || e.pointerId !== tabDrag.pointerId) return;
+    endTabDrag(false);
+  });
+  // The OS taking the capture back (or the chip leaving the DOM) ends the drag untouched.
+  nav.addEventListener('lostpointercapture', (e) => {
+    if (tabDrag && tabDrag.pointerId === (e as PointerEvent).pointerId && tabDragLive()) endTabDrag(false);
+  });
+  // Scrolled or resized mid-drag, the cached chip geometry is stale: cancel rather than mis-drop.
+  window.addEventListener('scroll', () => { if (tabDrag) endTabDrag(false); }, { passive: true, capture: true });
+  window.addEventListener('resize', () => { if (tabDrag) endTabDrag(false); });
+  // A backgrounded or hidden window never sees the pointerup.
+  window.addEventListener('blur', () => { if (tabDrag) endTabDrag(false); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && tabDragLive()) {
+      e.preventDefault();
+      e.stopPropagation();
+      endTabDrag(false); // the release this cancels must not become a click either
+    }
+  });
+  // Keyboard tab menu: Shift+F10 or the ContextMenu key on a focused tab opens the
+  // same actions the right-click menu shows, keyboard navigation included. The
+  // keydown is handled explicitly — no reliance on an OS-generated contextmenu event.
+  nav.addEventListener('keydown', (e) => {
+    if (e.key !== 'ContextMenu' && !(e.key === 'F10' && e.shiftKey)) return;
+    const chip = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-page-tab]') : null;
+    if (!chip) return;
+    e.preventDefault(); // the browser's own contextmenu event would open it twice
+    e.stopPropagation();
+    const p = pages.find((x) => x.id === chip.dataset.pageTab);
+    if (!p || grid?.classList.contains('wiring')) return; // flow mode lays pages out; no menu there
+    const r = chip.getBoundingClientRect();
+    openMenu(r.left, r.bottom + 4, (m) => pageMenu(m, p, chip));
+  });
+  // A concurrent publish (undo, a layout apply) is about to rebuild the strip.
+  window.addEventListener('fd:pages-changed', () => { if (tabDrag) endTabDrag(false); });
+}
+
 // -------------------------------------------------------------------- boot
 
 export function bootPages(): void {
@@ -405,6 +566,7 @@ export function bootPages(): void {
     stored = localStorage.getItem(pageStorageKey());
   } catch {}
   renderTabs();
+  setupTabDrag();
   showPage(fromHash() ?? q('#pages-data')?.dataset.activePage ?? stored ?? firstPage(), { replace: true });
   addEventListener('hashchange', () => {
     const id = fromHash();
@@ -413,13 +575,18 @@ export function bootPages(): void {
   // The strip shows in edit mode even with one page (the + chip). Leylines
   // mode lays every page out in flow while it is on.
   let flow = false;
+  let editing = false;
   new MutationObserver(() => {
-    if (nav) nav.hidden = pages.length < 2 && !isEditing();
-    placeInk();
     const wiring = grid!.classList.contains('wiring');
+    const nowEditing = isEditing();
+    // A mode change under a drag changes what the strip is for: end it cleanly.
+    if (tabDrag && (wiring !== flow || nowEditing !== editing)) endTabDrag(false);
+    if (nav) nav.hidden = pages.length < 2 && !nowEditing;
+    placeInk();
     if (wiring && !flow) enterFlow();
     else if (!wiring && flow) exitFlow();
     flow = wiring;
+    editing = nowEditing;
   }).observe(grid, { attributes: true, attributeFilter: ['class'] });
   addEventListener('resize', placeInk);
 

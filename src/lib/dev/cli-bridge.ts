@@ -17,18 +17,19 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { getDashboard } from '../dashboard.ts';
 import { activeConversationRow } from '../agent/conversations.ts';
 import { observe } from '../agent/observation-events.ts';
+import { agentWardConfig } from '../agent/ward-config.ts';
+import { sharedRime } from '../agent/sync.ts';
 import { secretEqual } from './native.ts';
 import { DevError, isDesktop, workDb } from './runtime.ts';
-import type { CliPhase, PermissionMode } from './types.ts';
-import { narrowerPermission } from './types.ts';
+import { PERMISSION_MODES, isPermissionMode, narrowerPermission, type CliPhase, type PermissionMode } from './types.ts';
 
 export type { CliPhase };
+export { PERMISSION_MODES };
 export interface CliOrigin { ward: string; conv?: number }
 export interface CliLaunch { args: string[]; env: Record<string, string>; cleanup(): void;
   /** Codex only: the positional task with the coordination preamble in front of it. */
   task?: string }
 
-export const PERMISSION_MODES: readonly PermissionMode[] = ['read-only', 'approvals', 'normal', 'yolo'];
 /** Rows written before the modes were tied to the agent ward. */
 export const LEGACY_MODES: Record<string, PermissionMode> = { human: 'approvals', rimeward: 'normal' };
 
@@ -49,28 +50,37 @@ const PERMISSION_WAIT_MS = 30 * 60_000;
 export const ASK_WAIT_MS = 30 * 60_000;
 export const ASK_TIMEOUT_TEXT = 'No answer from Rime within 30 minutes; proceed with your best judgment and say what you assumed.';
 
-const MODE_MEANING: Record<PermissionMode, string> = {
-  'read-only': 'read-only: you may inspect but not change files or run mutating commands; report what you would do',
-  approvals: 'approvals: every permission prompt is decided by Rime, not by a person at the terminal — keep working while it is pending',
-  normal: 'normal (auto): routine actions proceed; the few prompts that remain are decided by Rime',
-  yolo: 'yolo: no permission prompts at all — be deliberate about destructive commands',
-};
+/** What the mode means to the CLI itself. Who answers a prompt depends on whether a Rime
+ *  conversation is attached: with one, its PermissionRequest hook carries the prompt to Rime;
+ *  without one the hook is not installed and the CLI prompts at the terminal as it always does. */
+function meaning(mode: PermissionMode, coordinated: boolean): string {
+  const who = coordinated ? 'decided by Rime, not by a person at the terminal — keep working while it is pending' : 'answered by the person at this terminal';
+  return {
+    'read-only': 'read-only: you may inspect but not change files or run mutating commands; report what you would do',
+    approvals: `approvals: every permission prompt is ${who}`,
+    normal: `normal (auto): routine actions proceed; the few prompts that remain are ${who}`,
+    yolo: 'yolo: no permission prompts at all — be deliberate about destructive commands',
+  }[mode];
+}
 /** The coordination instructions every Rime-launched CLI gets (Claude: appended to the system
  *  prompt; Codex: in front of the task). Plain prose, under 1800 characters. */
 export function cliInstructions(session: string, mode: PermissionMode, coordinated = false): string {
-  if (!coordinated) return `This terminal is running in Rimeward without an active coordinator conversation. Speak to the person using this terminal; do not assume another Rime conversation owns this task. Permission mode: ${MODE_MEANING[mode]}. The "rime" MCP server can record status with rime_status, show the saved assignment with rime_context, and retain your final summary, changed files and checks with rime_report. Session id: ${session}.`;
-  return `You were launched by Rime, the Rimeward agent that coordinates this work; a person may also be watching this terminal. This session's permission mode is ${MODE_MEANING[mode]}. Rime is reachable through the "rime" MCP server. Use rime_status for progress worth reporting (a milestone, a blocker, a change of plan), not every step. When you need a decision or a clarification, call rime_ask instead of asking in the terminal; it blocks until Rime answers, so ask once with the options you see. Call rime_context if you need the assignment, the project or the permission mode restated. When the task is complete, or you are blocked, call rime_report exactly once with what changed (files) and what you checked (commands, tests); never claim completion without it. Keep the terminal readable: no walls of output when a summary will do. Session id: ${session}.`;
+  if (!coordinated) return `This terminal is running in Rimeward without an active coordinator conversation. Speak to the person using this terminal; do not assume another Rime conversation owns this task. Permission mode: ${meaning(mode, false)}. The "rime" MCP server can record status with rime_status, show the saved assignment with rime_context, and retain your final summary, changed files and checks with rime_report. Session id: ${session}.`;
+  return `You were launched by Rime, the Rimeward agent that coordinates this work; a person may also be watching this terminal. This session's permission mode is ${meaning(mode, true)}. Rime is reachable through the "rime" MCP server. Use rime_status for progress worth reporting (a milestone, a blocker, a change of plan), not every step. When you need a decision or a clarification, call rime_ask instead of asking in the terminal; it blocks until Rime answers, so ask once with the options you see. Call rime_context if you need the assignment, the project or the permission mode restated. When the task is complete, or you are blocked, call rime_report exactly once with what changed (files) and what you checked (commands, tests); never claim completion without it. Keep the terminal readable: no walls of output when a summary will do. Session id: ${session}.`;
 }
 
-/** The agent ward's `permissions` knob; default normal. Read defensively — validateConfig
- *  learns the key in a parallel change. TODO: what these modes mean for Rime's OWN tool
- *  approvals is deliberately open; today they only shape the CLIs Rime launches. */
+/** THE resolver for the mode a Rime-launched CLI runs with. A ward's EFFECTIVE setting is its
+ *  own knob, else the paired server Rime's (agentWardConfig merges the shared config), else
+ *  normal. A caller with no agent ward on this runtime — a remote Rime dispatching here, whose
+ *  ward id reads `remote:<hash>` — gets the shared Rime's setting, else the first local agent
+ *  ward's, else normal. `ceiling` is what the calling run started with: a ward edit mid-turn
+ *  can narrow a run's authority, never widen it (core.currentToolPolicy does the same for tools). */
 export function cliPermissions(user: number, ward?: string, ceiling?: PermissionMode): PermissionMode {
-  const wards = getDashboard(user);
-  const w = ward ? wards.find(x => x.i === ward && x.type === 'agent') : wards.find(x => x.type === 'agent');
-  const value = (w?.config as Record<string, unknown> | undefined)?.permissions;
-  const current = typeof value === 'string' && (PERMISSION_MODES as readonly string[]).includes(value) ? (value as PermissionMode) : 'normal';
-  return ceiling ? narrowerPermission(current, ceiling) : current;
+  const own = ward ? agentWardConfig(user, ward)?.permissions : undefined;
+  const shared = sharedRime(user)?.config.permissions;
+  const first = own === undefined && !isPermissionMode(shared) ? getDashboard(user).find(w => w.type === 'agent') : undefined;
+  const mode = own ?? (isPermissionMode(shared) ? shared : first ? agentWardConfig(user, first.i)?.permissions ?? 'normal' : 'normal');
+  return ceiling ? narrowerPermission(mode, ceiling) : mode;
 }
 
 const HOOK_SCRIPT = `// Rimeward CLI hook: forwards the CLI's hook payload to the runtime that launched it.
@@ -124,9 +134,14 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
   const token = randomBytes(32).toString('hex');
   const base = process.env.PUBLIC_BASE_URL ?? '';
   const mcpUrl = `${base}/api/cli/${session}/mcp`;
-  const instructions = cliInstructions(session, mode, !!origin?.conv && activeConversationRow(user, origin.ward)?.id === origin.conv);
+  const coordinated = !!origin?.conv && activeConversationRow(user, origin.ward)?.id === origin.conv;
+  const instructions = cliInstructions(session, mode, coordinated);
   // Timeouts: a permission decision waits on Rime (and possibly a human); reports are quick.
   const hook = (timeout: number) => ({ type: 'command', command, timeout });
+  // The blocking PermissionRequest hook exists to carry prompts to the Rime thread that launched
+  // this session. Without one (a person started the CLI from the terminal ward, or a thread was
+  // cleared before launch) it is not installed: the CLI prompts at its TTY, as it does anywhere
+  // else, instead of every prompt parking for 30 minutes on a decision nobody can give.
   if (kind === 'claude') {
     // Plugin layout per code.claude.com/docs/en/plugins: hooks/hooks.json at the plugin root,
     // .claude-plugin/plugin.json the manifest. --plugin-dir loads it for this session only,
@@ -137,7 +152,7 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
     fs.writeFileSync(path.join(dir, 'hooks', 'hooks.json'), JSON.stringify({
       description: 'Rimeward session bridge',
       hooks: {
-        PermissionRequest: [{ hooks: [hook(PERMISSION_WAIT_MS / 1000 + 60)] }],
+        ...(coordinated ? { PermissionRequest: [{ hooks: [hook(PERMISSION_WAIT_MS / 1000 + 60)] }] } : {}),
         Notification: [{ hooks: [hook(15)] }],
         UserPromptSubmit: [{ hooks: [hook(15)] }],
         Stop: [{ hooks: [hook(15)] }],
@@ -155,7 +170,7 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
     // turn-complete path — both may fire; the bridge ignores a repeat of the same phase.
     const table = (timeout: number) => `[{hooks=[{type="command",command=${toml(command)},timeout=${timeout}}]}]`;
     args.push(
-      '-c', `hooks.PermissionRequest=${table(PERMISSION_WAIT_MS / 1000 + 60)}`,
+      ...(coordinated ? ['-c', `hooks.PermissionRequest=${table(PERMISSION_WAIT_MS / 1000 + 60)}`] : []),
       '-c', `hooks.UserPromptSubmit=${table(15)}`,
       '-c', `hooks.Stop=${table(15)}`,
       '-c', `hooks.SessionStart=${table(15)}`,
@@ -183,13 +198,19 @@ export function prepareCliLaunch(user: number, session: string, kind: 'claude' |
   };
 }
 
-/** Publish the unattended prerequisite only after the PTY and session row exist. */
+/** Publish the unattended prerequisite only after the PTY and session row exist — and only
+ *  when Codex has NOT reported in: a trusted hook set fires SessionStart within a moment of
+ *  launch, so the notice is raised after a short grace period rather than flapping on every
+ *  launch. Hook trust is Codex's own gate (/hooks); no permission mode grants it. */
+const HOOK_REVIEW_GRACE_MS = 5000;
 export async function cliLaunchReady(session: string): Promise<void> {
   const e = registry.get(session);
   if (e?.kind !== 'codex' || e.phase) return;
   const message = "Codex lifecycle hooks need review in /hooks before unattended coordination is available. Review the generated Rimeward hooks; command permissions do not grant hook trust.";
-  await setPhase(e, session, 'waiting-input', 'hook-review', {}, message);
-  notifyCli(e, `Codex session ${session}: ${message}`);
+  setTimeout(() => {
+    if (registry.get(session) !== e || e.phase) return;
+    void setPhase(e, session, 'waiting-input', 'hook-review', {}, message).then(() => notifyCli(e, `Codex session ${session}: ${message}`));
+  }, HOOK_REVIEW_GRACE_MS).unref();
 }
 
 export function cliState(session: string): { phase: CliPhase; lastMessage?: string; pending?: { id: string; tool: string; input: unknown; at: number } } | null {
@@ -254,7 +275,7 @@ export function cliContext(session: string): string {
   const e = registry.get(session);
   if (!e) throw new DevError('Unknown session.', 401);
   const row = workDb().prepare('SELECT project,task,assignment FROM terminal_sessions WHERE id=? AND user_id=?').get(session, e.user) as { project: string; task: string; assignment: string } | undefined;
-  return [`Session: ${session} (${label(e)})`, `Project: ${row?.project ?? ''}`, `Permission mode: ${MODE_MEANING[e.mode]}`, `Assignment: ${row?.assignment || '(none)'}`, `Task: ${row?.task || '(none)'}`].join('\n');
+  return [`Session: ${session} (${label(e)})`, `Project: ${row?.project ?? ''}`, `Permission mode: ${meaning(e.mode, coordinated(e))}`, `Assignment: ${row?.assignment || '(none)'}`, `Task: ${row?.task || '(none)'}`].join('\n');
 }
 
 /** Park a rime_ask question; resolves with Rime's answer (terminal_answer) or the timeout text.
@@ -262,7 +283,7 @@ export function cliContext(session: string): string {
 export function parkQuestion(session: string, question: string, options?: string[]): Promise<string> | null {
   const e = registry.get(session);
   if (!e) throw new DevError('Unknown session.', 401);
-  if (!e.origin?.conv || activeConversationRow(e.user, e.origin.ward)?.id !== e.origin.conv) return null;
+  if (!coordinated(e)) return null;
   const id = randomUUID().slice(0, 8);
   const answer = new Promise<string>(resolve => {
     const timer = setTimeout(() => { if (e.questions.delete(id)) { resolve(ASK_TIMEOUT_TEXT); if (!e.questions.size) void setPhase(e, session, 'running', 'question-timeout', { question: id }); } }, ASK_WAIT_MS);
@@ -305,6 +326,13 @@ export async function handleCliHook(session: string, token: string, payload: unk
         return {};
       }
       const id = randomUUID().slice(0, 8), tool = str(p.tool_name, 200) || 'tool';
+      // The thread that launched this session is gone (cleared, retired): nobody can answer, so
+      // the CLI keeps the prompt — an empty hook result leaves its native decision flow intact —
+      // and the ward only shows that it is waiting.
+      if (!coordinated(e)) {
+        if (!e.pending.size) await setPhase(e, session, 'waiting-permission', 'permission-prompt', { tool, input: p.tool_input });
+        return {};
+      }
       // A resend of the same tool use (its cancel never arrived) supersedes the parked copy.
       const stale = toolUse ? [...e.pending.values()].find(x => x.toolUse === toolUse) : undefined;
       if (stale) release(e, session, stale, 'Superseded by a resend.', 'permission-superseded');
@@ -345,6 +373,8 @@ export async function handleCliHook(session: string, token: string, payload: unk
 }
 
 const label = (e: Entry) => (e.kind === 'claude' ? 'Claude Code' : 'Codex');
+/** Is the Rime thread that launched this session still the ward's active one? */
+const coordinated = (e: Entry): boolean => !!e.origin?.conv && activeConversationRow(e.user, e.origin.ward)?.id === e.origin.conv;
 /** Resolve one parked request (deny with a reason) and return the phase to running when it was the last. */
 function release(e: Entry, session: string, parked: Pending, why: string, eventType: string): void {
   clearTimeout(parked.timer);

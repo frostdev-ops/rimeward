@@ -88,9 +88,13 @@ interface PageDef { id: string; title: string; icon?: IconId; project?: string }
 
 ### 3.1 Tabs
 - A tab strip under the app header (`.app-pages`), one chip per page, the
-  active one underlined with the accent. Right-click a tab: Rename, Move left /
-  right, Delete. A `+` chip at the end adds a page (name prompt inline, no
-  dialog). Hidden when there is one page.
+  active one underlined with the accent. Right-click a tab — or focus it and
+  press Shift+F10 / the ContextMenu key — for Rename, Move left / right,
+  Delete. Tabs drag-to-reorder with mouse or pen; touch pans the strip
+  natively and reorders through the long-press menu. A release never switches
+  the page (a shared page cannot become the first), and an armed drag's click
+  is always swallowed — by gesture identity, never a timer, so a drag cancelled mid-gesture stays suppressed until its own release; keyboard activation (Enter / Space) is never swallowed. A `+` chip at the end adds a page (name prompt inline,
+  no dialog). Hidden when there is one page.
 - URL: `/dash#p=<id>` (hash, so SSR is unaffected and back/forward work).
   Last page per device in `localStorage` `fd-page`, applied on boot if the URL
   has none.

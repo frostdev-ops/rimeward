@@ -10,6 +10,7 @@ import { getSession } from '../auth.ts';
 import { getDashboard } from '../dashboard.ts';
 import { wardDevice } from './instance.ts';
 import { secretEqual } from './native.ts';
+import { isPermissionMode } from './types.ts';
 
 const endpoint = '/api/dev/agent-tools';
 const deviceId = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
@@ -49,7 +50,9 @@ async function remoteDeviceTool(name: string, args: Record<string, unknown>, ctx
     const caller = createHash('sha256').update(`${pair?.id ?? `server:${ctx.userId}`}:${ctx.ward}${agent ? `:${agent}` : ''}`).digest('hex');
     const request = new Request(`https://rimeward.invalid${endpoint}`, { method: 'POST',
       headers: { 'content-type': 'application/json' }, signal: ctx.signal,
-      body: JSON.stringify({ name, args: { ...args, device: 'local' }, ward: ctx.ward, ...(agent ? { agent } : {}) }) });
+      // The caller's run-start CLI permissions travel with the call: the receiving runtime caps
+      // any terminal it launches at them (cliPermissions), never at the caller's word alone.
+      body: JSON.stringify({ name, args: { ...args, device: 'local' }, ward: ctx.ward, ...(agent ? { agent } : {}), ...(ctx.cli ? { cli: ctx.cli } : {}) }) });
     try {
       const response = isDesktop()
         ? await instanceRequest(ctx.userId, `/runtime/${args.device}${endpoint}`, request)
@@ -167,7 +170,7 @@ export async function serveDeviceTool(user: number, request: Request) {
       end = () => { if (ended) return; ended = true; clearInterval(timer); request.signal.removeEventListener('abort', abort); try { controller.close(); } catch {} };
       void Promise.resolve().then(() => {
         ac.signal.throwIfAborted();
-        return tool.run(body.args, { userId: user, ward: `remote:${caller}`, conv: 0,
+        return tool.run(body.args, { userId: user, ward: `remote:${caller}`, conv: 0, ...(isPermissionMode(body.cli) ? { cli: body.cli } : {}),
           signal: ac.signal, progress: progress => send({ progress }) });
       }).then(result => send({ result }), error => send({ error: error instanceof Error ? error.message : 'Native tool failed.' })).finally(end);
     },

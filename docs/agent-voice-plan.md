@@ -23,6 +23,29 @@ The manual-flow gate is satisfied by the user report. Hands-free uses local audi
 Only input transcript fragments edit the draft. Provider delegation text and voice output never become agent requests or approvals. Newly received `says` and `reply` messages carry stable event identifiers shared by the direct stream and live mirror, preventing duplicate speech across those deliveries; stored history and repeated `done` data do not enqueue speech. Speech is sent sequentially in chunks of at most 500 UTF-8 bytes. Barge-in immediately mutes playback and clears queued speech, then closes the old call and waits for server acknowledgement before reconnecting capture. The UI shows Connecting during that gap; it does not promise to capture words spoken before Listening.
 
 
+## Clip dictation (the other credentials)
+
+The live route above needs a ChatGPT login. For an OpenAI API key, an OpenAI-compatible endpoint on
+the ward, or OpenRouter, the composer records instead: press the microphone, speak, press again. The
+clip is decoded and re-encoded in the browser as 16 kHz mono WAV — the one format every route takes,
+since OpenRouter accepts only WAV or MP3 — and POSTed to `/api/agent/<ward>/transcribe`, which
+answers with text. The text is appended to the draft the person is already editing; it is never sent,
+never a turn, and never a tool call.
+
+`lib/agent/transcribe.ts` picks the route: the ward's own provider first, so dictation is billed
+where the conversation is, then an account-wide OpenAI or OpenRouter key. A compat endpoint is used
+only when the ward is already on it — the name of someone's own server is a choice, not a default.
+OpenAI and compat go to `/audio/transcriptions` (`gpt-4o-mini-transcribe`, and `whisper-1` for compat,
+which is the name those servers answer to). OpenRouter has no such endpoint, so the clip rides an
+`input_audio` content part on the ward's own model; a model that cannot hear is reported as exactly
+that, with no substitution. The ward surface reports `dictation: 'live' | 'clip' | null`, and the
+composer hides the microphone when it is null rather than offering a control that cannot work. Read
+aloud and the conversation modes stay on the live route only.
+
+Not established: no clip has been transcribed against a real provider from this build. The wire
+shapes follow the current OpenRouter and OpenAI documentation; the client's WAV encoder, the route's
+bounds and the provider selection have not been exercised end to end.
+
 ## Decision
 
 Use the existing Codex OAuth connection to create a separate WebRTC voice session. Keep the current Rime agent as the only executor of tools and approvals. Start with microphone dictation and explicit read-aloud; add automatic conversation only after turn boundaries and interruption are reliable.

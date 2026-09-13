@@ -219,6 +219,7 @@ export function syncRime(user: number, force = false): Promise<void> {
         refreshWorkRecord(user, record.key);
         const current = syncRecord(user, record.key);
         if (peerFormat(remote.noteFormat) < NOTE_FORMAT && noteRecordNeedsFormat(current)) return;
+        // A conversation record the peer's format cannot carry stays ours; nothing it sends replaces it.
         if (peerFormat(remote.chatFormat) < CHAT_FORMAT && (chatRecordNeedsFormat(current) || chatRecordNeedsFormat(record))) return;
         if (
           current &&
@@ -258,6 +259,7 @@ export function syncRime(user: number, force = false): Promise<void> {
       let notesPaused = false, chatsPaused = false;
       for (const key of keys) {
         if (peerFormat(remote.noteFormat) < NOTE_FORMAT && noteRecordNeedsFormat(syncRecord(user, key))) { notesPaused = true; continue; }
+        // Never send an old peer a conversation record it would reject: it is kept locally (History still lists it).
         if (peerFormat(remote.chatFormat) < CHAT_FORMAT && chatRecordNeedsFormat(syncRecord(user, key))) { chatsPaused = true; continue; }
         const ours = local.get(key),
           theirs = other.get(key),
@@ -343,7 +345,6 @@ export async function sharedModel(
   provider: AgentProviderId,
   call: ProviderCall,
 ): Promise<ProviderResult | null> {
-  if (call.backend) return null;
   const connection = await rimeConnection(user),
     shared = sharedRime(user);
   const endpoint = call.endpoint;

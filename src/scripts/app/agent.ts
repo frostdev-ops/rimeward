@@ -13,19 +13,21 @@ import type { ContextUsage } from '../../lib/agent/context.ts';
 
 import { ACTIONS } from '../../lib/logic.ts';
 import { createAgentVoice, type VoiceState } from './agent-voice.ts';
+import { createClipDictation, type DictationState } from './agent-dictation.ts';
 import { completeCommand, parseCommand, type CommandSpec } from '../../lib/agent/commands.ts';
 import type { AgentTask } from '../../lib/agent/tasks.ts';
 import type { UserQuestion, PendingQuestion, UserAnswer } from '../../lib/agent/questions.ts';
 import type { TranscriptMsg } from '../../lib/agent/conversations.ts';
 import { AGENT_EFFORTS, CATALOG, pageOf, wardTitle, type AgentEffort, type AgentProviderId, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body, note, readLayout } from './wards.ts';
-import { el, getJson, postJson, tapToast, toast } from './dom.ts';
+import { el, getJson, hm, postJson, tapToast, toast } from './dom.ts';
 import { icon } from './icon.ts';
 import { popupFrame, popupLayer, popupViewport } from './popup-layer.ts';
 import { currentPage, readPages } from './pages.ts';
 import { activeMentions, mentionPattern, tagMentionMessage, plainMentionText, MAX_WARD_MENTIONS, type WardMention } from '../../lib/agent/mentions.ts';
 import { dialog } from './workspace-dialogs.ts';
 import { locationChip } from './workspace.ts';
+import { PERMISSION_HELP, PERMISSION_LABELS, PERMISSION_MODES, isPermissionMode, type PermissionMode } from '../../lib/dev/types.ts';
 import '../../styles/conversation.css';
 import { ensureStream, flushPendingLayout, onAgentLive, onAgentPing, reloadHolds, type AgentLive } from './logic.ts';
 
@@ -340,8 +342,8 @@ interface Ui {
   voiceStatus: HTMLElement;
   readResponses: HTMLInputElement;
   conversationMode: HTMLSelectElement;
-  /** The footer's provider / model / effort pickers (paintPicker fills them). */
-  picker: { root: HTMLElement; provider: HTMLSelectElement; model: HTMLSelectElement; effort: HTMLSelectElement };
+  /** The footer's provider / model / effort / Coding CLI permissions pickers (paintPicker fills them). */
+  picker: { root: HTMLElement; provider: HTMLSelectElement; model: HTMLSelectElement; effort: HTMLSelectElement; permissions: HTMLSelectElement };
   chips: HTMLElement;
   pendingBox: HTMLElement;
   pendingText: HTMLElement;
@@ -398,6 +400,8 @@ interface State {
   tasks: AgentTask[];
   sharedStatus?: string;
   configured?: boolean;
+  /** Coding CLI mode as the last repaint reported it (the surface GET): fresher than the catalog. */
+  permissions?: { effective: PermissionMode; inherited: PermissionMode };
   context?: ContextUsage;
   /** What the footer pickers offer, loaded per ward config (see loadCatalog). */
   catalog?: Catalog;
@@ -406,6 +410,10 @@ interface State {
   uis: Set<Ui>;
   voice?: ReturnType<typeof createAgentVoice>;
   voiceState?: VoiceState;
+  /** How this ward takes dictation, as the last repaint reported it. */
+  dictation?: 'live' | 'clip' | null;
+  clip?: ReturnType<typeof createClipDictation>;
+  clipState?: DictationState;
 }
 
 const kTokens = (t: number) => t < 1000 ? `${Math.round(t)}` : `${Math.round(t / 1000)}k`;
@@ -440,7 +448,8 @@ interface Catalog {
   source?: string;
   /** The account's default provider. */
   default?: AgentProviderId;
-  current?: { provider: AgentProviderId; endpoint?: string; model: string; effort: AgentEffort };
+  /** `permissions`: the ward's EFFECTIVE Coding CLI mode; `defaultPermissions`: what Default would make it. */
+  current?: { provider: AgentProviderId; endpoint?: string; model: string; effort: AgentEffort; permissions?: PermissionMode; defaultPermissions?: PermissionMode };
   providers: { provider: AgentProviderId; name: string; configured: boolean; default?: string }[];
   endpoints: string[];
   models: { id: string; name?: string; efforts?: string[] }[];
@@ -452,7 +461,7 @@ const PROVIDER_SHORT: Record<string, string> = { codex: 'Codex', openrouter: 'Op
 const routeOf = (provider: string, endpoint?: string) => (provider === 'compat' ? `compat:${endpoint ?? ''}` : provider);
 const catalogKey = (st: State) => {
   const c = (st.w.config ?? {}) as Record<string, unknown>;
-  return JSON.stringify([st.w.i, c.provider, c.endpoint, c.model, c.effort]);
+  return JSON.stringify([st.w.i, c.provider, c.endpoint, c.model, c.effort, c.permissions]); // permissions: the effective mode rides `current`
 };
 
 async function loadCatalog(st: State): Promise<void> {
@@ -528,23 +537,53 @@ function paintPicker(st: State, ui: Ui): void {
   p.effort.disabled = working || !cur;
   p.effort.value = cur?.effort ?? '';
   p.effort.parentElement!.title = cfg.effort ? 'Reasoning effort · set on this ward' : 'Reasoning effort · the default';
+  // Coding CLI permissions: the launch mode of the Claude Code / Codex sessions Rime starts. The
+  // stored pick is shown; "Default" carries the mode it would RESOLVE to (the paired server Rime's
+  // setting, else Normal), never the current pick, so removing an override is a visible choice.
+  const { effective, inherited } = cliModes(st);
+  setOptions(p.permissions, [{ value: '', label: `Default · ${PERMISSION_LABELS[inherited]}` }, ...PERMISSION_MODES.map((m) => ({ value: m, label: PERMISSION_LABELS[m] }))]);
+  p.permissions.disabled = working || !cur;
+  p.permissions.value = isPermissionMode(cfg.permissions) ? cfg.permissions : '';
+  p.permissions.parentElement!.title = cur ? `Coding CLI permissions · ${isPermissionMode(cfg.permissions) ? `${PERMISSION_LABELS[effective]}, set on this ward` : `Default: ${PERMISSION_LABELS[inherited]} (the paired server Rime’s setting, else Normal)`} · ${PERMISSION_HELP[effective]} Rime’s own tools follow this ward’s Tools and Approvals settings.` : '';
+}
+/** What the ward runs at and what Default resolves to — the repaint's word first, the catalog's otherwise. */
+function cliModes(st: State): { effective: PermissionMode; inherited: PermissionMode } {
+  const cur = st.catalog?.current;
+  return st.permissions ?? { effective: cur?.permissions ?? 'normal', inherited: cur?.defaultPermissions ?? 'normal' };
 }
 
-function confirmSwitch(name: string): Promise<boolean> {
+function confirmChoice(title: string, text: string, button: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const { d, form, actions, submit } = dialog('Switch provider?');
-    submit.textContent = 'Switch';
-    actions.before(el('p', 'muted', `Rime runs on ${name} from your next message. That starts a new chat here — the current one is archived, like New chat does.`));
+    const { d, form, actions, submit } = dialog(title);
+    submit.textContent = button;
+    actions.before(el('p', 'muted', text));
     let ok = false;
     form.onsubmit = (e) => { e.preventDefault(); ok = true; d.close(); };
     d.addEventListener('close', () => { d.remove(); resolve(ok); }, { once: true });
   });
 }
+const confirmSwitch = (name: string) => confirmChoice('Switch provider?', `Rime runs on ${name} from your next message. That starts a new chat here — the current one is archived, like New chat does.`, 'Switch');
+
+/** A permissions pick. Every choice is compared as the mode it RESOLVES to — Default included,
+ *  since dropping an override can widen. Narrowing is immediate; widening is confirmed, because
+ *  this is the one place this authority grows (Rime's configure_ward may narrow it, never widen).
+ *  Running terminals keep their launch mode; the next terminal_start takes the new one. */
+async function pickPermissions(st: State, value: string): Promise<void> {
+  const cur = st.catalog?.current;
+  const cfg = (st.w.config ?? {}) as Record<string, unknown>;
+  const stored = isPermissionMode(cfg.permissions) ? cfg.permissions : '';
+  if (!cur || value === stored || (value !== '' && !isPermissionMode(value))) { paint(st); return; }
+  const { effective, inherited } = cliModes(st);
+  const target = value === '' ? inherited : value;
+  if (PERMISSION_MODES.indexOf(target) > PERMISSION_MODES.indexOf(effective) &&
+    !(await confirmChoice('Widen Coding CLI permissions?', `${value === '' ? `Default currently means ${PERMISSION_LABELS[target]}. ` : ''}Claude Code and Codex sessions Rime starts from now on launch as ${PERMISSION_LABELS[target]}: ${PERMISSION_HELP[target]} Sessions already running keep their launch mode.`, `Use ${PERMISSION_LABELS[target]}`))) { paint(st); return; }
+  await saveSelection(st, { permissions: value === '' ? null : value });
+}
 
 /** Store a pick on the ward. The route is pinned with it — a model or an effort
  *  only means something on the provider it was chosen for — and the ordinary
  *  layout save carries it, so the push repaints every tab and the ⚙ dialog agrees. */
-async function saveSelection(st: State, patch: { provider?: AgentProviderId; endpoint?: string; model?: string | null; effort?: AgentEffort }): Promise<void> {
+async function saveSelection(st: State, patch: { provider?: AgentProviderId; endpoint?: string; model?: string | null; effort?: AgentEffort; permissions?: PermissionMode | null }): Promise<void> {
   if (st.switching || st.busy || st.remote || st.clearing) return;
   const cur = st.catalog?.current;
   if (!cur) return;
@@ -554,17 +593,22 @@ async function saveSelection(st: State, patch: { provider?: AgentProviderId; end
   const w = layout.find((x) => x.i === st.w.i);
   if (!w) { toast('Save the layout first.', undefined, true); paint(st); return; }
   const config: Record<string, unknown> = { ...(w.config ?? {}) };
-  config.provider = patch.provider ?? cur.provider;
-  if (config.provider === 'compat') config.endpoint = patch.endpoint ?? cur.endpoint;
-  else delete config.endpoint;
-  if ('model' in patch) { if (patch.model) config.model = patch.model; else delete config.model; }
-  if (patch.effort) config.effort = patch.effort;
+  // A model-side pick pins the route it was chosen on; a permissions pick touches nothing else,
+  // so an inherited provider, endpoint, model or effort stays inherited.
+  if ('provider' in patch || 'model' in patch || 'effort' in patch) {
+    config.provider = patch.provider ?? cur.provider;
+    if (config.provider === 'compat') config.endpoint = patch.endpoint ?? cur.endpoint;
+    else delete config.endpoint;
+    if ('model' in patch) { if (patch.model) config.model = patch.model; else delete config.model; }
+    if (patch.effort) config.effort = patch.effort;
+  }
+  if ('permissions' in patch) { if (patch.permissions) config.permissions = patch.permissions; else delete config.permissions; }
   w.config = config;
   st.switching = true;
   paint(st);
   const { ok, data } = await postJson('/api/dashboard', { layout, base }, 'PUT');
   st.switching = false;
-  if (!ok) { toast(typeof data?.error === 'string' ? `Could not save: ${data.error}` : 'Could not save the model choice.', undefined, true); paint(st); return; }
+  if (!ok) { toast(typeof data?.error === 'string' ? `Could not save: ${data.error}` : 'Could not save the choice.', undefined, true); paint(st); return; }
   // Repaint now rather than waiting for the layout push: the GET behind it is
   // what retires the thread on a provider change and reloads the transcript.
   await renderAgent(w);
@@ -612,6 +656,16 @@ function voiceFor(st: State) {
 }
 
 
+/** The clip recorder, for a ward whose connection transcribes a recording rather than holding a call. */
+function clipFor(st: State) {
+  return st.clip ??= createClipDictation({
+    ward: st.w.i,
+    getDraft: () => st.draft,
+    setDraft: value => setDraft(st, value),
+    onState: state => { st.clipState = state; paint(st); },
+  });
+}
+
 function stateFor(w: WardInstance): State {
   let st = states.get(w.i);
   if (!st) {
@@ -623,7 +677,7 @@ function stateFor(w: WardInstance): State {
     states.set(w.i, st);
     watchAgent(w.i);
   }
-  if (st.w.device !== w.device) st.voice?.dispose();
+  if (st.w.device !== w.device) { st.voice?.dispose(); st.clip?.dispose(); }
   st.w = w; // config changes keep the same id — track the live instance
   return st;
 }
@@ -773,7 +827,7 @@ function updateBubble(node: HTMLElement, item: Extract<Item, { k: 'msg' }>, st: 
     read.title = 'Read this message aloud'; read.setAttribute('aria-label', 'Read this message aloud');
     read.append(icon('volume'), el('span', undefined, 'Read aloud')); actions.append(read);
   }
-  if (read) { read.disabled = !!item.streaming; read.onclick = () => { void voiceFor(st).speak(item.text); }; }
+  if (read) { read.disabled = !!item.streaming || st.dictation === 'clip' || st.dictation === null; read.onclick = () => { void voiceFor(st).speak(item.text); }; }
 }
 
 // ------------------------------------------------------------- empty state
@@ -923,6 +977,11 @@ function followLog(log: HTMLElement, jump: HTMLElement, view: { follow: boolean 
     show();
     if (log.querySelector('.ag-empty')) { cancel(); log.scrollTop = 0; written = 0; writing = false; return; }
     if (!view.follow) return;
+    // A repaint that shrank the log for a moment — the composer giving its height back after a
+    // send, a step card swapped for its finished form — had the browser clamp scrollTop before the
+    // new content landed. That clamp arrives as a scroll event we never wrote, in the same frame
+    // the log grew, and read as the reader leaving the bottom. Put the offset back and own it.
+    if (log.scrollTop < written - 1) { const before = log.scrollTop; log.scrollTop = written; written = log.scrollTop; writing ||= before !== written; }
     if (instant || reducedMotion()) { cancel(); const before = log.scrollTop; log.scrollTop = log.scrollHeight; written = log.scrollTop; writing ||= before !== written; }
     else if (!frame) frame = requestAnimationFrame(tick);
   };
@@ -932,7 +991,9 @@ function followLog(log: HTMLElement, jump: HTMLElement, view: { follow: boolean 
   log.addEventListener('keydown', e => { if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) stop(); });
   log.addEventListener('scroll', () => {
     const top = log.scrollTop;
-    if (!writing || Math.abs(top - written) > 1) { view.follow = near(); if (!view.follow) cancel(); }
+    // A scroll that is not ours moves the baseline too: the reader's position is where the next
+    // repaint measures a clamp from, not the last offset this writer set.
+    if (!writing || Math.abs(top - written) > 1) { view.follow = near(); written = top; if (!view.follow) cancel(); }
     writing = false; show();
   }, { passive: true });
   jump.onclick = () => { view.follow = true; update(); }; // eased like the follow itself; reduced motion snaps
@@ -1212,18 +1273,31 @@ function paint(st: State): void {
     const voicePhase = st.voiceState?.phase ?? 'idle';
     const voiceActive = voicePhase !== 'idle' && voicePhase !== 'error';
     const conversationMode = st.voiceState?.mode ?? 'off';
+    // A ward whose credentials transcribe a recording has dictation and nothing else: read-aloud and
+    // the conversation modes are the live route's, and pretending otherwise would offer dead controls.
+    const clip = st.dictation === 'clip';
+    const clipPhase = st.clipState?.phase ?? 'idle';
     ui.readResponses.checked = st.voiceState?.readEnabled ?? false;
+    // Read-aloud and the conversation modes exist only on the live route; undefined = not reported yet.
+    const spoken = st.dictation === 'live' || st.dictation === undefined;
+    ui.readResponses.disabled = !spoken;
     ui.conversationMode.value = conversationMode;
-    ui.conversationMode.disabled = st.clearing || voicePhase === 'finishing';
-    ui.microphone.disabled = st.clearing || voicePhase === 'finishing' || (conversationMode !== 'off' && voicePhase !== 'listening');
-    ui.microphone.setAttribute('aria-pressed', String(voicePhase === 'listening'));
-    const microphoneLabel = conversationMode !== 'off' ? 'Finish & Send' : voicePhase === 'listening' ? 'Finish dictation' : voiceActive ? 'Stop voice' : 'Dictate message';
+    ui.conversationMode.disabled = !spoken || st.clearing || voicePhase === 'finishing';
+    ui.microphone.hidden = st.dictation === null;
+    ui.microphone.disabled = clip
+      ? st.clearing || clipPhase === 'sending'
+      : st.clearing || voicePhase === 'finishing' || (conversationMode !== 'off' && voicePhase !== 'listening');
+    ui.microphone.setAttribute('aria-pressed', String(clip ? clipPhase === 'recording' : voicePhase === 'listening'));
+    const microphoneLabel = clip
+      ? clipPhase === 'recording' ? 'Stop and transcribe' : clipPhase === 'sending' ? 'Transcribing…' : 'Dictate message'
+      : conversationMode !== 'off' ? 'Finish & Send' : voicePhase === 'listening' ? 'Finish dictation' : voiceActive ? 'Stop voice' : 'Dictate message';
     ui.microphone.title = microphoneLabel;
     ui.microphone.setAttribute('aria-label', microphoneLabel);
-    ui.voiceStop.hidden = !voiceActive && !st.voiceState?.readEnabled && conversationMode === 'off';
-    ui.voiceStatus.hidden = !st.voiceState?.message;
-    ui.voiceStatus.textContent = st.voiceState?.message ?? '';
-    ui.voiceStatus.dataset.error = String(voicePhase === 'error');
+    ui.voiceStop.hidden = clip ? clipPhase !== 'recording' : !voiceActive && !st.voiceState?.readEnabled && conversationMode === 'off';
+    const voiceMessage = clip ? st.clipState?.message ?? '' : st.voiceState?.message ?? '';
+    ui.voiceStatus.hidden = !voiceMessage;
+    ui.voiceStatus.textContent = voiceMessage;
+    ui.voiceStatus.dataset.error = String(clip ? clipPhase === 'error' : voicePhase === 'error');
     // Mid-turn the composer stays open: a send steers the running turn.
     ui.send.disabled = !!st.placementBlocked || !!st.pending?.question || st.configured === false || st.uploading > 0 || st.clearing || (!st.draft.trim() && !st.attachments.length);
     const working = st.busy || st.remote;
@@ -1240,10 +1314,12 @@ function paint(st: State): void {
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-history]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
     ui.stop.classList.toggle('hidden', !st.busy && !st.remote); // server-side stop — any client, any turn
     ui.background.classList.toggle('hidden', !st.busy && !st.remote && !st.tasks.some(t => t.state === 'running' && !t.background));
-    const running = st.tasks.filter(t => t.state === 'running' || t.state === 'stopping').length;
-    ui.tasksButton.setAttribute('aria-label', `Tasks${running ? ` (${running} running)` : ''}`);
-    ui.tasksButton.title = `Tasks${running ? ` · ${running} running` : ''}`;
+    const running = st.tasks.filter(taskActive).length, waiting = st.tasks.filter(t => t.waiting && t.state === 'running').length;
+    const breakdown = [running ? `${running} running` : '', waiting ? `${waiting} waiting for your answer` : ''].filter(Boolean).join(' · ');
+    ui.tasksButton.setAttribute('aria-label', `Tasks${breakdown ? ` (${breakdown})` : ''}`);
+    ui.tasksButton.title = `Tasks${breakdown ? ` · ${breakdown}` : ''}`;
     ui.tasksButton.dataset.count = running ? String(running) : '';
+    ui.tasksButton.dataset.waiting = String(waiting > 0);
     ui.pendingBox.classList.toggle('hidden', !st.pending || !!st.pending.question);
     ui.pendingBox.classList.toggle('flex', !!st.pending && !st.pending.question);
     ui.pendingText.textContent = st.pending?.summary ?? '';
@@ -1269,6 +1345,7 @@ async function refetch(st: State, settled = false): Promise<void> {
   }
   if (st.busy || st.refresh !== refresh || st.revision !== revision && !data.live) return;
   st.configured = data.configured;
+  if (data.dictation === 'live' || data.dictation === 'clip' || data.dictation === null) st.dictation = data.dictation;
   st.context = data.context ?? undefined;
   st.tasks = data.tasks ?? [];
   restoreSurface(st, data);
@@ -1603,27 +1680,103 @@ async function background(st: State): Promise<void> {
   toast(data.forked || data.tasks?.length ? 'Running in the background.' : 'Nothing is running.');
 }
 
+/** A task's lifecycle as the user reads it. The label is the STORED state — nothing is inferred from
+ *  silence, so idle never reads as completed; a child waiting on its parent's answer reads "waiting",
+ *  a stopped one "Stopped" (its error line names who stopped it). */
+const TASK_STATE: Record<string, string> = { running: 'Running', stopping: 'Stopping', completed: 'Completed', failed: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', watching: 'Watching', paused: 'Paused', blocked: 'Blocked', offline: 'Offline' };
+const isMonitor = (t: AgentTask): boolean => t.tool === 'monitor';
+/** A job holding a running-task slot. Monitors never do: their states are their own (watching, paused, blocked, offline). */
+const taskActive = (t: AgentTask): boolean => !isMonitor(t) && (t.state === 'running' || t.state === 'stopping');
+type TaskGroup = 'Active' | 'Monitors' | 'Finished';
+const taskGroup = (t: AgentTask): TaskGroup => isMonitor(t) ? 'Monitors' : taskActive(t) ? 'Active' : 'Finished';
+/** Which thread started a task, from ids: the row's against the one this ward is showing. Unknown stays
+ *  unknown — a row without its origin is never assumed to be this thread's. */
+const taskOrigin = (st: Pick<State, 'conversation'>, t: AgentTask): 'this' | 'earlier' | undefined =>
+  t.conversation !== undefined && st.conversation !== undefined ? (t.conversation === st.conversation ? 'this' : 'earlier') : t.thread;
+function taskState(t: AgentTask): { key: string; label: string } {
+  if (t.waiting && t.state === 'running') return { key: 'waiting', label: 'Waiting for your answer' };
+  return { key: t.state, label: TASK_STATE[t.state] ?? humanise(t.state) };
+}
+const taskKind = (t: AgentTask): string => t.tool === 'spawn_agent' ? 'Child run' : t.tool === 'monitor' ? 'Monitor' : humanise(t.tool);
+const taskRoute = (t: AgentTask): string => t.model ? `${t.provider ?? ''}${t.endpoint ? `:${t.endpoint}` : ''} ${t.model}`.trim() : '';
+function taskDuration(t: AgentTask): string {
+  const s = Math.max(0, Math.round(((t.finishedAt ?? Date.now()) - t.startedAt) / 1000));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+/** Where a background result or a child's report stands with the thread that started it. */
+function taskReport(t: AgentTask, origin: 'this' | 'earlier' | undefined): { text: string; title: string } | null {
+  if (!t.background || taskActive(t) || isMonitor(t)) return null;
+  const where = origin === 'this' ? 'this thread' : origin === 'earlier' ? 'an earlier thread of this ward' : 'the thread that started it';
+  if (t.notified) return { text: 'Reported', title: `Its result was delivered to ${where}.` };
+  return origin === 'this'
+    ? { text: 'Report pending', title: 'Its result reaches this chat at the next turn; nothing runs again.' }
+    : { text: 'Report pending', title: `Its result is owed to ${where}${t.tool === 'spawn_agent' && origin === 'earlier' ? ' and is filed there' : ''}; nothing is replayed here.` };
+}
+/** A finished child attempt with no later attempt: the one thing Resume applies to. */
+const resumable = (t: AgentTask): boolean => t.tool === 'spawn_agent' && !taskActive(t) && !t.resumedBy && t.started !== false;
+const RESUME_DEFAULT = 'Continue where the earlier attempt stopped; completed and uncertain actions are not to be replayed; inspect their results first.';
+/** Resume: a NEW linked attempt of a finished child run. The person sees what ended, how, on which route,
+ *  that it runs under the ward's current settings, and that its report lands in THIS chat — whose thread
+ *  id rides with the request so a chat that changed underneath is refused, never retargeted. */
+function openResume(st: State, task: AgentTask, after: () => void): void {
+  const { d, form, actions, error, submit } = dialog('Resume child run');
+  d.classList.add('ag-resume-dialog');
+  submit.textContent = 'Resume';
+  const body = el('div', 'ag-resume');
+  const ended = task.state === 'cancelled' ? `stopped by ${task.stoppedBy === 'user' ? 'you' : task.stoppedBy === 'agent' ? 'the parent agent' : task.stoppedBy === 'child' ? 'a child run' : task.stoppedBy === 'parent' ? 'its parent run' : task.stoppedBy === 'runtime' ? 'the runtime' : 'an unrecorded actor'}` : TASK_STATE[task.state]?.toLowerCase() ?? task.state;
+  const facts = el('dl', 'ag-resume-facts');
+  const fact = (k: string, v: string) => { if (v) facts.append(el('dt', undefined, k), el('dd', undefined, v)); };
+  fact('Assignment', task.reason);
+  fact(`Attempt ${task.attempt ?? 1}`, `${ended}${task.finishedAt ? ` at ${hm(task.finishedAt)}` : ''}${task.error ? ` · ${task.error}` : ''}`);
+  fact('Route', taskRoute(task) || 'as recorded');
+  const label = el('label', 'ag-resume-label', 'Instructions for the new attempt (optional)');
+  const input = el('textarea', 'input ag-resume-input'); input.rows = 3; input.maxLength = 4000; input.placeholder = RESUME_DEFAULT;
+  label.append(input);
+  const note = el('p', 'ag-resume-note', 'Starts a new attempt from a copy of that record — nothing already done is redone; a call left unanswered reads as interrupted. It runs on the same provider, endpoint and model (or is refused), under this ward’s current tools and approvals, and reports into this chat. The earlier attempt stays as it is.');
+  body.append(facts, label, note);
+  actions.before(body);
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (st.conversation === undefined) { error.hidden = false; error.textContent = 'Open the chat first so the report has somewhere to land.'; return; }
+    submit.disabled = true; error.hidden = true;
+    try {
+      const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'resume-task', task: task.id, instructions: input.value.trim(), conversation: st.conversation });
+      if (status !== 200 || !data?.task) throw Error(data?.error ?? 'Could not resume.');
+      updateTask(st, data.task);
+      toast(`Resumed as attempt ${data.task.attempt ?? '?'} · reports into this chat`);
+      d.close(); after();
+    } catch (err) { error.hidden = false; error.textContent = err instanceof Error ? err.message : String(err); submit.disabled = false; }
+  };
+  d.addEventListener('close', () => d.remove(), { once: true });
+  input.focus();
+}
+/** Drawer order: needs you, running jobs, monitors, then finished (the server already puts the newest first). */
+const taskOrder = (t: AgentTask): number => (t.waiting && t.state === 'running' ? 0 : taskActive(t) ? 1 : isMonitor(t) ? 2 : 3);
+
 function updateTask(st: State, task: AgentTask): void {
   const before = st.tasks.find(t => t.id === task.id);
   st.tasks = [task, ...st.tasks.filter(t => t.id !== task.id)].slice(0, 100);
-  if (task.background && !['running', 'stopping'].includes(task.state) && before?.state !== task.state) {
+  const finished = task.background && !taskActive(task) && before?.state !== task.state;
+  const asked = !!task.waiting && task.state === 'running' && before?.waiting?.id !== task.waiting.id;
+  if (finished || asked) {
     if (!logVisible(st.w.i)) { unread.set(st.w.i, (unread.get(st.w.i) ?? 0) + 1); paintBadge(st.w.i); }
-    tapToast(`Task ${task.state}: ${task.reason}`, () => openTasks(st));
+    tapToast(asked ? `Child run needs your answer: ${task.reason}` : `${taskKind(task)} ${taskState(task).label.toLowerCase()}: ${task.reason}`, () => openTasks(st));
   }
   paint(st);
 }
 
-/** Task controls fetch their own small surface; opening a drawer never runs a model. */
+/** Task controls fetch their own small surface; opening a drawer never runs, restarts, replays or stops anything. */
 function openTasks(st: State): void {
   const { d, form, actions, submit } = dialog('Tasks');
   submit.remove();
   actions.querySelector('button')!.textContent = 'Close';
   form.onsubmit = e => e.preventDefault();
+  d.classList.add('ag-tasks-dialog');
   const list = el('div', 'ag-task-list');
   const history = el('input'); history.type = 'checkbox';
   history.setAttribute('role', 'switch');
-  const historyLabel = el('label', 'ag-task-history switch'); historyLabel.append(history, icon('history'), document.createTextNode('Show completed logs'));
-  historyLabel.title = 'Newest 100 completed logs, kept for up to 30 days';
+  const historyLabel = el('label', 'ag-task-history switch'); historyLabel.append(history, icon('history'), document.createTextNode('Show finished'));
+  historyLabel.title = 'Finished, failed, stopped and interrupted work: tool jobs from the last 30 days (newest 100), and every child run — those are kept with their conversations';
   actions.before(historyLabel, list);
   let selected: string | null = null, cursor = 0, result = false;
   let output: HTMLPreElement | null = null, more: HTMLButtonElement | null = null;
@@ -1647,28 +1800,48 @@ function openTasks(st: State): void {
     try {
       const { status, data } = await getJson(`${endpoint}&history=${history.checked}`);
       if (!d.open) return;
-      if (status !== 200) { if (!list.childElementCount) list.append(el('p', undefined, data?.error ?? 'Tasks unavailable.')); return; }
+      if (status !== 200) { if (!list.childElementCount) list.append(el('p', 'ag-task-empty', data?.error ?? 'Tasks unavailable.')); return; }
       st.tasks = data.tasks ?? []; paint(st);
       const next = JSON.stringify(st.tasks);
       if (next !== signature) {
         signature = next;
         list.replaceChildren();
-        if (!st.tasks.length) list.append(el('p', undefined, 'No tasks yet. Ctrl+B moves a running turn to the background.'));
-        for (const task of st.tasks) {
+        const tasks = [...st.tasks].sort((a, b) => taskOrder(a) - taskOrder(b));
+        if (!tasks.length) list.append(el('p', 'ag-task-empty', history.checked ? 'Nothing has finished yet.' : 'Nothing is running. Ctrl+B moves a running turn to the background; Show finished lists earlier work.'));
+        const mixed = new Set(tasks.map(taskGroup)).size > 1;
+        let group: TaskGroup | '' = '';
+        for (const task of tasks) {
+          const heading = taskGroup(task);
+          if (mixed && heading !== group) { group = heading; list.append(el('h3', 'ag-task-group', heading)); }
           const row = el('article', 'ag-task-row');
+          row.dataset.state = taskState(task).key; row.dataset.task = task.id;
+          const dot = el('span', 'ag-task-dot'); dot.setAttribute('aria-hidden', 'true');
           const detail = el('div', 'ag-task-description');
           const status = el('span', 'ag-task-status');
           status.dataset.task = task.id;
           detail.append(el('strong', undefined, task.reason), status);
           if (task.error) detail.append(el('span', 'text-err', task.error));
+          if (task.summary) { const summary = el('span', 'ag-task-summary', task.summary); summary.title = task.summary; detail.append(summary); }
+          const report = taskReport(task, taskOrigin(st, task));
+          if (report) { const line = el('span', 'ag-task-report', report.text); line.title = report.title; line.dataset.pending = String(!task.notified); detail.append(line); }
+          if (task.resumedBy) { const line = el('span', 'ag-task-lineage', 'Resumed later'); line.title = `Continued as task ${task.resumedBy}; this record is unchanged`; detail.append(line); }
+          else if (task.resumedFrom) { const line = el('span', 'ag-task-lineage', `Resumed from attempt ${(task.attempt ?? 2) - 1}`); line.title = `Continues task ${task.resumedFrom}`; detail.append(line); }
           const rowActions = el('div', 'ag-task-actions');
           if (task.tool === 'spawn_agent') {
-            const open = el('button', 'btn', 'Open conversation'); open.type = 'button'; open.title = 'Open the child agent’s conversation';
+            const waiting = !!task.waiting && task.state === 'running';
+            const open = el('button', waiting ? 'btn-primary' : 'btn', waiting ? 'Answer' : 'Open'); open.type = 'button';
+            open.title = waiting ? 'Read the child agent’s question and answer it' : 'Open the child agent’s conversation — reading it changes nothing';
             open.dataset.agChild = task.id;
             open.onclick = () => openChildSession(st, task, d);
             rowActions.append(open);
+            if (resumable(task)) {
+              const resume = el('button', 'btn', 'Resume…'); resume.type = 'button'; resume.title = 'Start a linked new attempt of this run; the earlier attempt stays as it is';
+              resume.onclick = () => openResume(st, task, () => { signature = ''; void refresh(); });
+              rowActions.append(resume);
+            }
           }
-          for (const final of task.tool === 'monitor' ? [true] : [false, true]) {
+          // A child's live log is in its conversation; here its Result is enough.
+          for (const final of task.tool === 'monitor' || task.tool === 'spawn_agent' ? [true] : [false, true]) {
             const button = el('button', 'btn', task.tool === 'monitor' ? 'Filters and matches' : final ? 'Result' : 'Output'); button.type = 'button';
             button.title = task.tool === 'monitor' ? 'What this monitor watches for, and what it matched' : final ? 'The final result' : 'Live output';
             button.onclick = () => {
@@ -1705,7 +1878,7 @@ function openTasks(st: State): void {
               };
               rowActions.append(pause);
             }
-            const stop = el('button', 'btn', task.tool === 'monitor' ? 'Delete monitor' : 'Stop'); stop.type = 'button'; stop.title = task.tool === 'monitor' ? 'Delete this monitor' : 'Stop this task';
+            const stop = el('button', 'btn', task.tool === 'monitor' ? 'Delete monitor' : 'Stop'); stop.type = 'button'; stop.title = task.tool === 'monitor' ? 'Delete this monitor' : 'Stop this task (not a rollback: inspect what it changed)';
             stop.onclick = async () => {
               stop.disabled = true;
               const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'cancel-task', task: task.id });
@@ -1714,17 +1887,17 @@ function openTasks(st: State): void {
             };
             rowActions.append(stop);
           }
-          row.append(detail, rowActions); list.append(row);
+          row.append(dot, detail, rowActions); list.append(row);
         }
       }
       for (const status of list.querySelectorAll<HTMLElement>('.ag-task-status')) {
         const task = st.tasks.find(t => t.id === status.dataset.task)!;
-        const age = Math.max(0, Math.round(((task.finishedAt ?? Date.now()) - task.startedAt) / 1000));
-        const route = task.tool === 'spawn_agent' && task.model ? ` · ${task.provider ?? ''}${task.endpoint ? `:${task.endpoint}` : ''} ${task.model}` : '';
-        status.textContent = `${task.state}${task.background ? ' · background' : ''} · ${age}s · ${task.tool === 'spawn_agent' ? 'Child run' : humanise(task.tool)}${route}`;
+        const origin = taskOrigin(st, task);
+        status.textContent = [taskState(task).label, task.started === false ? 'never started' : '', taskKind(task), (task.attempt ?? 1) > 1 ? `attempt ${task.attempt}` : '', origin === 'earlier' ? 'earlier thread' : '', task.background && taskActive(task) && task.tool !== 'spawn_agent' ? 'background' : '', taskRoute(task), taskDuration(task)].filter(Boolean).join(' · ');
+        status.title = `Task ${task.id}${origin === 'earlier' ? ' · started by an earlier thread of this ward, which is where it reports' : ''}`;
       }
       if (selected && (!result || cursor === 0)) await loadOutput();
-    } catch { if (!list.childElementCount) list.append(el('p', undefined, 'Connection lost. Reopen Tasks to retry.')); }
+    } catch { if (!list.childElementCount) list.append(el('p', 'ag-task-empty', 'Connection lost. Reopen Tasks to retry.')); }
     finally { fetching = false; }
   };
   history.onchange = () => { signature = ''; void refresh(); };
@@ -1754,6 +1927,7 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
   const stage = el('div', 'ag-stage');
   const log = el('div', 'ag-log'); log.setAttribute('aria-label', 'Child agent conversation'); log.tabIndex = 0;
   const assignment = el('p', 'ag-child-assignment', task.reason);
+  const linkage = el('p', 'ag-child-linkage'); linkage.title = `Task ${task.id}`;
   const transcriptBox = el('div', 'ag-child-transcript');
   const progress = el('details', 'ag-activity');
   const progressTitle = el('summary', undefined, 'Live activity'); progressTitle.title = 'Raw tool output from this run';
@@ -1765,7 +1939,7 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
   const deliveryTitle = el('summary', undefined, 'Message delivery');
   const receipts = el('div', 'ag-child-receipts'); receipts.setAttribute('aria-label', 'Message delivery');
   delivery.append(deliveryTitle, receipts);
-  log.append(assignment, transcriptBox, progress, questionBox, delivery);
+  log.append(assignment, linkage, transcriptBox, progress, questionBox, delivery);
   const jump = el('button', 'ag-jump', 'Jump to latest'); jump.type = 'button'; jump.hidden = true; jump.title = 'Scroll to the latest message';
   stage.append(log, jump);
   const footer = el('div', 'ag-footer');
@@ -1787,11 +1961,15 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
   };
   const controls = el('div', 'ag-compose-controls');
   const hint = el('span', 'ag-hint', 'Direct to this child'); hint.title = 'Messages go to this child agent only';
+  let latest: AgentTask = task;
+  const resumeButton = el('button', 'btn ag-child-resume', 'Resume…'); resumeButton.type = 'button'; resumeButton.hidden = true;
+  resumeButton.title = 'Start a linked new attempt of this run; this record stays as it is';
+  resumeButton.onclick = () => openResume(st, latest, () => { void refresh(); });
   const stop = el('button', 'ag-icon-button ag-stop'); stop.type = 'button'; stop.hidden = true; stop.append(icon('stop'));
   stop.title = 'Stop this run'; stop.setAttribute('aria-label', 'Stop this run');
   submit.className = 'ag-send'; submit.replaceChildren(icon('send'));
   submit.title = 'Send message'; submit.setAttribute('aria-label', 'Send message');
-  controls.append(hint, stop, submit); composer.append(input, controls);
+  controls.append(hint, resumeButton, stop, submit); composer.append(input, controls);
   const help = el('p', 'ag-composer-help', 'Messages are read at the next step.');
   help.id = `${heading.id}-help`; input.setAttribute('aria-describedby', help.id);
   const connection = el('p', 'ag-child-connection'); connection.hidden = true; connection.setAttribute('role', 'status');
@@ -1822,9 +2000,19 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
       if (status !== 200 || !data) throw Error(data?.error ?? 'Reconnecting…');
       connected = true; connection.hidden = true;
       canMessage = data.canMessage; question = data.question ?? null;
-      const running = ['running', 'stopping'].includes(data.task.state);
-      statusLine.textContent = `${question ? 'Waiting for an answer' : humanise(data.task.state)} · ${data.task.model ?? 'Child agent'}`;
+      const running = taskActive(data.task);
+      const state = taskState(data.task);
+      statusLine.textContent = `${state.label} · ${data.task.model ?? 'Child agent'}`;
       statusLine.title = [data.task.provider, data.task.endpoint, data.task.model].filter(Boolean).join(' · ');
+      d.dataset.state = state.key;
+      // Origin from the authoritative parent record, never inferred; unknown stays unknown.
+      const origin: 'this' | 'earlier' | undefined = data.parent ? (data.parent.active ? 'this' : 'earlier') : undefined;
+      const report = taskReport(data.task, origin);
+      linkage.textContent = [`Child of ${origin === 'this' ? 'this thread' : origin === 'earlier' ? 'an earlier thread of this ward' : 'the thread that started it'}`, (data.task.attempt ?? 1) > 1 ? `attempt ${data.task.attempt} (continues ${data.task.resumedFrom})` : '', `started ${hm(data.task.startedAt)}`,
+        data.task.finishedAt ? `ended ${hm(data.task.finishedAt)}` : '', taskRoute(data.task), report?.text ?? '', data.task.resumedBy ? `resumed later as ${data.task.resumedBy}` : ''].filter(Boolean).join(' · ');
+      resumeButton.hidden = !resumable(data.task);
+      latest = data.task;
+      linkage.title = `Task ${task.id}${report ? ` · ${report.title}` : ''}${origin === 'this' ? '' : ' · its report goes to the thread that started it'}`;
       stop.hidden = !data.task.cancellable;
       input.readOnly = !running;
       input.maxLength = question?.maxLength ?? 8000;
@@ -1857,10 +2045,10 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
       delivery.hidden = !messages.length;
       deliveryTitle.textContent = `Message delivery${unread ? ` · ${unread} unread` : ''}`;
       if (messages.some(m => m.status === 'failed' || m.status === 'cancelled')) delivery.open = true;
-      if (data.task.error) { connection.hidden = false; connection.textContent = data.task.error; }
+      if (data.task.error) { connection.hidden = false; connection.textContent = data.task.error; connection.dataset.level = data.task.state === 'failed' || data.task.state === 'interrupted' ? 'err' : 'note'; }
       scroll();
     } catch (e) {
-      if (d.open) { connected = false; connection.hidden = false; connection.textContent = e instanceof Error ? e.message : 'Connection lost. Retrying…'; }
+      if (d.open) { connected = false; connection.hidden = false; connection.dataset.level = 'note'; connection.textContent = e instanceof Error ? e.message : 'Connection lost. Retrying…'; }
     } finally { fetching = false; controlsState(); }
   };
   form.onsubmit = async e => {
@@ -2227,12 +2415,19 @@ function wireComposer(ui: Ui, cur: () => State | undefined): void {
   ui.microphone.addEventListener('click', () => {
     const st = cur();
     if (!st) return;
+    if (st.dictation === 'clip') { void clipFor(st).toggle(); return; }
     if (st.voiceState && st.voiceState.mode !== 'off') void st.voice?.finishAndSend();
     else if (st.voiceState?.phase === 'speaking') void st.voice?.stop();
     else if (st.voiceState && !['idle', 'error'].includes(st.voiceState.phase)) void st.voice?.finishDraft();
     else void voiceFor(st).dictate();
   });
-  ui.voiceStop.addEventListener('click', () => { const st = cur(); if (st) void st.voice?.stop(); });
+  ui.voiceStop.addEventListener('click', () => {
+    const st = cur();
+    if (!st) return;
+    // On the clip route Stop drops the take rather than transcribing it.
+    if (st.dictation === 'clip') st.clip?.cancel();
+    else void st.voice?.stop();
+  });
   ui.readResponses.addEventListener('change', () => { const st = cur(); if (st) void voiceFor(st).setReadResponses(ui.readResponses.checked); });
   ui.conversationMode.addEventListener('change', () => {
     const st = cur();
@@ -2253,6 +2448,7 @@ function wireComposer(ui: Ui, cur: () => State | undefined): void {
     if ((AGENT_EFFORTS as readonly string[]).includes(effort) && effort !== st.catalog?.current?.effort) void saveSelection(st, { effort });
     else paint(st);
   });
+  ui.picker.permissions.addEventListener('change', () => { const st = cur(); if (st) void pickPermissions(st, ui.picker.permissions.value); });
   // FIRST, so its keydown listener sees Enter/Tab/arrows before the send below.
   wireCommandMenu(ui, go, cur);
   ui.send.addEventListener('click', go);
@@ -2410,7 +2606,9 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
     pickerRoot.append(label);
     return select;
   };
-  const picker = { root: pickerRoot, provider: pick('Provider', 'Provider'), model: pick('Model', 'Model'), effort: pick('Effort', 'Reasoning effort') };
+  const picker = { root: pickerRoot, provider: pick('Provider', 'Provider'), model: pick('Model', 'Model'), effort: pick('Effort', 'Reasoning effort'), permissions: pick('CLI', 'Coding CLI permissions') };
+  // A bare "Normal" beside Effort's "Medium" would be ambiguous: this word stays in the compact ward.
+  picker.permissions.previousElementSibling!.classList.add('ag-picker-word-keep');
   voiceOptions.append(readLabel, pickerRoot, modeLabel);
   footer.append(placement, questionBox, pendingBox, form, voiceOptions, voiceStatus, help);
   host.append(stage, footer);
@@ -2557,20 +2755,31 @@ async function openHistory(w:WardInstance) {
   const failure=(e:unknown)=>{error.hidden=false;error.textContent=e instanceof Error?e.message:String(e);};
   content.textContent='Loading your chats…';
   try{
-    const {status,data}=await getJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}`);if(status!==200)throw Error(data?.error??'Could not load history.');
+    const {status,data}=await getJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}&ward=${encodeURIComponent(w.i)}`);if(status!==200)throw Error(data?.error??'Could not load history.');
     content.replaceChildren();
     const state=data.sync;
     content.append(el('p','muted',state?.server?`${state.online?'Up to date':'Working offline'}${state.error?` · ${state.error}`:''}`:'Your conversations'));
     const list=el('div','ag-history-list');content.append(list);
+    const routeOf=(c:{provider?:string;endpoint?:string|null})=>`${c.provider??'?'}${c.endpoint?`:${c.endpoint}`:''}`;
     const open=async(key:string)=>{
-      const {data:chat,status}=await getJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}&key=${encodeURIComponent(key)}`);if(status!==200||!chat)throw Error('Conversation unavailable.');
+      const {data:chat,status}=await getJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}&ward=${encodeURIComponent(w.i)}&key=${encodeURIComponent(key)}`);if(status!==200||!chat)throw Error('Conversation unavailable.');
       list.replaceChildren(el('h3',undefined,chat.title));
+      // Identity first: where it ran and on what — a thread never records its model unless it ran on this build or later.
+      const identity=el('p','muted ag-history-identity',`Ran on ${routeOf(chat)}${chat.endpointUrl?` (${chat.endpointUrl})`:''} · model ${chat.model??'not recorded'}`);list.append(identity);
       for(const m of chat.messages){const msg=el('div','ag-history-message');msg.append(el('strong',undefined,m.role==='user'?'You':'Rime'),markdown(m.text));list.append(msg);}
-      submit.hidden=false;submit.textContent='Continue here';
-      list.append(el('p','muted','Opens a copy here. The original stays intact.'));
-      form.onsubmit=async(e)=>{e.preventDefault();submit.disabled=true;try{const {ok,data}=await postJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}`,{ward:w.i,key});if(!ok)throw Error(data?.error??'Could not continue chat.');d.close();await renderAgent(w);}catch(e){failure(e);}finally{submit.disabled=false;}};
+      const target=chat.target as {provider:string;endpoint:string|null;model:string}|null;
+      const sameRoute=!!target&&target.provider===chat.provider&&(target.endpoint??null)===(chat.endpoint??null);
+      const note=el('p','muted ag-history-note');list.append(note);
+      let choice:{model:string;acknowledged:boolean}|null=null;
+      // `blocked` is the server's own answer (route, provider, recorded backend) — never re-derived here.
+      if(chat.blocked||!target||!sameRoute){submit.hidden=true;note.textContent=chat.blocked??`This ward runs on ${target?routeOf(target):'another route'}. Set it to ${routeOf(chat)} first, then continue — the conversation is not moved.`;}
+      else if(chat.model){submit.hidden=false;choice={model:chat.model,acknowledged:false};
+        if(chat.model===target.model){submit.textContent='Continue here';note.textContent='Opens a copy here on the same model. The original stays intact.';}
+        else{submit.textContent=`Continue on ${chat.model}`;note.textContent=`Opens a copy here on ${chat.model}, the model it ran on, and sets this ward to it (currently ${target.model}). The original stays intact.`;}}
+      else{submit.hidden=false;choice={model:target.model,acknowledged:true};submit.textContent=`Continue on ${target.model}`;note.textContent=`The model this conversation ran on was not recorded. It continues on this ward's current model, ${target.model}, only because you choose so here. The original stays intact.`;}
+      form.onsubmit=async(e)=>{e.preventDefault();if(!choice)return;submit.disabled=true;try{const {ok,data}=await postJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}`,{ward:w.i,key,...choice});if(!ok)throw Error(data?.error??'Could not continue chat.');d.close();if(data?.wardModelChanged)toast(`This ward now uses ${data.model}, the model that conversation ran on.`);await renderAgent(w);}catch(e){failure(e);}finally{submit.disabled=false;}};
     };
-    for(const chat of data.chats??[]){const b=el('button','btn ag-history-row');b.type='button';b.title='Open this conversation';b.append(el('strong',undefined,chat.title),el('small','muted',chat.device));b.onclick=()=>void open(chat.key).catch(failure);list.append(b);}
+    for(const chat of data.chats??[]){const b=el('button','btn ag-history-row');b.type='button';b.title='Open this conversation';b.append(el('strong',undefined,chat.title),el('small','muted',[chat.device,routeOf(chat),chat.model??'model not recorded'].filter(Boolean).join(' · ')));b.onclick=()=>void open(chat.key).catch(failure);list.append(b);}
     if(!data.chats?.length)list.append(el('p','muted','Your conversations will appear here.'));
     for(const saved of state?.conflicts??[]){
       const b=el('button','btn ag-history-row',`Recovered version · ${saved.key}`);b.type='button';b.title='Open the recovered version';list.append(b);
@@ -2631,7 +2840,9 @@ async function renderAgent(w: WardInstance): Promise<void> {
   }
   st.sharedStatus=data.sync?.server?data.sync.online?'Rime':'Rime · working offline':undefined;
   st.configured = data.configured;
+  if (data.dictation === 'live' || data.dictation === 'clip' || data.dictation === null) st.dictation = data.dictation;
   st.context = data.context ?? undefined;
+  if (data.permissions && isPermissionMode(data.permissions.effective) && isPermissionMode(data.permissions.inherited)) st.permissions = data.permissions;
   if (!data.configured && !data.transcript?.length && !data.tasks?.length && !st.items.length && !st.busy && !st.remote) {
     const setup = el('div', 'ag-empty ag-setup');
     const mark = el('div', 'ag-empty-mark');

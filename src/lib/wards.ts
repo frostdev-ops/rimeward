@@ -994,12 +994,13 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
         provider: isAgentProvider(raw.provider) ? raw.provider : 'default',
         tools: raw.tools === 'read-only' ? 'read-only' : 'all',
         approvals: raw.approvals === 'all' || raw.approvals === 'off' ? raw.approvals : 'outbound',
-        // Coding CLIs this ward launches: read-only (plan / read-only sandbox), approvals (every
-        // permission goes to Rime), normal (auto), yolo (skip all permissions).
-        // TODO(permissions): what this mode means for Rime's own tool actions (the tools/approvals knobs) is deliberately open.
       };
-      // Stored only when set off the default, like headlessCap; absent reads as 'normal' (ward-config.ts).
-      if (['read-only', 'approvals', 'yolo'].includes(raw.permissions as string)) out.permissions = raw.permissions;
+      // Coding CLIs this ward launches: read-only (plan / read-only sandbox), approvals (the CLI
+      // asks), normal (auto), yolo (skip all permissions). `tools` and `approvals` above govern
+      // Rime's OWN tool calls; this knob never changes those. Stored whenever the user picked a
+      // mode — normal included, so a pick can never be overridden by an inherited value; absent
+      // (blank in the dialog) inherits the paired server Rime's setting, else normal (ward-config.ts).
+      if (['read-only', 'approvals', 'normal', 'yolo'].includes(raw.permissions as string)) out.permissions = raw.permissions;
       if (out.provider === 'compat' && typeof raw.endpoint === 'string' && ENDPOINT_NAME_RE.test(raw.endpoint)) out.endpoint = raw.endpoint;
       if (typeof raw.model === 'string') {
         const model = raw.model.trim();

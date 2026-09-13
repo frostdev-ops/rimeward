@@ -48,7 +48,10 @@ export interface ProviderCall {
   child?: boolean;
   /** provider 'compat': the endpoint the call is bound to (set by the provider, rides the relay). */
   endpoint?: string;
-  /** Recorded compat backend; pinned histories never move through a different relay. */
+  /** provider 'compat': the BACKEND this thread was admitted on (a normalized base URL). An endpoint
+   *  NAME is a per-runtime alias that can be repointed mid-thread; when this is set the call is refused
+   *  unless the name still resolves to exactly it, and it is never relayed to another runtime. Checked
+   *  where the request is built, so nothing can change between the check and the send. */
   backend?: string;
   instructions: string;
   items: unknown[];
@@ -242,7 +245,9 @@ export async function getProvider(id: AgentProviderId, endpoint?: string | null)
     // offered to the relay and a local one reaches the local provider.
     run: async(call) => {
       const routed: ProviderCall = { ...call, ...(provider.endpoint ? { endpoint: provider.endpoint } : {}) };
-      const go = async () => routed.backend ? provider.run(routed) : await sharedModel(call.userId, id, routed) ?? provider.run(routed);
+      // A call pinned to a backend stays on this runtime: the paired server's endpoint of the same
+      // name is a different server, and relaying would send this thread's context to it.
+      const go = async () => (call.backend ? provider.run(routed) : await sharedModel(call.userId, id, routed) ?? provider.run(routed));
       return call.child ? withChildSlot(go, call.signal) : go();
     },
     context: async(user, model) => {

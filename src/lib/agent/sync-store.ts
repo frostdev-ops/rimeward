@@ -13,12 +13,11 @@ import {
   appendItems,
   addMessage,
   userItemFor,
-  stampConversationModel,
   type AgentStep,
   type TurnSource,
 } from "./conversations.ts";
 import type { AgentProviderId } from "./provider.ts";
-import { isAgentProvider } from '../wards.ts';
+import { isAgentProvider } from "../wards.ts";
 import { INSTANCE_KEY, dashboardForSync, validateInstance, installInstance } from '../dev/instance.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { BG_DIR, listBackgrounds, MAX_PER_USER } from '../backgrounds.ts';
@@ -34,7 +33,9 @@ export interface SyncRecord {
 export interface SharedChat {
   provider: AgentProviderId;
   endpoint?: string | null;
+  /** compat: the base URL the endpoint NAME pointed at where this ran — names are per runtime (never the key). */
   endpointUrl?: string | null;
+  /** The model the thread last ran on (chat format 2); absent = not recorded. */
   model?: string | null;
   ward: string;
   title: string;
@@ -202,9 +203,12 @@ export function validateRecord(record: SyncRecord) {
       throw failure("Invalid shared history.");
     if (record.key.startsWith("chat/")) {
       const chat = value as SharedChat;
-      const optionalText = (value: unknown, max: number) => value === undefined || value === null || typeof value === 'string' && value.length <= max;
+      const optionalText = (v: unknown, max: number) => v === undefined || v === null || (typeof v === "string" && v.length <= max);
       if (
-        !isAgentProvider(chat.provider) || !optionalText(chat.endpoint, 64) || !optionalText(chat.endpointUrl, 2048) || !optionalText(chat.model, 100) ||
+        !isAgentProvider(chat.provider) ||
+        !optionalText(chat.endpoint, 64) ||
+        !optionalText(chat.endpointUrl, 2048) ||
+        !optionalText(chat.model, 100) ||
         typeof chat.title !== "string" ||
         typeof chat.ward !== "string" ||
         typeof chat.device !== "string" ||
@@ -396,6 +400,9 @@ export function captureRime(user: number) {
     store(user, `chat/${origin}/${conv.id}`, {
       provider: conv.provider,
       ...(conv.endpoint ? { endpoint: conv.endpoint } : {}),
+      // The backend the thread RAN against, as it recorded it — never today's value for that alias:
+      // repointing (or removing and re-adding) the endpoint must not rewrite an old conversation, and
+      // this read must not unseal a key that may since have been rotated away.
       ...(conv.provider === 'compat' && conv.endpoint_url ? { endpointUrl: conv.endpoint_url } : {}),
       ...(conv.model ? { model: conv.model } : {}),
       ward: conv.ward,
@@ -660,7 +667,6 @@ export async function continueSharedChat(
   admit.commit?.();
   retireConversation(user, ward);
   const conv = activeConversation(user, ward, chat.provider, chat.endpoint ?? null);
-  stampConversationModel(conv.id, chat.model ?? '', chat.provider === 'compat' ? chat.endpointUrl : undefined);
   for (const id of remapped.values())
     getDb()
       .prepare(

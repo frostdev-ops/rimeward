@@ -3,9 +3,21 @@
  *  prompt goes to Rime through the PermissionRequest hook), normal (the CLI's auto mode),
  *  yolo (skip permissions). Read from the agent ward's config, not per terminal. */
 export type PermissionMode = "read-only" | "approvals" | "normal" | "yolo";
-export const PERMISSION_MODES = ['read-only', 'approvals', 'normal', 'yolo'] as const;
-export const isPermissionMode = (value: unknown): value is PermissionMode => (PERMISSION_MODES as readonly unknown[]).includes(value);
-export const narrowerPermission = (a: PermissionMode, b: PermissionMode): PermissionMode => PERMISSION_MODES.indexOf(a) <= PERMISSION_MODES.indexOf(b) ? a : b;
+/** Narrowest first: the order IS the authority ranking (`narrowerPermission`). */
+export const PERMISSION_MODES = ["read-only", "approvals", "normal", "yolo"] as const satisfies readonly PermissionMode[];
+export const isPermissionMode = (v: unknown): v is PermissionMode => (PERMISSION_MODES as readonly unknown[]).includes(v);
+/** The narrower of two modes: a run may lose authority, never gain it. */
+export const narrowerPermission = (a: PermissionMode, b: PermissionMode): PermissionMode =>
+  PERMISSION_MODES.indexOf(a) <= PERMISSION_MODES.indexOf(b) ? a : b;
+/** One vocabulary for every surface that names a mode: the ward's Configure dialog, the chat
+ *  footer, the terminal ward and the CLI's own instructions. */
+export const PERMISSION_LABELS: Record<PermissionMode, string> = { "read-only": "Read-only", approvals: "Approvals", normal: "Normal", yolo: "YOLO" };
+export const PERMISSION_HELP: Record<PermissionMode, string> = {
+  "read-only": "Claude Code plan mode / Codex read-only sandbox: the CLI is held to inspecting, each by its own mechanism.",
+  approvals: "The CLI asks before acting (Claude Code’s default mode / Codex on-request in its workspace-write sandbox). Rime answers while its conversation is active; otherwise the person at the terminal does.",
+  normal: "Claude Code auto mode / Codex automatic approval review in its workspace-write sandbox: routine actions proceed; the prompts that remain are answered as under Approvals.",
+  yolo: "Claude Code skips its permission prompts; Codex skips prompts and its sandbox. OS permissions and Codex hook trust still apply.",
+};
 /** A Rime-launched CLI's lifecycle as its hooks report it (lib/dev/cli-bridge.ts). */
 export type CliPhase = "running" | "waiting-permission" | "waiting-input" | "done" | "ended";
 export type TerminalKind = "shell" | "codex" | "claude";

@@ -158,6 +158,7 @@ export function machineLocalEndpoint(url: string): boolean {
   if (literal) return isLoopbackAddress(host) || isPrivateAddress(host);
   return !host.includes('.'); // a single-label name is resolved by the local search domain, not globally
 }
+
 export function storeEndpoint(userId: number, e: { name: string; url: string; key?: string }): void {
   const name = e.name.trim().toLowerCase();
   if (!ENDPOINT_NAME_RE.test(name)) throw new Error('endpoint name: 1-40 lowercase letters, digits or dashes');

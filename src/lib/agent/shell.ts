@@ -114,7 +114,7 @@ async function vetHost(target: URL, allowLoopback = false): Promise<VettedAddres
  *  from the URL). */
 function request(
   target: URL,
-  options: { method: string; headers?: Record<string, string>; body?: string; timeoutMs: number; pinned: VettedAddress; signal?: AbortSignal; deadlineMs?: number; onChunk?: (chunk: Uint8Array, headers: Record<string, string>) => void }
+  options: { method: string; headers?: Record<string, string>; body?: string | Uint8Array; timeoutMs: number; pinned: VettedAddress; signal?: AbortSignal; deadlineMs?: number; onChunk?: (chunk: Uint8Array, headers: Record<string, string>) => void }
 ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: Uint8Array; location?: string }> {
   const mod = target.protocol === 'https:' ? https : http;
   const { address, family } = options.pinned;
@@ -183,7 +183,7 @@ function request(
     // A cancel tears the socket down; the promise rejects through 'error'.
     if (options.signal?.aborted) req.destroy(new Error('aborted'));
     else options.signal?.addEventListener('abort', onAbort, { once: true });
-    if (options.body) req.write(options.body);
+    if (options.body?.length) req.write(options.body);
     req.end();
   });
 }
@@ -199,7 +199,7 @@ function request(
  */
 export async function pinnedRequest(
   url: string,
-  options: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; signal?: AbortSignal; allowLoopback?: boolean; onChunk?: (chunk: Uint8Array, headers: Record<string, string>) => void }
+  options: { method?: string; headers?: Record<string, string>; body?: string | Uint8Array; timeoutMs?: number; signal?: AbortSignal; allowLoopback?: boolean; onChunk?: (chunk: Uint8Array, headers: Record<string, string>) => void }
 ): Promise<{ status: number; headers: Record<string, string>; text: string }> {
   const target = new URL(url);
   const pinned = await vetHost(target, options.allowLoopback === true);

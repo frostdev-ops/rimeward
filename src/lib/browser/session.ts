@@ -10,6 +10,7 @@ import { browserScale, httpUrl, type BrowserConfig } from '../wards.ts';
 import { direct, guardFor, guardPort, type Dial } from './guard.ts';
 import { connectBrowserbase, dropBrowserbase } from './browserbase.ts';
 import { connectApp } from './app-backend.ts';
+import { watchDevtools } from './devtools.ts';
 import { publicAddress } from '../net-guard.ts';
 import { openStream, subscribeTunnel, tunnelOnline, tunnelStatus } from '../tunnel.ts';
 import { captureDownload, listDownloads, moveDownloads, type BrowserDownload } from './downloads.ts';
@@ -377,6 +378,7 @@ function emit(s: Session, ev: BrowserEvent): void {
 }
 
 function watchPage(s: Session, p: Page): void {
+  watchDevtools(s, p); // console and network, recorded for the whole session (lib/browser/devtools.ts)
   p.on('download', download => captureDownload(s.userId, s.ward, download,
     s.backend === 'local' ? path.join(PROFILES, String(s.userId), s.ward, 'rimeward-transfers') : undefined,
     file => emit(s, { type: 'download', file })));

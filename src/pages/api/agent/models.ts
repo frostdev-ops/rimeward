@@ -1,6 +1,6 @@
 import type { APIRoute } from 'astro';
 import { agentConfigured, defaultAgentProvider, isAgentProvider, AGENT_PROVIDERS, DEFAULT_MODELS, PROVIDER_NAMES } from '../../../lib/agent/provider.ts';
-import { agentWardConfig } from '../../../lib/agent/ward-config.ts';
+import { agentWardConfig, cliPermissionState } from '../../../lib/agent/ward-config.ts';
 import { syncRime } from '../../../lib/agent/sync.ts';
 import { knownEndpoints, modelCatalog } from '../../../lib/agent/models.ts';
 
@@ -28,7 +28,10 @@ export const GET: APIRoute = async ({ url, locals }) => {
     endpoints,
     default: defaultAgentProvider(user),
     providers: AGENT_PROVIDERS.map((p) => ({ provider: p, name: PROVIDER_NAMES[p], configured: p === 'compat' ? endpoints.some((e) => agentConfigured(user, 'compat', e)) : agentConfigured(user, p), ...(DEFAULT_MODELS[p] ? { default: DEFAULT_MODELS[p] } : {}) })),
-    ...(current ? { current: { provider: current.provider, ...(current.endpoint ? { endpoint: current.endpoint } : {}), model: current.model, effort: current.effort } } : {}),
+    // `permissions` is the ward's EFFECTIVE Coding CLI mode and `defaultPermissions` what Default
+    // would make it (the paired server Rime's setting, else normal) — the chat footer's picker
+    // shows both and edits the pick beside the model.
+    ...(current ? { current: { provider: current.provider, ...(current.endpoint ? { endpoint: current.endpoint } : {}), model: current.model, effort: current.effort, permissions: current.permissions ?? 'normal', defaultPermissions: cliPermissionState(user, wardId!)?.inherited ?? 'normal' } } : {}),
   };
   const headers = { 'cache-control': 'no-store' };
   if (provider === 'compat' && !endpoint) return Response.json({ models: [], source: 'none', ...shared }, { headers });

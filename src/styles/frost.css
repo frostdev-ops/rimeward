@@ -490,6 +490,9 @@ summary {
   color: var(--color-ink-muted);
   white-space: nowrap;
   transition: color 0.15s, border-color 0.15s;
+  /* No touch-action override: touch pans scroll the strip natively; drags are mouse/pen only. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 .app-page:hover {
   color: var(--color-ink);
@@ -501,10 +504,28 @@ summary {
   padding-inline: 0.6rem;
   color: var(--color-ink-faint);
 }
-/* The ⋯ chip after the active tab (pages.ts): the page menu's visible door. */
-.app-page-more {
-  padding-inline: 0.4rem;
-  color: var(--color-ink-faint);
+/* Tab drag-reorder (pages.ts): the grabbed chip rides the pointer while its
+   neighbours part to show the landing slot — transforms only, the strip's
+   DOM (and the ink) never move until release. */
+.app-page-drag {
+  position: relative;
+  z-index: 1;
+  color: var(--color-ink);
+  background: var(--color-accent-soft);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  box-shadow: var(--shadow-lg, 0 8px 24px rgb(0 0 0 / 0.2));
+  will-change: transform;
+}
+.app-pages[data-page-drag] .app-page:not(.app-page-drag) {
+  transition: transform 0.16s ease-out, color 0.15s, border-color 0.15s;
+}
+.app-pages[data-page-drag] .app-page-ink {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-pages[data-page-drag] .app-page:not(.app-page-drag) {
+    transition: none;
+  }
 }
 /* A card dragged over a tab (edit.ts): lit until the dwell switches page. */
 .app-page[data-drop-hot] {

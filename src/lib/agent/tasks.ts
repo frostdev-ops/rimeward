@@ -2,7 +2,10 @@ import { liveTurn } from './live-turn.ts';
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db.ts';
 import { broadcast } from '../logic-engine.ts';
-import { activeConversationRow, addMessage, appendItems, getConversation, transcript, userItemFor } from './conversations.ts';
+import { activeConversationRow, addMessage, appendItems, getConversation, transcript, userItemFor, type ConvRow } from './conversations.ts';
+import { agentConfigured } from './provider.ts';
+import { endpointUrlOf } from './accounts.ts';
+import type { AgentProviderId } from '../wards.ts';
 import type { Dialect } from './provider.ts';
 import type { ToolCtx, ToolDef } from './tools.ts';
 import { CHILD_ANSWER_MAX, openQuestion } from './inbox.ts';
@@ -20,10 +23,30 @@ export interface AgentTask {
   finishedAt: number | null;
   cancellable: boolean;
   error: string | null;
+  /** The thread that started it — where a background result or a child's report is delivered. */
+  conversation?: number;
+  /** That thread has been told the result (a task notice drained, or filed into an archived thread). */
+  notified?: boolean;
+  /** Relative to the thread the list was asked from: started by it, or by an earlier one of this ward. */
+  thread?: 'this' | 'earlier';
+  /** A running child's question to its parent, still unanswered. */
+  waiting?: { id: number; text: string };
+  /** A finished child's final reply, first lines. */
+  summary?: string;
   /** A child run's route, as started (and as switched by set_model). */
   provider?: string;
   model?: string;
   endpoint?: string;
+  /** Resume lineage: which attempt this is, the attempt it continued, and the later attempt that continued it. */
+  attempt?: number;
+  resumedFrom?: string;
+  resumedBy?: string;
+  /** Who stopped it (cancelled/interrupted); absent when not stopped or unrecorded. */
+  stoppedBy?: StopActor;
+  /** false: the row was reserved and refused before its start — an audit line, not an attempt that ran. */
+  started?: false;
+  /** Who asked for this resumed attempt. */
+  resumeActor?: 'user' | 'agent';
 }
 interface Row {
   id: string; user_id: number; ward: string; conversation_id: number;
@@ -31,7 +54,26 @@ interface Row {
   started_at: number; finished_at: number | null; error: string | null;
   result: string; output: string; output_offset: number; notified: number;
   provider: string | null; model: string | null; endpoint: string | null;
+  /** Listing rows only: the head of a child's reply, extracted in SQL from the parsed result. */
+  reply_head?: string | null;
+  /** Resume lineage (migration 035): the attempt this row continued, and the root of its chain (NULL on a root). */
+  resumed_from: string | null; lineage: string | null;
+  /** Structured stop provenance; NULL = not stopped, or stopped before it was recorded (unknown). */
+  stopped_by: StopActor | null;
+  /** Execution provenance: 0 = reserved and refused before its start (never a source, never a block), 1 = ran. */
+  ran: number;
+  /** Who asked for this resumed attempt: 'user' (Tasks, server-verified) or 'agent' (task_resume); NULL on a plain spawn. */
+  resume_actor: 'user' | 'agent' | null;
 }
+/** Who stopped a job: the person (UI), the parent agent's task_cancel, a child run's task_cancel, the
+ *  parent run's own stop cascading into its children, or a runtime restart. Stored, never parsed from text. */
+export type StopActor = 'user' | 'agent' | 'child' | 'parent' | 'runtime';
+const STOP_LABEL: Record<StopActor, string> = { user: 'the user', agent: 'the parent agent', child: 'a child run', parent: 'its parent run', runtime: 'the runtime' };
+export const stopLabel = (actor: StopActor | null | undefined): string => (actor ? STOP_LABEL[actor] : 'an unrecorded actor');
+/** Provenance precedence: an explicit user Stop is never downgraded by an earlier or later actor; otherwise the first recorded actor stands. */
+const stopWins = (current: StopActor | null | undefined, next: StopActor): StopActor => (current === 'user' || next === 'user' ? 'user' : current ?? next);
+/** SQL form of stopWins for the stored column. */
+const STOP_SQL = "stopped_by=CASE WHEN stopped_by='user' OR ?='user' THEN 'user' ELSE COALESCE(stopped_by, ?) END";
 interface Running {
   ac: AbortController;
   cancellable: boolean;
@@ -39,6 +81,7 @@ interface Running {
   done: Promise<unknown>;
   /** Who asked for the cancel — the run's own interrupt line names them. */
   cancelledBy?: string;
+  stoppedBy?: StopActor;
 }
 /** Who cancelled a running job, once someone has. */
 export const cancelledBy = (id: string): string | undefined => live.get(id)?.cancelledBy;
@@ -51,7 +94,12 @@ let recovered = false;
 function db() {
   const db = getDb();
   if (!recovered) {
-    db.prepare("UPDATE agent_jobs SET state='interrupted', finished_at=?, error='Runtime restarted; inspect the result before retrying. Nothing was replayed.' WHERE state IN ('running','stopping')").run(Date.now());
+    // A recorded actor survives the restart; a stop that was pending without one stays UNKNOWN (never
+    // relabelled as the runtime's); only a plainly running row was interrupted by the runtime itself.
+    db.prepare(`UPDATE agent_jobs SET state='interrupted', finished_at=?,
+      error=CASE WHEN state='stopping' THEN 'Runtime restarted while this run was stopping; inspect the result before retrying. Nothing was replayed.' ELSE 'Runtime restarted; inspect the result before retrying. Nothing was replayed.' END,
+      stopped_by=CASE WHEN stopped_by IS NOT NULL THEN stopped_by WHEN state='stopping' THEN NULL ELSE 'runtime' END
+      WHERE state IN ('running','stopping')`).run(Date.now());
     recovered = true;
   }
   return db;
@@ -81,15 +129,120 @@ export function assertTaskCapacity(userId: number): void {
 export function stampJob(id: string, sel: { provider: string; model: string; endpoint?: string | null }): void {
   db().prepare('UPDATE agent_jobs SET provider=?, model=?, endpoint=? WHERE id=?').run(sel.provider, sel.model, sel.endpoint ?? null, id);
 }
-function view(r: Row): AgentTask {
+const ACTIVE = new Set<AgentTask['state']>(['running', 'stopping']);
+function view(r: Row, conversation?: number): AgentTask {
+  const child = r.tool === 'spawn_agent';
+  const question = child && r.state === 'running' ? openQuestion(r.user_id, r.id, r.ward) : null;
+  const reply = child && !ACTIVE.has(r.state) ? summaryOf(childReply(r)) : '';
+  const later = child ? descendant(r) : undefined;
   return { id: r.id, tool: r.tool, reason: r.reason, state: r.state, background: !!r.background,
     startedAt: r.started_at, finishedAt: r.finished_at, error: r.error,
     cancellable: !!live.get(r.id)?.cancellable && r.state === 'running',
+    conversation: r.conversation_id, notified: !!r.notified,
+    ...(conversation === undefined ? {} : { thread: r.conversation_id === conversation ? 'this' as const : 'earlier' as const }),
+    ...(question ? { waiting: { id: question.id, text: question.text.slice(0, 500) } } : {}),
+    ...(reply ? { summary: reply } : {}),
+    ...(child ? { attempt: attemptOf(r), ...(r.resumed_from ? { resumedFrom: r.resumed_from } : {}), ...(later ? { resumedBy: later.id } : {}) } : {}),
+    ...(r.ran ? {} : { started: false }),
+    ...(r.resume_actor ? { resumeActor: r.resume_actor } : {}),
+    ...(r.stopped_by ? { stoppedBy: r.stopped_by } : {}),
     ...(r.provider ? { provider: r.provider } : {}), ...(r.model ? { model: r.model } : {}), ...(r.endpoint ? { endpoint: r.endpoint } : {}) };
 }
+/** The attempt that continued this one, if any (a resume is always a new row pointing back). */
+function descendant(r: Pick<Row, 'id' | 'user_id'>): { id: string; state: AgentTask['state'] } | undefined {
+  // A row refused before its start (ran=0, finished) is an audit line: it never continued anything.
+  return db().prepare("SELECT id,state FROM agent_jobs WHERE resumed_from=? AND user_id=? AND (ran=1 OR state IN ('running','stopping')) ORDER BY started_at DESC LIMIT 1").get(r.id, r.user_id) as { id: string; state: AgentTask['state'] } | undefined;
+}
+/** The source a reserved resume row was admitted for — written only by runTask's admitted insert; the
+ *  one place a run learns it is a resume. NULL for every ordinary spawn, whatever its arguments said. */
+export function admittedResume(userId: number, job: string): string | null {
+  return (db().prepare('SELECT resumed_from FROM agent_jobs WHERE id=? AND user_id=?').get(job, userId) as { resumed_from: string | null } | undefined)?.resumed_from ?? null;
+}
+/** The run is about to start for real (its model is about to be called): from here on the row is an
+ *  attempt that ran, whatever happens next — resumable, and a block on its lineage while live. */
+export function markRan(job: string): void { db().prepare('UPDATE agent_jobs SET ran=1 WHERE id=?').run(job); }
+/** 1 for a first attempt; one more per resumed_from hop. */
+function attemptOf(r: Pick<Row, 'resumed_from'>): number {
+  let n = 1, cur = r.resumed_from; const seen = new Set<string>();
+  while (cur && !seen.has(cur) && n < 100) { seen.add(cur); n++; cur = (db().prepare('SELECT resumed_from FROM agent_jobs WHERE id=?').get(cur) as { resumed_from: string | null } | undefined)?.resumed_from ?? null; }
+  return n;
+}
+/** Every resumed row carries the root id; a root is its own. */
+const lineageRoot = (r: Pick<Row, 'id' | 'lineage'>): string => r.lineage ?? r.id;
+/** What a resume continues from — the finished attempt, its thread and how much of it is there. */
+export function resumeSource(userId: number, ward: string, id: string): { job: AgentTask & { attempt: number }; conv: ConvRow | null; items: number } | null {
+  const r = db().prepare('SELECT * FROM agent_jobs WHERE id=? AND user_id=? AND ward=? AND tool=?').get(id, userId, ward, 'spawn_agent') as Row | undefined;
+  if (!r) return null;
+  const conv = (db().prepare('SELECT * FROM agent_conversations WHERE user_id=? AND ward=? AND task_id=?').get(userId, ward, id) as ConvRow | undefined) ?? null;
+  const items = conv ? (db().prepare('SELECT count(*) AS n FROM agent_items WHERE conversation_id=?').get(conv.id) as { n: number }).n : 0;
+  return { job: { ...view(r), attempt: attemptOf(r) }, conv, items };
+}
+/**
+ * The finished attempt a resume continues, or the reason it cannot — decided in the same synchronous
+ * step as capacity and the insert (runTask), so two resumes can never both pass. For every caller: this
+ * chat's own child, finished, not already continued, no live attempt anywhere in its lineage. For the
+ * agent's tool (no ctx.user, which only the server sets on a person's own action): from the thread that
+ * started it, never inside a child, and never work the person stopped or whose stop is unrecorded —
+ * those the person resumes from Tasks. No model-supplied flag can stand in for that.
+ */
+function admitResume(ctx: ToolCtx, id: string): Row {
+  const r = db().prepare('SELECT * FROM agent_jobs WHERE id=? AND user_id=? AND ward=?').get(id, ctx.userId, ctx.ward) as Row | undefined;
+  if (r?.tool !== 'spawn_agent') throw Error('Task not found in this chat, or not a child run.');
+  if (ACTIVE.has(r.state)) throw Error(`Child run ${id} is still ${r.state}; there is nothing to resume.`);
+  // A row refused before its start is not a source: it holds no record. Point at the attempt that does.
+  if (!r.ran) throw Error(r.resumed_from
+    ? `Attempt ${attemptOf(r)} (task ${id}) never started — its start was refused: ${r.error ?? 'unknown'}. Resume attempt ${attemptOf(r) - 1} (task ${r.resumed_from}) instead.`
+    : `Child run ${id} never started — its start was refused: ${r.error ?? 'unknown'}. There is nothing to resume; start a new child.`);
+  const later = descendant(r);
+  if (later) throw Error(`Attempt ${attemptOf(r)} of this work was already resumed as task ${later.id} (${later.state}); resume that attempt instead.`);
+  const root = lineageRoot(r);
+  const running = db().prepare("SELECT id FROM agent_jobs WHERE user_id=? AND state IN ('running','stopping') AND (id=? OR lineage=?)").get(ctx.userId, root, root) as { id: string } | undefined;
+  if (running) throw Error(`This work is already being continued by task ${running.id}; wait for it or stop it first.`);
+  if (!ctx.user) {
+    if (ctx.task) throw Error('A child run cannot resume runs. Ask your parent.');
+    if (ctx.conv !== r.conversation_id) throw Error(`child run ${id} belongs to an earlier thread of this ward — only the user can resume it, from Tasks`);
+    // The person's Stop is theirs to undo, whatever state the run ended in; so is any stop whose actor
+    // is unknown or was the parent run's own stop. The tool may continue work the agent side stopped
+    // (its own task_cancel, a child's) or a genuine runtime interruption.
+    const stopped = r.state === 'cancelled' || r.state === 'interrupted' || r.stopped_by !== null;
+    if (stopped && !(r.stopped_by === 'agent' || r.stopped_by === 'child' || r.stopped_by === 'runtime')) throw Error(`child run ${id} was stopped by ${stopLabel(r.stopped_by)}; only the user can resume it, from Tasks`);
+    // A continuation of this source that the person (or an unknown actor, or a parent-run stop) stopped
+    // before it started is an audit row for retryability, but its stop authority stands: the agent may
+    // not re-continue that work — only the person's own Resume does. (A continuation the person started
+    // that then RAN moved the source on; nothing here is read off the clock.)
+    const barrier = db().prepare("SELECT stopped_by FROM agent_jobs WHERE resumed_from=? AND user_id=? AND ran=0 AND (state='cancelled' OR state='interrupted' OR stopped_by IS NOT NULL) AND (stopped_by IS NULL OR stopped_by NOT IN ('agent','child','runtime')) LIMIT 1").get(r.id, ctx.userId) as { stopped_by: StopActor | null } | undefined;
+    if (barrier) throw Error(`a continuation of child run ${id} was stopped by ${stopLabel(barrier.stopped_by)} before it started; only the user can resume this work, from Tasks`);
+  }
+  // Identity and context that can be checked without waiting: refused here, BEFORE a row is reserved —
+  // a missing thread, an empty record, an unrecorded model or an unconfigured provider leave no trace
+  // and block nothing. (What remains async — the live catalog — is checked after reservation, and a
+  // refusal there leaves a row that never ran: audit, not a source, not a block.)
+  const conv = db().prepare('SELECT provider, endpoint, endpoint_url FROM agent_conversations WHERE user_id=? AND ward=? AND task_id=?').get(ctx.userId, ctx.ward, id) as { provider: AgentProviderId; endpoint: string | null; endpoint_url: string | null } | undefined;
+  if (!conv) throw Error(`no recoverable context: the thread of child run ${id} is gone`);
+  if (!(db().prepare('SELECT count(*) AS n FROM agent_items WHERE conversation_id=(SELECT id FROM agent_conversations WHERE user_id=? AND ward=? AND task_id=?)').get(ctx.userId, ctx.ward, id) as { n: number }).n) throw Error(`no recoverable context: child run ${id} left no conversation record`);
+  if (!r.model) throw Error(`child run ${id} did not record its model; start a new child with spawn_agent instead`);
+  if (!agentConfigured(ctx.userId, conv.provider, conv.endpoint)) throw Error(`${conv.provider}${conv.endpoint ? ` "${conv.endpoint}"` : ''} is no longer configured; child run ${id} ran there and is not moved to another provider`);
+  // An endpoint NAME is a per-runtime alias; the attempt's recorded backend is what has to be behind it
+  // still. runChildRun checks this again on the config it actually runs with — this copy is only so the
+  // refusal costs no reservation. (Same wording, one meaning.)
+  if (conv.endpoint) {
+    if (!conv.endpoint_url) throw Error(`child run ${id} did not record which server "${conv.endpoint}" pointed at; start a new child with spawn_agent instead`);
+    const here = endpointUrlOf(ctx.userId, conv.endpoint);
+    if (here !== conv.endpoint_url) throw Error(`endpoint "${conv.endpoint}" now points at ${here ?? 'nothing'}; child run ${id} ran against ${conv.endpoint_url} and is not moved to another server`);
+  }
+  return r;
+}
+/** A push carries the origin relative to the ward's active thread — the thread every open client shows. */
+const broadcastTask = (r: Row) => broadcast(r.user_id, 'agent-live', { ward: r.ward, event: { type: 'task', task: view(r, activeConversationRow(r.user_id, r.ward)?.id) } });
 function publish(r: Row) {
   observe({ user:r.user_id,source:'agent',target:r.id,key:`${r.id}:${r.state}`,data:{ eventType:'task',status:r.state,text:r.result?.slice(0,8000) ?? '',tool:r.tool } });
-  broadcast(r.user_id, 'agent-live', { ward: r.ward, event: { type: 'task', task: view(r) } });
+  broadcastTask(r);
+}
+/** Re-broadcast a task whose view changed without a state change — a child's question opened or
+ *  closed — so badges and open drawers follow without polling. No observation: nothing happened to the job. */
+export function touchTask(userId: number, id: string): void {
+  const r = db().prepare('SELECT * FROM agent_jobs WHERE id=? AND user_id=?').get(id, userId) as Row | undefined;
+  if (r) broadcastTask(r);
 }
 function cleanTaskLogs(userId: number) {
   // Unreported results for a current conversation/running child still carry work.
@@ -102,9 +255,14 @@ function cleanTaskLogs(userId: number) {
 export function listTasks(ctx: Pick<ToolCtx, 'userId' | 'ward'> & Partial<Pick<ToolCtx, 'conv'>>, history = true): AgentTask[] {
   cleanTaskLogs(ctx.userId);
   const conversation = ctx.conv ?? activeConversationRow(ctx.userId, ctx.ward)?.id ?? 0;
-  return (db().prepare(`SELECT id,tool,reason,state,background,started_at,finished_at,error,provider,model,endpoint FROM agent_jobs WHERE user_id=? AND ward=?
+  // The view reads the owner (a child's open question), the thread, the delivery flag and — for a
+  // child — the head of its REPLY, extracted from the parsed result in SQL (a cut JSON envelope would
+  // parse as nothing); output and result stay out of the listing.
+  return (db().prepare(`SELECT id,user_id,ward,conversation_id,tool,reason,state,background,started_at,finished_at,error,notified,provider,model,endpoint,resumed_from,lineage,stopped_by,ran, '' AS result,
+    CASE WHEN tool='spawn_agent' AND json_valid(result) AND json_type(result,'$.reply')='text' THEN substr(json_extract(result,'$.reply'),1,4000) END AS reply_head
+    FROM agent_jobs WHERE user_id=? AND ward=?
     AND (? OR state IN ('running','stopping') OR (background=1 AND notified=0 AND conversation_id=?))
-    ORDER BY state IN ('running','stopping') DESC, started_at DESC LIMIT 100`).all(ctx.userId, ctx.ward, Number(history), conversation) as Row[]).map(view).concat(listMonitors({ ...ctx,conv:conversation }));
+    ORDER BY state IN ('running','stopping') DESC, started_at DESC LIMIT 100`).all(ctx.userId, ctx.ward, Number(history), conversation) as Row[]).map((r) => view(r, conversation)).concat(listMonitors({ ...ctx,conv:conversation }));
 }
 /** Output offsets are absolute, so a rolling log can report an explicit gap. */
 export function readTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string, cursor = 0, result = false) {
@@ -132,7 +290,10 @@ export function readChildTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string)
     .all(ctx.userId, id) as { id: number; text: string; status: string; result: string }[];
   const question = r.state === 'running' ? openQuestion(ctx.userId, id, ctx.ward) : null;
   const running = conv ? liveTurn(ctx.userId, conv.id) : undefined;
-  return { task: view(r), conversation: conv?.id, live: running, transcript: running?.transcript ?? (conv ? transcript(conv.id) : []), output: r.output, truncated: r.output_offset > 0,
+  const active = activeConversationRow(ctx.userId, ctx.ward)?.id ?? null;
+  return { task: view(r, active ?? undefined), conversation: conv?.id, live: running, transcript: running?.transcript ?? (conv ? transcript(conv.id) : []), output: r.output, truncated: r.output_offset > 0,
+    // Linkage: the thread this child reports to, and whether the user is still looking at it.
+    parent: { conversation: r.conversation_id, active: r.conversation_id === active },
     canMessage: r.state === 'running' && isLive(id), messages: messages.reverse(),
     question: question ? { id: question.id, text: question.text, maxLength: CHILD_ANSWER_MAX } : null };
 }
@@ -152,13 +313,16 @@ export function backgroundTasks(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id?: stri
   }
   return changed;
 }
-export function cancelTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string, by = 'the user'): AgentTask {
+export function cancelTask(ctx: Pick<ToolCtx, 'userId' | 'ward'>, id: string, by = 'the user', actor: StopActor = 'user'): AgentTask {
   if (id.startsWith('monitor:')) { const { monitor } = readMonitor(ctx,id); deleteMonitor(ctx,id); return { ...monitor,state:'cancelled',finishedAt:Date.now(),cancellable:false }; }
   const r = row(ctx, id), run = live.get(id);
   if (!run || !['running', 'stopping'].includes(r.state)) return view(r);
   if (!run.cancellable) throw Error('This tool cannot be stopped safely. It will retain its result when it finishes.');
-  db().prepare("UPDATE agent_jobs SET state='stopping' WHERE id=?").run(id);
-  run.cancelledBy ??= by;
+  // The actor is durable from the moment the Stop is asked for — not at settlement, which a restart
+  // may never reach — and a person's Stop outranks an earlier agent cancel.
+  db().prepare(`UPDATE agent_jobs SET state='stopping', ${STOP_SQL} WHERE id=?`).run(actor, actor, id);
+  if (actor === 'user' || !run.cancelledBy) run.cancelledBy = by;
+  run.stoppedBy = stopWins(run.stoppedBy, actor);
   run.ac.abort();
   const updated = row(ctx, id); publish(updated);
   return view(updated);
@@ -216,11 +380,20 @@ export function fileChildNotice(userId: number, id: string): boolean {
 
 /** The child's final reply, for a notice — the parent should not need task_output to hear it. */
 function childBrief(r: Row): string {
+  const reply = childReply(r).trim();
+  return reply ? `\nIts final reply:\n<<<\n${reply.slice(0, 4000)}\n>>>` : '';
+}
+/** A child's reply: the whole string from a full row, or the SQL-extracted head a listing row carries.
+ *  A malformed, omitted or non-string result is no reply at all — never an error. */
+function childReply(r: Pick<Row, 'result' | 'reply_head'>): string {
+  if (r.reply_head !== undefined) return r.reply_head ?? '';
   try {
     const reply = (JSON.parse(r.result) as { reply?: unknown }).reply;
-    return typeof reply === 'string' && reply.trim() ? `\nIts final reply:\n<<<\n${reply.slice(0, 4000)}\n>>>` : '';
+    return typeof reply === 'string' ? reply : '';
   } catch { return ''; }
 }
+/** The one summary every surface shows (listing, detail, live push): trimmed, 300 code points, never a split surrogate. */
+const summaryOf = (reply: string): string => [...reply.trim().slice(0, 1200)].slice(0, 300).join('');
 /**
  * A finished child's result reaches its parent through ONE durable path: the
  * task notice (taskNotices — the job row's `notified` flag, claimed atomically
@@ -272,8 +445,14 @@ export async function runTask(name: string, args: Record<string, unknown>, ctx: 
   // A child's cancel reaches the tools it started, backgrounded or not.
   const onAbort = () => ac.abort();
   ctx.signal?.addEventListener('abort', onAbort, { once: true });
-  store.prepare('INSERT INTO agent_jobs(id,user_id,ward,conversation_id,tool,reason,background,started_at) VALUES(?,?,?,?,?,?,?,?)')
-    .run(id, ctx.userId, ctx.ward, ctx.conv, name, String(args.reason ?? name).slice(0, 500), Number(background), Date.now());
+  // A resume (ToolDef.resume: args.id names the finished attempt) is admitted in the same transaction
+  // as the row it reserves — the lineage check and the insert cannot be split by another caller. The
+  // new row is a child (tool spawn_agent) linked back; the attempt it continues is never edited.
+  store.transaction(() => {
+    const ancestor = def.resume ? admitResume(ctx, String(args.id ?? '')) : null;
+    store.prepare('INSERT INTO agent_jobs(id,user_id,ward,conversation_id,tool,reason,background,started_at,resumed_from,lineage,ran,resume_actor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, ctx.userId, ctx.ward, ctx.conv, def.spawn ? 'spawn_agent' : name, ancestor ? ancestor.reason : String(args.reason ?? name).slice(0, 500), Number(background), Date.now(), ancestor?.id ?? null, ancestor ? lineageRoot(ancestor) : null, def.spawn ? 0 : 1, ancestor ? (ctx.user ? 'user' : 'agent') : null);
+  })();
   let release!: () => void;
   const detached = new Promise<void>(resolve => { release = resolve; });
   const run: Running = { ac, cancellable: def.cancellable === true, release, done: Promise.resolve() };
@@ -296,15 +475,20 @@ export async function runTask(name: string, args: Record<string, unknown>, ctx: 
     const json = JSON.stringify(value ?? null);
     const error = toolFailure(value);
     const cancelled = ac.signal.aborted || !!(value && typeof value === 'object' && 'cancelled' in value && value.cancelled === true);
-    store.prepare('UPDATE agent_jobs SET state=?,finished_at=?,result=?,error=? WHERE id=?')
+    // Who stopped it is recorded as data; a stopped child run's error line names them too
+    // ("Command cancelled." is a process's line).
+    const actor: StopActor | null = cancelled ? run.stoppedBy ?? (ctx.signal?.aborted ? 'parent' : 'user') : null;
+    const why = cancelled && def.spawn ? `Stopped by ${run.cancelledBy ?? stopLabel(actor)}.` : error;
+    store.prepare(`UPDATE agent_jobs SET state=?,finished_at=?,result=?,error=?,${STOP_SQL} WHERE id=?`)
       .run(cancelled ? 'cancelled' : error !== null ? 'failed' : 'completed', Date.now(), json.length <= RESULT_KEEP ? json : JSON.stringify({ omitted: true, note: 'Result exceeded 128k characters; inspect the output or source. Do not repeat a mutation.', preview: json.slice(0, 8000) }),
-        error?.slice(0, 500) ?? null, id);
+        why?.slice(0, 500) ?? null, actor, actor, id);
     return value;
   }).catch(error => {
     const message = error instanceof Error ? error.message : String(error);
     failure = new Error(message);
-    store.prepare('UPDATE agent_jobs SET state=?,finished_at=?,result=?,error=? WHERE id=?')
-      .run(ac.signal.aborted ? 'cancelled' : 'failed', Date.now(), JSON.stringify({ error: message.slice(0, 8000) }), message.slice(0, 500), id);
+    const actor: StopActor | null = ac.signal.aborted ? run.stoppedBy ?? (ctx.signal?.aborted ? 'parent' : 'user') : null;
+    store.prepare(`UPDATE agent_jobs SET state=?,finished_at=?,result=?,error=?,${STOP_SQL} WHERE id=?`)
+      .run(ac.signal.aborted ? 'cancelled' : 'failed', Date.now(), JSON.stringify({ error: message.slice(0, 8000) }), message.slice(0, 500), actor, actor, id);
     return { error: message };
   }).finally(() => {
     ctx.signal?.removeEventListener('abort', onAbort);
