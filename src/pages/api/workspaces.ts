@@ -9,7 +9,7 @@ import { saveGraph,getGraph,broadcast,pruneUserLogic } from '../../lib/logic-eng
 import { nativeDesktop } from '../../lib/dev/remote.ts';
 import { isDesktop,DevError,requireWorkspaceRuntime } from '../../lib/dev/runtime.ts';
 import { validateWorkspaceDefinition,workspaceFingerprint,WORKSPACE_CONSUMERS } from '../../lib/dev/workspace-contract.ts';
-import { currentRuntimeId,workspaceInventory,workspaceRuntimeCatalog,workspaceContext,workspaceHostAction,workspaceRegisterRoot,workspaceConfigureSsh,resolveWorkspaceForWard,workspaceOperation,preflightWorkspaceDashboard,completeWorkspaceDashboard,reconcileWorkspaceActivity } from '../../lib/dev/workspaces.ts';
+import { currentRuntimeId,workspaceInventory,workspaceRuntimeCatalog,workspaceContext,workspaceHostAction,workspaceRegisterRoot,workspaceConfigureSsh,resolveWorkspaceForWard,workspaceOperation,workspaceDispatch,preflightWorkspaceDashboard,completeWorkspaceDashboard,reconcileWorkspaceActivity } from '../../lib/dev/workspaces.ts';
 import { recordLegacyAgentPlacement,publishAgentBirth } from '../../lib/dev/agent-placement.ts';
 
 export const prerender=false;
@@ -27,6 +27,10 @@ export const ALL:APIRoute=async({request,locals,url})=>{
     if(body.action==='worker-host'){if(isDesktop()||body.runtimeId!==`worker:${user}`)throw new DevError('Worker does not belong to this account.',403);return json(await (await import('../../lib/dev/workspace-worker-client.ts')).workerRequest(user,String(body.hostAction),body,request.signal));}
     if(body.action==='host'){requireWorkspaceRuntime();return json(await workspaceHostAction(user,String(body.hostAction),body,request.signal));}
     if(body.action==='root')return json(await workspaceRegisterRoot(user,String(body.runtimeId),body));
+    if(body.action==='instruction-files'){
+      const page=await workspaceDispatch(user,String(body.runtimeId),'operation',{rootId:String(body.rootId),operation:'tree',args:{path:'',cursor:body.cursor??0},owner:'client:workspace'},request.signal);
+      return json({files:page.entries.filter((entry:{directory:boolean;name:string})=>!entry.directory&&/\.md$/i.test(entry.name)).map((entry:{path:string})=>entry.path),next:page.next});
+    }
     if(body.action==='ssh')return json(await workspaceConfigureSsh(user,String(body.runtimeId),body));
     if(body.action==='folder'){if(!isDesktop()||body.runtimeId!==await currentRuntimeId(user))throw new DevError('Enter the absolute folder path for a remote runtime.');return json({path:await nativeDesktop('folder')});}
     if(body.action==='dev'){

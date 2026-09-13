@@ -191,7 +191,7 @@ export async function configureWorkspace(existing?: WardInstance, title = '', pa
   submit.textContent = existing ? 'Save workspace' : 'Add workspace'; submit.disabled = true;
   const name = textInput('Workspace name', existing?.title ?? title); name.maxLength = 60;
   const rows = el('div', 'workspace-mounts');
-  actions.before(field('Name', name), el('p', 'workspace-help', 'The primary folder is /. Other folders appear at /name. Select each instruction file explicitly; leaving it blank loads none.'), rows);
+  actions.before(field('Name', name), el('p', 'workspace-help', 'The primary folder is /. Other folders appear at /name. Markdown files are detected in each folder. Choose an instruction file, or leave it blank to load none.'), rows);
   let inventory: Inventory;
   let initial: WorkspaceDefinition | undefined;
   const mounts: { node: HTMLElement; read(): WorkspaceMount }[] = [];
@@ -211,19 +211,47 @@ export async function configureWorkspace(existing?: WardInstance, title = '', pa
       if (selected && ![...root.options].some(o => o.value === selected)) root.add(new Option('Saved folder · unavailable', selected));
       root.value = selected;
     };
-    fillRoots(saved?.rootId); runtime.onchange = () => fillRoots();
+    fillRoots(saved?.rootId);
     const folder = action('Choose another folder…', async () => {
       const selected = inventory.runtimes.find(r => r.id === runtime.value);
       if (!selected) throw Error('This location is unavailable.');
       const result = await registerFolder(selected); if (!result || !d.open) return;
-      selected.roots = [...(selected.roots ?? []).filter(r => r.id !== result.id), result]; fillRoots(result.id);
+      selected.roots = [...(selected.roots ?? []).filter(r => r.id !== result.id), result]; fillRoots(result.id); instructions.value = ''; void detectInstructions();
     });
     const instructions = textInput('Instruction file', saved?.instructionsPath ?? ''); instructions.placeholder = 'AGENTS.md or CLAUDE.md';
-    node.append(field('Location', runtime), field('Folder', root), folder, ...(primary ? [] : [field('Mount path', alias)]), field('Instruction file inside this folder (optional)', instructions));
+    const detected = el('select', 'input'); detected.setAttribute('aria-label', 'Detected Markdown instruction files');
+    const detectionStatus = el('p', 'workspace-help'); detectionStatus.setAttribute('role', 'status');
+    let detection = 0;
+    const detectInstructions = async () => {
+      const sequence = ++detection, runtimeId = runtime.value, rootId = root.value;
+      detected.replaceChildren(new Option('None / enter a path below', '')); detected.disabled = true;
+      detectionStatus.textContent = rootId ? 'Looking for Markdown files…' : 'Choose a folder to detect Markdown files.';
+      if (!rootId) return;
+      try {
+        const files: string[] = []; let cursor: number | undefined = 0;
+        do {
+          const page: { files: string[]; next?: number } = await workspaceApi({ action: 'instruction-files', runtimeId, rootId, cursor });
+          if (sequence !== detection || !d.open || !node.isConnected) return;
+          files.push(...page.files); cursor = page.next;
+        } while (cursor !== undefined);
+        for (const file of files.sort((a, b) => a.localeCompare(b))) detected.add(new Option(file, file));
+        detected.value = files.includes(instructions.value) ? instructions.value : '';
+        detected.disabled = !files.length;
+        detectionStatus.textContent = files.length ? 'Select a Markdown file, or enter a path to a file in a subfolder below.' : 'No Markdown files found directly in this folder. You can enter a path below.';
+      } catch (e) {
+        if (sequence === detection && d.open && node.isConnected) detectionStatus.textContent = `Could not detect files: ${(e as Error).message} You can still enter a path below.`;
+      }
+    };
+    detected.onchange = () => { instructions.value = detected.value; };
+    instructions.oninput = () => { detected.value = [...detected.options].some(option => option.value === instructions.value) ? instructions.value : ''; };
+    root.onchange = () => { instructions.value = ''; void detectInstructions(); };
+    runtime.onchange = () => { fillRoots(); instructions.value = ''; void detectInstructions(); };
+    node.append(field('Location', runtime), field('Folder', root), folder, ...(primary ? [] : [field('Mount path', alias)]), field('Detected instruction files', detected), detectionStatus, field('Instruction file path (optional)', instructions));
     const item = { node, read: () => ({ id: saved?.id ?? id, mountPath: primary ? '/' : alias.value.trim(), runtimeId: runtime.value, rootId: root.value, ...(instructions.value.trim() ? { instructionsPath: instructions.value.trim() } : {}) }) };
     const id = crypto.randomUUID();
     if (!primary) node.append(action('Remove folder', () => { mounts.splice(mounts.indexOf(item), 1); node.remove(); }));
     mounts.push(item); rows.append(node);
+    void detectInstructions();
   };
   const more = action('Add folder', () => { if (mounts.length >= 16) throw Error('A Workspace supports up to 16 folders.'); drawMount(); });
   const ssh = action('Connect SSH location…', async () => {
