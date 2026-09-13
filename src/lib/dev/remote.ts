@@ -1,3 +1,4 @@
+import { sealToken, openToken } from '../crypto.ts';
 import { runtimeNavigation, workspacePath } from "./navigation.ts";
 import type { WorkspaceEntry, WorkspaceNavigation } from "./types.ts";
 import { ensureRimeSync, disconnectRime } from '../agent/sync.ts';
@@ -294,6 +295,13 @@ export async function instanceRequest(user: number, path: string, request: Reque
   for (const key of forwardHeaders) {
     const value = request.headers.get(key);
     if (value) headers.set(key, value);
+  }
+  // OAuth attempts survive a runtime restart without sharing a browser session.
+  if (/^\/api\/account\/(?:oauth|integration)(?:\?|$)/.test(path)) {
+    const key = `oauth_native_binding:${user}:${pair.id}`;
+    let stored = getSetting(key);
+    if (!stored) { stored = sealToken(crypto.randomBytes(32).toString('base64url')); setSetting(key, stored); }
+    headers.set('x-rimeward-oauth-binding', openToken(stored));
   }
   // A same-origin request on the desktop remains same-origin at the server.
   headers.set('origin', pair.server);

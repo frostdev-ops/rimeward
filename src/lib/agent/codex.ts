@@ -1,3 +1,4 @@
+import { startAttempt, attemptOf, attemptData, claimAttempt, completeAttempt, cancelAttempt, failAttempt } from '../oauth-attempts.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { readSse, thinkingCounter } from './stream.ts';
 import { getSetting, setSetting, deleteSetting } from '../settings.ts';
@@ -26,7 +27,6 @@ import {
 
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'; // codex CLI public client
 const CODEX_REDIRECT = 'http://localhost:1455/auth/callback';
-const OAUTH_TTL_MS = 15 * 60 * 1000;
 const TIMEOUT_MS = 300_000; // a long reasoning round thinks for minutes; the relay client waits 330s, nginx 360s
 
 class CodexError extends Error {}
@@ -48,6 +48,7 @@ export function jwtClaims(jwt: string | undefined): Record<string, unknown> | nu
 // (redirect_uri is just a matching string at the token endpoint).
 
 interface PendingOauth {
+  id: string;
   verifier: string;
   state: string;
   url: string;
@@ -56,16 +57,14 @@ interface PendingOauth {
 
 const pendingKey = (userId: number) => `codex_oauth_pending:${userId}`;
 
-export function codexOauthPending(userId: number): PendingOauth | null {
+export function codexOauthPending(userId: number, id = getSetting(pendingKey(userId)) ?? ''): PendingOauth | null {
   try {
-    const p = JSON.parse(getSetting(pendingKey(userId)) || 'null') as PendingOauth | null;
-    return p?.verifier && Date.now() - p.at < OAUTH_TTL_MS ? p : null;
-  } catch {
-    return null;
-  }
+    const attempt = attemptOf(userId,id);
+    return ['pending','authorizing'].includes(attempt.status) ? { ...attemptData<PendingOauth>(attempt), id } : null;
+  } catch { return null; }
 }
 
-export function codexOauthStart(userId: number): PendingOauth {
+export function codexOauthStart(userId: number, session = String(userId), destination = 'This account'): PendingOauth {
   const verifier = randomBytes(64).toString('base64url');
   const state = randomBytes(16).toString('base64url');
   const url =
@@ -81,18 +80,21 @@ export function codexOauthStart(userId: number): PendingOauth {
       codex_cli_simplified_flow: 'true',
       state,
     }).toString();
-  const pending: PendingOauth = { verifier, state, url, at: Date.now() };
-  setSetting(pendingKey(userId), JSON.stringify(pending));
+  const data = { verifier, state, url, at: Date.now() };
+  const attempt = startAttempt(userId,'codex',destination,session,data);
+  const pending: PendingOauth = { ...data, id: attempt.id };
+  setSetting(pendingKey(userId),attempt.id);
   return pending;
 }
 
-export function codexOauthCancel(userId: number): void {
-  deleteSetting(pendingKey(userId));
+export function codexOauthCancel(userId: number, id = getSetting(pendingKey(userId)) ?? ''): void {
+  try { cancelAttempt(userId,id); } catch {}
+  if (getSetting(pendingKey(userId)) === id) deleteSetting(pendingKey(userId));
 }
 
 /** Finish with the localhost URL the user pasted; returns the account email. */
-export async function codexOauthFinish(userId: number, pasted: string): Promise<string> {
-  const pending = codexOauthPending(userId);
+export async function codexOauthFinish(userId: number, pasted: string, id?: string): Promise<string> {
+  const pending = codexOauthPending(userId,id);
   if (!pending) throw new Error('no sign-in in progress (or it expired) — click "Connect ChatGPT" again');
 
   const candidate = pasted.trim();
@@ -102,6 +104,7 @@ export async function codexOauthFinish(userId: number, pasted: string): Promise<
   } catch {
     throw new Error('that does not look like an address — paste the FULL address of the localhost:1455 page');
   }
+  if(url.origin !== 'http://localhost:1455' || url.pathname !== '/auth/callback' || url.username || url.password) throw new Error('Use the registered localhost callback address');
   const code = url.searchParams.get('code');
   if (!code) {
     throw new Error(url.searchParams.get('error_description') ?? 'that address has no ?code= in it — paste the whole address bar');
@@ -110,6 +113,8 @@ export async function codexOauthFinish(userId: number, pasted: string): Promise<
     throw new Error('this link came from an older sign-in attempt — start again and use the newest one');
   }
 
+  claimAttempt(userId,pending.id);
+  try {
   const res = await fetch('https://auth.openai.com/oauth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -123,7 +128,8 @@ export async function codexOauthFinish(userId: number, pasted: string): Promise<
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
-    throw new Error(`token exchange failed (${res.status}) ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    failAttempt(userId,pending.id);
+    throw new Error(`Token exchange failed (${res.status}). Start again.`);
   }
   const tok = (await res.json()) as { id_token?: string; access_token?: string; refresh_token?: string };
   if (!tok.access_token || !tok.refresh_token) throw new Error('token exchange returned no tokens');
@@ -131,19 +137,21 @@ export async function codexOauthFinish(userId: number, pasted: string): Promise<
   const claims = jwtClaims(tok.id_token) as
     | { email?: string; 'https://api.openai.com/auth'?: { chatgpt_account_id?: string } }
     | null;
-  storeAgentAccount({
+  completeAttempt(userId,pending.id, () => storeAgentAccount({
     userId,
     provider: 'codex',
-    token: tok.refresh_token,
+    token: tok.refresh_token!,
     label: claims?.email ?? '',
     accessToken: tok.access_token,
     meta: { account_id: claims?.['https://api.openai.com/auth']?.chatgpt_account_id ?? '', id_token: tok.id_token ?? '' },
-  });
-  codexOauthCancel(userId);
+  }));
+  if (getSetting(pendingKey(userId)) === pending.id) deleteSetting(pendingKey(userId));
   return claims?.email ?? '';
+  } catch (error) { failAttempt(userId,pending.id);throw error; }
 }
 
 export function codexDisconnect(userId: number): void {
+  getDb().prepare("UPDATE oauth_attempts SET status='cancelled',private_enc='' WHERE user_id=? AND provider='codex' AND status IN ('pending','authorizing','completing')").run(userId);
   deleteAgentAccount(userId, 'codex');
 }
 
@@ -155,7 +163,14 @@ interface LiveTokens {
 }
 
 /** Refresh lazily — only when the access token expires within 5 minutes. */
-export async function ensureFreshTokens(userId: number): Promise<LiveTokens> {
+// ponytail: single-flight is per process; use a database lease before clustering refresh workers.
+const tokenRefreshes = new Map<number,Promise<LiveTokens>>();
+export function ensureFreshTokens(userId:number):Promise<LiveTokens> {
+  const existing=tokenRefreshes.get(userId);if(existing)return existing;
+  const pending=refreshCodexTokens(userId).finally(()=>tokenRefreshes.delete(userId));
+  tokenRefreshes.set(userId,pending);return pending;
+}
+async function refreshCodexTokens(userId: number): Promise<LiveTokens> {
   const row = getAgentAccount(userId, 'codex');
   if (!row) throw new CodexError('codex: not connected — connect ChatGPT under Account → Agent');
   const meta = accountMeta(row);
@@ -187,6 +202,7 @@ export async function ensureFreshTokens(userId: number): Promise<LiveTokens> {
     throw Object.assign(new CodexError(`codex: token refresh rejected (${res.status})`), { status: res.status });
   }
   const fresh = (await res.json()) as { id_token?: string; access_token?: string; refresh_token?: string };
+  if(getAgentAccount(userId,'codex')?.token_enc!==row.token_enc)throw new CodexError('ChatGPT connection changed; retry with the current account');
   storeAgentAccount({
     userId,
     provider: 'codex',

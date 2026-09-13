@@ -1,0 +1,15 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { registerAccount, limitAccountAction } from '../lib/account-access.ts';
+let error='', done=false;
+Astro.response.headers.set('Cache-Control','no-store');
+if(Astro.request.method==='POST')try{
+  limitAccountAction('register:'+Astro.clientAddress);
+  const form=await Astro.request.formData();
+  await registerAccount(String(form.get('email')??''),String(form.get('password')??''));done=true;
+}catch(e){error=(e as Error).message;}
+---
+<BaseLayout title="Create account — Rimeward"><main class="mx-auto max-w-xl px-4 py-10"><h1 class="page-title">Create your account</h1>
+{error&&<p role="alert" class="banner banner-err">{error}</p>}
+{done?<p role="status">Check your email to continue. An administrator may need to approve your account.</p>:<form method="post" class="grid gap-4 my-4"><label>Email<input name="email" type="email" class="input" required autocomplete="username"/></label><label>Password<input name="password" type="password" minlength="12" maxlength="1024" class="input" required autocomplete="new-password"/></label><button class="btn-primary">Create account</button></form>}
+<a href="/login" class="link">Sign in</a></main></BaseLayout>

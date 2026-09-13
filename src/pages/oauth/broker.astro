@@ -1,0 +1,10 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { brokerByCode,authorizeBroker } from '../../lib/oauth-broker.ts';
+let error='',grant;const code=Astro.url.searchParams.get('code')??'';
+Astro.response.headers.set('Cache-Control','no-store');Astro.response.headers.set('Referrer-Policy','no-referrer');
+if(!Astro.url.searchParams.has('done'))try{grant=brokerByCode(code);if(Astro.request.method==='POST')return Astro.redirect(authorizeBroker(code,Astro.locals.user!.userId),303);}catch(e){error=(e as Error).message;}
+---
+<BaseLayout title="Connect provider — Rimeward"><main class="mx-auto max-w-xl px-4 py-10"><h1 class="page-title">Connect your provider</h1>
+{error?<p role="alert">{error}</p>:Astro.url.searchParams.has('done')?<div><p>{Astro.url.searchParams.has('error')?'Connection was not completed. Return to Rimeward to try again.':'Authorization received. Return to the Rimeward app to finish.'}</p><a class="btn" href="rimeward://oauth/complete">Return to Rimeward</a></div>:<><p class="my-4">Connect {grant?.provider} for the Rimeward installation showing this code: <strong>{code}</strong>.</p><p>Signed in as {Astro.locals.user!.email}. Only continue if you started this request. This does not pair your desktop or sync your files.</p><form method="post"><button class="btn-primary my-4">Confirm and continue</button></form></>}
+</main></BaseLayout>

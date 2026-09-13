@@ -1,0 +1,42 @@
+---
+import { verifyMail } from '../../lib/account-access.ts';
+import { identityConnectors, saveIdentityConnector } from '../../lib/identity.ts';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { CONFIG, configView, saveConfig, type ConfigKey } from '../../lib/app-config.ts';
+import { getDb } from '../../lib/db.ts';
+Astro.response.headers.set('Cache-Control','no-store');
+let error = '', saved = false;
+if (Astro.request.method === 'POST') {
+  try {
+    const form = await Astro.request.formData();
+    if (form.get('action') === 'email-test') { await verifyMail(Astro.locals.user!.email); return Astro.redirect('/admin/settings?mail=ok',303); }
+    if (form.get('action') === 'identity') { saveIdentityConnector({id:String(form.get('id')),name:String(form.get('name')),issuer:String(form.get('issuer')),clientId:String(form.get('clientId')),clientSecret:String(form.get('clientSecret')??''),enabled:form.get('enabled')==='on'},Astro.locals.user!.userId,form.get('clearSecret')==='on'); return Astro.redirect('/admin/settings',303); }
+    const key = String(form.get('key')) as ConfigKey;
+    if (!Object.hasOwn(CONFIG,key)) throw new Error('Unknown setting');
+    saveConfig(key,form.get('action') === 'reset' ? null : form.get('action') === 'clear' ? '' : String(form.get('value')??''),Astro.locals.user!.userId);
+    saved = true;
+  } catch(e) { error = (e as Error).message; }
+}
+const fields = (Object.keys(CONFIG) as ConfigKey[]).map(configView);
+const events = getDb().prepare('SELECT event,target,created_at FROM auth_audit ORDER BY id DESC LIMIT 30').all() as {event:string;target:string;created_at:string}[];
+---
+<BaseLayout title="Administration — Rimeward">
+  <main class="mx-auto max-w-3xl px-4 py-10">
+    <h1 class="page-title">Installation & settings</h1>
+    <nav class="my-4 flex gap-4"><a class="link" href="/admin/users">Users, site & updates</a><a class="link" href="/admin/monitors">Monitors</a><a class="link" href="/dash">Dashboard</a></nav>
+    {Astro.url.searchParams.has('setup') && <p class="banner banner-info">Your installation is private by default. Configure email and optional connections below, or continue to your dashboard and return later.</p>}
+    {error && <p role="alert" class="banner banner-err">{error}</p>}
+    {saved && <p role="status" class="banner banner-ok">Setting saved.</p>}
+    {[...new Set(fields.map(f=>f.group))].map(group=><section class="card p-4 mb-4"><h2 class="section-title">{group}</h2>{fields.filter(f=>f.group===group).map(f=><form method="post" class="grid gap-2 border-b border-line py-3">
+      <input type="hidden" name="key" value={f.key}/>
+      <label for={f.key}>{f.label}</label>
+      {f.choices ? <select id={f.key} name="value" class="input">{f.choices.map(v=><option selected={v===f.value}>{v}</option>)}</select> : <input id={f.key} class="input" name="value" type={f.secret?'password':'text'} required={f.secret} value={f.value} autocomplete="off" placeholder={f.secret && f.configured?'Configured — enter replacement':''}/>}
+      <p class="text-xs text-ink-muted">Source: {f.source}{f.secret ? ` · ${f.configured?'configured':'not configured'}`:''}{f.restart?' · Restart required; saving does not restart the app.':''}</p>
+      <div class="flex gap-2"><button class="btn" name="action" value="save">Save</button><button class="btn" name="action" value="reset" formnovalidate>Use environment value</button>{f.secret&&<button class="btn" name="action" value="clear" formnovalidate>Clear credential</button>}</div>
+    </form>)}</section>)}
+    <section class="card p-4 mb-4"><h2 class="section-title">Email delivery check</h2><p>A test email will be sent to your administrator email.</p><form method="post"><button class="btn" name="action" value="email-test">Send test email</button></form>{Astro.url.searchParams.get('mail')==='ok'&&<p role="status">Test email accepted by your mail server.</p>}</section>
+    <section class="card p-4 mb-4"><h2 class="section-title">SSO connectors</h2>{identityConnectors().map(c=><p>{c.name} · {c.enabled?'enabled':'disabled'} · Callback: {`${configView('PUBLIC_BASE_URL').value}/api/auth/${c.id==='google'?'google/callback':`identity/${c.id}/callback`}`}</p>)}
+    <form method="post" class="grid gap-3 mt-4"><input type="hidden" name="action" value="identity"/>{['id','name','issuer','clientId','clientSecret'].map(k=><label>{k}<input class="input" name={k} type={k==='clientSecret'?'password':'text'} required={k!=='clientSecret'} autocomplete="off"/></label>)}<label><input name="enabled" type="checkbox" checked/> Enabled</label><label><input name="clearSecret" type="checkbox"/> Remove saved client secret</label><button class="btn">Save OIDC connector</button></form></section>
+    <section class="card p-4"><h2 class="section-title">Recent administration activity</h2>{events.map(e=><p class="text-sm">{e.created_at} · {e.event} · {e.target}</p>)}</section>
+  </main>
+</BaseLayout>

@@ -1,4 +1,6 @@
 ---
+import { config } from '../lib/app-config.ts';
+import { identityConnectors } from '../lib/identity.ts';
 import BaseLayout from '../layouts/BaseLayout.astro';
 import { RimewardLockup } from '../lib/brand.ts';
 import { userCount } from '../lib/users.ts';
@@ -6,7 +8,7 @@ import { secret } from '../lib/secrets.ts';
 
 // A fresh install has no row that could log in; the CLI is where the first one comes from.
 const noUsers = userCount() === 0;
-const google = !!secret('GOOGLE_CLIENT_ID');
+const google = config('GOOGLE_SSO_ENABLED')==='true' && !!secret('GOOGLE_CLIENT_ID');
 
 const err = Astro.url.searchParams.get('err');
 const MESSAGES: Record<string, string> = {
@@ -67,7 +69,7 @@ const message = err ? (MESSAGES[err] ?? 'Sign-in failed.') : null;
         )
       }
 
-      <form method="post" action="/api/login" class="login-form">
+      {config('PASSWORD_LOGIN')==='true'&&<form method="post" action="/api/login" class="login-form">
         <div class="login-field">
           <label for="email">Email</label>
           <input id="email" name="email" type="email" required autocomplete="username" />
@@ -77,10 +79,10 @@ const message = err ? (MESSAGES[err] ?? 'Sign-in failed.') : null;
           <input id="password" name="password" type="password" required autocomplete="current-password" />
         </div>
         <button type="submit" class="login-submit">Sign in</button>
-      </form>
+      </form>}
     </div>
 
-    <p class="login-foot">Private. Nothing to see here.</p>
+    <div class="login-foot">{identityConnectors().filter(c=>c.enabled&&c.id!=='google').map(c=><p><a href={`/api/auth/identity/${c.id}`} class="link">Sign in with {c.name}</a></p>)}<a class="link" href="/recover">Recover account access</a>{config('REGISTRATION_POLICY')!=='invite'&&<p><a class="link" href="/register">Create an account</a></p>}</div>
   </main>
 
   {message && <script is:inline>document.getElementById('form-error')?.focus();</script>}

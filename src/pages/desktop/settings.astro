@@ -1,0 +1,7 @@
+---
+import Settings from '../admin/settings.astro';
+import { isDesktop } from '../../lib/dev/runtime.ts';
+if(!isDesktop())return Astro.redirect('/admin/settings');
+if(Astro.locals.user?.role!=='admin')return new Response('Administrator required',{status:403});
+---
+<Settings/>

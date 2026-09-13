@@ -1,0 +1,32 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { needsSetup, claimInstallation } from '../lib/installation.ts';
+import { createSession, SESSION_COOKIES, sessionCookieOptions } from '../lib/auth.ts';
+import { configuredOrigin } from '../lib/app-config.ts';
+if (!needsSetup()) return Astro.redirect('/login');
+Astro.response.headers.set('Cache-Control','no-store');
+let error = '';
+if (Astro.request.method === 'POST') {
+  try {
+    const form = await Astro.request.formData();
+    const id = claimInstallation(String(form.get('token')??''),String(form.get('email')??''),String(form.get('password')??''),String(form.get('origin')??''));
+    const session = createSession(id);
+    for (const name of SESSION_COOKIES) Astro.cookies.set(name,session.id,sessionCookieOptions(session.expiresAt));
+    return Astro.redirect('/admin/settings?setup=1',303);
+  } catch (e) { error = (e as Error).message; }
+}
+---
+<BaseLayout title="Install Rimeward">
+  <main class="mx-auto max-w-xl px-4 py-10">
+    <h1 class="page-title">Welcome to Rimeward</h1>
+    <p class="my-4">Create your administrator account. Read the setup-token file in your installation’s data directory to claim this installation.</p>
+    {error && <p role="alert" class="banner banner-err">{error}</p>}
+    <form method="post" class="grid gap-4">
+      <label class="label">Installation token<input class="input" name="token" type="password" required autocomplete="off" /></label>
+      <label class="label">Administrator email<input class="input" name="email" type="email" required autocomplete="username" /></label>
+      <label class="label">Password<input class="input" name="password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password" /></label>
+      <label class="label">Public URL<input class="input" name="origin" type="url" required value={configuredOrigin() ?? Astro.url.origin} /></label>
+      <button class="btn-primary">Create administrator and continue</button>
+    </form>
+  </main>
+</BaseLayout>

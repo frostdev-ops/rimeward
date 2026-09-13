@@ -67,6 +67,7 @@
     "node-pop3": "^0.15.0",
     "node-pty": "1.1.0",
     "nodemailer": "^9.1.0",
+    "openid-client": "6.8.4",
     "pdfjs-dist": "^6.3.289",
     "playwright-core": "1.62.1",
     "prosemirror-commands": "1.7.2",

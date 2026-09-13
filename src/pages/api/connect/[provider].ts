@@ -15,6 +15,7 @@ const CREDS: Record<string, [SecretKey, SecretKey]> = {
 export const GET: APIRoute = async ({ params, url, locals, redirect }) => {
   const provider = params.provider ?? '';
   const creds = CREDS[provider];
+  if(creds && !url.searchParams.has('legacy'))return redirect(`/account?connect=${provider}${url.searchParams.has('readonly')?'&readonly=1':''}${url.searchParams.has('teams')?'&teams=1':''}#accounts`,303);
   if (!creds) return redirect('/account?err=unknown-provider', 303);
   if (!secret(creds[0]) || !secret(creds[1])) return redirect(`/account?err=${provider}-unconfigured`, 303);
 

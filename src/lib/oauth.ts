@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { publicOrigin } from './app-config.ts';
 import { getSession, sessionId } from './auth.ts';
 import { setSetting, sweepSettings, takeSetting } from './settings.ts';
 
@@ -13,6 +14,7 @@ export interface PendingState {
   userId?: number;
   /** Microsoft only: the Mail.Send-less retry after a tenant denies consent. */
   readonly?: boolean;
+  brokerId?: string;
   at: number;
 }
 
@@ -55,5 +57,5 @@ export function takeConnectState(
 }
 
 export function baseUrl(): string {
-  return (process.env.PUBLIC_BASE_URL ?? 'http://localhost:4321').replace(/\/$/, '');
+  return publicOrigin();
 }

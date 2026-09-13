@@ -1,3 +1,4 @@
+import { config } from '../../lib/app-config.ts';
 import type { APIRoute } from 'astro';
 import { SESSION_COOKIES, createSession, sessionCookieOptions, afterLogin } from '../../lib/auth.ts';
 import { getUserByEmail, verifyUserPassword } from '../../lib/users.ts';
@@ -40,6 +41,7 @@ function recordFailure(key: string): void {
 }
 
 export const POST: APIRoute = async ({ request, cookies, redirect, clientAddress }) => {
+  if (config('PASSWORD_LOGIN') !== 'true') return redirect('/login?err=disabled',303);
   const form = await request.formData();
   const email = String(form.get('email') ?? '').trim().toLowerCase();
   const password = String(form.get('password') ?? '');
@@ -48,7 +50,7 @@ export const POST: APIRoute = async ({ request, cookies, redirect, clientAddress
   if (throttled(key)) return redirect('/login?err=throttled', 303);
 
   const user = email ? getUserByEmail(email) : null;
-  if (!user || !verifyUserPassword(user.id, password)) {
+  if (!user || user.status !== 'active' || password.length > 1024 || !verifyUserPassword(user.id, password)) {
     recordFailure(key);
     return redirect('/login?err=1', 303);
   }

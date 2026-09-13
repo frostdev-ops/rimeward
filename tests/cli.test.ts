@@ -64,13 +64,14 @@ test('users role, passwd, and the last-admin / last-user guards', () => {
   assert.match(demote.err, /only admin/);
 
   assert.equal(run(['users', 'role', 'guest@test.io', 'admin']).code, 0);
-  assert.equal(run(['users', 'role', 'admin@test.io', 'member']).code, 0);
-  assert.match(run(['users', 'list']).out, /^1 admin@test.io member/m);
-
+  // An unlinked SSO-only row is not a usable replacement administrator.
+  assert.equal(run(['users', 'role', 'admin@test.io', 'member']).code, 1);
   const pw = run(['users', 'passwd', 'guest@test.io', '--password', 'hunter22']);
   assert.equal(pw.code, 0, pw.err);
   assert.match(pw.out, /session/);
   assert.doesNotMatch(pw.out, /^password:/m, 'a supplied password is not echoed');
+  assert.equal(run(['users', 'role', 'admin@test.io', 'member']).code, 0);
+  assert.match(run(['users', 'list']).out, /^1 admin@test.io member/m);
 
   const del = run(['users', 'delete', 'guest@test.io']);
   assert.equal(del.code, 1);

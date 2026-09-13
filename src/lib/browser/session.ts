@@ -1,3 +1,4 @@
+import { config } from '../app-config.ts';
 import { terminalEnv } from '../dev/environment.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { execFileSync } from 'node:child_process';
@@ -31,7 +32,7 @@ import { TURN_HOST } from '../dev/remote-turn.ts';
 /** Where local profiles live. A server that runs chromium as a separate user
  *  (BROWSER_EXECUTABLE) points this OUTSIDE data/: that user must never be able
  *  to read homepage.db. */
-export const PROFILES = process.env.BROWSER_PROFILES ?? path.join(DATA_DIR, 'browser');
+export const PROFILES = config('BROWSER_PROFILES') || path.join(DATA_DIR, 'browser');
 /** A wrapper that drops root before exec, so chromium keeps its sandbox on a
  *  root-run server. Unset = playwright-core's own chromium. */
 const EXE = process.env.BROWSER_EXECUTABLE;
@@ -41,7 +42,7 @@ const EXE = process.env.BROWSER_EXECUTABLE;
 const SANDBOX = !!EXE || process.getuid?.() !== 0;
 if (!SANDBOX)
   console.warn('[browser] root without BROWSER_EXECUTABLE: chromium sandbox OFF — run as a non-root user or set BROWSER_EXECUTABLE to a wrapper that drops root');
-const MAX = Number(process.env.BROWSER_MAX_SESSIONS ?? 3);
+const MAX = Number(config('BROWSER_MAX_SESSIONS'));
 const IDLE_MS = 10 * 60_000;
 const CLOSE_MS = 5_000;
 const NAV_MS = 30_000;

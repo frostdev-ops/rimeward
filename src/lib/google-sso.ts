@@ -38,6 +38,8 @@ export async function exchangeGoogleCode(
       redirect_uri: redirectUri,
       grant_type: 'authorization_code',
     }),
+    signal: AbortSignal.timeout(15000),
+    redirect: 'error',
   });
   if (!res.ok) throw new Error(`google token exchange failed: ${res.status} ${await res.text()}`);
   return res.json();

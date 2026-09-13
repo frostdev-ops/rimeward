@@ -1,3 +1,4 @@
+import { publicOrigin } from './app-config.ts';
 import crypto from 'node:crypto';
 import { getDb } from './db.ts';
 import { revokeRemoteSessions } from './dev/remote-desktop-events.ts';
@@ -6,6 +7,8 @@ export const SESSION_COOKIE = 'rimeward_session';
 export const SSO_STATE_COOKIE = 'rimeward_sso';
 /** Only this fixed continuation survives login; never accept a redirect URL. */
 export function afterLogin(cookies: {get(name:string):{value:string}|undefined;delete(name:string,opts:{path:string}):void}):string {
+  const broker=cookies.get('rimeward_broker')?.value;cookies.delete('rimeward_broker',{path:'/'});
+  if(broker&&/^[A-F0-9]{12}$/.test(broker))return '/oauth/broker?code='+broker;
   const code=cookies.get('rimeward_connect')?.value;
   cookies.delete('rimeward_connect',{path:'/'});
   return code&&/^[A-F0-9]{4}-[A-F0-9]{4}$/.test(code)?'/desktop/connect?code='+code:'/dash';
@@ -23,7 +26,7 @@ export function sessionId(cookies: { get(name: string): { value: string } | unde
 }
 /** Only an https site can set a Secure cookie: an install reached over plain
  *  http (a LAN, Tailscale) would otherwise bounce on the login forever. */
-const SECURE = (process.env.PUBLIC_BASE_URL ?? '').startsWith('https:');
+const secure = () => publicOrigin().startsWith('https:');
 
 const N = 16384;
 const R = 8;
@@ -55,6 +58,7 @@ export function verifyPassword(pw: string, stored: string): boolean {
 }
 
 export function createSession(userId: number): { id: string; expiresAt: string } {
+  if (!getDb().prepare("SELECT 1 FROM users WHERE id=? AND status='active'").get(userId)) throw new Error('Account is not active');
   const id = crypto.randomBytes(32).toString('base64url');
   const row = getDb()
     .prepare(
@@ -84,7 +88,7 @@ export function getSession(id: string | undefined): Session | null {
     .prepare(
       `SELECT s.user_id AS userId, u.email AS email, u.role AS role, u.display_name AS displayName, u.theme AS theme
          FROM sessions s JOIN users u ON u.id = s.user_id
-        WHERE s.id = ? AND s.expires_at > datetime('now')`
+        WHERE s.id = ? AND s.expires_at > datetime('now') AND u.status = 'active'`
     )
     .get(id) as Session | undefined;
   if (row) return row;
@@ -104,7 +108,7 @@ export function destroySession(id: string): void {
 export function ssoStateCookieOptions() {
   return {
     httpOnly: true,
-    secure: SECURE,
+    secure: secure(),
     sameSite: 'lax' as const,
     path: '/',
     maxAge: 15 * 60,
@@ -114,7 +118,7 @@ export function ssoStateCookieOptions() {
 export function sessionCookieOptions(expiresAt: string) {
   return {
     httpOnly: true,
-    secure: SECURE,
+    secure: secure(),
     sameSite: 'lax' as const,
     path: '/',
     expires: new Date(expiresAt.replace(' ', 'T') + 'Z'),

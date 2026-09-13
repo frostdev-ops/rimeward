@@ -1,0 +1,14 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { recoverAccount, redeemAction, limitAccountAction } from '../lib/account-access.ts';
+Astro.response.headers.set('Cache-Control','no-store');Astro.response.headers.set('Referrer-Policy','no-referrer');
+let error='', message='';const token=Astro.url.searchParams.get('token')??'';
+if(Astro.request.method==='POST')try{
+  limitAccountAction('recover:'+Astro.clientAddress);
+  const form=await Astro.request.formData();
+  if(token)message=redeemAction(token,String(form.get('password')??''))==='active'?'Account ready. You can sign in.':'Email verified. Your account is awaiting administrator approval.';
+  else {await recoverAccount(String(form.get('email')??'')).catch(()=>{});message='If this account is eligible, an email will arrive with the next step.';}
+}catch(e){error=(e as Error).message;}
+---
+<BaseLayout title="Account access — Rimeward"><main class="mx-auto max-w-xl px-4 py-10"><h1 class="page-title">Account access</h1>
+{error&&<p role="alert" class="banner banner-err">{error}</p>}{message?<p role="status">{message}</p>:<form method="post" class="grid gap-4 my-4">{token?<label>New password<input name="password" class="input" type="password" minlength="12" maxlength="1024" required autocomplete="new-password"/></label>:<label>Email<input class="input" name="email" type="email" required autocomplete="username"/></label>}<button class="btn-primary">Continue</button></form>}<a href="/login" class="link">Sign in</a></main></BaseLayout>

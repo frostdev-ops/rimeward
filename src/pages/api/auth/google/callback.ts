@@ -1,3 +1,4 @@
+import { GET as identityCallback } from '../identity/[...action].ts';
 import type { APIRoute } from 'astro';
 import {
   SESSION_COOKIES,
@@ -12,7 +13,9 @@ import { decideSsoLogin, decodeIdToken, exchangeGoogleCode, ssoRedirectUri } fro
 
 export const prerender = false;
 
-export const GET: APIRoute = async ({ url, cookies, redirect }) => {
+export const GET: APIRoute = async (context) => {
+  const {url,cookies,redirect}=context;
+  if(cookies.get(`identity_${url.searchParams.get('state')??''}`))return identityCallback({...context,params:{action:'google/callback'}});
   const state = url.searchParams.get('state') ?? '';
   const code = url.searchParams.get('code');
   const nonce = cookies.get(SSO_STATE_COOKIE)?.value;

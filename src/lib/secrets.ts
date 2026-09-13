@@ -1,8 +1,6 @@
-import { getDb } from './db.ts';
+import { config } from './app-config.ts';
 
-// OAuth client credentials come from the environment (.env.example lists the
-// pairs). A `secret:<KEY>` settings row still wins when one exists — nothing
-// writes those any more; the admin UI that once did was never built.
+// Compatibility names for the typed, encrypted admin configuration layer.
 
 export type SecretKey =
   | 'GOOGLE_CLIENT_ID'
@@ -14,12 +12,4 @@ export type SecretKey =
   | 'ZOHO_CLIENT_ID'
   | 'ZOHO_CLIENT_SECRET';
 
-const row = (key: SecretKey): string =>
-  (
-    (getDb().prepare('SELECT value FROM settings WHERE key = ?').get(`secret:${key}`) as { value: string } | undefined)
-      ?.value ?? ''
-  ).trim();
-
-export function secret(key: SecretKey): string {
-  return row(key) || (process.env[key] ?? '').trim();
-}
+export function secret(key: SecretKey): string { return config(key); }

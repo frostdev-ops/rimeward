@@ -1,3 +1,4 @@
+import { configuredOrigin } from './app-config.ts';
 import http from 'node:http';
 import type net from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -20,7 +21,7 @@ export const refuseUpgrade = (socket: net.Socket, status: number) => socket.end(
 export function upgradeSession(req: http.IncomingMessage): { id: string; userId: number; origin: URL; url: URL; share?: ShareScope; forward?: string } | number {
   let origin: URL;
   try { origin = new URL(req.headers.origin ?? ''); } catch { return 403; }
-  const expected = process.env.PUBLIC_BASE_URL;
+  const expected = configuredOrigin();
   if (expected ? origin.origin !== new URL(expected).origin : origin.host !== req.headers.host) return 403;
   const cookies = new Map((req.headers.cookie ?? '').split(';').map(s => { const i = s.indexOf('='); return [s.slice(0, i).trim(), s.slice(i + 1)]; }));
   const id = SESSION_COOKIES.map(name => cookies.get(name)).find(Boolean);

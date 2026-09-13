@@ -346,7 +346,8 @@ async function doctor() {
     if (level === 'fail') failed = true;
     out(`${level.padEnd(4)} ${msg}`);
   };
-  const env = (k) => (process.env[k] ?? '').trim();
+  const { CONFIG, config } = await lib('app-config.ts');
+  const env = (k) => Object.hasOwn(CONFIG,k) ? config(k) : (process.env[k] ?? '').trim();
 
   const [maj, min] = process.versions.node.split('.').map(Number);
   say(maj > 22 || (maj === 22 && min >= 18) ? 'ok' : 'fail', `node: ${process.versions.node} (need >= 22.18)`);
@@ -373,7 +374,7 @@ async function doctor() {
   }
 
   const sso = env('SSO_WORKSPACE_DOMAIN');
-  say(sso ? 'ok' : 'warn', sso ? `SSO_WORKSPACE_DOMAIN: ${sso}` : 'SSO_WORKSPACE_DOMAIN: unset — Google sign-in only for invited rows');
+  say('ok', `Registration: ${config('REGISTRATION_POLICY')}; SSO domains: ${sso || 'unrestricted'}`);
 
   const { DATA_DIR, getDb } = await lib('db.ts');
   let writable = false;

@@ -1,4 +1,5 @@
 ---
+import { identityConnectors } from '../lib/identity.ts';
 import AppLayout from '../layouts/AppLayout.astro';
 import { getDb } from '../lib/db.ts';
 import { hasPassword } from '../lib/users.ts';
@@ -761,14 +762,10 @@ const TABS = [
                     <p class="text-sm font-medium">{p.name}</p>
                     <p class="text-xs text-ink-muted">{link ? link.account_label || 'connected' : p.hint}</p>
                   </div>
-                  {link ? (
-                    <form method="post" action="/api/connect/disconnect">
-                      <input type="hidden" name="provider" value={p.id} />
-                      <button type="submit" class="btn text-xs">Disconnect</button>
-                    </form>
-                  ) : (
-                    <a href={`/api/connect/${p.id}`} class="btn-primary text-xs">Connect</a>
-                  )}
+                  <div class="grid gap-2">
+                    {link && <form method="post" action="/api/connect/disconnect"><input type="hidden" name="provider" value={p.id}/><button class="btn text-xs">Disconnect</button></form>}
+                    <div data-integration={p.id}>{p.id==='microsoft'&&<label class="text-xs">Access<select class="input" data-access><option value="full">Mail and calendar</option><option value="readonly">Read-only mail and calendar</option><option value="teams">Mail, calendar and Teams</option></select></label>}<button type="button" class="btn-primary text-xs">{link?'Reconnect':'Connect'}</button><p role="status" aria-live="polite" class="text-xs"></p><a class="link" hidden target="_blank" rel="noreferrer">Continue in browser</a></div>
+                  </div>
                 </li>
               );
             })
@@ -991,30 +988,27 @@ const TABS = [
                 : 'Unofficial Codex backend, billed to your ChatGPT plan — may break without notice.'}
             </p>
           </div>
-          {codexAccount ? (
-            <form method="post" action="/api/account/agent">
-              <button type="submit" name="action" value="codex-disconnect" class="btn text-xs">Disconnect</button>
-            </form>
-          ) : !codexPending ? (
-            <form method="post" action="/api/account/agent">
-              <button type="submit" name="action" value="codex-start" class="btn-primary text-xs">Connect ChatGPT</button>
-            </form>
-          ) : null}
+          {codexAccount && <form method="post" action="/api/account/agent"><button name="action" value="codex-disconnect" class="btn">Disconnect</button></form>}
         </div>
-        {codexPending && (
-          <div class="space-y-2 border-b border-line py-3">
-            <p class="text-xs">
-              1. <a class="link" href={codexPending.url} target="_blank" rel="noreferrer">Sign in with ChatGPT</a> — you will land on a
-              dead <code>localhost:1455</code> page. 2. Copy that page's FULL address and paste it here:
-            </p>
-            <form method="post" action="/api/account/agent" class="flex gap-2">
-              <input name="pasted" type="text" class="input min-h-0 flex-1 px-2 py-1 text-xs" placeholder="http://localhost:1455/auth/callback?code=…" />
-              <button type="submit" name="action" value="codex-finish" class="btn-primary min-h-0 px-2 py-1 text-xs">Finish</button>
-              <button type="submit" name="action" value="codex-cancel" class="btn min-h-0 px-2 py-1 text-xs">Cancel</button>
-            </form>
-          </div>
-        )}
+        <section class="space-y-2 py-3"><h3>Sign-in identities</h3>{identityConnectors().filter(c=>c.enabled).map(c=><p><a class="link" href={`/api/auth/identity/${c.id}?link=1`}>Link {c.name} for sign-in</a></p>)}</section>
+        <section data-codex-connect class="space-y-2 border-b border-line py-3">
+          <a data-local-settings hidden class="link" href="/desktop/settings">This desktop’s settings</a>
+          <label data-destination hidden>Connect to<select class="input" data-target><option value="default">Connected server</option><option value="local">This desktop only</option></select></label>
+          <button type="button" data-start class="btn-primary">{codexAccount?'Reconnect ChatGPT':'Connect ChatGPT'}</button>
+          <p role="status" aria-live="polite" class="text-xs">{sharedAgent?'Local connection · This desktop':'Connect to this account'}</p>
+          <a data-open hidden class="link" target="_blank" rel="noreferrer">Continue in browser</a>
+          <button type="button" data-cancel hidden class="btn">Cancel</button>
+          <form data-manual hidden class="grid gap-2">
+            <p class="text-xs">Compatibility sign-in: after authorizing, paste the full localhost callback address here.</p>
+            <input name="pasted" class="input" type="text" required autocomplete="off" placeholder="http://localhost:1455/auth/callback?code=…"/>
+            <button class="btn">Finish sign-in</button>
+          </form>
+        </section>
+        <script>import '../scripts/account-oauth.ts';</script>
 
+        {err==='ms-denied'&&<p class="banner banner-info">Microsoft sign-in was cancelled or needs administrator consent. <a class="link" href="/api/connect/microsoft?readonly=1">Try mail and calendar read-only access</a></p>}
+
+        <script>import '../scripts/account-integrations.ts';</script>
         <EmbeddingSettings />
         {/* A key saves when the field loses focus (or on Enter). `action` is a
             hidden INPUT, not a button — there is no submitter to carry it. */}

@@ -1,3 +1,4 @@
+import { config } from '../app-config.ts';
 // The browser ward's WebRTC signaling: one peer per viewer, the capture page
 // (assets/browser-extensions/stream) the host. A viewer joins with a random
 // connection id; the page's offer, candidates and states come back through the
@@ -32,7 +33,7 @@ const direct = () => process.env.RIMEWARD_RTC_DIRECT === '1';
 /** Peers per session: a desktop encodes on its GPU, a server on its four cores. */
 const peersMax = () => (isDesktop() ? 3 : 2);
 /** Every session of this runtime together. */
-const globalMax = () => Number(process.env.RIMEWARD_RTC_VIEWERS ?? 4);
+const globalMax = () => Number(config('RIMEWARD_RTC_VIEWERS'));
 const maxBitrate = () => (isDesktop() ? 8_000_000 : 4_000_000);
 /** H.264 encodes on VideoToolbox on a Mac; VP8 is the cheapest software encoder elsewhere. */
 const CODECS = process.platform === 'darwin' ? 'h264' : 'vp8';

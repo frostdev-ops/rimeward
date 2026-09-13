@@ -26,6 +26,7 @@ export async function routeInstance(context: APIContext): Promise<Response | und
   const { request, url } = context;
   const path = url.pathname + url.search;
   // Update discovery belongs to this runtime, even when the desktop is paired.
+  if (url.pathname === '/api/account/oauth' || url.pathname === '/api/account/integration') return;
   if (url.pathname === '/api/update' || url.pathname === '/api/update/desktop') return;
   // Workspace APIs resolve immutable session owners and mounted roots themselves.
   if (url.pathname === '/api/workspaces') return;

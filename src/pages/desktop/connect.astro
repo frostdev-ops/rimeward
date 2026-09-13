@@ -26,7 +26,7 @@ try {
       <span class="setup-card-icon"><Icon id={done ? "sparkle" : "route"} /></span>
       <p class="setup-eyebrow">RIMEWARD · CONNECT A DESKTOP</p>
       <h1 class="text-2xl font-semibold tracking-tight">{done?(declined?'Connection declined':'Desktop approved'):'Connect this desktop?'}</h1>
-      {error?<p role="alert" class="banner banner-err">{error}</p>:done?<><p>Return to the Rimeward app to continue.</p><a class="btn" href="/dash">Open my dashboard</a></>:<>
+      {error?<p role="alert" class="banner banner-err">{error}</p>:done?<><p>Return to the Rimeward app to continue.</p><a class="btn" href="rimeward://oauth/complete">Return to Rimeward</a><a class="btn" href="/dash">Open my dashboard</a></>:<>
         <p><strong>{grant!.name}</strong> wants to connect to your Rimeward account, <strong>{Astro.locals.user!.email}</strong>.</p>
         <p>This connects Rime’s provider access, chat history, memories, skills, and agent files, with a local copy for offline work. It also lets you remotely control this desktop while it is online. Project folders stay on the desktop; code excerpts and attachments shared with Rime travel with its chats.</p>
         <p>Confirm this matches the request you just started in the app: <strong class="setup-approval-code">{code}</strong></p>
