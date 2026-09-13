@@ -518,6 +518,17 @@ export async function rootOperation(user:number,rootId:string,operation:string,a
     return {sessionId:row.id,rootId:row.project,originWard:row.origin_ward,associated:contains(view),title:row.title,kind:row.kind,state:row.state,virtualCwd:row.virtual_cwd||'/',...(row.workspace_json?{workspace:JSON.parse(row.workspace_json)}:{})};
   }
   if(operation==='location')return rootLocation(user,root,file);
+  if(operation==='patch-preview'){
+    if(args.recovery!==undefined){
+      if(!Number.isSafeInteger(args.recovery))throw new DevError('Invalid recovery reference.');
+      const copy=db().prepare('SELECT text FROM buffer_copies WHERE id=? AND user_id=? AND project=? AND path=?').get(args.recovery,user,rootId,relativePath(file)) as {text:string}|undefined;
+      if(!copy)throw new DevError('This edit’s original file is no longer retained.',404);
+      return {text:copy.text,source:'original'};
+    }
+    const bytes=await rootReadBytes(user,root,file),decoded=decode(bytes);
+    if(decoded.readonly)throw new DevError('This file cannot be displayed as text.');
+    return {text:decoded.text,hash:hash(bytes),source:'current'};
+  }
   if(operation==='transfer-tree')return transferTree(user,root,file,Number(args.cursor)||0);
   if(operation==='rename-directory')return renameDirectory(user,root,file,String(args.to),owner);
   if(['mkdir','rmdir','rename-directory'].includes(operation)&&typeof args.operationId==='string')return journalDirectoryMutation(user,root,operation,args,owner,signal);

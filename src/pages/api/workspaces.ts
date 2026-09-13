@@ -27,6 +27,7 @@ export const ALL:APIRoute=async({request,locals,url})=>{
     if(body.action==='worker-host'){if(isDesktop()||body.runtimeId!==`worker:${user}`)throw new DevError('Worker does not belong to this account.',403);return json(await (await import('../../lib/dev/workspace-worker-client.ts')).workerRequest(user,String(body.hostAction),body,request.signal));}
     if(body.action==='host'){requireWorkspaceRuntime();return json(await workspaceHostAction(user,String(body.hostAction),body,request.signal));}
     if(body.action==='root')return json(await workspaceRegisterRoot(user,String(body.runtimeId),body));
+    if(body.action==='patch-preview')return json(await workspaceDispatch(user,String(body.runtimeId),'operation',{rootId:String(body.rootId),operation:'patch-preview',args:{path:body.path,recovery:body.recovery},owner:'client:patch-preview'},request.signal));
     if(body.action==='browse-folders')return json(await workspaceDispatch(user,String(body.runtimeId),'browse-folders',{path:body.path,connection:body.connection,cursor:body.cursor},request.signal));
     if(body.action==='instruction-files'){
       const page=await workspaceDispatch(user,String(body.runtimeId),'operation',{rootId:String(body.rootId),operation:'tree',args:{path:'',cursor:body.cursor??0},owner:'client:workspace'},request.signal);

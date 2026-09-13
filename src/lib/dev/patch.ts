@@ -75,10 +75,10 @@ export function parsePatch(patch: unknown): PatchOperation[] {
   return operations;
 }
 
-export function patchText(text: string, op: Extract<PatchOperation, { kind: 'update' }>): string {
+export function planPatch(text: string, op: Extract<PatchOperation, { kind: 'update' }>) {
   const finalNewline = text.endsWith('\n');
   const lines = text === '' ? [] : (finalNewline ? text.slice(0, -1) : text).split('\n');
-  const replacements: { at: number; before: number; after: string[] }[] = [];
+  const replacements: { at: number; before: number; after: string[]; context: Hunk['context'] }[] = [];
   let cursor = 0, budget = 2_000_000;
   // Codex seek_sequence.rs, 21aa552e8727c03189d0f7d18bbd6e7583e88f88.
   const trimEnd = (line: string) => line.replace(/\p{White_Space}+$/u, '');
@@ -108,7 +108,7 @@ export function patchText(text: string, op: Extract<PatchOperation, { kind: 'upd
       cursor = anchor + 1;
     }
     // Codex insertion-only hunks append, including after an anchor.
-    if (!hunk.before.length) { replacements.push({ at: lines.length, before: 0, after: hunk.after }); continue; }
+    if (!hunk.before.length) { replacements.push({ at: lines.length, before: 0, after: hunk.after, context: [] }); continue; }
     let before = hunk.before, after = hunk.after.slice();
     let at = locate(before, cursor, hunk.eof);
     if (at < 0 && before.at(-1) === '') {
@@ -119,13 +119,18 @@ export function patchText(text: string, op: Extract<PatchOperation, { kind: 'upd
     if (at < 0) throw Error(`${op.path}: context not found; read the current file before retrying.`);
     // A tolerant match must not rewrite unchanged context's indentation or punctuation.
     for (const [oldIndex, newIndex] of hunk.context) if (oldIndex < before.length && newIndex < after.length) after[newIndex] = lines[at + oldIndex] ?? '';
-    replacements.push({ at, before: before.length, after });
+    replacements.push({ at, before: before.length, after, context: hunk.context.filter(([oldIndex,newIndex]) => oldIndex < before.length && newIndex < after.length) });
     cursor = at + before.length;
   }
+  return { lines, finalNewline, replacements: replacements.sort((a,b) => a.at - b.at) };
+}
+
+export function patchText(text: string, op: Extract<PatchOperation, { kind: 'update' }>): string {
+  const { lines, finalNewline, replacements } = planPatch(text, op);
   const output: string[] = [];
-  cursor = 0;
+  let cursor = 0;
   // Hunks match the original file; appended text never becomes later context.
-  for (const change of replacements.sort((a, b) => a.at - b.at)) {
+  for (const change of replacements) {
     for (; cursor < change.at; cursor++) output.push(lines[cursor] ?? '');
     for (const line of change.after) output.push(line);
     cursor = change.at + change.before;

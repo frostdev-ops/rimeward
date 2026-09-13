@@ -41,7 +41,7 @@ export async function runWorkspacePatch(user: number, binding: WorkspaceBinding,
       group.revisions[ref.relativePath] = Number(revision);
     }
   }
-  const manifest = [...groups.values()].flatMap(g => [...g.paths.values()].map(path => ({ path, runtimeId: g.runtimeId, rootId: g.rootId, operation: 'update', saved: true, revision: Number.MAX_SAFE_INTEGER, recovery: Number.MAX_SAFE_INTEGER, hash: '0'.repeat(64) })));
+  const manifest = [...groups.values()].flatMap(g => [...g.paths].map(([relativePath,path]) => ({ path, relativePath, runtimeId: g.runtimeId, rootId: g.rootId, operation: 'update', saved: true, revision: Number.MAX_SAFE_INTEGER, recovery: Number.MAX_SAFE_INTEGER, hash: '0'.repeat(64) })));
   if (JSON.stringify(manifest).length > 9000) throw new DevError('Patch receipts would exceed the result limit; use a smaller batch.');
   const prepared: Prepared[] = [], resources = new Set<string>(), applied: Record<string, unknown>[] = [], finished = new Set<string>();
   let sourceBytes = 0, dispatched: Prepared | undefined, renewalFailure: unknown, renewTimer: NodeJS.Timeout | undefined;
@@ -49,6 +49,8 @@ export async function runWorkspacePatch(user: number, binding: WorkspaceBinding,
     workspaceDispatch(user, p.runtimeId, 'operation', { rootId: p.rootId, operation, args: extra, owner }, requestSignal);
   const renew = () => Promise.all(prepared.filter(p => !finished.has(p.planId)).map(p => invoke(p, 'patch-renew', { planId: p.planId })));
   const describe = (p: Group, receipt: Record<string, unknown>) => ({ ...receipt, runtimeId: p.runtimeId, rootId: p.rootId,
+    ...(typeof receipt.path === 'string' ? { relativePath: receipt.path } : {}),
+    ...(typeof receipt.to === 'string' ? { relativeTo: receipt.to } : {}),
     ...(typeof receipt.path === 'string' ? { path: p.paths.get(receipt.path) ?? receipt.path } : {}),
     ...(typeof receipt.to === 'string' ? { to: p.paths.get(receipt.to) ?? receipt.to } : {}) });
   try {

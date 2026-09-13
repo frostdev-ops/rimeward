@@ -27,6 +27,7 @@ import { currentPage, readPages } from './pages.ts';
 import { activeMentions, mentionPattern, tagMentionMessage, plainMentionText, MAX_WARD_MENTIONS, type WardMention } from '../../lib/agent/mentions.ts';
 import { dialog } from './workspace-dialogs.ts';
 import { locationChip } from './workspace.ts';
+import { patchPreview, samePatchPreview } from './agent-patch.ts';
 import { PERMISSION_HELP, PERMISSION_LABELS, PERMISSION_MODES, isPermissionMode, type PermissionMode } from '../../lib/dev/types.ts';
 import '../../styles/conversation.css';
 import { ensureStream, flushPendingLayout, onAgentLive, onAgentPing, reloadHolds, type AgentLive } from './logic.ts';
@@ -258,9 +259,11 @@ function animateDetails(detail: HTMLDetailsElement) {
 }
 
 function stepCard(step: Step, running = false, ward = ''): HTMLElement {
+  const patch = step.tool === 'apply_patch' && typeof step.args?.patch === 'string' ? patchPreview(step.args.patch, { ward, running, error: step.error, result: step.result }) : null;
   const row = el('details', 'ag-activity ag-step');
+  if (patch) row.classList.add('ag-patch-step');
   row.dataset.running = String(running); row.dataset.error = String(!!step.error);
-  row.open = !!step.error;
+  row.open = !!step.error || !!patch;
   const head = el('summary');
   const mark = el('span', running ? 'ag-working-mark' : 'ag-activity-mark');
   mark.append(icon(running ? 'rime' : step.error ? 'warning' : 'check'));
@@ -275,7 +278,11 @@ function stepCard(step: Step, running = false, ward = ''): HTMLElement {
   const args = { ...(step.args ?? {}) }; delete args.reason;
   const text = `${step.tool}(${Object.keys(args).length ? JSON.stringify(args, null, 1) : ''})` +
     (step.result !== undefined ? `\n\n${typeof step.result === 'string' ? step.result : JSON.stringify(step.result, null, 1)}` : running ? '\n\nRunning…' : '');
-  body.append(el('pre', 'ag-step-output', text.length > 20_000 ? `${text.slice(0, 20_000)}\n… (truncated for display)` : text));
+  const output = el('pre', 'ag-step-output', text.length > 20_000 ? `${text.slice(0, 20_000)}\n… (truncated for display)` : text);
+  if (patch) {
+    const raw = el('details', 'ag-patch-raw'); raw.append(el('summary', undefined, 'Execution details'), output);
+    body.append(patch, raw);
+  } else body.append(output);
   if (step.error) body.prepend(el('p', 'ag-step-error', step.error));
   if (['computer_screenshot', 'computer_app_state', 'computer_app_input', 'render_document_page'].includes(step.tool) && step.result && typeof step.result === 'object' &&
       'image_sha256' in step.result && typeof step.result.image_sha256 === 'string' && /^[a-f0-9]{64}$/.test(step.result.image_sha256)) {
@@ -349,6 +356,7 @@ interface Ui {
   pendingText: HTMLElement;
   pendingDetails: HTMLDetailsElement;
   pendingPatch: HTMLElement;
+  pendingPatchSource?: string;
   questionBox: HTMLElement;
   questionId?: string;
   status: HTMLElement;
@@ -753,10 +761,14 @@ function patchDom(old: Node, fresh: Node, reveal = false): void {
     return;
   }
   if (!(old instanceof Element) || !(fresh instanceof Element)) return;
+  if (old instanceof HTMLElement && fresh instanceof HTMLElement && old.classList.contains('ag-patch-preview') && fresh.classList.contains('ag-patch-preview')) {
+    if (!samePatchPreview(old, fresh)) old.replaceWith(fresh);
+    return;
+  }
   const wasError = old.getAttribute('data-error') === 'true';
   for (const attr of [...old.attributes]) if (attr.name !== 'open' && !fresh.hasAttribute(attr.name)) old.removeAttribute(attr.name);
   for (const attr of [...fresh.attributes]) if (attr.name !== 'open' && old.getAttribute(attr.name) !== attr.value) old.setAttribute(attr.name, attr.value);
-  if (old instanceof HTMLDetailsElement && fresh instanceof HTMLDetailsElement && fresh.open && !wasError) old.open = true;
+  if (old instanceof HTMLDetailsElement && fresh instanceof HTMLDetailsElement && fresh.open && !wasError && !old.classList.contains('ag-patch-step')) old.open = true;
   if (old instanceof HTMLElement && fresh instanceof HTMLElement && fresh.onclick) old.onclick = fresh.onclick;
   // Streaming plain text grows without replacing the preceding selection.
   if (fresh.childNodes.length === 1 && fresh.firstChild instanceof Text &&
@@ -1324,7 +1336,10 @@ function paint(st: State): void {
     ui.pendingBox.classList.toggle('flex', !!st.pending && !st.pending.question);
     ui.pendingText.textContent = st.pending?.summary ?? '';
     ui.pendingDetails.hidden = !st.pending?.patch;
-    if (ui.pendingPatch.textContent !== (st.pending?.patch ?? '')) ui.pendingPatch.textContent = st.pending?.patch ?? '';
+    if (ui.pendingPatchSource !== (st.pending?.patch ?? '')) {
+      ui.pendingPatchSource = st.pending?.patch ?? '';
+      ui.pendingPatch.replaceChildren(patchPreview(ui.pendingPatchSource, { ward: st.w.i }) ?? el('pre', 'ag-step-output', ui.pendingPatchSource));
+    }
     paintChips(st, ui.chips);
     paintQuestion(st, ui);
     paintPicker(st, ui);
@@ -2539,7 +2554,7 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   const pendingText = el('span', 'ag-approval-text');
   const pendingDetails = el('details', 'ag-approval-text');
   pendingDetails.hidden = true;
-  const pendingPatch = el('pre', 'font-mono whitespace-pre-wrap');
+  const pendingPatch = el('div');
   pendingDetails.append(el('summary', 'cursor-pointer', 'Review patch'), pendingPatch);
   const approve = el('button', 'btn-primary', 'Confirm');
   approve.type = 'button'; approve.dataset.agConfirm = ''; approve.title = 'Run this action';

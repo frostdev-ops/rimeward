@@ -6,6 +6,8 @@ The Tauri app runs the existing Astro 7 backend and Rimeward harness locally. No
 
 ## Use
 
+Rime’s `apply_patch` activity shows inline, collapsible file diffs with green additions and red removals. Compact previews retain up to three supplied context lines around changes and shorten large edits. **Expand full file** opens a scrollable full-file diff from the retained original when available; otherwise the view explicitly identifies the current file. Raw execution receipts remain under **Execution details**, and pending approvals use the same visual preview.
+
 Workspace folder selection opens a directory browser with Home, Parent, and clickable subfolders on local desktops, connected desktops, server workers, and SSH locations. The local desktop also offers its system folder picker. Once a folder is selected, its `.md` files appear in the instruction-file selector; files in subfolders can be selected by entering their relative path. Only the selected instruction file is loaded.
 
 1. Build with `npm run desktop:build` (Rust and platform build prerequisites required; `npm ci` installs the pinned Tauri CLI). No separate Node installation is required on the installed user's machine.
