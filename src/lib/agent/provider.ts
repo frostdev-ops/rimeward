@@ -28,12 +28,16 @@ export interface AgentToolSpec {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  /** Raw text on capable Responses models; parameters retain the JSON fallback. */
+  inputFormat?: 'text';
 }
 
 export interface AgentToolCall {
   call_id: string;
   name: string;
+  /** JSON for function calls; exact input text when type is custom. */
   arguments: string;
+  type?: 'custom';
 }
 
 export interface ProviderCall {
@@ -44,6 +48,8 @@ export interface ProviderCall {
   child?: boolean;
   /** provider 'compat': the endpoint the call is bound to (set by the provider, rides the relay). */
   endpoint?: string;
+  /** Recorded compat backend; pinned histories never move through a different relay. */
+  backend?: string;
   instructions: string;
   items: unknown[];
   tools: AgentToolSpec[];
@@ -86,7 +92,7 @@ export interface AgentProvider {
   run(call: ProviderCall): Promise<ProviderResult>;
   /** Wire-shape user message / tool result for this protocol. */
   userItem(text: string): unknown;
-  toolOutputItem(callId: string, json: string): unknown;
+  toolOutputItem(callId: string, json: string, type?: AgentToolCall['type']): unknown;
   /**
    * Per-protocol pairToolCalls repair — MANDATORY before every model call.
    * Synthesizes an "interrupted" output for any unanswered call (except those
@@ -236,7 +242,7 @@ export async function getProvider(id: AgentProviderId, endpoint?: string | null)
     // offered to the relay and a local one reaches the local provider.
     run: async(call) => {
       const routed: ProviderCall = { ...call, ...(provider.endpoint ? { endpoint: provider.endpoint } : {}) };
-      const go = async () => await sharedModel(call.userId, id, routed) ?? provider.run(routed);
+      const go = async () => routed.backend ? provider.run(routed) : await sharedModel(call.userId, id, routed) ?? provider.run(routed);
       return call.child ? withChildSlot(go, call.signal) : go();
     },
     context: async(user, model) => {

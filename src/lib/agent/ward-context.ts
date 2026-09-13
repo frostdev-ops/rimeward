@@ -94,25 +94,39 @@ export async function readWardContext(user: number, id: string, agent: string): 
         break;
       }
       case 'editor': case 'project-files': case 'changes': case 'terminal': {
-        const { requireDesktop, workDb } = await import('../dev/runtime.ts');
-        requireDesktop();
-        const { listProjects, readPage, treePage, gitView } = await import('../dev/projects.ts');
-        const row = workDb().prepare('SELECT json FROM ward_state WHERE user_id=? AND ward=?').get(user, w.i) as { json: string } | undefined;
-        const state = JSON.parse(row?.json ?? '{}');
-        const projects = listProjects(user), project = projects.find(p => p.id === (state.project || page?.project)) ?? (!state.project && !page?.project ? projects[0] : undefined);
-        if (!project) { data = { status: 'No project selected.' }; break; }
-        const base = { project: project.id, name: project.name, activeFile: state.active, openFiles: state.tabs };
+        const { resolveWorkspaceForWard, workspaceOperation } = await import('../dev/workspaces.ts');
         if (w.type === 'terminal') {
-          const { listSessions, readSession } = await import('../dev/terminals.ts');
-          const sessions = listSessions(user, project.id);
+          const roster = await (await import('../dev/terminal-placement.ts')).readTerminalPlacements(user, w.i);
+          if (roster.placements.length) {
+            const selected = roster.placements.find(ref => ref.sessionId === roster.view?.session);
+            const output = selected ? await (await import('../dev/workspaces.ts')).workspaceDispatch(user, selected.runtimeId, 'operation', {
+              rootId: selected.rootId, operation: 'terminal-read', args: { session: selected.sessionId, ward: w.i }, owner: `agent:${agent}`,
+            }, ctx.signal) : undefined;
+            data = { activeSession: selected?.sessionId, ownerRuntimeId: selected?.runtimeId, virtualCwd: selected?.virtualCwd,
+              screen: output?.screen, note: selected ? undefined : 'No active session selected.',
+              sessions: roster.placements.slice(0, 20).map(ref => ({ id: ref.sessionId, title: ref.title, ownerRuntimeId: ref.runtimeId, virtualCwd: ref.virtualCwd })) };
+            break;
+          }
+        }
+        const binding = await resolveWorkspaceForWard(user, w.i);
+        const op = (operation: string, args: Record<string, unknown> = {}) => workspaceOperation(user, binding, operation, { ...args, ward: w.i }, `agent:${agent}`, ctx.signal);
+        const state = await op('view');
+        const base = { workspace: binding.workspaceId, mounts: binding.mounts, activeFile: state.active, openFiles: state.tabs };
+        if (w.type === 'terminal') {
+          const { sessions } = await op('terminal-list') as { sessions: import('../dev/types.ts').SessionView[] };
           const selected = sessions.find(s => s.id === state.session);
-          const output = selected ? readSession(user, selected.id, undefined, false) : undefined;
+          const output = selected ? await op('terminal-read', { session: selected.id }) : undefined;
           data = { ...base, activeSession: selected?.id, screen: output?.screen,
-            recentOutput: output ? clip(stripVTControlCharacters(output.data).slice(-8000), 8000) : 'No active session selected.',
+            recentOutput: output ? clip(stripVTControlCharacters(String(output.data ?? '')).slice(-8000), 8000) : 'No active session selected.',
             sessions: sessions.filter(s => !s.command || s.state === 'running').slice(0, 20).map(s => ({ id: s.id, title: s.title, state: s.state, exitCode: s.exitCode })) };
-        } else if (w.type === 'changes') data = { ...base, changes: await gitView(user, project.id) };
-        else if (w.type === 'editor' && state.active) data = { ...base, file: readPage(user, project.id, state.active) };
-        else data = { ...base, files: treePage(user, project.id, '') };
+        } else if (w.type === 'changes') data = { ...base, changes: await op('git', { path: state.gitFolder ?? '/' }) };
+        else if (w.type === 'editor' && state.active) data = { ...base, file: await op('read', { path: state.active }) };
+        else data = { ...base, files: await op('tree', { path: '/' }) };
+        break;
+      }
+      case 'workspace': {
+        const { workspaceContext } = await import('../dev/workspaces.ts');
+        data = { ...await workspaceContext(user, w.i), consumers: layout.filter(consumer => consumer.workspace === w.i).map(consumer => ({ ward: consumer.i, type: consumer.type, title: wardTitle(consumer) })) };
         break;
       }
       case 'remote-desktop': {
@@ -156,8 +170,9 @@ export async function readWardContext(user: number, id: string, agent: string): 
       case 'flow': data = await read('list_packets', { ward: w.i }); break;
       case 'agent': {
         const { activeConversationRow, transcript } = await import('./conversations.ts');
+        const ownerRuntimeId = await (await import('../dev/agent-placement.ts')).assertAgentRunsHere(user, w.i);
         const conv = activeConversationRow(user, w.i);
-        data = { transcript: conv ? transcript(conv.id, 10).map(m => ({ role: m.role, text: m.text })) : [],
+        data = { ownerRuntimeId, transcript: conv ? transcript(conv.id, 10).map(m => ({ role: m.role, text: m.text })) : [],
           note: 'Conversation excerpt only. Mentioning an agent does not send it a message.' }; break;
       }
       case 'memory': case 'skill': {
@@ -186,21 +201,25 @@ export async function readWardContext(user: number, id: string, agent: string): 
   }
   // Credentials live in separate sealed stores. Limit configuration to useful display/data selectors.
   const settings = Object.fromEntries(Object.entries(cfg).filter(([key]) => ['url', 'page', 'db', 'ds', 'view', 'props', 'show', 'sort', 'limit', 'account', 'channel', 'group', 'services', 'source', 'metric', 'hours', 'duration', 'steps', 'target', 'display'].includes(key)));
-  return { text: clip(JSON.stringify({ ward: w.i, title: wardTitle(w), type: w.type, page: page?.title, device: wardDevice(user, w.i), capturedAt: new Date().toISOString(), settings, warnings, data })), image, imageName,
+  return { text: clip(JSON.stringify({ ward: w.i, title: wardTitle(w), type: w.type, page: page?.title, device: ['workspace', 'agent', 'editor', 'project-files', 'changes', 'terminal'].includes(w.type) ? undefined : wardDevice(user, w.i), capturedAt: new Date().toISOString(), settings, warnings, data })), image, imageName,
     warnings: warnings.map(message => `@${wardTitle(w)}: ${message}`) };
 }
 
 /** Capture on the owning runtime. Never fall back to another computer or a stale local copy. */
 async function routedContext(user: number, ward: string, agent: string): Promise<WardContext> {
-  const device = wardDevice(user, ward), desktop = isDesktop();
+  const type = getDashboard(user).find(w => w.i === ward)?.type;
+  const filesystem = ['workspace', 'editor', 'project-files', 'changes', 'terminal'].includes(type ?? '');
+  const device = filesystem ? undefined : type === 'agent' ? (await (await import('../dev/agent-placement.ts')).agentPlacement(user, ward)).runtime_id : wardDevice(user, ward), desktop = isDesktop();
   const pair = desktop ? await rimeConnection(user) : undefined;
+  const own = type === 'agent' ? await (await import('../dev/workspaces.ts')).currentRuntimeId(user) : pair?.id;
   const path = `/api/ward-context?ward=${encodeURIComponent(ward)}&agent=${encodeURIComponent(agent)}`;
   const request = new Request(`https://rimeward.invalid${path}`, { signal: AbortSignal.timeout(25_000) });
   let response: Response | undefined;
-  if (device && device !== pair?.id) response = desktop
+  if (device === 'server') { if (desktop) response = await instanceRequest(user, path, request); }
+  else if (device && device !== own) response = desktop
     ? await instanceRequest(user, `/runtime/${device}${path}`, request)
     : await relayRequest(user, device, path, request);
-  else if (desktop && pair && !device && getSetting(`instance:joined:${user}`)) {
+  else if (!filesystem && desktop && pair && !device && getSetting(`instance:joined:${user}`)) {
     // Unplaced app browsers still belong to this desktop, as in routeInstance.
     const w = getDashboard(user).find(w => w.i === ward);
     if (w?.type !== 'browser' || w.config?.backend !== 'app') response = await instanceRequest(user, path, request);

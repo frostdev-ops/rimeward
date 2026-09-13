@@ -7,6 +7,7 @@ import { dialectOf, providerDialect, type AgentProvider, type AgentProviderId, t
 import { estimateTokens, type ContextUsage } from './context.ts';
 import { retireMonitors } from './monitors.ts';
 import { knowledgeChanged } from './observation-events.ts';
+import { getSetting } from '../settings.ts';
 
 // The agent's memory, per (user, ward). Two views of one conversation:
 //   agent_messages — what the ward renders
@@ -33,6 +34,13 @@ export interface ConvRow {
   pending_confirm_id: string | null;
   /** Set on a child run's thread (the agent_jobs id); null on a ward's own threads. */
   task_id: string | null;
+  /** The model this thread last ran on (validated, as sent to the provider); null = not recorded. */
+  model: string | null;
+  /** compat: the normalized base URL of the backend this thread ran against, captured at its first
+   *  run; null = not recorded. The endpoint NAME is only an alias for it. */
+  endpoint_url: string | null;
+  /** Physical coordinator that owns this conversation. Copies receive their own local owner. */
+  owner_runtime_id: string | null;
 }
 
 export interface AgentStep {
@@ -65,6 +73,16 @@ export interface TranscriptMsg {
 
 export function getConversation(id: number): ConvRow | null {
   return (getDb().prepare('SELECT * FROM agent_conversations WHERE id = ?').get(id) as ConvRow | undefined) ?? null;
+}
+
+export function stampConversationOwner(conversation: number, runtimeId: string): void {
+  const current = getConversation(conversation);
+  if (!current) throw Error('Conversation unavailable.');
+  let owner = current.owner_runtime_id;
+  const seen = new Set<string>();
+  while (owner && owner !== runtimeId && !seen.has(owner)) { seen.add(owner); const alias = getSetting(`agent-runtime-alias:${current.user_id}:${owner}`); if (!alias) break; owner = alias; }
+  if (owner && owner !== runtimeId) throw Error('A conversation cannot change its owning runtime.');
+  getDb().prepare('UPDATE agent_conversations SET owner_runtime_id=? WHERE id=? AND owner_runtime_id IS NULL').run(runtimeId, conversation);
 }
 
 export function conversationTools(conv: Pick<ConvRow, 'id' | 'user_id' | 'ward'>): string[] {
@@ -140,8 +158,21 @@ export function copyItems(from: number, to: number): number {
   })();
 }
 
-/** A user message in the shape a thread's dialect stores — for filing a note
- *  into a thread without loading its provider. */
+/** Passive run identity used to keep shared history bound to its recorded backend. */
+export function stampConversationModel(conversationId: number, model: string, endpointUrl?: string | null): void {
+  const db = getDb();
+  if (model) db.prepare('UPDATE agent_conversations SET model=? WHERE id=? AND model IS NOT ?').run(model, conversationId, model);
+  if (endpointUrl) db.prepare('UPDATE agent_conversations SET endpoint_url=? WHERE id=? AND endpoint_url IS NULL').run(endpointUrl, conversationId);
+}
+
+/** Copy display history without transferring runtime ownership. */
+export function copyTranscript(from: number, to: number): number {
+  const db = getDb();
+  if (!db.prepare('SELECT a.id FROM agent_conversations a JOIN agent_conversations b ON b.id=? WHERE a.id=? AND a.user_id=b.user_id AND a.ward=b.ward').get(to, from)) throw Error('copy refused: the source is not this ward’s conversation');
+  return db.prepare('INSERT INTO agent_messages(conversation_id,role,text,steps_json,source,at) SELECT ?,role,text,steps_json,source,at FROM agent_messages WHERE conversation_id=? ORDER BY id').run(to, from).changes;
+}
+
+/** A user message in the stored dialect, without loading its provider. */
 export const userItemFor = (dialect: Dialect, text: string): unknown =>
   dialect === 'codex' ? { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } : { role: 'user', content: text };
 
@@ -208,7 +239,7 @@ const isUserMsg = (it: any): boolean =>
  *  as an orphan, and repairItems would then delete the orphan — leaving the
  *  result in neither half. */
 const isToolOutput = (it: any): boolean =>
-  it?.type === 'function_call_output' || (it?.role === 'tool' && !!it.toolCallId);
+  it?.type === 'function_call_output' || it?.type === 'custom_tool_call_output' || (it?.role === 'tool' && !!it.toolCallId);
 
 /** Image bytes live in the attachment store, not in five copies of the thread.
  *  Image parts carry a file_id (codex dialect) / fileId (openrouter) that the
@@ -362,6 +393,7 @@ export async function compactIfNeeded(
 
   const result = await provider.run({
     userId: conv.user_id,
+    ...(conv.endpoint_url ? { backend: conv.endpoint_url } : {}),
     model,
     instructions:
       'You are compacting the earlier part of a dashboard-assistant conversation so it can be carried forward in less space. ' +
@@ -391,7 +423,7 @@ export async function compactIfNeeded(
   const summary = provider.userItem(
     `[Earlier in this conversation, compacted. The transcript is at /history/${conv.id}.md; ` +
       `the full original items removed by compaction are at /history/${conv.id}.compacted.jsonl — ` +
-      `search it with the bash tool if you need a detail that is not here.]\n\n${result.text}`
+      `search it with bash scope:"knowledge" if you need a detail that is not here.]\n\n${result.text}`
   );
   const json = JSON.stringify(summary);
   // Folding has to actually pay for itself. Without this, a conversation whose
@@ -452,7 +484,8 @@ function summarisable(item: unknown): string {
 
   // Tool traffic first, in both dialects.
   if (it.type === 'function_call') return `tool ${it.name}(${cap(it.arguments)})`;
-  if (it.type === 'function_call_output') return `result: ${cap(it.output)}`;
+  if (it.type === 'custom_tool_call') return `tool ${it.name}(${cap(it.input)})`;
+  if (it.type === 'function_call_output' || it.type === 'custom_tool_call_output') return `result: ${cap(it.output)}`;
   if (it.role === 'tool') return `result: ${cap(it.content)}`;
 
   const lines: string[] = [];

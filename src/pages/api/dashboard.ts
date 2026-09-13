@@ -8,6 +8,10 @@ import { getDb } from '../../lib/db.ts';
 import { getNoteMeta } from '../../lib/note.ts';
 import { ensureNotebook, linkNote, notebookIdOf } from '../../lib/notebook.ts';
 import { resolveShare } from '../../lib/shares.ts';
+import { preflightWorkspaceDashboard,completeWorkspaceDashboard } from '../../lib/dev/workspaces.ts';
+import { currentRuntimeId } from '../../lib/dev/workspaces.ts';
+import { WORKSPACE_CONSUMERS } from '../../lib/dev/workspace-contract.ts';
+import { recordLegacyAgentPlacement, publishAgentBirth } from '../../lib/dev/agent-placement.ts';
 
 export const prerender = false;
 
@@ -48,7 +52,11 @@ export const PUT: APIRoute = async ({ request, locals }) => {
     return Response.json({ error: 'invalid_note_moves' }, { status: 400 });
   }
   const notebooks = new Set<string>();
+  const newAgents=layout.filter(w=>w.type==='agent'&&!current.some(old=>old.i===w.i)),birthRuntime=await currentRuntimeId(userId);
+  for(const ward of layout)if(!current.some(old=>old.i===ward.i)&&(WORKSPACE_CONSUMERS as readonly string[]).includes(ward.type))ward.workspaceVersion=1;
+  for(const ward of newAgents){if(birthRuntime==='server')delete ward.device;else ward.device=birthRuntime;}
   try {
+    await preflightWorkspaceDashboard(userId,layout);
     getDb().transaction(() => {
       for (const move of moves) {
         const w = layout.find(w => w.i === move.notebook && w.type === 'notebook')!;
@@ -60,7 +68,10 @@ export const PUT: APIRoute = async ({ request, locals }) => {
         notebooks.add(id);
       }
       saveDashboard(userId, layout, pages);
+      for(const ward of newAgents)recordLegacyAgentPlacement(userId,ward.i,birthRuntime);
     })();
+    await completeWorkspaceDashboard(userId);
+    for(const ward of newAgents)await publishAgentBirth(userId,ward.i,birthRuntime);
   } catch (err) {
     return Response.json({ error: err instanceof Error ? err.message : 'could not move the notepad' }, { status: 400 });
   }

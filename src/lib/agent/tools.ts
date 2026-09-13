@@ -3,7 +3,7 @@ import { listTasks, readTask, waitTask, cancelTask, childJob } from './tasks.ts'
 import { postUserQuestion } from './questions.ts';
 import { searchKnowledge, readKnowledge } from './knowledge.ts';
 import type { ToolSearch } from './tool-discovery.ts';
-import { manageMonitor } from './monitors.ts';
+import { manageMonitor, readMonitor } from './monitors.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { sharedTool, serverTool } from './sync.ts';
 import { randomBytes } from 'node:crypto';
@@ -73,6 +73,9 @@ import { runShell, shellNetworkEnabled } from './shell.ts';
 import { webSearch } from './websearch.ts';
 import { scheduleWake, cancelWake, listWakes } from './wakes.ts';
 import type { AgentToolSpec } from './provider.ts';
+import type { WorkspaceBinding } from '../dev/workspace-contract.ts';
+import { workspacePath, resolveWorkspacePath, workspaceFingerprint, validateWorkspaceDefinition, WORKSPACE_CONSUMERS } from '../dev/workspace-contract.ts';
+import { PATCH_EDIT_GUIDANCE } from '../dev/patch.ts';
 import { deleteDoc, docPath, writeDoc, DOC_DESC_MAX, STORES, type StoreKind } from './store.ts';
 import { askAgent, getMessage, listInbox, INBOX_MODES, type InboxMode, type InboxRow } from './inbox.ts';
 import { opsDoc } from '../comms/ops.ts';
@@ -91,6 +94,12 @@ export type ToolKind = 'read' | 'write' | 'confirm';
 export const AGENT_HELP_TOPICS = ['general', 'computer', 'browser', 'sandbox', 'wards', 'leylines', 'memory', 'delegation', 'all'] as const;
 
 export interface ToolCtx {
+  /** Run-start ceiling for native CLI launches; supplied by the harness. */
+  cli?: import('./ward-config.ts').CliPermissions;
+  /** Immutable run scope, supplied by the harness, never by tool arguments. */
+  workspace?: WorkspaceBinding;
+  /** Current run policy, including its original ceiling; never a model argument. */
+  mayMutate?: () => boolean;
   /** Conversation-retained discovery, absent in the sandbox and outside the model loop. */
   searchTools?: (args:ToolSearch) => Promise<unknown>;
   userId: number;
@@ -124,6 +133,8 @@ export interface ToolDef {
   /** Starts an independent run (a child): always detached, capped, refused inside a child. */
   spawn?: boolean;
   description: string;
+  inputFormat?: 'text';
+  requiresWorkspace?: boolean;
   parameters: Record<string, unknown>;
   run: (args: Record<string, any>, ctx: ToolCtx) => unknown | Promise<unknown>;
 }
@@ -194,6 +205,8 @@ const layoutView = (userId: number) =>
     title: wardTitle(w),
     hidden: !!w.hidden,
     ...(w.in ? { group: w.in } : {}),
+    ...(w.workspace ? { workspace: w.workspace } : {}),
+    ...(w.type === 'workspace' ? { workspaceFingerprint: workspaceFingerprint(validateWorkspaceDefinition(w.config)) } : {}),
     // Absent = the first page; a nested ward's page is its group's.
     page: w.page ?? getPages(userId)[0]!.id,
     config: w.config ?? {},
@@ -210,6 +223,7 @@ function pageArg(userId: number, page: unknown): string | undefined | Error {
  *  fn returns the new layout or an error string. */
 function mutateLayout(userId: number, fn: (layout: WardInstance[]) => WardInstance[] | string): unknown {
   const current = getDashboard(userId);
+  const currentPages = getPages(userId);
   const next = fn(JSON.parse(JSON.stringify(current)) as WardInstance[]);
   if (typeof next === 'string') throw new Error(next);
   const valid = validateLayout(next, getPages(userId));
@@ -219,12 +233,30 @@ function mutateLayout(userId: number, fn: (layout: WardInstance[]) => WardInstan
         'non-multi types appear once, and per-type config is complete'
     );
   }
-  saveDashboard(userId, valid);
-  pruneUserLogic(userId);
-  // The full layout, not a diff: events can arrive out of order and the last
-  // one still lands the browser on the right grid.
-  broadcast(userId, 'layout', { layout: valid, pages: getPages(userId) });
-  return { ok: true, layout: layoutView(userId) };
+  const createdAgents = valid.filter(w => w.type === 'agent' && !current.some(old => old.i === w.i));
+  let stampOwners: (() => void) | undefined;
+  let publishOwners: (() => Promise<void>) | undefined;
+  const commit = () => {
+    saveDashboard(userId, valid);
+    stampOwners?.();
+    pruneUserLogic(userId);
+    broadcast(userId, 'layout', { layout: valid, pages: getPages(userId) });
+    return { ok: true, layout: layoutView(userId) };
+  };
+  if (!createdAgents.length && ![...current, ...valid].some(w => w.type === 'workspace' || w.workspace)) return commit();
+  return import('../dev/workspaces.ts').then(async ({ preflightWorkspaceDashboard, completeWorkspaceDashboard, cancelWorkspaceDashboard, currentRuntimeId }) => {
+    if (createdAgents.length) {
+      const own = await currentRuntimeId(userId), { recordLegacyAgentPlacement, publishAgentBirth } = await import('../dev/agent-placement.ts');
+      if (/^[a-f0-9-]{36}$/i.test(own)) for (const ward of createdAgents) ward.device = own;
+      stampOwners = () => { for (const ward of createdAgents) recordLegacyAgentPlacement(userId, ward.i, own); };
+      publishOwners = async () => { for (const ward of createdAgents) await publishAgentBirth(userId, ward.i, own); };
+    }
+    await preflightWorkspaceDashboard(userId, valid);
+    try {
+      if (JSON.stringify(getDashboard(userId)) !== JSON.stringify(current) || JSON.stringify(getPages(userId)) !== JSON.stringify(currentPages)) throw Error('Dashboard changed during workspace checks. Read the layout again.');
+      const result = commit(); await publishOwners?.(); await completeWorkspaceDashboard(userId); return result;
+    } catch (error) { await cancelWorkspaceDashboard(userId); throw error; }
+  });
 }
 
 /** The page-list twin of mutateLayout: pages and layout change together
@@ -309,10 +341,32 @@ export const TOOLS: Record<string, ToolDef> = {
   monitor: {
     kind:'write',description:'Create, update, pause, resume, delete, or inspect a persistent background monitor in this conversation. Observation only: never authorizes replies or external actions. Sources: terminal, file, browser, agent, note, notebook, http, comms, event (Leylines). Initial observations are baselines; matching events wake this conversation or arrive between rounds. Clearing/archiving deletes monitors. HTTP defaults to 30 seconds. Watching does not occupy running-task slots. Exact filters run before an optional semantic gate; unavailable semantic inference visibly blocks delivery. Terminal sources observe rendered screen rows (new stable lines, spinner ticks and repaints dropped), never raw bytes. Deliveries are rate limited per monitor by minIntervalSeconds (default 5): bursts coalesce into one notice and a trailing notice follows when the source goes quiet.',
     parameters:obj({ action:{ type:'string',enum:['create','update','pause','resume','delete','status'] },id:str('Monitor id for an existing monitor'),name:str('Short description'),minIntervalSeconds:num('Minimum seconds between alert deliveries for this monitor, 1–3600; default 5. Distinct from source.intervalSeconds (polling).'),
-      source:{ type:'object',properties:{ type:{ type:'string',enum:['terminal','file','browser','agent','note','notebook','http','comms','event'] },target:str('Terminal, ward, note, notebook or child task id'),project:str('Owned local project id for files'),path:str('Project-relative file or scoped folder'),url:str('Read-only HTTP(S) probe'),selector:str('Optional browser CSS selector'),event:str('Leyline trigger type'),intervalSeconds:num('5–86400 seconds, default 30; connector minimums still apply'),headers:{ type:'array',items:{ type:'string' } },fields:{ type:'array',items:{ type:'string' },description:'Selected JSON field paths' } },required:['type'],additionalProperties:false },
+      source:{ type:'object',properties:{ type:{ type:'string',enum:['terminal','file','browser','agent','note','notebook','http','comms','event'] },target:str('Terminal, ward, note, notebook or child task id'),path:str('Virtual workspace file or folder. File monitors currently support local folders on this run’s runtime; remote and SSH file watchers are unavailable.'),url:str('Read-only HTTP(S) probe'),selector:str('Optional browser CSS selector'),event:str('Leyline trigger type'),intervalSeconds:num('5–86400 seconds, default 30; connector minimums still apply'),headers:{ type:'array',items:{ type:'string' } },fields:{ type:'array',items:{ type:'string' },description:'Selected JSON field paths' } },required:['type'],additionalProperties:false },
       filter:{ type:'object',description:'Exact filter: {all:[filters]}, {any:[filters]}, {not:filter}, or {field,op,value}; op eq, contains, glob (* and ?), gt, gte, lt, lte, changed. Maximum depth 8 and 64 nodes. Source fields include path, sender, channel, eventType, status, exitCode, text, and json fields.',additionalProperties:true },
       semantic:{ type:['object','null'],properties:{ field:str('Text field to compare'),query:str('Meaning to match'),threshold:num('Minimum cosine similarity, -1 to 1') },required:['field','query','threshold'],additionalProperties:false } },['action']),
-    run:(a,ctx) => manageMonitor(ctx,a),
+    run:async(a,ctx) => {
+      if (!['create', 'update', 'resume'].includes(a.action)) return manageMonitor(ctx, a);
+      const source = a.source ?? (a.id ? readMonitor(ctx, String(a.id)).monitor.source : undefined);
+      if (source?.type !== 'file' && source?.type !== 'terminal') return manageMonitor(ctx, a);
+      if (!ctx.workspace) throw Error('Filesystem monitors require an available workspace binding.');
+      const { assertWorkspaceBinding, currentRuntimeId, workspaceOperation } = await import('../dev/workspaces.ts');
+      await assertWorkspaceBinding(ctx.userId, ctx.workspace);
+      const runtime = await currentRuntimeId(ctx.userId);
+      if (source.type === 'terminal') {
+        const session = await workspaceOperation(ctx.userId, ctx.workspace, 'terminal-read', { session: source.target }, `agent:${ctx.ward}`, ctx.signal);
+        if (session.ownerRuntimeId !== runtime) throw Error('Remote terminal monitoring is unavailable; this watcher only observes sessions on its own runtime.');
+        return manageMonitor(ctx, a);
+      }
+      if (a.source && ['project', 'runtime', 'device', 'rootId'].some(key => key in a.source)) throw Error('File monitors use the workspace path; target overrides are not accepted.');
+      const existingMount = !a.source ? ctx.workspace.mounts.find(m => m.rootId === source.project && m.runtimeId === runtime) : undefined;
+      if (!a.source && !existingMount) throw Error('The existing file monitor is outside this workspace and cannot be resumed here.');
+      const file = existingMount ? workspacePath(`${existingMount.mountPath}/${String(source.path ?? '')}`) : String(source.path ?? '');
+      const ref = resolveWorkspacePath(ctx.workspace, file, ctx.workspace.cwd);
+      if (ref.runtimeId !== runtime) throw Error('Remote workspace file monitoring is unavailable; no local project fallback was used.');
+      const { rootOf } = await import('../dev/workspace-roots.ts');
+      if (rootOf(ctx.userId, ref.rootId).connection) throw Error('SSH file monitoring is unavailable.');
+      return manageMonitor(ctx, { ...a, source: { ...source, project: ref.rootId, path: ref.relativePath } });
+    },
   },
   search_tools: {
     kind:'read', description:'Search capabilities or exact tool names not already callable. Loads up to five schemas for the next round (maximum ten) and retains them for this conversation across messages, restarts and compaction. Relevant tools may already be preloaded; use those directly. Discovery grants no authority.',
@@ -373,9 +427,9 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   get_logic_graph: {
     kind: 'read',
-    description: 'The leylines — the automation graph, every logic edge — plus each edge\'s last run result.',
+    description: 'Event/action Leylines with their last run results, plus persistent Workspace Leylines. Workspace links are single per-consumer references, not executable event edges; configure_ward changes them after checking active work and unsaved buffers.',
     parameters: obj({}),
-    run: (_a, ctx) => ({ graph: getGraph(ctx.userId), runs: getRuns(ctx.userId) }),
+    run: (_a, ctx) => ({ graph: getGraph(ctx.userId), runs: getRuns(ctx.userId), workspaces: getDashboard(ctx.userId).filter(w => w.workspace).map(w => ({ type: 'workspace', source: w.workspace, target: w.i })) }),
   },
   get_theme: {
     kind: 'read',
@@ -591,7 +645,7 @@ export const TOOLS: Record<string, ToolDef> = {
   remember: {
     kind: 'write',
     description:
-      'Save one durable fact to your memory as /work/memory/<name>.md — a new file, or a rewrite of the one with that name. The index of names + descriptions is in your instructions every turn; read a file back with bash (cat /work/memory/<name>.md). One fact per file; the description is what you will see when deciding whether to read it.',
+      'Save one durable fact to your memory as /work/memory/<name>.md — a new file, or a rewrite of the one with that name. The index of names + descriptions is in your instructions every turn; read a file back with bash scope:"knowledge" (cat /work/memory/<name>.md). One fact per file; the description is what you will see when deciding whether to read it.',
     parameters: obj(
       {
         name: docName,
@@ -611,7 +665,7 @@ export const TOOLS: Record<string, ToolDef> = {
   save_skill: {
     kind: 'write',
     description:
-      'Save a procedure as /work/skills/<name>/SKILL.md — how to do a kind of task: the steps, a checklist, a format, the rules of a recurring job. A new skill, or a rewrite of the one with that name. The index of names + descriptions is in your instructions every turn; read one back with bash (cat /work/skills/<name>/SKILL.md) before following it.',
+      'Save a procedure as /work/skills/<name>/SKILL.md — how to do a kind of task: the steps, a checklist, a format, the rules of a recurring job. A new skill, or a rewrite of the one with that name. The index of names + descriptions is in your instructions every turn; read one back with bash scope:"knowledge" (cat /work/skills/<name>/SKILL.md) before following it.',
     parameters: obj(
       {
         name: docName,
@@ -974,10 +1028,20 @@ export const TOOLS: Record<string, ToolDef> = {
     backgroundable: true,
     cancellable: true,
     description:
-      'Run one command line in your sandbox (a bash interpreter over a virtual FS — /history holds your past conversations, /docs the text of every attachment, /work is your scratch space; rg, sed, awk, sqlite3, pdftotext, js-exec are available). js-exec runs JavaScript (QuickJS): `js-exec file.js` or `js-exec -c "…"`; inside a script `await tools.<name>({…})` calls any of your READ-ONLY tools. It cannot touch the dashboard DB or the host.',
-    parameters: obj({ command: str(`the command line, e.g. rg -n "invoice" /docs`) }, ['command']),
+      `Run a bash interpreter over the bound workspace virtual filesystem; cwd defaults to /. Workspace scope follows the same confirmation policy as apply_patch and native commands. This does not execute host programs. Use scope:"knowledge" for separate private /history, /docs and /work stores under their existing write policy. js-exec runs QuickJS and can invoke READ-ONLY tools. Host programs require terminal_exec. ${PATCH_EDIT_GUIDANCE}`,
+    parameters: obj({ command: str('The command line'), scope: { type: 'string', enum: ['workspace', 'knowledge'], description: 'Default workspace. knowledge selects private history, attachments and scratch.' }, cwd: str('Virtual workspace directory; unavailable with knowledge scope') }, ['command']),
     run: async (a, ctx) => {
-      const res = await runShell(ctx.userId, String(a.command), (path, argsJson) => invokeReadTool(path, argsJson, ctx), ctx.signal);
+      if (a.scope !== undefined && !['workspace', 'knowledge'].includes(a.scope)) throw Error('Choose workspace or knowledge scope.');
+      if (['project', 'device', 'runtime', 'rootId', 'binding', 'workspace'].some(k => k in a)) throw Error('bash uses the current workspace binding; target overrides are not accepted.');
+      let workspace;
+      if (a.scope === 'knowledge') {
+        if (a.cwd !== undefined) throw Error('knowledge scope has its own /work cwd.');
+      } else {
+        if (!ctx.workspace) throw Error('This call has no workspace binding.');
+        const { workspaceFileSystem } = await import('../dev/workspace-fs.ts');
+        workspace = { fs: await workspaceFileSystem(ctx.userId, ctx.workspace, `agent:${ctx.ward}`, ctx.signal, ctx.mayMutate), cwd: workspacePath(a.cwd ?? ctx.workspace.cwd) };
+      }
+      const res = await runShell(ctx.userId, String(a.command), (path, argsJson) => invokeReadTool(path, argsJson, ctx), ctx.signal, workspace);
       return { exit_code: res.exitCode, stdout: res.stdout, stderr: res.stderr.slice(0, 500), truncated: res.truncated };
     },
   },
@@ -1060,6 +1124,7 @@ export const TOOLS: Record<string, ToolDef> = {
         hidden: bool('keep the ward off the dashboard — it still shows in Edit and Leylines mode. Use it for a "note" ward that only exists to anchor a schedule.'),
         group: str('id of a "container" ward to put it inside (groups unfold in place when tapped)'),
         page: str('page id (list_pages) to put it on; default the first page. A ward in a group follows the group\'s page.'),
+        workspace: str('optional existing Workspace ward id for an Agent, Terminal, Editor, Files or Changes ward'),
         config: { type: 'object', description: 'per-type config (links:[{url, icon?, statusService?}] (or a single url) for applink, url for embed, account all|google|microsoft|zoho|mailbox + unreadOnly for mail, icon (emoji or icon name) for button, services (targets, or host:cpu|mem|disk) or group + view wards|dots for service-group, db + view table|list for notion-db, duration + optional rounds/work/rest/long/loop (a routine) for timer, paper plain|lines|grid|dots + ink + transcribe off|manual|live + keepInk + provider/model for note (its text is read_note/write_note; note = a notebook note id to show that document instead of its own), the same knobs + notebook (the id of another Notebook ward, to share one notebook) for notebook, source/metric/chart/hours for chart, effect none|glass|magnify|aurora|scene + scene for spacer/separator…)', additionalProperties: true },
       },
       ['type']
@@ -1069,6 +1134,7 @@ export const TOOLS: Record<string, ToolDef> = {
         const type = String(a.type);
         if (!CATALOG[type]) return `unknown ward type "${type}"`;
         const w: WardInstance = { i: newWardId(), type, size: (a.size as WardSize) ?? CATALOG[type].defaultSize };
+        if ((WORKSPACE_CONSUMERS as readonly string[]).includes(type)) w.workspaceVersion = 1;
         if (typeof a.title === 'string' && a.title.trim()) w.title = a.title.trim().slice(0, 60);
         if (a.hidden === true) w.hidden = true;
         if (typeof a.group === 'string' && a.group) {
@@ -1079,13 +1145,17 @@ export const TOOLS: Record<string, ToolDef> = {
         if (page instanceof Error) return page.message;
         if (page) w.page = page;
         if (a.config && typeof a.config === 'object') w.config = a.config as Record<string, unknown>;
+        if (a.workspace !== undefined) {
+          if (!(WORKSPACE_CONSUMERS as readonly string[]).includes(type) || typeof a.workspace !== 'string' || !layout.some(target => target.i === a.workspace && target.type === 'workspace')) return 'Choose an existing Workspace for a filesystem ward.';
+          w.workspace = a.workspace;
+        }
         layout.push(w);
         return layout;
       }),
   },
   configure_ward: {
     kind: 'write',
-    description: 'Change a ward\'s title, visibility and/or config (config replaces the old one wholesale).',
+    description: 'Change a ward\'s title, visibility, config, or Workspace Leyline (config replaces the old one wholesale). Workspace changes require the last read revision/fingerprint or link value and refuse active work or unsaved buffers.',
     parameters: obj(
       {
         ward: str('the ward id'),
@@ -1093,6 +1163,10 @@ export const TOOLS: Record<string, ToolDef> = {
         hidden: bool('true keeps the ward off the dashboard (still visible in Edit and Leylines mode); false puts it back'),
         group: str('id of a "container" ward to move it into; empty string moves it back to the top level'),
         page: str('page id (list_pages) to move it to'),
+        workspace: { type: ['string', 'null'], description: 'Workspace ward id; null explicitly disconnects to the default folder for future sessions' },
+        expectedWorkspace: { type: ['string', 'null'], description: 'Previously read workspace link, or null if unlinked; required when changing workspace' },
+        expectedRevision: num('Current Workspace config revision, required when replacing its definition'),
+        expectedFingerprint: str('workspaceFingerprint from get_layout, required when replacing a Workspace definition'),
         config: { type: 'object', additionalProperties: true },
       },
       ['ward']
@@ -1104,6 +1178,13 @@ export const TOOLS: Record<string, ToolDef> = {
         const page = pageArg(ctx.userId, a.page);
         if (page instanceof Error) return page.message;
         if (page) w.page = page;
+        if (a.workspace !== undefined) {
+          if (!(WORKSPACE_CONSUMERS as readonly string[]).includes(w.type)) return 'This ward does not consume a Workspace.';
+          if (a.expectedWorkspace === undefined || a.expectedWorkspace !== (w.workspace ?? null)) return 'Workspace link changed or its expected value is missing. Read get_layout again.';
+          if (a.workspace === null) delete w.workspace;
+          else if (typeof a.workspace === 'string' && layout.some(target => target.i === a.workspace && target.type === 'workspace')) w.workspace = a.workspace;
+          else return 'Choose an existing Workspace ward.';
+        }
         if (typeof a.title === 'string') {
           if (a.title.trim()) w.title = a.title.trim().slice(0, 60);
           else delete w.title;
@@ -1118,7 +1199,15 @@ export const TOOLS: Record<string, ToolDef> = {
           else if (!layout.some((x) => x.i === a.group && x.type === 'container')) return `no container ward "${a.group}"`;
           else w.in = a.group;
         }
-        if (a.config && typeof a.config === 'object') w.config = a.config as Record<string, unknown>;
+        if (a.config && typeof a.config === 'object') {
+          if (w.type === 'workspace') {
+            const before = validateWorkspaceDefinition(w.config), after = validateWorkspaceDefinition(a.config);
+            if (a.expectedRevision !== before.revision || a.expectedFingerprint !== workspaceFingerprint(before)) return 'Workspace changed or its revision/fingerprint is missing. Read get_layout again.';
+            if (after.workspaceId !== before.workspaceId) return 'Preserve the Workspace identity when configuring it.';
+            a.config = { ...after, revision: workspaceFingerprint(before) === workspaceFingerprint(after) ? before.revision : before.revision + 1 };
+          }
+          w.config = a.config as Record<string, unknown>;
+        }
         return layout;
       }),
   },
@@ -1158,6 +1247,7 @@ export const TOOLS: Record<string, ToolDef> = {
       mutateLayout(ctx.userId, (layout) => {
         const from = layout.findIndex((x) => x.i === a.ward);
         if (from < 0) return `no ward "${a.ward}"`;
+        if (layout[from]?.type === 'workspace' && layout.some(w => w.workspace === a.ward)) return 'Disconnect the linked wards before removing this Workspace.';
         layout.splice(from, 1);
         return layout;
       }),
@@ -1641,15 +1731,17 @@ export function dirtiesNotion(name: string): boolean {
  * Tool specs for the provider call, with `reason` injected once for all tools
  * (the reason line IS the streaming UI — enforced in core.ts, not just asked).
  */
-export function aiTools(allow: 'all' | 'read-only', extra: Record<string, ToolDef> = {}, loaded?:ReadonlySet<string>): AgentToolSpec[] {
+export function aiTools(allow: 'all' | 'read-only', extra: Record<string, ToolDef> = {}, loaded?:ReadonlySet<string>, workspaceAvailable = true): AgentToolSpec[] {
   return Object.entries({ ...TOOLS, ...extra })
     .filter(([name]) => !loaded || loaded.has(name))
     .filter(([, t]) => allow === 'all' || t.kind === 'read')
+    .filter(([, t]) => workspaceAvailable || !t.requiresWorkspace)
     .map(([name, t]) => {
       const params = t.parameters as { properties?: Record<string, unknown>; required?: string[] };
       return {
         name,
         description: t.description,
+        ...(t.inputFormat ? { inputFormat: t.inputFormat } : {}),
         parameters: {
           ...params,
           properties: {

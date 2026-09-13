@@ -1,5 +1,6 @@
 import { readDesktopCheckpoint, saveDesktopState } from "./desktop-state.ts";
-import type { searchFiles, bufferCopies } from "../../lib/dev/projects.ts";
+import type { bufferCopies } from "../../lib/dev/projects.ts";
+import type { WorkspaceSearchPage } from '../../lib/dev/workspace-read.ts';
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine } from "@codemirror/view";
 import { Compartment, EditorState, Transaction } from "@codemirror/state";
 import { LanguageDescription, indentUnit, syntaxHighlighting, foldGutter, indentOnInput, defaultHighlightStyle, bracketMatching, foldKeymap } from "@codemirror/language";
@@ -13,6 +14,8 @@ import { MergeView } from "@codemirror/merge";
 import { icon } from "./icon.ts";
 import { el, toast } from "./dom.ts";
 import { askText, dialog } from "./workspace-dialogs.ts";
+import { normalizeEditorPaths } from '../../lib/dev/editor-paths.ts';
+import { reloadHolds, flushPendingLayout } from './logic.ts';
 import { poll } from "./wards.ts";
 import type { BufferView, Project } from "../../lib/dev/types.ts";
 
@@ -78,13 +81,13 @@ function actions(anchor: HTMLButtonElement, items: () => [string, () => unknown,
   return () => { if (menu.matches(":popover-open")) menu.hidePopover(); menu.remove(); };
 }
 
-/** The same explorer works inside Editor or as a separate Project files ward. */
+/** The same explorer works inside Editor or as a separate Files ward. */
 export function fileExplorer(host: HTMLElement, api: Api, project: string, open: (path: string, line?: number) => unknown,
   rename: (from: string, to: string) => Promise<void> = async (from, to) => { await api("rename", { project, path: from, to }, "POST"); }) {
   host.classList.add("editor-explorer");
   const heading = el("div", "editor-explorer-heading"), list = el("div", "editor-file-list"), search = el("input", "input editor-file-search");
-  search.placeholder = "Find a file or text…"; search.setAttribute("aria-label", "Search project files");
-  list.setAttribute("aria-label", "Project files");
+  search.placeholder = "Find a file or text…"; search.setAttribute("aria-label", "Search workspace files");
+  list.setAttribute("aria-label", "Workspace files");
   const add = action("File actions", () => {}, "plus");
   heading.append(el("strong", undefined, "Files"), add); host.append(heading, search, list);
   let selected = "", selectedDirectory = false, stopped = false, request = 0;
@@ -146,14 +149,19 @@ export function fileExplorer(host: HTMLElement, api: Api, project: string, open:
     clearTimeout(searchTimer); const id = ++request, q = search.value;
     searchTimer = setTimeout(() => run(async () => {
       if (!q.trim()) { signatures.clear(); return refresh(); }
-      const rows = await api<Awaited<ReturnType<typeof searchFiles>>>("search", { project, q });
-      if (stopped || id !== request) return;
-      list.replaceChildren();
-      for (const r of rows) {
-        const b = action(`${r.path}:${r.line}`, () => open(r.path, r.line));
-        b.className = "editor-search-result"; b.append(el("small", undefined, r.text)); list.append(b);
-      }
-      if (!rows.length) list.append(el("p", "editor-no-files", "No matching files or text."));
+      const rows: WorkspaceSearchPage['matches'] = [], warnings = new Set<string>();
+      const append = async (cursor?: number) => {
+        const result = await api<WorkspaceSearchPage>('search', { project, q, ...(cursor === undefined ? {} : { cursor }) });
+        if (stopped || id !== request) return;
+        rows.push(...result.matches); for (const item of result.unavailable ?? []) warnings.add(`${item.mount}: ${item.error}`);
+        list.replaceChildren();
+        for (const r of rows) { const b = action(`${r.path}:${r.line}`, () => open(r.path, r.line)); b.className = 'editor-search-result'; b.append(el('small', undefined, r.text)); list.append(b); }
+        if (!rows.length) list.append(el('p', 'editor-no-files', result.complete && !warnings.size ? 'No matching files or text.' : 'No matches in the folders searched so far.'));
+        if (warnings.size) list.append(el('p', 'editor-no-files', [...warnings].join('\n')));
+        if (result.next !== undefined) { const more = action('Search more files', async () => { more.disabled = true; try { await append(result.next); } finally { more.disabled = false; } }); list.append(more); }
+        else if (!result.complete && !warnings.size) list.append(el('p', 'editor-no-files', result.hint ?? 'Search incomplete. Narrow the search and retry.'));
+      };
+      await append();
     }), 250);
   };
   const stopPoll = poll(() => refresh().catch(e => {
@@ -163,12 +171,17 @@ export function fileExplorer(host: HTMLElement, api: Api, project: string, open:
 }
 
 export function projectEditor(host: HTMLElement, options: {
-  api: Api; owner: string; ward: string; project: Project; state: { tabs?: string[]; active?: string }; remember: () => Promise<unknown>;
+  api: Api; owner: string; ward: string; workspace?: string; project: Project; state: { tabs?: string[]; active?: string }; remember: () => Promise<unknown>;
   changeProject: () => unknown; expand: () => void; page?: string;
 }) {
   const { api, owner, project, state, remember } = options;
   const recoveryKey = `editor:${options.ward}:${project.id}`;
   const recovered = readDesktopCheckpoint<{ files: Record<string, { state: { doc?: string; [key: string]: unknown }; top: number; left: number }>; hidden: boolean; wrap: boolean; problems: boolean }>(recoveryKey);
+  if (options.workspace) {
+    const normalized = normalizeEditorPaths(state, recovered?.files);
+    state.tabs = normalized.tabs; state.active = normalized.active;
+    if (recovered && normalized.files) recovered.files = normalized.files;
+  }
   const toolbar = el("div", "editor-toolbar"), shell = el("div", "editor-shell"), side = el("aside"), main = el("div", "editor-main");
   const tabs = el("div", "editor-tabs"), breadcrumb = el("div", "editor-breadcrumb"), editorHost = el("div", "dev-editor"), footer = el("div", "editor-statusbar");
   const empty = el("div", "editor-welcome"), notice = el("div", "editor-notice"), message = el("span"), problems = el("section", "editor-problems");
@@ -179,7 +192,7 @@ export function projectEditor(host: HTMLElement, options: {
   const toggle = action("Toggle file explorer", () => { host.classList.toggle("editor-files-hidden"); toggle.setAttribute("aria-expanded", String(!host.classList.contains("editor-files-hidden"))); }, "folders");
   toggle.setAttribute("aria-expanded", "true");
   const projectName = action(project.name, () => runExclusive(async () => { await flush(); return options.changeProject(); }));
-  projectName.className = "editor-project"; projectName.title = `Change project · ${project.root}`;
+  projectName.className = "editor-project"; projectName.title = 'Show Workspace connection'; projectName.setAttribute('aria-label', 'Show Workspace connection');
   const quick = action("Quick open (⌘/Ctrl P)", () => quickOpen(), "search"), save = action("Save file (⌘/Ctrl S)", () => saveFile(), "save");
   const more = action("Editor actions", () => {}, "more"), expand = action("Expand editor", options.expand, "resize"); expand.classList.add("editor-expand");
   toolbar.append(toggle, projectName, quick, save, more, expand);
@@ -279,6 +292,8 @@ export function projectEditor(host: HTMLElement, options: {
   };
   function refreshStatus(reconfigure = true) {
     if (stopped) return;
+    if (pending || uncertain || dirtyFiles.size) reloadHolds.add(options.ward);
+    else if (reloadHolds.delete(options.ward)) queueMicrotask(flushPendingLayout);
     const hasFile = !!current; empty.hidden = hasFile; editorHost.hidden = !hasFile; breadcrumb.hidden = !hasFile;
     save.disabled = !canEdit();
     status.textContent = !current ? "" : uncertain ? "Recovery not acknowledged" : pending ? "Keeping recovery…" : current.dirty ? "Unsaved · recovery stored" : "Saved";
@@ -440,11 +455,28 @@ export function projectEditor(host: HTMLElement, options: {
     let timer: ReturnType<typeof setTimeout>, request = 0;
     const render = (rows: { path: string; line?: number; text?: string }[]) => {
       results.replaceChildren();
-      for (const r of rows.slice(0, 60)) { const b = action(r.path, () => { d.close(); return load(r.path, r.line); }); b.className = "editor-quick-result"; if (r.text) b.append(el("small", undefined, `${r.line} · ${r.text}`)); results.append(b); }
+      for (const r of rows) { const b = action(r.path, () => { d.close(); return load(r.path, r.line); }); b.className = "editor-quick-result"; if (r.text) b.append(el("small", undefined, `${r.line} · ${r.text}`)); results.append(b); }
       if (!rows.length) results.append(el("p", "editor-no-files", "No matches. Try a file name or some text."));
     };
     render((state.tabs ?? []).map(path => ({ path })));
-    query.oninput = () => { clearTimeout(timer); const id = ++request; timer = setTimeout(() => run(async () => { const rows = query.value.trim() ? await api<Awaited<ReturnType<typeof searchFiles>>>("search", { project: project.id, q: query.value }) : (state.tabs ?? []).map(path => ({ path })); if (id === request && d.open) render(rows); }), 200); };
+    query.oninput = () => {
+      clearTimeout(timer); const id = ++request, q = query.value;
+      timer = setTimeout(() => run(async () => {
+        if (!q.trim()) { render((state.tabs ?? []).map(path => ({ path }))); return; }
+        const rows: WorkspaceSearchPage['matches'] = [], warnings = new Set<string>();
+        const append = async (cursor?: number) => {
+          const page = await api<WorkspaceSearchPage>('search', { project: project.id, q, ...(cursor === undefined ? {} : { cursor }) });
+          if (id !== request || !d.open) return;
+          rows.push(...page.matches); for (const item of page.unavailable ?? []) warnings.add(`${item.mount}: ${item.error}`);
+          render(rows);
+          if (!rows.length && (!page.complete || warnings.size)) results.replaceChildren(el('p', 'editor-no-files', 'No matches in the folders searched so far.'));
+          if (warnings.size) results.append(el('p', 'editor-no-files', [...warnings].join('\n')));
+          if (page.next !== undefined) { const more = action('Search more files', async () => { more.disabled = true; try { await append(page.next); } finally { more.disabled = false; } }); results.append(more); }
+          else if (!page.complete && !warnings.size) results.append(el('p', 'editor-no-files', page.hint ?? 'Search incomplete. Narrow the search and retry.'));
+        };
+        await append();
+      }), 200);
+    };
     form.onsubmit = e => { e.preventDefault(); results.querySelector<HTMLButtonElement>("button")?.click(); };
     d.onkeydown = e => { if (!["ArrowDown", "ArrowUp"].includes(e.key)) return; e.preventDefault(); const all = [...results.querySelectorAll<HTMLButtonElement>("button")], at = all.indexOf(document.activeElement as HTMLButtonElement); all[(at + (e.key === "ArrowDown" ? 1 : -1) + all.length) % all.length]?.focus(); };
     d.onclose = () => { clearTimeout(timer); d.remove(); }; query.focus();
@@ -485,9 +517,9 @@ export function projectEditor(host: HTMLElement, options: {
   const stopMenu = actions(more, () => [
     ["Find / replace", () => { openSearchPanel(editor); }, !current], ["Go to line…", () => { gotoLine(editor); }, !current],
     ["Format document", formatFile, !canEdit()], [wrap ? "Turn off word wrap" : "Turn on word wrap", () => { wrap = !wrap; editor.dispatch({ effects: wrapping.reconfigure(wrap ? EditorView.lineWrapping : []) }); }],
-    ["Compare / recovery…", compareFile, !current], ["Open another project…", () => runExclusive(async () => { await flush(); return options.changeProject(); })],
+    ["Compare / recovery…", compareFile, !current], ["Workspace connection…", () => runExclusive(async () => { await flush(); return options.changeProject(); })],
   ]);
-  const onOpen = (e: Event) => { const d = (e as CustomEvent).detail; if (d.project === project.id && d.page === options.page) run(() => load(d.path, d.line)); };
+  const onOpen = (e: Event) => { const d = (e as CustomEvent).detail; if (d.project === project.id && d.workspace === options.workspace && d.page === options.page) run(() => load(d.path, d.line)); };
   window.addEventListener("fd:open-file", onOpen);
   const onKey = (e: KeyboardEvent) => { if (!e.defaultPrevented && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") { e.preventDefault(); e.stopPropagation(); run(quickOpen); } };
   host.addEventListener("keydown", onKey);
@@ -536,6 +568,7 @@ export function projectEditor(host: HTMLElement, options: {
   problemToggle.setAttribute('aria-expanded', String(!problems.hidden));
   renderTabs(); refreshStatus(); renderProblems(); const active = state.active; if (active) run(() => load(active));
   return () => {
+    reloadHolds.delete(options.ward);
     stopped = true; clearTimeout(recoveryTimer); clearTimeout(lintTimer); lintGeneration++; stopPoll(); stopMenu(); stopChrome(); explorer.stop(); themeObserver.disconnect(); tabResize.disconnect();
     window.removeEventListener("fd:before-workspace-navigation", beforeNavigate);
     window.removeEventListener("fd:ward-context", beforeMention);

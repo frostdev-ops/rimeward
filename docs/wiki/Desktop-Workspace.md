@@ -12,11 +12,13 @@ A page can be a project, a daily planner, a reading space, or a collection of se
 
 Try a small starting layout: **Rime + Browser + Notepad + Routine**. For a daily overview, add Agenda and an Inbox after connecting those services. For operations, add Services and Incidents. A simple layout is easier to use than an empty card for every available integration.
 
-## Open a project
+## Connect a Workspace
 
-Choose **Open project** and select an existing folder or create a named project. Rimeward reuses the existing project page when it can; a new one starts with Editor and Rime side by side, with Terminal and Changes below. Rime inherits that page's project context.
+Add a **Workspace** ward from **Edit → Add ward**. Choose the primary folder, then optionally add folders from other connected machines or SSH hosts. The primary folder appears at `/`; additional folders appear at paths such as `/data`. Select each instruction file explicitly, such as `AGENTS.md` or `CLAUDE.md`. Leaving the selection blank loads no instruction file from that folder.
 
-The folder remains where you selected it. Rimeward keeps references and recovery state; it does not import the folder into a proprietary project store. Project toolchains and dependencies are yours to install as usual.
+Use **Connect a ward…**, a consumer's **Workspace connection…**, or drag a Workspace Leyline in **Leylines** mode to connect Rime, Terminal, Editor, Files, or Changes. A consumer has one Workspace. Pages arrange the wards; moving a ward to another page does not change its folders. The folder remains at its source location, with toolchains and dependencies installed there.
+
+Unlinked tools start in `Documents/Rimeward/workspace` on the current desktop. In a browser, fresh unlinked sessions use your server workspace worker. Viewing an existing session keeps its original machine; the session's owner label tells you where it runs. Finish active work and resolve unsaved buffers before changing a Workspace or its connections. Disconnect linked wards before deleting their Workspace. If the primary folder is offline, the Workspace is unavailable; a secondary folder going offline affects only that path.
 
 ## Edit and review files
 

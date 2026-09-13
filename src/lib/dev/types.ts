@@ -3,6 +3,9 @@
  *  prompt goes to Rime through the PermissionRequest hook), normal (the CLI's auto mode),
  *  yolo (skip permissions). Read from the agent ward's config, not per terminal. */
 export type PermissionMode = "read-only" | "approvals" | "normal" | "yolo";
+export const PERMISSION_MODES = ['read-only', 'approvals', 'normal', 'yolo'] as const;
+export const isPermissionMode = (value: unknown): value is PermissionMode => (PERMISSION_MODES as readonly unknown[]).includes(value);
+export const narrowerPermission = (a: PermissionMode, b: PermissionMode): PermissionMode => PERMISSION_MODES.indexOf(a) <= PERMISSION_MODES.indexOf(b) ? a : b;
 /** A Rime-launched CLI's lifecycle as its hooks report it (lib/dev/cli-bridge.ts). */
 export type CliPhase = "running" | "waiting-permission" | "waiting-input" | "done" | "ended";
 export type TerminalKind = "shell" | "codex" | "claude";
@@ -26,6 +29,9 @@ export interface BufferView {
 }
 export interface SessionView {
   id: string;
+  ownerRuntimeId?: string;
+  virtualCwd?: string;
+  workspace?: import('./workspace-contract.ts').WorkspaceBinding;
   project: string;
   kind: TerminalKind;
   /** One-shot tool execution; opens a Terminal tab only at the user's request. */
@@ -59,11 +65,14 @@ export interface SessionResourceView extends SessionView {
 }
 export const terminalIsLog = (session: Pick<SessionView, 'command' | 'state'>): boolean => !!session.command && session.state !== 'running';
 export function terminalNeedsRestore(session: Pick<SessionView, 'state' | 'command' | 'terminationReason'>): boolean {
+  if(session.terminationReason==='remote-process-unconfirmed'||session.terminationReason==='owner-offline')return false;
   return !session.command && session.state !== 'running' && (session.state === 'interrupted' ||
     session.terminationReason === 'runtime-shutdown' || session.terminationReason === 'runtime-interrupted');
 }
 /** Older session responses have no termination metadata; do not guess their signals. */
 export function terminalExitLabel(session: Pick<SessionView, 'state' | 'command' | 'exitCode' | 'exitSignal' | 'terminationReason'>): string {
+  if(session.terminationReason==='remote-process-unconfirmed')return 'Remote process unconfirmed';
+  if(session.terminationReason==='owner-offline')return 'Owner offline';
   if (terminalNeedsRestore(session)) return 'Saved';
   const label = session.terminationReason === 'cancelled' ? 'Cancelled' :
     session.terminationReason === 'input-error' ? 'Input failed' :

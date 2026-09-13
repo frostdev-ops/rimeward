@@ -7,6 +7,8 @@ import os from 'node:os';
 
 process.env.TZ ??= 'UTC'; // pin local-time assertions (dailyClock, due dates) machine-independently
 process.env.HOMEPAGE_DATA_DIR = fs.mkdtempSync(os.tmpdir() + '/fdtest-');
+// Native defaults must stay in the fixture, outside both app data and the user's Documents.
+process.env.RIMEWARD_DOCUMENTS_DIR = `${process.env.HOMEPAGE_DATA_DIR}-documents`;
 process.env.TOKEN_ENC_KEY = Buffer.alloc(32, 7).toString('base64');
 
 // Two monitors for the tests that name one. The registry loads from the

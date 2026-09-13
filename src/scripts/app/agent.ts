@@ -25,6 +25,7 @@ import { popupFrame, popupLayer, popupViewport } from './popup-layer.ts';
 import { currentPage, readPages } from './pages.ts';
 import { activeMentions, mentionPattern, tagMentionMessage, plainMentionText, MAX_WARD_MENTIONS, type WardMention } from '../../lib/agent/mentions.ts';
 import { dialog } from './workspace-dialogs.ts';
+import { locationChip } from './workspace.ts';
 import '../../styles/conversation.css';
 import { ensureStream, flushPendingLayout, onAgentLive, onAgentPing, reloadHolds, type AgentLive } from './logic.ts';
 
@@ -349,6 +350,8 @@ interface Ui {
   questionBox: HTMLElement;
   questionId?: string;
   status: HTMLElement;
+  location: HTMLElement;
+  ownerLabel: HTMLElement;
   /** How full the thread is, next to the status line. */
   context: HTMLElement;
   jump: HTMLButtonElement;
@@ -366,6 +369,10 @@ interface State {
   task?: string;
   reloadLive?: () => void;
   conversation?: number;
+  ownerRuntimeId?: string;
+  ownerName?: string;
+  newChatRequest?: string;
+  placementBlocked?: string;
   run?: string;
   frame?: number;
   w: WardInstance;
@@ -814,7 +821,7 @@ function emptyState(st: State, ui: Pick<Ui, 'input'>): HTMLElement {
   mark.append(icon('rime'));
   wrap.append(mark, el('h3', undefined, 'What would you like to work on?'));
   const chips = el('div', 'ag-starters');
-  const starters = st.w.config?.project ? [
+  const starters = st.w.workspace ? [
     'Explore this project and explain how it fits together',
     'Review the current changes',
     'Help me plan the next feature',
@@ -1019,11 +1026,19 @@ function paintStream(st: State) {
   st.frame = requestAnimationFrame(() => { st.frame = undefined; for (const ui of st.uis) if (ui.root.isConnected) buildLog(st, ui); });
 }
 
-function restoreSurface(st: State, data: { conversation?: number; transcript?: TranscriptMsg[]; live?: LiveTurn }) {
+function restoreSurface(st: State, data: { conversation?: number; transcript?: TranscriptMsg[]; live?: LiveTurn; ownerRuntimeId?: string; ownerName?: string; workspace?: { runOwnerRuntimeId?: string } | null }) {
   // Only this run's in-flight items may outlive the snapshot: another tab's New
   // chat swaps the conversation, and its old messages must not be carried over.
   const old = st.items, sameRun = !!data.live && (!st.run || st.run === data.live.id) && (!st.conversation || st.conversation === data.conversation);
+  const nextOwner = data.ownerRuntimeId ?? data.workspace?.runOwnerRuntimeId;
+  if (st.newChatRequest && (st.conversation !== data.conversation || st.ownerRuntimeId !== nextOwner)) {
+    try { sessionStorage.removeItem(`rimeward-new-chat:${st.w.i}:${st.ownerRuntimeId ?? ''}:${st.conversation ?? 'empty'}`); } catch { /* The committed response is sufficient to reconcile this view. */ }
+    st.newChatRequest = undefined;
+  }
   st.conversation = data.conversation; st.run = data.live?.id;
+  st.ownerRuntimeId = nextOwner;
+  st.ownerName = data.ownerName;
+  st.placementBlocked = undefined;
   st.items = itemsFrom(data.live?.transcript ?? data.transcript ?? []);
   const matched = new Set<Item>();
   for (const item of st.items) if (item.k === 'msg') {
@@ -1190,6 +1205,10 @@ function paint(st: State): void {
   for (const ui of [...st.uis]) if (!ui.root.isConnected) { ui.scroll?.dispose(); ui.visibility?.disconnect(); st.uis.delete(ui); }
   for (const ui of st.uis) {
     buildLog(st, ui);
+    const placement = `${st.w.i}:${st.w.workspace ?? ''}`;
+    if (ui.location.dataset.binding !== placement) { ui.location.replaceChildren(locationChip(st.w)); ui.location.dataset.binding = placement; }
+    ui.ownerLabel.textContent = st.ownerRuntimeId ? `${st.busy || st.remote ? 'Running' : 'Conversation'} on ${st.ownerName ?? st.ownerRuntimeId}` : '';
+    ui.ownerLabel.title = 'This conversation stays on its original runtime. New unlinked conversations start on the machine you are using.';
     const voicePhase = st.voiceState?.phase ?? 'idle';
     const voiceActive = voicePhase !== 'idle' && voicePhase !== 'error';
     const conversationMode = st.voiceState?.mode ?? 'off';
@@ -1206,15 +1225,15 @@ function paint(st: State): void {
     ui.voiceStatus.textContent = st.voiceState?.message ?? '';
     ui.voiceStatus.dataset.error = String(voicePhase === 'error');
     // Mid-turn the composer stays open: a send steers the running turn.
-    ui.send.disabled = !!st.pending?.question || st.configured === false || st.uploading > 0 || st.clearing || (!st.draft.trim() && !st.attachments.length);
+    ui.send.disabled = !!st.placementBlocked || !!st.pending?.question || st.configured === false || st.uploading > 0 || st.clearing || (!st.draft.trim() && !st.attachments.length);
     const working = st.busy || st.remote;
     const paused = !!st.pending || !!currentQuestion(st)?.wait;
     ui.root.dataset.paused = String(paused);
-    const status = st.pending?.question ? 'Waiting for your answer' : st.pending ? 'Approval needed' : st.clearing ? 'Starting a new chat…' : working ? 'Working' : st.sharedStatus || 'Rimeward agent';
+    const status = st.placementBlocked ?? (st.pending?.question ? 'Waiting for your answer' : st.pending ? 'Approval needed' : st.clearing ? 'Starting a new chat…' : working ? 'Working' : st.sharedStatus || 'Rimeward agent');
     if (ui.status.textContent !== status) ui.status.textContent = status;
     paintContext(ui.context, st.context);
     ui.root.dataset.working = String(working);
-    ui.input.disabled = !!st.pending?.question;
+    ui.input.disabled = !!st.placementBlocked || !!st.pending?.question;
     ui.input.placeholder = st.pending?.question ? 'Answer the question above to continue…' : st.configured === false ? 'Reconnect or configure a local provider in Account…' : working ? 'Add a follow-up…' : 'Message Rime…';
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-attach]').forEach(b => { b.disabled = st.configured === false; });
     ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-clear]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
@@ -1244,7 +1263,10 @@ async function refetch(st: State, settled = false): Promise<void> {
   const revision = st.revision;
   const refresh = ++st.refresh;
   const { status, data } = await getJson(`/api/agent/${encodeURIComponent(st.w.i)}`).catch(() => ({ status: 0, data: null }));
-  if (status !== 200 || !data) return;
+  if (status !== 200 || !data) {
+    if (data?.transition) { st.newChatRequest = data.transition; st.placementBlocked = data.error ?? 'Reconcile the new conversation before continuing.'; paint(st); }
+    return;
+  }
   if (st.busy || st.refresh !== refresh || st.revision !== revision && !data.live) return;
   st.configured = data.configured;
   st.context = data.context ?? undefined;
@@ -1524,6 +1546,11 @@ function submit(st: State, ui: Ui): void {
   if (parseCommand(text)?.name === 'background') {
     setDraft(st, '');
     void background(st);
+    return;
+  }
+  if (parseCommand(text)?.name === 'clear') {
+    if (st.busy || st.remote) { toast('Finish the active response before starting a new conversation.'); return; }
+    void clearChat(st);
     return;
   }
   // Mid-turn (here or elsewhere), a message is a steer: it lands inside the
@@ -1910,10 +1937,19 @@ async function clearChat(st: State): Promise<void> {
   st.voice?.dispose();
   st.clearing = true;
   paint(st);
-  const { ok, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { action: 'clear' });
+  const key = `rimeward-new-chat:${st.w.i}:${st.ownerRuntimeId ?? ''}:${st.conversation ?? 'empty'}`;
+  let idempotencyKey: string;
+  let retry = !!st.newChatRequest;
+  try { const saved = sessionStorage.getItem(key); retry ||= !!saved; idempotencyKey = st.newChatRequest ?? saved ?? crypto.randomUUID(); sessionStorage.setItem(key, idempotencyKey); }
+  catch { idempotencyKey = st.newChatRequest ?? crypto.randomUUID(); }
+  st.newChatRequest = idempotencyKey;
+  const { ok, data } = await postJson('/api/agent-placement', { action: 'new', ward: st.w.i, idempotencyKey, expectedConversation: st.conversation ?? null, ...(!retry ? { expectedOwnerRuntimeId: st.ownerRuntimeId } : {}) });
   st.clearing = false;
   if (!ok) { fail(st, data?.error ?? 'Could not start a new chat. Try again.', {}); return; }
+  try { sessionStorage.removeItem(key); } catch { /* The durable server receipt remains authoritative. */ }
+  st.newChatRequest = undefined; st.placementBlocked = undefined;
   st.items = [];
+  st.conversation = data.conversation; st.ownerRuntimeId = data.ownerRuntimeId; st.ownerName = undefined;
   st.pending = null;
   st.attachments = [];
   st.question = null;
@@ -1921,6 +1957,7 @@ async function clearChat(st: State): Promise<void> {
   setDraft(st, '');
   for (const ui of st.uis) ui.follow = true;
   paint(st);
+  void refetch(st, true);
 }
 
 async function addFiles(st: State, picked: FileList | File[]): Promise<void> {
@@ -2300,6 +2337,8 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   stage.append(log, jump);
   const footer = el('div', 'ag-footer');
   const pendingBox = el('div', 'ag-approval hidden');
+  const location = el('div', 'ag-workspace-location'), ownerLabel = el('span', 'workspace-session-owner');
+  const placement = el('div', 'ag-workspace-placement'); placement.append(location, ownerLabel);
   pendingBox.setAttribute('role', 'status');
   const pendingText = el('span', 'ag-approval-text');
   const pendingDetails = el('details', 'ag-approval-text');
@@ -2373,9 +2412,9 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   };
   const picker = { root: pickerRoot, provider: pick('Provider', 'Provider'), model: pick('Model', 'Model'), effort: pick('Effort', 'Reasoning effort') };
   voiceOptions.append(readLabel, pickerRoot, modeLabel);
-  footer.append(questionBox, pendingBox, form, voiceOptions, voiceStatus, help);
+  footer.append(placement, questionBox, pendingBox, form, voiceOptions, voiceStatus, help);
   host.append(stage, footer);
-  return { root, visibility, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, readResponses, conversationMode, picker, chips, pendingBox, pendingText, pendingDetails, pendingPatch, questionBox, status, context, jump, follow: true, rendered: [] };
+  return { root, visibility, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, readResponses, conversationMode, picker, chips, pendingBox, pendingText, pendingDetails, pendingPatch, questionBox, status, location, ownerLabel, context, jump, follow: true, rendered: [] };
 }
 
 // ------------------------------------------------------------ shared dialog
@@ -2558,7 +2597,10 @@ async function renderAgent(w: WardInstance): Promise<void> {
   const b = body(w.i);
   if (!b) return;
   const mounted = [...st.uis].some(ui => b.contains(ui.root));
-  if (mounted && (status !== 200 || !data)) return; // Keep the last usable view through a transient outage.
+  if (mounted && (status !== 200 || !data)) {
+    if (data?.transition) { st.newChatRequest = data.transition; st.placementBlocked = data.error ?? 'Reconcile the new conversation before continuing.'; paint(st); }
+    return; // Keep the transcript while a connection or placement is unresolved.
+  }
   if (status === 400) {
     note(w.i, 'Save the layout first.');
     unsaved.set(w.i, w);
@@ -2574,7 +2616,16 @@ async function renderAgent(w: WardInstance): Promise<void> {
     const retry = el('button', 'btn', 'Try again');
     retry.type = 'button';
     retry.onclick = () => { retry.disabled = true; void renderAgent(w); };
-    unavailable.append(el('h3', undefined, 'Couldn’t load this conversation'), el('p', undefined, 'Check your connection and try again.'), retry);
+    unavailable.append(el('h3', undefined, 'Couldn’t load this conversation'), el('p', undefined, data?.error ?? 'Check your connection and try again.'), retry);
+    if (data?.transition) {
+      const reconcile = el('button', 'btn', 'Reconcile new conversation'); reconcile.type = 'button';
+      reconcile.onclick = async () => {
+        reconcile.disabled = true;
+        const result = await postJson('/api/agent-placement', { action: 'new', ward: w.i, idempotencyKey: data.transition });
+        if (result.ok) void renderAgent(w); else { reconcile.disabled = false; toast(result.data?.error ?? 'The conversation transition is still unresolved.', undefined, true); }
+      };
+      unavailable.append(reconcile);
+    }
     b.replaceChildren(unavailable);
     return;
   }
@@ -2616,7 +2667,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   const fresh = el('button', 'ag-icon-button');
   fresh.type = 'button';
   fresh.dataset.agClear = '';
-  fresh.title = 'New chat (archives this one)';
+  fresh.title = 'New chat (archives this one). Without a Workspace Leyline, the new conversation starts on the machine you are using.';
   fresh.setAttribute('aria-label', 'New chat');
   fresh.append(icon('plus'));
   const expand = el('button', 'ag-icon-button');

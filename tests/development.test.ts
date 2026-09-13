@@ -34,10 +34,23 @@ import {
   restartSession,
 } from "../src/lib/dev/terminals.ts";
 import { subscribeDev } from "../src/lib/dev/runtime.ts";
+import { getDashboard } from '../src/lib/dashboard.ts';
+import { localOwner } from '../src/lib/dev/native.ts';
+import { currentRuntimeId, resolveWorkspaceForWard, saveWorkspaceDashboard } from '../src/lib/dev/workspaces.ts';
 process.env.RIMEWARD_DESKTOP = "1";
 process.env.RIMEWARD_NATIVE_TOKEN = "test-only";
+Object.assign(globalThis, { __nativeVault: async () => '[]' });
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "rimeward-project-"));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
+async function workspaceContext(project: string, ward: string) {
+  assert.equal(localOwner(), 1);
+  const runtimeId = await currentRuntimeId(1), workspace = `ws-${ward}`;
+  await saveWorkspaceDashboard(1, [...getDashboard(1),
+    { i: workspace, type: 'workspace', size: '3x3', config: { workspaceId: workspace, revision: 1, mounts: [{ id: 'primary', mountPath: '/', runtimeId, rootId: project }] } },
+    { i: ward, type: 'agent', size: '2x2', workspace },
+  ]);
+  return { userId: 1, ward, conv: 0, workspace: await resolveWorkspaceForWard(1, ward) };
+}
 test("approved roots, independent user ownership, versioned recovery, conflicts and encoding", () => {
   const p = addProject(1, root);
   const file = path.join(root, "a.txt");
@@ -330,22 +343,23 @@ test("file reads page under the tool cap and the diff scopes to a path", async (
   assert.equal(second.text.split("\n").length, 5);
   assert.equal(second.revision, first.revision, "a page carries the buffer's revision for the edit that follows");
   assert.equal(readPage(1, p.id, "small.txt").next, undefined);
-  const edit = (file: string, revision: number) => DEV_TOOLS.project_edit!.run({ runtime: 'desktop', project: p.id, path: file, text: 'created by Rime\n', revision, save: true }, { userId: 1, ward: 'rime', conv: 0 });
+  const ctx = await workspaceContext(p.id, 'rime-pages');
+  const edit = (file: string, revision: number) => DEV_TOOLS.workspace_edit!.run({ path: file, text: 'created by Rime\n', revision, save: true }, ctx);
   await edit('created.txt', 0);
   assert.equal(fs.readFileSync(path.join(dir, 'created.txt'), 'utf8'), 'created by Rime\n');
-  assert.throws(() => edit('small.txt', 0), { status: 409 });
+  await assert.rejects(async () => edit('small.txt', 0), { status: 409 });
   assert.equal(fs.readFileSync(path.join(dir, 'small.txt'), 'utf8'), 'hello\n');
   const text = 'Large write receipt\n'.repeat(2000);
-  const receipt = await DEV_TOOLS.project_edit!.run({ runtime: 'desktop', project: p.id, path: 'large-edit.txt', text, revision: 0, save: true }, { userId: 1, ward: 'rime', conv: 0 });
+  const receipt = await DEV_TOOLS.workspace_edit!.run({ path: 'large-edit.txt', text, revision: 0, save: true }, ctx);
   assert.equal((receipt as { saved: boolean }).saved, true);
   assert.ok(JSON.stringify(receipt).length < 1000, 'successful writes acknowledge the revision without echoing the whole file');
   assert.equal(fs.readFileSync(path.join(dir, 'large-edit.txt'), 'utf8'), text);
-  const recovery = await DEV_TOOLS.project_edit!.run({ runtime: 'desktop', project: p.id, path: 'large-edit.txt', text: text + 'unsaved', revision: (receipt as { revision: number }).revision, save: false }, { userId: 1, ward: 'rime', conv: 0 }) as { revision: number; saved: boolean; dirty: boolean };
+  const recovery = await DEV_TOOLS.workspace_edit!.run({ path: 'large-edit.txt', text: text + 'unsaved', revision: (receipt as { revision: number }).revision, save: false }, ctx) as { revision: number; saved: boolean; dirty: boolean };
   assert.equal(recovery.saved, false);
   assert.equal(recovery.dirty, true);
   assert.ok(JSON.stringify(recovery).length < 1000);
   fs.writeFileSync(path.join(dir, 'large-edit.txt'), 'external change');
-  assert.throws(() => DEV_TOOLS.project_edit!.run({ runtime: 'desktop', project: p.id, path: 'large-edit.txt', text, revision: recovery.revision, save: true }, { userId: 1, ward: 'rime', conv: 0 }), { status: 409 });
+  await assert.rejects(async () => DEV_TOOLS.workspace_edit!.run({ path: 'large-edit.txt', text, revision: recovery.revision, save: true }, ctx), { status: 409 });
   assert.equal(readPage(1, p.id, 'large-edit.txt').conflict, true);
   assert.equal(fs.readFileSync(path.join(dir, 'large-edit.txt'), 'utf8'), 'external change');
 
@@ -385,7 +399,8 @@ test('model-facing search and Git pages exhaust results without overflow or gaps
   const project = addProject(1, dir);
   fs.mkdirSync(path.join(dir, 'src'));
   fs.writeFileSync(path.join(dir, 'src', 'large.ts'), Array.from({ length: 600 }, (_, i) => `const value${i} = ${JSON.stringify('x'.repeat(180))};`).join('\n'));
-  const read = (operation: string, cursor?: number, scope = 'src') => DEV_TOOLS.project_read!.run({ runtime: 'desktop', project: project.id, operation, path: scope, query: 'const', cursor }, { userId: 1, ward: 'rime', conv: 0 }) as Promise<any>;
+  const ctx = await workspaceContext(project.id, 'rime-search');
+  const read = (operation: string, cursor?: number, scope = 'src') => DEV_TOOLS.workspace_read!.run({ operation, path: scope, query: 'const', cursor }, ctx) as Promise<any>;
   const matches: any[] = [];
   let cursor: number | undefined;
   do {
@@ -432,13 +447,14 @@ test('task receipts survive reads and mark changed evidence stale', async () => 
   fs.writeFileSync(path.join(dir, 'reviewed.txt'), 'reviewed');
   const project = addProject(1, dir);
   await git(1, project.id, ['init', '-q']);
+  const ctx = await workspaceContext(project.id, 'reviewer');
   const session = await startSession(1, { project: project.id, kind: 'shell', mode: 'approvals' });
   try {
-    const receipt = await DEV_TOOLS.terminal_task!.run({ runtime: 'desktop', session: session.id, state: 'done', review: 'Inspected saved file; checks not run.' + '"'.repeat(7000), files: ['reviewed.txt'], checks: [] }, { userId: 1, ward: 'reviewer', conv: 0 });
+    const receipt = await DEV_TOOLS.terminal_task!.run({ session: session.id, state: 'done', review: 'Inspected saved file; checks not run.' + '"'.repeat(7000), files: ['reviewed.txt'], checks: [] }, ctx);
     assert.ok(JSON.stringify(receipt).length < 1000);
     let cursor: number | undefined, text = '';
     do {
-      const page = await DEV_TOOLS.terminal_read!.run({ runtime: 'desktop', session: session.id, review: true, cursor }, { userId: 1, ward: 'reviewer', conv: 0 }) as { text: string; next?: number };
+      const page = await DEV_TOOLS.terminal_read!.run({ session: session.id, review: true, cursor }, ctx) as { text: string; next?: number };
       assert.ok(JSON.stringify(page).length < 12000);
       text += page.text; cursor = page.next;
     } while (cursor !== undefined);

@@ -3,8 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { getDb } from '../src/lib/db.ts';
-import { NOTES_CAP, NOTES_FILE, ensureNotes, workDir } from '../src/lib/agent/history.ts';
+import { NOTES_CAP, NOTES_FILE, ensureNotes, workDir, historyDir } from '../src/lib/agent/history.ts';
 import { getDashboard, saveDashboard } from '../src/lib/dashboard.ts';
 import { validateLayout } from '../src/lib/wards.ts';
 import { getSetting, setSetting } from '../src/lib/settings.ts';
@@ -13,6 +14,10 @@ import {
   activeConversation,
   addMessage,
   appendItems,
+  compactIfNeeded,
+  copyItems,
+  childConversation,
+  retireConversation,
   getConversation,
   loadItems,
   transcript,
@@ -24,6 +29,7 @@ import {
   buildInstructions,
   detailedInstructions,
   claimConfirm,
+  clearThread,
   parkConfirm,
   resolveConfirmTurn,
   runCommand,
@@ -36,7 +42,8 @@ import { TOOLS } from '../src/lib/agent/tools.ts';
 import { completeCommand, parseCommand } from '../src/lib/agent/commands.ts';
 import { agentRounds, parseRounds, ROUND_DEFAULT } from '../src/lib/agent/provider.ts';
 import type { AgentProvider, ProviderResult } from '../src/lib/agent/provider.ts';
-import { repairResponsesItems } from '../src/lib/agent/codex.ts';
+import { repairResponsesItems, codexProvider } from '../src/lib/agent/codex.ts';
+import { localOwner } from '../src/lib/dev/native.ts';
 import { getProvider } from '../src/lib/agent/provider.ts';
 import { storeAttachment } from '../src/lib/agent/attachments.ts';
 
@@ -68,7 +75,7 @@ function fakeProvider(script: ProviderResult[]): AgentProvider {
       return next;
     },
     userItem: (text) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }),
-    toolOutputItem: (callId, json) => ({ type: 'function_call_output', call_id: callId, output: json }),
+    toolOutputItem: (callId, json, type) => ({ type: type === 'custom' ? 'custom_tool_call_output' : 'function_call_output', call_id: callId, output: json }),
     repairItems: repairResponsesItems,
   };
 }
@@ -568,7 +575,7 @@ test('the instructions are a stable, cacheable prefix: no clock, static bulk fir
   assert.ok(a.indexOf('Your notes, verbatim:') > a.indexOf('search_tools'));
 });
 
-test('Rime inherits its own desktop project, including when nested, without adding desktop context on the server', () => {
+test('Rime workspace prompts never infer a project from a page, including nested wards', () => {
   const u = seedUser('core-project@x.dev');
   const pages = [{ id: 'home', title: 'Home' }, { id: 'code', title: 'Project', project: 'project-one' }];
   saveDashboard(u, validateLayout([
@@ -579,9 +586,10 @@ test('Rime inherits its own desktop project, including when nested, without addi
   const desktop = process.env.RIMEWARD_DESKTOP, token = process.env.RIMEWARD_NATIVE_TOKEN;
   try {
     process.env.RIMEWARD_DESKTOP = '1'; process.env.RIMEWARD_NATIVE_TOKEN = 'test-only';
-    assert.match(buildInstructions(cfg, u, 'ag1'), /Current desktop project:.*"project":"project-one"/);
+    assert.doesNotMatch(buildInstructions(cfg, u, 'ag1'), /Current desktop project:|project-one/);
+    assert.match(buildInstructions(cfg, u, 'ag1'), /bound workspace/);
     saveDashboard(u, getDashboard(u), [{ id: 'home', title: 'Home' }, { id: 'code', title: 'Project', project: 'project-two' }]);
-    assert.match(buildInstructions(cfg, u, 'ag1'), /Current desktop project:.*"project":"project-two"/);
+    assert.doesNotMatch(buildInstructions(cfg, u, 'ag1'), /Current desktop project:|project-two/);
     process.env.RIMEWARD_DESKTOP = '0';
     assert.doesNotMatch(buildInstructions(cfg, u, 'ag1'), /Current desktop project:/);
   } finally {
@@ -831,4 +839,144 @@ test('model usage triggers mid-turn compaction and persistence resumes without d
   assert.equal(folds, 1);
   assert.equal(rounds, 2);
   assert.deepEqual(loadItems(cfg.conv, provider, new Set()), items);
+});
+
+test('raw patches are available on the first round and retain their format through approval decisions', async () => {
+  const original = TOOLS.apply_patch!;
+  const desktop = process.env.RIMEWARD_DESKTOP, token = process.env.RIMEWARD_NATIVE_TOKEN, documents = process.env.RIMEWARD_DOCUMENTS_DIR;
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'rimeward-patch-lifecycle-'));
+  process.env.RIMEWARD_DESKTOP = '1'; process.env.RIMEWARD_NATIVE_TOKEN = 'fixture-only'; process.env.RIMEWARD_DOCUMENTS_DIR = folder;
+  const provider = codexProvider, priorRun = provider.run, priorContext = provider.context;
+  const globals = globalThis as typeof globalThis & { __nativeVault?: (operation: string, value?: string) => Promise<string> };
+  const vault = globals.__nativeVault; globals.__nativeVault = async () => '[]';
+  const patch = '*** Begin Patch\n*** Add File: literal.txt\n+attachment:42 file_id 42\n*** End Patch';
+  try {
+    provider.context = async () => undefined;
+    for (const [approvals, approved] of [['off', true], ['outbound', true], ['outbound', false], ['all', true], ['all', false]] as const) {
+      const user = localOwner();
+      retireConversation(user, 'ag1');
+      saveDashboard(user, validateLayout([{ i: 'ag1', type: 'agent', size: '2x2', config: { provider: 'codex', approvals } }])!);
+      const conv = activeConversation(user, 'ag1', 'codex');
+      let executions = 0, rounds = 0;
+      TOOLS.apply_patch = { ...original, run: (args, ctx) => {
+        executions++; assert.equal(args.patch, patch); assert.ok(ctx.workspace);
+        assert.equal(args.project, undefined); assert.equal(args.runtime, undefined); assert.equal(args.device, undefined);
+        return { ok: true, applied: [{ path: 'literal.txt', saved: true }] };
+      } };
+      provider.run = async request => {
+        if (rounds++ === 0) {
+          assert.ok(request.tools.some(t => t.name === 'workspace_read'));
+          assert.equal(request.tools.find(t => t.name === 'apply_patch')?.inputFormat, 'text');
+          const calls: ProviderResult['calls'] = [{ call_id: 'raw', name: 'apply_patch', arguments: patch, type: 'custom' }];
+          if (approvals === 'off') calls.push(
+            call('json', 'apply_patch', { patch, reason: 'Apply the JSON fixture' }),
+            call('json-no-reason', 'apply_patch', { patch }),
+            { call_id: 'unknown-raw', name: 'unknown_raw_tool', arguments: patch, type: 'custom' },
+            { call_id: 'invalid-raw', name: 'apply_patch', arguments: '{"patch":"not raw"}', type: 'custom' },
+          );
+          return { text: '', calls, items: calls.map(c => c.type === 'custom'
+            ? { type: 'custom_tool_call', call_id: c.call_id, name: c.name, input: c.arguments }
+            : { type: 'function_call', ...c }) };
+        }
+        const replies = request.items.filter((it: any) => it.call_id === 'raw' && it.type.endsWith('_output')) as { type: string; output: string }[];
+        assert.equal(replies.length, 1); assert.equal(replies[0]!.type, 'custom_tool_call_output');
+        assert.equal(JSON.parse(replies[0]!.output).declined === true, !approved);
+        if (approvals === 'off') {
+          const results = request.items.filter((it: any) => it.type?.endsWith('_output')) as { type: string; call_id: string; output: string }[];
+          assert.equal(results.find(it => it.call_id === 'json')?.type, 'function_call_output');
+          assert.match(results.find(it => it.call_id === 'json-no-reason')!.output, /requires a `reason`/);
+          for (const id of ['unknown-raw', 'invalid-raw']) {
+            assert.equal(results.find(it => it.call_id === id)?.type, 'custom_tool_call_output');
+            assert.ok(JSON.parse(results.find(it => it.call_id === id)!.output).error);
+          }
+        }
+        return { text: 'verified', calls: [], items: [] };
+      };
+      const items: unknown[] = [];
+      const first = await runLoop({ provider, conv, wardCfg: agentWardConfig(user, 'ag1')!, headless: false }, items);
+      if (approvals !== 'off') {
+        assert.ok(first.pending); assert.equal(executions, 0);
+        const parked = JSON.parse(getSetting(`agent_confirm:${first.pending.confirmId}`)!);
+        assert.equal(parked.type, 'custom'); assert.equal(parked.args.patch, patch); assert.ok(parked.workspace.definitionFingerprint);
+        appendItems(conv.id, items);
+        assert.equal((await resolveConfirmTurn(user, 'ag1', first.pending.confirmId, approved, () => {})).reply, 'verified');
+        assert.equal(getSetting(`agent_confirm:${first.pending.confirmId}`), null);
+      } else assert.equal(first.reply, 'verified');
+      assert.equal(executions, approvals === 'off' ? 2 : Number(approved)); assert.equal(rounds, 2);
+    }
+    for (const mode of ['read-only', 'headless'] as const) {
+      const user = localOwner(); retireConversation(user, 'ag1');
+      saveDashboard(user, validateLayout([{ i: 'ag1', type: 'agent', size: '2x2', config: { provider: 'codex', approvals: 'all', tools: mode === 'read-only' ? 'read-only' : 'all' } }])!);
+      const conv = activeConversation(user, 'ag1', 'codex'); let rounds = 0;
+      TOOLS.apply_patch = { ...original, run: () => { throw Error('A refused patch must never execute.'); } };
+      provider.run = async request => {
+        if (rounds++ === 0) {
+          assert.equal(request.tools.some(tool => tool.name === 'apply_patch'), mode !== 'read-only');
+          return { text: '', calls: [{ call_id: 'refused', name: 'apply_patch', arguments: patch, type: 'custom' }],
+            items: [{ type: 'custom_tool_call', call_id: 'refused', name: 'apply_patch', input: patch }] };
+        }
+        const result = request.items.find((item: any) => item.call_id === 'refused' && item.type === 'custom_tool_call_output') as { output: string };
+        assert.ok(result);
+        if (mode === 'read-only') assert.match(result.output, /read-only/);
+        else assert.equal(JSON.parse(result.output).declined, true);
+        return { text: 'refused safely', calls: [], items: [] };
+      };
+      const result = await runLoop({ provider, conv, wardCfg: agentWardConfig(user, 'ag1')!, headless: mode === 'headless' }, []);
+      assert.equal(result.reply, 'refused safely'); assert.equal(result.pending, undefined); assert.equal(rounds, 2);
+    }
+  } finally {
+    TOOLS.apply_patch = original; provider.run = priorRun; provider.context = priorContext;
+    if (vault === undefined) Reflect.deleteProperty(globals, '__nativeVault'); else globals.__nativeVault = vault;
+    for (const [name, value] of Object.entries({ RIMEWARD_DESKTOP: desktop, RIMEWARD_NATIVE_TOKEN: token, RIMEWARD_DOCUMENTS_DIR: documents })) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test('raw patch replay repairs interruptions, forks preserve raw input, and compaction archives complete pairs', async () => {
+  const patch = '*** Begin Patch\n*** Add File: literal.txt\n+attachment:17 file_id 17\n*** End Patch';
+  const raw = { type: 'custom_tool_call', call_id: 'raw-replay', name: 'apply_patch', input: patch };
+  const repaired = repairResponsesItems([raw], new Set()) as { type: string; call_id: string; output?: string; input?: string }[];
+  assert.equal(repaired[0]!.input, patch);
+  assert.equal(repaired[1]!.type, 'custom_tool_call_output');
+  assert.equal(JSON.parse(repaired[1]!.output!).interrupted, true);
+  assert.deepEqual(repairResponsesItems(repaired, new Set()), repaired, 'repair does not duplicate an interrupted receipt');
+  assert.deepEqual(repairResponsesItems([raw], new Set(['raw-replay'])), [raw], 'parked approval remains open');
+  assert.deepEqual(repairResponsesItems([{ type: 'custom_tool_call_output', call_id: 'missing', output: '{}' }], new Set()), []);
+  const user = seedUser('raw-replay@test'), conv = activeConversation(user, 'ag1', 'codex'), provider = fakeProvider([]);
+  appendItems(conv.id, repaired);
+  assert.deepEqual(loadItems(conv, provider, new Set()), repaired, 'restart retains opaque raw call and matching result');
+  const fork = childConversation(user, 'ag1', 'codex', null, 'raw-fork-fixture');
+  copyItems(conv.id, fork.id);
+  assert.deepEqual(loadItems(fork, provider, new Set()), repaired, 'fork copies raw calls without reinterpreting input');
+  const compact = activeConversation(user, 'compact', 'codex');
+  const completed = { type: 'custom_tool_call_output', call_id: raw.call_id, output: JSON.stringify({ ok: true, marker: 'applied-exactly-once', detail: 'x'.repeat(2000) }) };
+  appendItems(compact.id, [provider.userItem('Earlier request '.repeat(80)), raw, completed, { type: 'message', role: 'assistant', content: 'Later reply '.repeat(80) }]);
+  let summaryInput = '';
+  provider.run = async request => { summaryInput = JSON.stringify(request.items); return { text: 'Applied the requested patch once.', calls: [], items: [] }; };
+  assert.equal(await compactIfNeeded(compact, provider, 'fixture', true), true);
+  assert.match(summaryInput, /apply_patch/); assert.match(summaryInput, /applied-exactly-once/);
+  const archive = fs.readFileSync(path.join(historyDir(user), `${compact.id}.compacted.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line).item);
+  assert.equal(archive.find(item => item.type === 'custom_tool_call').input, patch);
+  assert.deepEqual(archive.find(item => item.type === 'custom_tool_call_output'), completed);
+  assert.equal(loadItems(compact, provider, new Set()).some((item: any) => item.call_id === raw.call_id), false, 'no orphan raw receipt survives outside the archive');
+});
+
+test('clearing a parked patch records one format-matching decline before archiving', () => {
+  for (const raw of [true, false]) {
+    const user = seedUser(`patch-clear-${raw}@test`), conv = activeConversation(user, 'ag1', 'codex');
+    const patch = '*** Begin Patch\n*** Add File: unchanged.txt\n+attachment:91\n*** End Patch';
+    appendItems(conv.id, [raw ? { type: 'custom_tool_call', name: 'apply_patch', call_id: 'parked', input: patch }
+      : { type: 'function_call', name: 'apply_patch', call_id: 'parked', arguments: JSON.stringify({ patch, reason: 'Prepare fixture' }) }]);
+    const pending = parkConfirm(conv, { name: 'apply_patch', call_id: 'parked', ...(raw ? { type: 'custom' as const } : {}), args: { patch, reason: 'Prepare fixture' } });
+    clearThread(user, 'ag1'); clearThread(user, 'ag1');
+    assert.equal(getSetting(`agent_confirm:${pending.confirmId}`), null);
+    const stored = (getDb().prepare('SELECT json FROM agent_items WHERE conversation_id=? ORDER BY id').all(conv.id) as { json: string }[]).map(row => JSON.parse(row.json));
+    assert.equal(stored.length, 2, 'known decline is persisted once, without waiting for replay repair');
+    assert.equal(stored[1].type, raw ? 'custom_tool_call_output' : 'function_call_output');
+    assert.equal(JSON.parse(stored[1].output).declined, true);
+    assert.equal(JSON.parse(stored[1].output).notRun, true);
+    assert.equal((getDb().prepare('SELECT active FROM agent_conversations WHERE id=?').get(conv.id) as { active: number }).active, 0);
+  }
 });

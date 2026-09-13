@@ -36,6 +36,7 @@ import {
 import { answerCli, cliPermissions, decideCli } from './cli-bridge.ts';
 import { fitOutput } from "../agent/shell.ts";
 import { applyProjectPatch } from './apply-patch.ts';
+import { PATCH_EDIT_GUIDANCE } from './patch.ts';
 import { deviceTool, agentDevices } from './tool-routing.ts';
 import { computerStatus, computerScreenshot, computerInput, computerApp } from './computer.ts';
 const str = (description: string) => ({ type: "string", description });
@@ -426,12 +427,55 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ),
 };
 
+function workspaceParameters(def: ToolDef, extra: Record<string, unknown> = {}) {
+  const p = def.parameters as { properties: Record<string, unknown>; required?: string[] };
+  return schema({ ...Object.fromEntries(Object.entries(p.properties).filter(([k]) => !['runtime', 'project', 'device'].includes(k))), ...extra },
+    (p.required ?? []).filter(k => !['runtime', 'project', 'device'].includes(k)));
+}
+function workspaceCall(operation: string): ToolDef['run'] {
+  return async (args, ctx) => {
+    if (!ctx.workspace) throw Error('This call has no workspace binding. Start a new turn in the workspace.');
+    if (!['tree', 'read', 'search', 'git', 'terminal-list', 'terminal-read', 'terminal-wait', 'patch-status'].includes(operation) && ctx.mayMutate && !ctx.mayMutate()) throw Error('This run is now read-only. No mutation was dispatched.');
+    if (['runtime', 'project', 'device', 'rootId', 'workspace', 'binding'].some(k => k in args)) throw Error('Workspace tools use the current binding. Omit project, runtime, device and root overrides.');
+    const { workspaceOperation } = await import('./workspaces.ts');
+    return workspaceOperation(ctx.userId, ctx.workspace, operation, { ...args, cli: ctx.cli,
+      ...(operation.startsWith('terminal-') ? { mode: cliPermissions(ctx.userId, ctx.ward, ctx.cli) } : {}),
+      origin: { ward: ctx.ward, conv: ctx.conv } }, owner(ctx), ctx.signal);
+  };
+}
+const cwd = str('Virtual workspace directory, default /. Native commands run on that folder’s host with its real OS cwd.');
+const WORKSPACE_TOOLS: Record<string, ToolDef> = {
+  workspace_read: { kind: 'read', description: 'Read files, list folders, search text, or inspect Git changes in the bound workspace. Paths are virtual; / is the primary folder and /name selects another mount. File pages use from/lines and next/nextColumn; directory/search/Git pages use cursor. Read current context before applying a focused patch.',
+    parameters: workspaceParameters(LOCAL_DEV_TOOLS.project_read as ToolDef),
+    run: (a, c) => workspaceCall(({ files: 'tree', file: 'read', search: 'search', git: 'git' } as Record<string, string>)[a.operation] ?? 'invalid')(a, c) },
+  workspace_edit: { kind: 'write', description: `Replace an entire recovery buffer; save:true writes it. Read every page first and supply the current revision. For targeted disk edits use apply_patch. ${PATCH_EDIT_GUIDANCE}`,
+    parameters: workspaceParameters(LOCAL_DEV_TOOLS.project_edit as ToolDef), run: async (a, c) => {
+      const result = await workspaceCall('edit')({ ...a, create: a.revision === 0 }, c) as Record<string, unknown>;
+      return { path: result.path, revision: result.revision, dirty: result.dirty, saved: a.save === true && !result.dirty && !result.conflict, conflict: result.conflict, readonly: result.readonly, ownerRuntimeId: result.ownerRuntimeId };
+    } },
+  apply_patch: { kind: 'confirm', inputFormat: 'text', description: `${PATCH_EDIT_GUIDANCE} Send *** Begin Patch / *** End Patch with Add/Update/Delete File, @@ hunks, optional Move to and End of File. Matching tries exact, trailing-whitespace, trimmed, then limited Unicode normalization; first match in the strongest pass wins. Replacement text is literal. Paths are virtual. All files preflight before writes; dirty/other-owned buffers abort. Recovery copies and bounded saved/revision/hash receipts are retained. Cross-mount moves use workspace_transfer. I/O failures may be partial. Up to 20 operations, 1 MiB patch text.`,
+    parameters: workspaceParameters(LOCAL_DEV_TOOLS.apply_patch as ToolDef), run: workspaceCall('patch') },
+  workspace_transfer: { kind: 'confirm', backgroundable: true, cancellable: true, description: 'Copy or move regular files or directories between workspace folders. Same-root directory moves rename the tree. Other directory transfers inventory at most 1000 entries and 100 MiB total, with 5 MiB per file; the entire destination is verified before deleting any source file. Existing destinations, links and Git metadata are refused. Paths are virtual. Inspect partial/uncertain receipts with workspace_receipt. Use background:true for long transfers.',
+    parameters: schema({ source: str('Source virtual path'), destination: str('Destination virtual path'), mode: { type: 'string', enum: ['copy', 'move'] } }, ['source', 'destination', 'mode']), run: workspaceCall('transfer') },
+  workspace_receipt: { kind: 'read', description: 'Inspect a patch or transfer by operation_id after a partial result, disconnection or restart. Omit the ID to find the ten most recent receipts when a response was lost. Reads the same mounted hosts and never replays an operation. Inspect current files before repeating an uncertain mutation.',
+    parameters: schema({ operation_id: str('operationId returned by apply_patch or workspace_transfer; omit to find recent receipts'), path: str('Optional virtual path selecting a mounted folder for paged receipts'), cursor: { type: 'integer', minimum: 0, description: 'Follow next to read more phase receipts in that mounted folder' } }), run: workspaceCall('patch-status') },
+  workspace_worktree: { kind: 'write', description: 'Create or remove a Rimeward Git worktree for a workspace folder. Dirty worktrees are never force removed.',
+    parameters: workspaceParameters(LOCAL_DEV_TOOLS.project_worktree as ToolDef, { cwd }), run: workspaceCall('worktree') },
+  ...Object.fromEntries(Object.entries(LOCAL_DEV_TOOLS).filter(([name]) => name.startsWith('terminal_')).map(([name, def]) => [name, {
+    ...def,
+    description: `${def.description.replaceAll('desktop project', 'workspace folder').replaceAll('project', 'workspace')}${name === 'terminal_exec' || name === 'terminal_start' ? ` ${PATCH_EDIT_GUIDANCE}` : ''}`,
+    parameters: workspaceParameters(def, { ...(name === 'terminal_start' || name === 'terminal_exec' ? { cwd } : {}), sessionRuntimeId: str('Owning runtime from this session’s receipt, when supplied. Must belong to the bound workspace.') }),
+    run: workspaceCall(name === 'terminal_close' ? 'terminal-stop' : name.replace('terminal_', 'terminal-')),
+  }])),
+};
+
 export const DEV_TOOLS: Record<string, ToolDef> = {
   list_devices: { kind: 'read', description: 'List computers paired to this Rimeward account with their IDs, names, platforms and live connection state. Use an explicit device ID on native tools to choose a computer. local means the desktop hosting this chat; it is unavailable on a server. Keep project/session IDs paired with their device. Never substitute another computer when the intended one is offline.', parameters: schema({}), run: (_, c) => agentDevices(c.userId) },
-  ...Object.fromEntries(Object.entries(LOCAL_DEV_TOOLS).map(([name, def]) => {
+  ...Object.fromEntries(Object.entries(LOCAL_DEV_TOOLS).filter(([name]) => !name.startsWith('project_') && !name.startsWith('desktop_') && name !== 'apply_patch' && !name.startsWith('terminal_')).map(([name, def]) => {
     const parameters = def.parameters as { properties: Record<string, unknown> };
     return [name, { ...def, parameters: { ...parameters, properties: { ...parameters.properties,
       device: str('Computer ID from list_devices. Omit or local for the desktop hosting this chat; required on the server.') } },
       run: (args: Record<string, unknown>, ctx: ToolCtx) => deviceTool(name, args, ctx, def.run) }];
   })),
+  ...Object.fromEntries(Object.entries(WORKSPACE_TOOLS).map(([name, tool]) => [name, { ...tool, requiresWorkspace: true }])),
 };

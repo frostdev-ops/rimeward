@@ -356,6 +356,7 @@ export function fromWire(msg: { role?: string; content?: unknown; reasoning?: st
 async function callCompat(endpoint: string, call: ProviderCall): Promise<ProviderResult> {
   const target = endpointOf(call.userId, endpoint);
   if (!target) throw new Error(`compat: no endpoint "${endpoint}" — add it under Account → Agent`);
+  if (call.backend && target.url !== call.backend) throw new Error('The model endpoint changed since this conversation was admitted; its history was not sent.');
   if (!call.model) throw new Error(`compat: pick a model for "${endpoint}" (list_models shows what it serves)`);
   const stream = chatStream(call.onTextDelta), decoder = new TextDecoder();
   let streaming = false;

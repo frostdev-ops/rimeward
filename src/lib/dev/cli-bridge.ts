@@ -20,6 +20,7 @@ import { observe } from '../agent/observation-events.ts';
 import { secretEqual } from './native.ts';
 import { DevError, isDesktop, workDb } from './runtime.ts';
 import type { CliPhase, PermissionMode } from './types.ts';
+import { narrowerPermission } from './types.ts';
 
 export type { CliPhase };
 export interface CliOrigin { ward: string; conv?: number }
@@ -64,11 +65,12 @@ export function cliInstructions(session: string, mode: PermissionMode, coordinat
 /** The agent ward's `permissions` knob; default normal. Read defensively — validateConfig
  *  learns the key in a parallel change. TODO: what these modes mean for Rime's OWN tool
  *  approvals is deliberately open; today they only shape the CLIs Rime launches. */
-export function cliPermissions(user: number, ward?: string): PermissionMode {
+export function cliPermissions(user: number, ward?: string, ceiling?: PermissionMode): PermissionMode {
   const wards = getDashboard(user);
   const w = ward ? wards.find(x => x.i === ward && x.type === 'agent') : wards.find(x => x.type === 'agent');
   const value = (w?.config as Record<string, unknown> | undefined)?.permissions;
-  return typeof value === 'string' && (PERMISSION_MODES as readonly string[]).includes(value) ? (value as PermissionMode) : 'normal';
+  const current = typeof value === 'string' && (PERMISSION_MODES as readonly string[]).includes(value) ? (value as PermissionMode) : 'normal';
+  return ceiling ? narrowerPermission(current, ceiling) : current;
 }
 
 const HOOK_SCRIPT = `// Rimeward CLI hook: forwards the CLI's hook payload to the runtime that launched it.

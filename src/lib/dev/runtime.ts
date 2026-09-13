@@ -6,6 +6,10 @@ import type { RuntimeEvent } from "./types.ts";
 
 export const isDesktop = (): boolean =>
   process.env.RIMEWARD_DESKTOP === "1" && !!process.env.RIMEWARD_NATIVE_TOKEN;
+export const isWorkspaceWorker = (): boolean => process.env.RIMEWARD_WORKER === '1' && process.platform === 'linux' && typeof process.getuid?.() === 'number' && process.getuid() > 0 && /^[1-9]\d*$/.test(process.env.RIMEWARD_WORKER_ACCOUNT ?? '');
+export function requireWorkspaceRuntime(): void {
+  if (!isDesktop() && !isWorkspaceWorker()) throw new DevError('A desktop or provisioned workspace worker is required.', 503);
+}
 export class DevError extends Error {
   status: number;
   constructor(message: string, status = 400) {
@@ -21,7 +25,7 @@ export function requireDesktop(): void {
 let database: Database.Database | undefined;
 /** Native data is a separate, local-only database. A server never opens it. */
 export function workDb(): Database.Database {
-  requireDesktop();
+  requireWorkspaceRuntime();
   if (database) return database;
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   const db = new Database(path.join(DATA_DIR, "workspaces.db"));
@@ -88,6 +92,14 @@ export function workDb(): Database.Database {
       next_mode=CASE next_mode WHEN 'human' THEN 'approvals' WHEN 'rimeward' THEN 'normal' ELSE next_mode END
       WHERE mode IN ('human','rimeward') OR next_mode IN ('human','rimeward')`);
   })();
+  const projectColumns = new Set((db.pragma('table_info(projects)') as {name:string}[]).map(c => c.name));
+  if (!projectColumns.has('connection')) db.exec("ALTER TABLE projects ADD COLUMN connection TEXT NOT NULL DEFAULT ''");
+  db.exec(`CREATE TABLE IF NOT EXISTS workspace_operations (id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,fingerprint TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT NOT NULL DEFAULT '{}',updated INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS workspace_activity (workspace TEXT NOT NULL,consumer TEXT NOT NULL,owner TEXT NOT NULL,fingerprint TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(workspace,consumer,owner));`);
+  db.exec(`CREATE TABLE IF NOT EXISTS workspace_runs (id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,workspace TEXT NOT NULL,consumer TEXT NOT NULL,owner TEXT NOT NULL,fingerprint TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS workspace_gates (user_id INTEGER NOT NULL,workspace TEXT NOT NULL,fingerprint TEXT NOT NULL,token TEXT,state TEXT NOT NULL DEFAULT 'idle',PRIMARY KEY(user_id,workspace));`);
+  const sessionColumns=new Set((db.pragma('table_info(terminal_sessions)') as {name:string}[]).map(c=>c.name));
+  for(const name of ['workspace_json','owner_runtime','virtual_cwd','workspace_lease'])if(!sessionColumns.has(name))db.exec(`ALTER TABLE terminal_sessions ADD COLUMN ${name} TEXT NOT NULL DEFAULT ''`);
   database = db;
   return db;
 }
@@ -118,7 +130,7 @@ export function subscribeDev(
   user: number,
   fn: (event: RuntimeEvent) => void,
 ): () => void {
-  requireDesktop();
+  requireWorkspaceRuntime();
   const s = stream(user);
   s.listeners.add(fn);
   fn({ sequence: s.sequence, type: "reset", id: "" });
@@ -127,6 +139,13 @@ export function subscribeDev(
 
 // Leases serialize human input, not arbitrary third-party filesystem writes.
 const leases = new Map<string, { owner: string; until: number }>();
+let directoryReservation:string|undefined;
+export function assertNoDirectoryMutation(reservation?:string){if(directoryReservation&&directoryReservation!==reservation)throw new DevError('A directory rename is in progress. Wait for its receipt before changing files.',409);}
+/** ponytail: directory renames reserve this runtime; scope the lock if concurrent folder moves matter. */
+export function reserveDirectoryMutation(token:string):()=>void{
+  assertNoDirectoryMutation();for(const key of leases.keys())if(key.startsWith('mutation:')&&leaseOwner(key))throw new DevError('Finish prepared file mutations before renaming a directory.',409);
+  directoryReservation=token;return()=>{if(directoryReservation===token)directoryReservation=undefined;};
+}
 export function leaseOwner(key: string): string | null {
   const l = leases.get(key);
   if (l && l.until > Date.now()) return l.owner;
@@ -134,6 +153,7 @@ export function leaseOwner(key: string): string | null {
   return null;
 }
 export function claimLease(key: string, owner: string, takeover = false, duration = 30_000): void {
+  if(key.startsWith('mutation:'))assertNoDirectoryMutation();
   if (!/^[\w:-]{1,120}$/.test(owner))
     throw new DevError("Invalid input owner.");
   const current = leaseOwner(key);

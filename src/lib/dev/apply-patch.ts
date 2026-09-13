@@ -1,19 +1,39 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { bufferKey, decode, encode, hash, MAX_FILE, projectOf, projectPath, type BufferRow } from './projects.ts';
+import { bufferKey, fileMutationKey, decode, encode, hash, MAX_FILE, projectOf, projectPath, type BufferRow } from './projects.ts';
 import { claimLease, DevError, emitDev, leaseOwner, workDb } from './runtime.ts';
-import { parsePatch, patchPath, patchText } from './patch.ts';
+import { parsePatch, patchPath, patchText, type PatchOperation } from './patch.ts';
 
 type Snapshot = { path: string; target: string; stat: fs.Stats | undefined; digest: string | null; raw: Buffer; text: string; encoding: string; newline: string };
 type Receipt = { operation: string; path: string; to?: string; revision: number | null; saved: boolean; recovery?: number; hash: string | null };
 const collisionKey = (file: string) => process.platform === 'linux' ? file : file.normalize('NFC').toLowerCase();
+function syncParent(target: string) {
+  if (process.platform === 'win32') return; // Windows does not expose directory fsync through Node.
+  const fd = fs.openSync(path.dirname(target), 'r');
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+const identity = (stat: fs.Stats | undefined) => stat ? `${stat.dev}:${stat.ino}:${stat.mode}:${stat.nlink}` : null;
+type Preparation = { prepare?: boolean; hashes?: Record<string, string | null>; identities?: Record<string, string | null>; parents?: Record<string, string>; mutationOwner?: string; rawBytes?: Buffer; allowBinary?: boolean; newMode?: number };
 
 /** Synchronous preflight/commit prevents interleaving with this runtime's editor requests.
  * External processes are not locked: recheck before each write and report partial I/O honestly. */
-export function applyProjectPatch(user: number, project: string, owner: string, patch: unknown, revisions?: unknown) {
-  const operations = parsePatch(patch);
+export function applyProjectPatch(user: number, project: string, owner: string, patch: unknown, revisions?: unknown, preparation?: Preparation) {
   if (!/^agent:[\w:-]{1,114}$/.test(owner)) throw new DevError('Invalid patch owner.');
+  return applyChanges(user, project, owner, parsePatch(patch), revisions, preparation);
+}
+
+/** Workspace byte writes and transfers share the patch engine's physical safety checks. */
+export function applyProjectBytes(user: number, project: string, owner: string, file: string, bytes: Buffer | null, expectedHash: string | null, preparation?: Preparation) {
+  patchPath(file);
+  const op: PatchOperation = bytes === null ? { kind: 'delete', path: file }
+    : expectedHash === null ? { kind: 'add', path: file, text: '' } : { kind: 'update', path: file, hunks: [] };
+  return applyChanges(user, project, owner, [op], undefined, { ...preparation, hashes: { [file]: expectedHash }, allowBinary: true, ...(bytes === null ? {} : { rawBytes: bytes }) });
+}
+
+function applyChanges(user: number, project: string, owner: string, operations: PatchOperation[], revisions?: unknown, preparation?: Preparation) {
+  if (!/^[\w:-]{1,120}$/.test(owner)) throw new DevError('Invalid mutation owner.');
+  if (preparation?.newMode !== undefined && (!Number.isInteger(preparation.newMode) || preparation.newMode < 0 || preparation.newMode > 0o777)) throw new DevError('Invalid file mode.');
   const db = workDb(), root = projectOf(user, project).root;
   const expected = new Map<string, number>();
   if (revisions !== undefined) {
@@ -41,13 +61,15 @@ export function applyProjectPatch(user: number, project: string, owner: string, 
     }
     if (fs.realpathSync(root) !== root || target !== path.join(root, file)) throw new DevError(`${file}: project path changed.`, 409);
     const stat = fs.lstatSync(target, { throwIfNoEntry: false });
+    if (preparation?.identities && preparation.identities[file] !== identity(stat)) throw new DevError(`${file}: file identity changed after batch preflight.`, 409);
     if (stat && (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_FILE)) throw new DevError(`${file}: patch only regular, single-link files up to 5 MiB.`);
     const raw = stat ? fs.readFileSync(target) : Buffer.alloc(0);
     total += raw.length;
     if (total > 20 * 1024 * 1024) throw new DevError('Patch source files exceed 20 MiB in total.');
     const decoded = decode(raw);
-    if (decoded.readonly) throw new DevError(`${file}: binary, mixed newlines, or unsupported text encoding.`);
+    if (decoded.readonly && !preparation?.allowBinary) throw new DevError(`${file}: binary, mixed newlines, or unsupported text encoding.`);
     const snapshot = { path: file, target, stat, digest: stat ? hash(raw) : null, raw, ...decoded };
+    if (preparation?.hashes && (!Object.hasOwn(preparation.hashes,file) || preparation.hashes[file] !== snapshot.digest)) throw new DevError(`${file}: source changed after batch preflight.`,409);
     snapshots.set(file, snapshot);
     return snapshot;
   };
@@ -63,10 +85,12 @@ export function applyProjectPatch(user: number, project: string, owner: string, 
     if (op.kind === 'add' ? !!source.stat : !source.stat) throw new DevError(`${op.path}: ${op.kind === 'add' ? 'destination already exists' : 'source does not exist'}.`, 409);
     const dest = op.kind === 'update' && op.move ? inspect(op.move) : source;
     if (dest !== source && dest.stat) throw new DevError(`${dest.path}: destination already exists.`, 409);
-    const text = op.kind === 'add' ? op.text : op.kind === 'update' ? patchText(source.text, op) : '';
-    const bytes = encode(text, source.encoding, source.newline);
+    let text = op.kind === 'add' ? op.text : op.kind === 'update' ? patchText(source.text, op) : '';
+    const bytes = preparation?.rawBytes ?? encode(text, source.encoding, source.newline);
+    const decoded = decode(bytes);
+    if (preparation?.rawBytes) text = decoded.text;
     if (bytes.length > MAX_FILE) throw new DevError(`${dest.path}: patched file exceeds 5 MiB.`);
-    return { op, source, dest, text, bytes };
+    return { op, source, dest, text, bytes, decoded };
   });
   // Reserve space for error text and recovery metadata even if the last write fails.
   // Unapplied recovery records are smaller than these conservative per-operation receipts.
@@ -88,6 +112,8 @@ export function applyProjectPatch(user: number, project: string, owner: string, 
       if (rowOf(peer.user_id, peer.project, peer.path)?.dirty) throw new DevError(`${peer.path}: save or resolve the dirty recovery buffer before patching.`, 409);
     }
     for (const snapshot of snapshots.values()) {
+      const reservation = leaseOwner(fileMutationKey(user, project, snapshot.path));
+      if (reservation && reservation !== preparation?.mutationOwner) throw new DevError(`${snapshot.path}: another mutation is prepared for this file.`, 409);
       const row = rowOf(user, project, snapshot.path), revision = expected.get(snapshot.path);
       if (revision !== undefined && (revision !== (row?.revision ?? 0) || (row && row.base_hash !== (snapshot.digest ?? ''))))
         throw new DevError(`${snapshot.path}: stale buffer revision or disk hash; read the current file.`, 409);
@@ -104,7 +130,13 @@ export function applyProjectPatch(user: number, project: string, owner: string, 
       throw new DevError(`${snapshot.path}: file changed during patch planning.`, 409);
   };
   checkBuffers();
+  if (preparation?.parents) for (const [dir, expected] of Object.entries(preparation.parents)) {
+    const now = fs.lstatSync(dir, { throwIfNoEntry: false });
+    if (!now?.isDirectory() || `${now.dev}:${now.ino}:${now.mode}` !== expected) throw new DevError('Parent directory changed after batch preflight.', 409);
+  }
   for (const snapshot of snapshots.values()) recheck(snapshot);
+  if (preparation?.prepare) return { project, ok: true, applied: [], prepared: Object.fromEntries([...snapshots].map(([file,s]) => [file,s.digest])), resources: [...snapshots.keys()].map(file => fileMutationKey(user, project, file)).sort(),
+    identities: Object.fromEntries([...snapshots].map(([file, s]) => [file, identity(s.stat)])), parents: Object.fromEntries([...directories].map(([dir, s]) => [dir, `${s.dev}:${s.ino}:${s.mode}`])), sourceBytes: total };
   // Recovery is durable before any destructive operation. Raw bytes/mode supplement the existing text history.
   const recovery = new Map<string, number>();
   db.transaction(() => {
@@ -116,13 +148,13 @@ export function applyProjectPatch(user: number, project: string, owner: string, 
   })();
   const applied: Receipt[] = [], createdDirectories: string[] = [];
   const events: { user: number; project: string; path: string }[] = [];
-  const saveBuffer = (snapshot: Snapshot, text: string, bytes: Buffer | null, encoding: string, newline: string) => {
+  const saveBuffer = (snapshot: Snapshot, text: string, bytes: Buffer | null, encoding: string, newline: string, readonly = false) => {
     const owners = [{ user_id: user, project, path: snapshot.path }, ...peers.filter(p => collisionKey(path.resolve(p.root, p.path)) === collisionKey(snapshot.target) && !(p.user_id === user && p.project === project && p.path === snapshot.path))];
     for (const peer of owners) {
       db.prepare(`INSERT INTO buffers(user_id,project,path,text,base_hash,encoding,newline,readonly) VALUES(?,?,?,?,?,?,?,?)
         ON CONFLICT(user_id,project,path) DO UPDATE SET text=excluded.text,base_hash=excluded.base_hash,encoding=excluded.encoding,newline=excluded.newline,
         readonly=excluded.readonly,dirty=0,revision=buffers.revision+1`)
-        .run(peer.user_id, peer.project, peer.path, text, bytes ? hash(bytes) : '', encoding, newline, Number(!bytes));
+        .run(peer.user_id, peer.project, peer.path, text, bytes ? hash(bytes) : '', encoding, newline, Number(!bytes || readonly));
       events.push({ user: peer.user_id, project: peer.project, path: peer.path });
     }
     claimLease(bufferKey(user, project, snapshot.path), owner);
@@ -142,7 +174,7 @@ export function applyProjectPatch(user: number, project: string, owner: string, 
     }
   };
   try {
-    for (const { op, source, dest, text, bytes } of plans) {
+    for (const { op, source, dest, text, bytes, decoded } of plans) {
       recheck(source);
       if (dest !== source) recheck(dest);
       const receipt: Receipt = { operation: op.kind === 'update' && op.move ? 'move' : op.kind, path: source.path,
@@ -151,28 +183,32 @@ export function applyProjectPatch(user: number, project: string, owner: string, 
       if (op.kind === 'delete') {
         fs.unlinkSync(source.target);
         applied.push(receipt);
+        syncParent(source.target);
         receipt.revision = saveBuffer(source, source.text, null, source.encoding, source.newline);
         continue;
       }
       parents(dest);
       const tmp = path.join(path.dirname(dest.target), `.rimeward-patch-${randomUUID()}`);
       try {
-        fs.writeFileSync(tmp, bytes, { flag: 'wx', mode: source.stat?.mode ?? 0o600 });
-        if (source.stat) fs.chmodSync(tmp, source.stat.mode & 0o777);
+        const mode = (source.stat?.mode ?? preparation?.newMode ?? 0o600) & 0o777;
+        const fd = fs.openSync(tmp, 'wx', 0o600);
+        try { fs.writeFileSync(fd, bytes); fs.fchmodSync(fd, mode); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
         recheck(source);
         if (dest !== source) recheck(dest);
         if (op.kind === 'add' || dest !== source) fs.linkSync(tmp, dest.target); // Atomic no-clobber publication.
         else fs.renameSync(tmp, dest.target);
         // Record publication immediately, even if source removal or DB persistence fails next.
         applied.push(receipt);
+        syncParent(dest.target);
         if (dest !== source) {
           receipt.operation = 'copy';
           recheck(source);
           fs.unlinkSync(source.target);
           receipt.operation = 'move';
+          syncParent(source.target);
           saveBuffer(source, source.text, null, source.encoding, source.newline);
         }
-        receipt.revision = saveBuffer(dest, text, bytes, source.encoding, source.newline);
+        receipt.revision = saveBuffer(dest, text, bytes, preparation?.rawBytes ? decoded.encoding : source.encoding, preparation?.rawBytes ? decoded.newline : source.newline, decoded.readonly);
       } finally {
         fs.rmSync(tmp, { force: true });
       }

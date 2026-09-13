@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { getDb } from '../db.ts';
 import { sealToken, openToken } from '../crypto.ts';
 import { ENDPOINT_NAME_RE } from '../wards.ts';
-import { isLoopbackAddress } from '../net-guard.ts';
+import { isLoopbackAddress, isPrivateAddress } from '../net-guard.ts';
 
 // Per-user agent credentials. Deliberately NOT linked_accounts: that table's
 // provider CHECK and Provider union feed the ward Connect-chip machinery,
@@ -116,6 +116,48 @@ export function endpointOf(userId: number, name: string): { url: string; key: st
   return { url, key, revision: createHash('sha256').update(`${url}\n${key ?? ''}`).digest('hex').slice(0, 16) };
 }
 
+/** The endpoint's base URL, normalized, WITHOUT touching its key: what a stored conversation is
+ *  compared against long after the credential was rotated, removed or made unreadable. A history
+ *  read must never depend on unsealing today's secret. */
+export function endpointUrlOf(userId: number, name: string): string | null {
+  if (!ENDPOINT_NAME_RE.test(name)) return null;
+  const row = getAgentAccount(userId, `compat:${name}`);
+  if (!row) return null;
+  return normalizeEndpoint(String(accountMeta(row).url ?? '')) || null;
+}
+
+/** Non-secret backend identity: scheme, host, explicit port and path, case- and slash-normalized.
+ *  Two endpoint names on one runtime pointing here are the same backend; the same string on ANOTHER
+ *  runtime is only the same backend when the host is not machine-local (see machineLocalEndpoint). */
+export function normalizeEndpoint(raw: string): string {
+  const text = String(raw ?? '').trim();
+  if (!text) return '';
+  try {
+    const u = new URL(text);
+    const dflt = u.protocol === 'https:' ? '443' : u.protocol === 'http:' ? '80' : '';
+    const port = u.port && u.port !== dflt ? `:${u.port}` : '';
+    return `${u.protocol}//${u.hostname.toLowerCase()}${port}${u.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return text.replace(/\/+$/, '');
+  }
+}
+
+/** True when this URL's host does NOT establish, on its own, that two runtimes mean the same server:
+ *  loopback and local-only names resolve per machine, and a private LAN address names whatever holds
+ *  it on the network that runtime is attached to. This is "cannot establish the same backend", not
+ *  proof of a different one — the caller refuses rather than guessing either way. A fully qualified
+ *  public name is the only case that answers the same wherever it is resolved, so everything else,
+ *  including an unqualified single-label name and anything unparseable, fails closed. */
+export function machineLocalEndpoint(url: string): boolean {
+  let host: string;
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return true; }
+  host = host.replace(/^\[|\]$/g, '');
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.home.arpa')) return true;
+  const literal = /^[0-9.]+$/.test(host) || host.includes(':');
+  if (literal) return isLoopbackAddress(host) || isPrivateAddress(host);
+  return !host.includes('.'); // a single-label name is resolved by the local search domain, not globally
+}
 export function storeEndpoint(userId: number, e: { name: string; url: string; key?: string }): void {
   const name = e.name.trim().toLowerCase();
   if (!ENDPOINT_NAME_RE.test(name)) throw new Error('endpoint name: 1-40 lowercase letters, digits or dashes');

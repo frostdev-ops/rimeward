@@ -27,6 +27,18 @@ export async function routeInstance(context: APIContext): Promise<Response | und
   const path = url.pathname + url.search;
   // Update discovery belongs to this runtime, even when the desktop is paired.
   if (url.pathname === '/api/update' || url.pathname === '/api/update/desktop') return;
+  // Workspace APIs resolve immutable session owners and mounted roots themselves.
+  if (url.pathname === '/api/workspaces') return;
+  if (url.pathname === '/api/agent-placement') return;
+  if (url.pathname === '/api/terminal-placement') return;
+  const agent = requestWard(path);
+  if ((url.pathname.startsWith('/api/agent/') || url.pathname === '/api/ward-context') && agent && getDashboard(user).some(w => w.i === agent && w.type === 'agent')) {
+    try { return await (await import('./agent-placement.ts')).routeAgentPlacement(context, agent); }
+    catch (e) { return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: e instanceof DevError ? e.status : 503 }); }
+  }
+  if (url.pathname === '/api/dev/events' && !context.locals.share) {
+    const ward=requestWard(path);if(ward&&getDashboard(user).some(w=>w.i===ward&&['terminal','editor','project-files','changes'].includes(w.type)))return(await import('./workspace-events.ts')).workspaceEvents(user,ward,request.signal);
+  }
   // Replicated documents belong to this account on every runtime, including offline.
   if (/^\/api\/(?:notes$|(?:note|notebook)\/)/.test(url.pathname)) return;
   // These operations authorize their explicit target, never page placement.
@@ -75,8 +87,6 @@ export async function routeInstance(context: APIContext): Promise<Response | und
     if (!device && url.pathname.startsWith('/api/dev/')) {
       const page = url.searchParams.get('_page');
       device = getPages(user).find(p => p.id === page)?.device;
-      // Global project actions use this computer in the app, or the available owner in a browser.
-      if (!desktop && !device) device = listDevices(user).find(d => d.online)?.id;
     }
     if (device && device !== connection?.id) {
       if (desktop) return await instanceRequest(user, `/runtime/${device}${path}`, request);

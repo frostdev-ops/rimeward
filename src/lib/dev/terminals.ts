@@ -7,13 +7,14 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
+import { execFileSync } from 'node:child_process';
 import type { IPty } from "node-pty";
 import type { Socket } from "node:net";
 import type { Terminal as Headless } from "@xterm/headless";
 import type { SerializeAddon } from "@xterm/addon-serialize";
 import {
   workDb,
-  requireDesktop,
+  requireWorkspaceRuntime,
   DevError,
   emitDev,
   claimLease,
@@ -57,9 +58,12 @@ type Row = {
    *  brought back after a runtime restart still reports to its coordinator. */
   origin_ward: string;
   origin_conv: number | null;
+  owner_runtime?: string;
+  workspace_json?: string;
+  virtual_cwd?: string;
 };
 interface Live {
-  pty: IPty;
+  pty: TerminalTransport;
   /** Every input writer invalidates a pending model-added Enter. */
   inputSequence: number;
   pendingSend?: boolean;
@@ -86,6 +90,7 @@ interface Live {
   /** The ephemeral hook plugin of a Rime-launched CLI (cli-bridge.ts); removed at exit. */
   launch?: CliLaunch;
 }
+export type TerminalTransport = Pick<IPty,'pid'|'onData'|'onExit'|'write'|'resize'|'kill'|'pause'|'resume'>;
 const live = new Map<string, Live>();
 function stopPty(s: Live, reason?: Live['terminationReason']) {
   if (s.closing) return s.exited;
@@ -127,7 +132,7 @@ export function executable(name: string): string | null {
   return null;
 }
 export function terminalCapabilities() {
-  requireDesktop();
+  requireWorkspaceRuntime();
   return {
     platform: process.platform,
     agents: { codex: !!executable("codex"), claude: !!executable("claude") },
@@ -154,9 +159,17 @@ export function cliArgs(
   // read-only: plan / read-only sandbox. approvals: the CLI asks and the PermissionRequest hook
   // (cli-bridge.ts) carries it to Rime. normal: the CLI's own auto mode. yolo: no prompts at all.
   const flags = kind === "codex"
-    ? { "read-only": ["--sandbox", "read-only", "--ask-for-approval", "never"], approvals: ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"], normal: ["--full-auto"], yolo: ["--dangerously-bypass-approvals-and-sandbox"] }[mode]
+    ? { "read-only": ["--sandbox", "read-only", "--ask-for-approval", "never"], approvals: ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"], normal: [codexAutoFlag()], yolo: ["--dangerously-bypass-approvals-and-sandbox"] }[mode]
     : { "read-only": ["--permission-mode", "plan"], approvals: ["--permission-mode", "default"], normal: ["--permission-mode", "auto"], yolo: ["--dangerously-skip-permissions"] }[mode];
   return [...(resume ? [kind === "codex" ? "resume" : "--resume"] : []), ...flags, ...(task ? [task] : [])];
+}
+let codexAuto: string | undefined;
+function codexAutoFlag(): string {
+  if (codexAuto) return codexAuto;
+  let help = '';
+  try { help = execFileSync(executable('codex') || 'codex', ['--help'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }); } catch { /* Prefer the current flag when discovery is unavailable. */ }
+  codexAuto = !help.includes('--approve-for-me') && help.includes('--full-auto') ? '--full-auto' : '--approve-for-me';
+  return codexAuto;
 }
 function rowOf(user: number, id: string): Row {
   const row = workDb()
@@ -178,6 +191,9 @@ function view(r: Row, inspect = false): SessionView {
   });
   return {
     id: r.id,
+    ...(r.owner_runtime?{ownerRuntimeId:r.owner_runtime}:{}),
+    ...(r.virtual_cwd?{virtualCwd:r.virtual_cwd}:{}),
+    ...(r.workspace_json?{workspace:JSON.parse(r.workspace_json)}:{}),
     project: r.project,
     kind: r.kind,
     command: !!r.is_command,
@@ -219,7 +235,7 @@ export function listSessions(user: number, project?: string): SessionView[] {
     workDb()
       .prepare(
         // Everything but the snapshot (multi-MB per session): the list never shows it.
-        "SELECT id,user_id,project,kind,mode,title,shell,next_mode,human_control,review,state,exit_code,exit_signal,termination_reason,task,assignment,task_state,cols,rows,sequence,agent_input,is_command,phase,last_message FROM terminal_sessions WHERE user_id=? AND (? IS NULL OR project=?) ORDER BY rowid DESC",
+        "SELECT id,user_id,project,kind,mode,title,shell,next_mode,human_control,review,state,exit_code,exit_signal,termination_reason,task,assignment,task_state,cols,rows,sequence,agent_input,is_command,phase,last_message,owner_runtime,workspace_json,virtual_cwd FROM terminal_sessions WHERE user_id=? AND (? IS NULL OR project=?) ORDER BY rowid DESC",
       )
       .all(user, project ?? null, project ?? null) as Row[]
   ).map(r => view(r));
@@ -290,6 +306,9 @@ export async function startSession(
   user: number,
   opts: {
     project: string;
+    /** Resolved by the trusted workspace backend, never from native tool arguments. */
+    nativeCwd?: string;
+    transport?: TerminalTransport;
     kind?: TerminalKind;
     mode?: PermissionMode;
     agentInput?: boolean;
@@ -306,7 +325,7 @@ export async function startSession(
   },
   saved?: Row,
 ): Promise<SessionView> {
-  requireDesktop();
+  requireWorkspaceRuntime();
   const p = projectOf(user, opts.project),
     kind = opts.kind ?? "shell",
     mode = LEGACY_MODES[opts.mode as string] ?? opts.mode ?? cliPermissions(user, opts.origin?.ward);
@@ -329,7 +348,7 @@ export async function startSession(
       ? executable("pwsh") || executable("powershell") || "cmd.exe"
       : process.env.SHELL || os.userInfo().shell || "/bin/sh");
   const command = executable(kind === "shell" ? shell : kind);
-  if (!command)
+  if (!command && !opts.transport)
     throw new DevError(
       `${kind === "shell" ? shell : kind} is not installed. Install it and sign in locally, then try again.`,
       409,
@@ -357,11 +376,11 @@ export async function startSession(
   const task = (opts.task ?? "").slice(0, 8000),
     assignment = (opts.assignment ?? "").slice(0, 2000);
   // argv is passed directly to the executable, never concatenated into a shell command.
-  let program = command,
+  let program = command ?? shell,
     args = cliArgs(kind, mode, task, !!saved);
   // A CLI gets its session-only hook plugin (before the positional task) and the env its hooks use.
   let launch: CliLaunch | undefined;
-  if (kind !== "shell") {
+  if (kind !== "shell" && !opts.transport) {
     try { launch = prepareCliLaunch(user, id, kind, mode, opts.origin, task); } catch (error) { term.dispose(); throw error; }
     args.splice(args.length - (task ? 1 : 0), 0, ...launch.args);
     if (task && launch.task) args[args.length - 1] = launch.task; // Codex: the coordination preamble rides the task
@@ -372,14 +391,14 @@ export async function startSession(
       ? ["-NoLogo", "-NoProfile", "-Command", opts.command]
       : ["-lc", opts.command];
   }
-  if (kind !== "shell" && process.platform !== "win32") {
+  if (kind !== "shell" && process.platform !== "win32" && command) {
     const script = fs.realpathSync(command);
     if (/\.[cm]?js$/.test(script)) {
       program = process.execPath;
       args = [script, ...args];
     }
   }
-  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(command)) {
+  if (process.platform === "win32" && command && /\.(cmd|bat)$/i.test(command)) {
     const packageFile =
       kind === "codex"
         ? "@openai/codex/bin/codex.js"
@@ -397,11 +416,11 @@ export async function startSession(
     program = process.execPath;
     args = [script, ...args];
   }
-  let pty: IPty;
+  let pty: TerminalTransport;
   try {
-    pty = spawn(program, args, {
+    pty = opts.transport ?? spawn(program, args, {
       name: "xterm-256color",
-      cwd: projectPath(user, p.id),
+      cwd: opts.nativeCwd ?? projectPath(user, p.id),
       cols,
       rows,
       env: { ...terminalEnv(), ...(launch?.env ?? {}) },
@@ -487,15 +506,18 @@ export async function startSession(
     flushOutput(s);
     term.write("", () => {
       // A cancellation can arrive while xterm drains the final output.
-      const reason = s.terminationReason ?? (exitSignal ? 'signal' : null);
+      const reason = s.terminationReason ?? (exitSignal ? 'signal' : !Number.isFinite(exitCode) ? 'connection-lost' : null);
+      const uncertain = !!opts.transport && (!Number.isFinite(exitCode) || !!s.closing);
       persist(s);
       s.launch?.cleanup(); // denies any parked permission request; removes the hook plugin
       workDb()
         .prepare(
-          "UPDATE terminal_sessions SET state='exited',exit_code=?,exit_signal=?,termination_reason=?,finished_at=?,task_state=CASE WHEN ?='cancelled' THEN 'cancelled' WHEN task_state='active' THEN 'needs-attention' ELSE task_state END,phase=CASE WHEN phase='' THEN '' ELSE 'ended' END WHERE id=?",
+          "UPDATE terminal_sessions SET state=?,exit_code=?,exit_signal=?,termination_reason=?,finished_at=?,task_state=CASE WHEN ?='cancelled' THEN 'cancelled' WHEN task_state='active' THEN 'needs-attention' ELSE task_state END,phase=CASE WHEN phase='' THEN '' ELSE 'ended' END WHERE id=?",
         )
-        .run(reason ? null : exitCode, exitSignal, reason, Date.now(), reason, id);
+        .run(uncertain?'interrupted':'exited', reason ? null : exitCode, exitSignal, uncertain?'remote-process-unconfirmed':reason, Date.now(), reason, id);
       live.delete(id);
+      const lease=(workDb().prepare('SELECT workspace_lease FROM terminal_sessions WHERE id=? AND user_id=?').get(id,user) as {workspace_lease:string}|undefined)?.workspace_lease;
+      if(lease&&!uncertain)void import('./workspaces.ts').then(m=>m.endWorkspaceRun(user,JSON.parse(lease))).then(()=>workDb().prepare("UPDATE terminal_sessions SET workspace_lease='' WHERE id=? AND user_id=?").run(id,user)).catch(()=>{});
       releaseLease(ownerKey(id), leaseOwner(ownerKey(id)) ?? "");
       emitDev(user, "session", id, view(rowOf(user, id)));
       term.dispose();
@@ -839,6 +861,7 @@ export function restartSession(user: number, id: string) {
 }
 
 export function deleteSession(user: number, id: string) {
+  if(rowOf(user,id).termination_reason==='remote-process-unconfirmed')throw new DevError('Verify and reconcile the remote process before deleting this session.',409);
   rowOf(user, id);
   if (live.has(id)) throw new DevError("End this session before deleting its saved history.", 409);
   workDb().transaction(() => {
@@ -847,4 +870,11 @@ export function deleteSession(user: number, id: string) {
   })();
   releaseLease(ownerKey(id), leaseOwner(ownerKey(id)) ?? "");
   emitDev(user, "session", id);
+}
+export async function reconcileSession(user:number,id:string,owner:string,confirmedStopped:unknown){
+  const row=rowOf(user,id);if(!owner.startsWith('client:')||confirmedStopped!==true)throw new DevError('A person must verify the remote process stopped before clearing this session.',403);
+  if(row.state!=='interrupted'||row.termination_reason!=='remote-process-unconfirmed')throw new DevError('This session does not need remote reconciliation.',409);
+  const lease=(workDb().prepare('SELECT workspace_lease FROM terminal_sessions WHERE id=? AND user_id=?').get(id,user) as {workspace_lease:string}).workspace_lease;
+  if(lease)await(await import('./workspaces.ts')).endWorkspaceRun(user,JSON.parse(lease));
+  workDb().prepare("UPDATE terminal_sessions SET state='exited',termination_reason='user-confirmed-stopped',workspace_lease='' WHERE id=? AND user_id=?").run(id,user);emitDev(user,'session',id,view(rowOf(user,id)));return view(rowOf(user,id));
 }

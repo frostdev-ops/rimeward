@@ -17,10 +17,10 @@ const groups = (Object.keys(CATEGORIES) as Category[])
   .filter(([, es]) => es.length > 0);
 ---
 
-<dialog id="add-ward" class="fd-dialog fd-dialog-wide">
+<dialog id="add-ward" class="fd-dialog fd-dialog-wide" aria-labelledby="aw-dialog-heading">
   <form method="dialog" class="flex flex-col gap-3 p-4">
     <div class="flex items-center justify-between">
-      <h2 class="section-title" data-aw-heading>Add ward</h2>
+      <h2 id="aw-dialog-heading" class="section-title" data-aw-heading>Add ward</h2>
       <button type="button" class="btn min-h-0 px-2 py-1 text-xs" data-aw-close aria-label="Close"><Icon id="close" /></button>
     </div>
 
@@ -73,6 +73,9 @@ const groups = (Object.keys(CATEGORIES) as Category[])
       </div>
     </template>
 
+    <div data-cfg="workspace" class="hidden flex-col gap-3">
+      <p class="text-xs text-ink-faint">Choose folders on your connected computers or an SSH location, select instruction files, then connect your tools with Workspace Leylines.</p>
+    </div>
     <div data-cfg="remote-desktop" class="hidden flex-col gap-3">
       <p class="text-xs text-ink-faint">Choose the computer in the ward. Its target stays the same when you move it to another page. Manage access from Devices.</p>
       <div data-rd-access></div>

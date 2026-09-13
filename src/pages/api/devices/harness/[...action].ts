@@ -1,5 +1,7 @@
 import { REMOTE_DESKTOP_HEADER, requireRemoteLayoutVersion } from '../../../../lib/dev/remote-desktop-contract.ts';
+import { WORKSPACE_FORMAT,WORKSPACE_FORMAT_HEADER,requireWorkspaceLayoutVersion } from '../../../../lib/dev/workspace-migration.ts';
 import { NOTE_FORMAT, NOTE_FORMAT_HEADER, noteRecordNeedsFormat } from '../../../../lib/notebook-pages.ts';
+import { CHAT_FORMAT, CHAT_FORMAT_HEADER, chatRecordNeedsFormat, peerFormat } from '../../../../lib/agent/chat-format.ts';
 import { modelFailure } from "../../../../lib/agent/diagnostics.ts";
 import { randomUUID } from "node:crypto";
 import { voiceAction, voiceBody } from '../../../../lib/agent/voice.ts';
@@ -20,7 +22,7 @@ import { listEndpoints } from "../../../../lib/agent/accounts.ts";
 import { getDashboard } from "../../../../lib/dashboard.ts";
 import { INSTANCE_KEY, instanceDashboard } from '../../../../lib/dev/instance.ts';
 import {
-  acceptRecord,
+  acceptRecordGuarded,
   profileId,
   syncManifest,
   syncRecord,
@@ -75,13 +77,15 @@ export const ALL: APIRoute = async ({
     // unfamiliar dashboard with their fallback layout.
     const version = request.headers.get(REMOTE_DESKTOP_HEADER);
     if (!params.action) requireRemoteLayoutVersion(getDashboard(user), version);
+    if (!params.action) requireWorkspaceLayoutVersion(getDashboard(user),request.headers.get(WORKSPACE_FORMAT_HEADER));
     let value: unknown,
       status = 200;
     if (request.method === "GET" && !params.action) {
       const key = url.searchParams.get("key");
       if (key) {
         value = syncRecord(user, key);
-        if (Number(request.headers.get(NOTE_FORMAT_HEADER) ?? 1) < NOTE_FORMAT && noteRecordNeedsFormat(value as { key: string; payload: string } | null)) return Response.json({ error: 'Update Rimeward to sync this document format.' }, { status: 426 });
+        if (peerFormat(request.headers.get(NOTE_FORMAT_HEADER)) < NOTE_FORMAT && noteRecordNeedsFormat(value as { key: string; payload: string } | null)) return Response.json({ error: 'Update Rimeward to sync this document format.' }, { status: 426 });
+        if (peerFormat(request.headers.get(CHAT_FORMAT_HEADER)) < CHAT_FORMAT && chatRecordNeedsFormat(value as { key: string; payload: string } | null)) return Response.json({ error: 'Update Rimeward to sync conversations on this provider.' }, { status: 426 });
         if (!value)
           return Response.json({ error: "Record not found." }, { status: 404 });
       } else {
@@ -105,8 +109,10 @@ export const ALL: APIRoute = async ({
           providers,
           endpoints,
           config: { provider, model, effort, ...(provider === 'compat' && typeof endpoint === 'string' ? { endpoint } : {}) },
-          manifest: syncManifest(user),
+          manifest: peerFormat(request.headers.get(CHAT_FORMAT_HEADER)) < CHAT_FORMAT ? syncManifest(user).filter(record => !chatRecordNeedsFormat(syncRecord(user, record.key))) : syncManifest(user),
           noteFormat: NOTE_FORMAT,
+          chatFormat: CHAT_FORMAT,
+          workspaceFormat: WORKSPACE_FORMAT,
         };
       }
     } else if (request.method === "GET" && params.action === "models") {
@@ -128,11 +134,13 @@ export const ALL: APIRoute = async ({
       }
     } else if (request.method === "POST" && !params.action) {
       const body = await bodyOf(request);
-      if (Number(request.headers.get(NOTE_FORMAT_HEADER) ?? 1) < NOTE_FORMAT && (noteRecordNeedsFormat(body.record) || (typeof body.record?.key === 'string' && noteRecordNeedsFormat(syncRecord(user, body.record.key))))) return Response.json({ error: 'Update Rimeward to sync this document format.' }, { status: 426 });
+      if (peerFormat(request.headers.get(NOTE_FORMAT_HEADER)) < NOTE_FORMAT && (noteRecordNeedsFormat(body.record) || (typeof body.record?.key === 'string' && noteRecordNeedsFormat(syncRecord(user, body.record.key))))) return Response.json({ error: 'Update Rimeward to sync this document format.' }, { status: 426 });
+      if (peerFormat(request.headers.get(CHAT_FORMAT_HEADER)) < CHAT_FORMAT && (chatRecordNeedsFormat(body.record) || (typeof body.record?.key === 'string' && chatRecordNeedsFormat(syncRecord(user, body.record.key))))) return Response.json({ error: 'Update Rimeward to sync conversations on this provider.' }, { status: 426 });
       if (body.record?.key?.startsWith('appearance/brand/')) return Response.json({ error: 'Instance brand assets are managed on the server.' }, { status: 403 });
       if (body.record?.key === INSTANCE_KEY && typeof body.record.payload === 'string')
         requireRemoteLayoutVersion(JSON.parse(body.record.payload)?.layout, version);
-      value = acceptRecord(
+      if(body.record?.key===INSTANCE_KEY&&typeof body.record.payload==='string')requireWorkspaceLayoutVersion(JSON.parse(body.record.payload)?.layout,request.headers.get(WORKSPACE_FORMAT_HEADER));
+      value = await acceptRecordGuarded(
         user,
         body.record,
         typeof body.base === "string" ? body.base : null,

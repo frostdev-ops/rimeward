@@ -87,6 +87,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
   }
 
   if (body.action === 'clear') {
+    if (wardBusy(userId, ward)) return Response.json({ error: 'Finish the active response before starting another conversation.' }, { status: 409 });
     clearThread(userId, ward);
     return Response.json({ ok: true });
   }

@@ -36,8 +36,6 @@ if (native && (!local || base) && !document.querySelector('main[data-popout-ward
       text.textContent = status.connected ? 'Connected' : 'Working offline';
       label.dataset.offline = String(!status.connected);
       label.title = status.connected ? 'Your workspace is connected. Pages, settings and Rime stay in sync.' : 'Local projects remain available. Changes will reconcile when the connection returns.';
-      const project = document.getElementById('dev-open-project');
-      if (project) project.hidden = !local && !status.devices?.some((d: { online: boolean }) => d.online);
       window.dispatchEvent(new CustomEvent('fd:instance', { detail: status }));
     } catch {
       text.textContent = 'Reconnecting…';

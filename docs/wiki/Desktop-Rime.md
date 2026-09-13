@@ -30,7 +30,9 @@ With the endpoint, model, and Rimeward on the same computer, AI can work without
 
 ## Give Rime the right context
 
-Open a project page to supply that project's context. Type **@** to select wards by name or page: an editor buffer, terminal output, a browser page, a note, or connected information. You can also attach files.
+Connect a Workspace ward to Rime with a Workspace Leyline to supply its folders and explicitly selected instruction files. Without a link, a fresh session uses the default folder on the current machine (your server worker in a browser). Type **@** to select wards by name or page: an editor buffer, terminal output, a browser page, a note, or connected information. You can also attach files.
+
+An existing conversation stays on its original runtime when you open it elsewhere; its owner label shows that location. **New chat** archives the old conversation and creates a new identity. An unlinked ward starts the new conversation on the machine you are using, with browser agents coordinated by the server. A linked ward keeps its coordinator. Cross-machine creation waits for the original runtime to confirm retirement, and refuses active work, unresolved approvals, or dirty workspace buffers. If the connection fails during this change, **Reconcile new conversation** checks the saved receipt without duplicating the conversation or replaying work.
 
 Mentions capture context when you send. They do not authorize a command, send a message to another agent, or acquire Remote Desktop control. Check the captured source when multiple wards have similar names. Offline or unavailable sources are reported explicitly.
 
@@ -48,7 +50,7 @@ Completed task logs are hidden from Rime's default queries and the Tasks drawer.
 
 Review each Rime ward's approvals and unattended-turn limits in its configuration. The default approval policy is oriented around outbound actions, but policies can be changed; do not assume every write or command will always prompt.
 
-Native commands run with your computer account's permissions inside an approved project. **Let Rime control** is on by default in every terminal. You and Rime can type in the same session while it is on. Turn it off to stop Rime input; your keyboard stays active. Native command tools still follow the chat's approval setting.
+Native commands start in the selected workspace folder on its host, with that OS account's permissions. Virtual paths are resolved by file tools; an ordinary shell is not restricted to the virtual filesystem. **Let Rime control** is on by default in every terminal. You and Rime can type in the same session while it is on. Turn it off to stop Rime input; your keyboard stays active. Native command tools still follow the chat's approval setting.
 
 Rime's targeted patch tool validates edits and protects dirty or human-owned buffers, with recovery copies before destructive writes. Review a patch and the resulting diff for consequential changes. Recovery and permission checks do not replace judgment about a command's effects.
 

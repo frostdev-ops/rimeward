@@ -6,17 +6,19 @@ import { DATA_DIR, getDb } from "../db.ts";
 import { getSetting, setSetting } from "../settings.ts";
 import { getDashboard } from "../dashboard.ts";
 import { knowledgeChanged } from './observation-events.ts';
-import { attachmentPath, storeAttachment } from "./attachments.ts";
+import { attachmentPath, storeAttachment, discardAttachment } from "./attachments.ts";
 import {
   activeConversation,
   retireConversation,
   appendItems,
   addMessage,
   userItemFor,
+  stampConversationModel,
   type AgentStep,
   type TurnSource,
 } from "./conversations.ts";
 import type { AgentProviderId } from "./provider.ts";
+import { isAgentProvider } from '../wards.ts';
 import { INSTANCE_KEY, dashboardForSync, validateInstance, installInstance } from '../dev/instance.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { BG_DIR, listBackgrounds, MAX_PER_USER } from '../backgrounds.ts';
@@ -32,6 +34,8 @@ export interface SyncRecord {
 export interface SharedChat {
   provider: AgentProviderId;
   endpoint?: string | null;
+  endpointUrl?: string | null;
+  model?: string | null;
   ward: string;
   title: string;
   device: string;
@@ -198,8 +202,9 @@ export function validateRecord(record: SyncRecord) {
       throw failure("Invalid shared history.");
     if (record.key.startsWith("chat/")) {
       const chat = value as SharedChat;
+      const optionalText = (value: unknown, max: number) => value === undefined || value === null || typeof value === 'string' && value.length <= max;
       if (
-        !["codex", "openrouter"].includes(chat.provider) ||
+        !isAgentProvider(chat.provider) || !optionalText(chat.endpoint, 64) || !optionalText(chat.endpointUrl, 2048) || !optionalText(chat.model, 100) ||
         typeof chat.title !== "string" ||
         typeof chat.ward !== "string" ||
         typeof chat.device !== "string" ||
@@ -345,13 +350,15 @@ export function captureRime(user: number) {
   const wards = getDashboard(user);
   for (const conv of db
     .prepare(
-      "SELECT id,ward,provider,endpoint,updated_at FROM agent_conversations WHERE user_id=? AND task_id IS NULL",
+      "SELECT id,ward,provider,endpoint,model,endpoint_url,updated_at FROM agent_conversations WHERE user_id=? AND task_id IS NULL",
     )
     .all(user) as {
     id: number;
     ward: string;
     provider: AgentProviderId;
     endpoint: string | null;
+    model: string | null;
+    endpoint_url: string | null;
     updated_at: string;
   }[]) {
     const messages = (
@@ -389,6 +396,8 @@ export function captureRime(user: number) {
     store(user, `chat/${origin}/${conv.id}`, {
       provider: conv.provider,
       ...(conv.endpoint ? { endpoint: conv.endpoint } : {}),
+      ...(conv.provider === 'compat' && conv.endpoint_url ? { endpointUrl: conv.endpoint_url } : {}),
+      ...(conv.model ? { model: conv.model } : {}),
       ward: conv.ward,
       title:
         messages.find((m) => m.role === "user")?.text.slice(0, 120) ||
@@ -538,6 +547,23 @@ export function acceptRecord(
   installRecord(user, record);
   return { ok: true, record };
 }
+/** Native workspace checks are asynchronous; the synchronous installer still enforces its proof. */
+export async function installRecordGuarded(user:number,record:SyncRecord){
+  if(record.key!==INSTANCE_KEY){installRecord(user,record);return;}
+  validateRecord(record);
+  const {preflightWorkspaceDashboard,completeWorkspaceDashboard,cancelWorkspaceDashboard}=await import('../dev/workspaces.ts');
+  const baseline=JSON.stringify(dashboardForSync(user));
+  try{await preflightWorkspaceDashboard(user,validateInstance(JSON.parse(record.payload)).layout,{sync:true});if(JSON.stringify(dashboardForSync(user))!==baseline)throw Error('Dashboard changed during workspace synchronization.');installRecord(user,record);await completeWorkspaceDashboard(user);}
+  catch(error){await cancelWorkspaceDashboard(user).catch(()=>{});throw error;}
+}
+export async function acceptRecordGuarded(user:number,record:SyncRecord,base:string|null){
+  if(record.key!==INSTANCE_KEY)return acceptRecord(user,record,base);
+  validateRecord(record);refreshWorkRecord(user,record.key);const current=syncRecord(user,record.key);
+  if(current?.hash===record.hash)return {ok:true,record:current};
+  if((current?.hash??null)!==base)return {ok:false,record:current??null};
+  try{await installRecordGuarded(user,record);return {ok:true,record};}
+  catch(error){if(!getDb().prepare('SELECT 1 FROM agent_sync_conflicts WHERE user_id=? AND key=? AND payload=?').get(user,record.key,record.payload))preserveConflict(user,record);refreshWorkRecord(user,record.key);return {ok:false,record:syncRecord(user,record.key),error:error instanceof Error?error.message:String(error)};}
+}
 export function sharedChats(user: number) {
   captureRime(user);
   return (
@@ -553,16 +579,32 @@ export function sharedChats(user: number) {
     }))
     .sort((a, b) => b.updated.localeCompare(a.updated));
 }
+/** The record a continuation was admitted on, and the caller's last word before anything is written.
+ *  `hash` pins the SOURCE: a sync pass that replaces the record between validation and the copy is a
+ *  different conversation and is never copied in its place. `commit` runs inside the same synchronous
+ *  transaction as the copy — no await stands between it and the mutation, so what it checks (the
+ *  ward's route, model and active thread, the backend the alias resolves to) cannot move underneath. */
+export interface ContinueAdmission {
+  hash?: string;
+  commit?: () => void;
+}
 export async function continueSharedChat(
   user: number,
   ward: string,
   key: string,
+  admit: ContinueAdmission = {},
 ) {
   const record = syncRecord(user, key);
   if (!key.startsWith("chat/") || !record || record.payload === "null")
     throw failure("Conversation not found.");
+  const substituted = () => failure("This conversation was replaced by a sync while it was being prepared. Nothing was continued — open it again from History.");
+  if (admit.hash && record.hash !== admit.hash) throw substituted();
   const chat = JSON.parse(record.payload) as SharedChat;
   const remapped = new Map<string, number>();
+  // Attachments are prepared before the commit because they await; every row this creates is undone
+  // if the commit then refuses, so a refusal never leaves half an import behind.
+  const prepared: number[] = [];
+  try {
   for (const [oldId, fileKey] of Object.entries(chat.files)) {
     const attachment = syncRecord(user, fileKey);
     if (!attachment || attachment.payload === "null")
@@ -575,6 +617,7 @@ export async function continueSharedChat(
       bytes: Buffer.from(f.data, "base64"),
       conversationId: null,
     });
+    prepared.push(saved.id);
     remapped.set(oldId, saved.id);
   }
   const remap = (value: unknown, name = ""): unknown => {
@@ -584,6 +627,7 @@ export async function continueSharedChat(
     )
       return remapped.get(String(value));
     if (typeof value === "string") {
+      if (name === 'patch') return value; // Authored source is opaque, even if it mentions attachment IDs.
       if (name === "arguments" || name === "output") {
         try {
           return JSON.stringify(remap(JSON.parse(value)));
@@ -604,12 +648,19 @@ export async function continueSharedChat(
     if (Array.isArray(value)) return value.map((v) => remap(v));
     if (value && typeof value === "object")
       return Object.fromEntries(
-        Object.entries(value).map(([k, v]) => [k, remap(v, k)]),
+        Object.entries(value).map(([k, v]) => [k, k === 'input' && 'type' in value && value.type === 'custom_tool_call' ? v : remap(v, k)]),
       );
     return value;
   };
+  return getDb().transaction(() => {
+  // Last look, one synchronous step with the writes below: the source record is still the one that was
+  // validated, and the caller's own bindings still hold. Either is a refusal, with nothing written.
+  const still = syncRecord(user, key);
+  if (!still || still.hash !== record.hash) throw substituted();
+  admit.commit?.();
   retireConversation(user, ward);
   const conv = activeConversation(user, ward, chat.provider, chat.endpoint ?? null);
+  stampConversationModel(conv.id, chat.model ?? '', chat.provider === 'compat' ? chat.endpointUrl : undefined);
   for (const id of remapped.values())
     getDb()
       .prepare(
@@ -638,4 +689,9 @@ export async function continueSharedChat(
   appendItems(conv.id,[userItemFor(conv.dialect,monitorNotice)]);
   addMessage(conv,{ role:'user',text:monitorNotice,source:'monitor' });
   return conv;
+  })();
+  } catch (err) {
+    for (const id of prepared) discardAttachment(user, id);
+    throw err;
+  }
 }

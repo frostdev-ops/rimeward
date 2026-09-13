@@ -135,6 +135,12 @@ test("history keeps raw items and attachments while continuing a copy without ap
       name: "read_document",
       arguments: JSON.stringify({ file_id: file.id }),
     },
+    { type: 'custom_tool_call', call_id: 'raw-patch', name: 'apply_patch',
+      input: `*** Begin Patch\n*** Add File: literal.txt\n+attachment:${file.id} file_id ${file.id}\n*** End Patch` },
+    { type: 'custom_tool_call_output', call_id: 'raw-patch', output: '{"ok":true}' },
+    { type: 'function_call', call_id: 'json-patch', name: 'apply_patch',
+      arguments: JSON.stringify({ reason: 'Preserve literal source', patch: `*** Begin Patch\n*** Add File: second.txt\n+attachment:${file.id} file_id ${file.id}\n*** End Patch`, file_id: file.id }) },
+    { type: 'function_call_output', call_id: 'json-patch', output: '{"ok":true}' },
   ]);
   getDb()
     .prepare("UPDATE agent_conversations SET pending_confirm_id=? WHERE id=?")
@@ -176,6 +182,13 @@ test("history keeps raw items and attachments while continuing a copy without ap
       .get(resumed.id) as { json: string }
   ).json;
   assert.equal(JSON.parse(JSON.parse(raw).arguments).file_id, attachment.id);
+  const imported = (getDb().prepare('SELECT json FROM agent_items WHERE conversation_id=? ORDER BY id').all(resumed.id) as { json: string }[]).map(row => JSON.parse(row.json));
+  assert.equal(imported.find(item => item.type === 'custom_tool_call').input,
+    `*** Begin Patch\n*** Add File: literal.txt\n+attachment:${file.id} file_id ${file.id}\n*** End Patch`, 'raw patch strings are never attachment references');
+  const jsonPatch = JSON.parse(imported.find(item => item.type === 'function_call' && item.call_id === 'json-patch').arguments);
+  assert.equal(jsonPatch.patch, `*** Begin Patch\n*** Add File: second.txt\n+attachment:${file.id} file_id ${file.id}\n*** End Patch`);
+  assert.equal(jsonPatch.file_id, attachment.id, 'real structured attachment references still remap');
+  assert.equal(imported.filter(item => item.call_id === 'raw-patch' && item.type === 'custom_tool_call_output').length, 1);
   assert.match(
     JSON.stringify(
       getDb()

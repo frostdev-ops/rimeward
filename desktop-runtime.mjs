@@ -7,6 +7,7 @@ const initial = await new Promise((resolve) =>
   lines.once("line", (line) => resolve(JSON.parse(line))),
 );
 process.env.RIMEWARD_DESKTOP = "1";
+if (typeof initial.documents === "string") process.env.RIMEWARD_DOCUMENTS_DIR = initial.documents;
 // The app's version: what /api/update/desktop compares against the newest release.
 if (typeof initial.version === "string") process.env.RIMEWARD_DESKTOP_VERSION = initial.version;
 process.env.RIMEWARD_NATIVE_TOKEN = crypto

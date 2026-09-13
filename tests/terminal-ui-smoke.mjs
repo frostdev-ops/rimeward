@@ -1,4 +1,5 @@
 import { liveStreamFixture } from './live-stream-fixture.mjs';
+import { addWorkspaceUi } from './workspace-ui-fixture.mjs';
 // Real PTY + isolated desktop data. Agent launcher dialogs are exercised without
 // starting external agents or sending any provider requests.
 import fs from 'node:fs';
@@ -59,10 +60,7 @@ try {
   });
   await page.reload();
   const ward=page.locator('[data-wd="terminal-ui"]');
-  await ward.getByRole('button',{name:'Open / new project'}).click();
-  const projectDialog=page.getByRole('dialog',{name:'Open a project'});
-  await projectDialog.getByRole('textbox',{name:'Project folder',exact:true}).fill(project);
-  await projectDialog.getByRole('button',{name:'Open project',exact:true}).click();
+  await addWorkspaceUi(page, project, { wards: ['terminal-ui'] });
   await ward.getByRole('button',{name:'Open terminal',exact:true}).waitFor();
   await page.screenshot({path:path.join(screenshotDir,'rimeward-terminal-empty.png'),animations:'disabled'});
   // New sessions let the user and Rime share the keyboard.

@@ -8,16 +8,15 @@ import './notion.ts';
 import './agent.ts';
 import './browser.ts';
 import './remote-desktop.ts';
+import './workspace.ts';
 import './note.ts';
 import './notebook.ts';
 import './store.ts';
 import './mcp.ts';
 import './chat.ts';
 import { RENDERERS, body } from './wards.ts';
-import {toast} from './dom.ts';
 import { DEV_WARDS } from '../../lib/dev/types.ts';
 for(const type of DEV_WARDS)RENDERERS[type]={render:async w=>{const target=body(w.i);await import('./development.ts');if(target?.isConnected && body(w.i)===target)return RENDERERS[type]!.render(w);}};
-document.getElementById('dev-open-project')?.addEventListener('click',()=>{void import('./workspace-dialogs.ts').then(m=>m.openProjectWorkspace()).catch(e=>toast(e.message,undefined,true));});
 import { bootEdit } from './edit.ts';
 import { bootLogicEdit } from './logic-edit.ts';
 import './ward-window.ts';
@@ -39,4 +38,8 @@ bootWards();
 if (!shareView) {
   bootEdit();
   if (!popoutWard) bootLogicEdit();
+  if (new URL(location.href).searchParams.has('add-workspace')) {
+    const url = new URL(location.href); url.searchParams.delete('add-workspace'); history.replaceState(null, '', url);
+    void import('./workspace.ts').then(m => m.configureWorkspace());
+  }
 }

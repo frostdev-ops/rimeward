@@ -3,6 +3,7 @@ import { DEFAULT_LAYOUT, DEFAULT_PAGES, validateLayout, validatePages, type Brow
 import { dropSession, setSound } from './browser/session.ts';
 import { isCommsType } from './comms/types.ts';
 import { observe } from './agent/observation-events.ts';
+import { assertWorkspaceDashboardWrite } from './dev/workspaces.ts';
 
 type Row = { layout_json: string; pages_json: string };
 const row = (userId: number) => getDb().prepare('SELECT layout_json, pages_json FROM dashboards WHERE user_id = ?').get(userId) as Row | undefined;
@@ -44,6 +45,7 @@ export function browserWard(userId: number, ward: unknown): BrowserConfig | null
 export function saveDashboard(userId: number, layout: WardInstance[], pages?: PageDef[]): void {
   // A browser ward leaving the layout takes its profile (cookies, logins) with it.
   const before = getDashboard(userId);
+  assertWorkspaceDashboardWrite(userId,before,layout);
   const gone = before.filter((w) => w.type === 'browser' && !layout.some((x) => x.i === w.i));
   // A chat ward leaving takes its sealed token and its messages; the
   // connection manager then reconciles what is still open (late import: it

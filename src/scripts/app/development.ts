@@ -2,10 +2,12 @@ import { expandedDesktopWard, restoreExpandedWard } from "./desktop-state.ts";
 import type { terminalCapabilities } from "../../lib/dev/terminals.ts";
 import type { gitView } from "../../lib/dev/projects.ts";
 import { icon } from "./icon.ts";
-import { chooseProject, askText, confirmAction, dialog as workspaceDialog } from "./workspace-dialogs.ts";
+import { askText, confirmAction, dialog as workspaceDialog } from "./workspace-dialogs.ts";
+import { locationChip, showWorkspace, workspaceContext, workspaceOperation } from './workspace.ts';
+import { workspacePath, type WorkspaceBinding } from '../../lib/dev/workspace-contract.ts';
 import { RENDERERS, body, poll } from "./wards.ts";
 import { el, toast, reducedMotion } from "./dom.ts";
-import { readPages, pageOfCard } from "./pages.ts";
+import { pageOfCard } from "./pages.ts";
 import { CATALOG, type WardInstance } from "../../lib/wards.ts";
 import {
   DEV_WARDS,
@@ -28,7 +30,10 @@ async function request<T = unknown>(
   data: Record<string, unknown> = {},
   method = "GET",
   ward = '',
+  binding?: WorkspaceBinding,
+  workspaceWard?: string,
 ): Promise<T> {
+  if (!shareView) return workspaceOperation<T>(ward, action, data, method, owner, binding, workspaceWard ?? null);
   const response = await fetch(
     "/api/dev/" +
       action +
@@ -104,6 +109,7 @@ function expand(host: HTMLElement) {
 }
 interface State {
   project: string;
+  gitFolder?: string;
   session?: string;
   closedSessions?: string[];
   tabs?: string[];
@@ -112,7 +118,8 @@ interface State {
   groups?: Node[];
 }
 async function mount(w: WardInstance) {
-  const api = <T = unknown>(action: string, data: Record<string, unknown> = {}, method = 'GET') => request<T>(action, data, method, w.i);
+  let binding: WorkspaceBinding | undefined;
+  const api = <T = unknown>(action: string, data: Record<string, unknown> = {}, method = 'GET') => request<T>(action, data, method, w.i, binding, w.workspace);
   const b = body(w.i);
   if (!b) return;
   states.get(w.i)?.stop(); // resize / undo / project change re-render: replace the live instance, never blank it
@@ -136,41 +143,22 @@ async function mount(w: WardInstance) {
     },
   });
   try {
-    const projects: Project[] = shareView ? [] : await api("projects");
+    const context = shareView ? undefined : await workspaceContext(w.i);
+    binding = context?.binding;
     let state: State = await api("view", { id: w.i });
     if (stopped) return;
-    state.project ||=
-      readPages().find((p) => p.id === pageOfCard(w.i))?.project ??
-      projects[0]?.id ??
-      "";
-    const picker = select("Project", []);
-    picker.add(new Option("Select project", ""));
-    for (const p of projects) picker.add(new Option(p.name, p.id));
-    picker.value = state.project;
+    if (context) state.project = context.project.id;
     const remember = () => (shareView ? Promise.resolve() : api("view", { id: w.i, value: state }, "POST"));
-    picker.onchange = async () => {
-      state = { project: picker.value };
-      await remember();
-      states.get(w.i)?.stop();
-      void mount(w);
-    };
-    const projectButton = button("Open / new project", async () => {
-      const project = await chooseProject(w.i);
-      if (!project) return;
-      state = { project: project.id };
-      await remember();
-      states.get(w.i)?.stop();
-      await mount(w);
-    });
-    bar.append(...(shareView ? [] : [picker, projectButton]), button("Expand", () => expand(host)));
-    const project = shareView ? (state.project ? { id: state.project, name: "Shared terminal", root: "" } : undefined) : projects.find(p => p.id === state.project);
+    const projectButton = locationChip(w, context);
+    bar.append(...(shareView ? [] : [projectButton]), button("Expand", () => expand(host)));
+    const project: Project | undefined = shareView ? (state.project ? { id: state.project, name: "Shared terminal", root: "" } : undefined) : context?.project;
     restoreExpandedWard(w.i, () => expand(host));
     if (!project) {
       if (w.type === "terminal" || w.type === "editor") bar.hidden = true;
       const empty = el("div", "dev-empty");
       const mark = el("span", "dev-empty-icon"); mark.append(icon(w.type === "terminal" ? "code" : "folder"));
-      empty.append(mark, el("h3", undefined, shareView ? "Nothing open yet" : "Your workspace starts here"),
-        el("p", undefined, shareView ? "The owner has not opened a project on this terminal." : "Open a folder or create a project to get started. Files and sessions stay on this desktop."));
+      empty.append(mark, el("h3", undefined, shareView ? "Nothing open yet" : "Workspace unavailable"),
+        el("p", undefined, shareView ? "The owner has not opened a session on this terminal." : context?.error ?? "Reconnect the Workspace location to use its files and sessions."));
       if (!shareView) empty.append(projectButton);
       content.append(empty);
       return;
@@ -178,17 +166,20 @@ async function mount(w: WardInstance) {
     if (w.type === "project-files") {
       const { fileExplorer } = await import("./project-editor.ts");
       const explorer = fileExplorer(content, api, state.project, (path, line) =>
-        window.dispatchEvent(new CustomEvent("fd:open-file", { detail: { project: state.project, path, line, page: pageOfCard(w.i) } })));
+        window.dispatchEvent(new CustomEvent("fd:open-file", { detail: { project: state.project, workspace: context?.binding.workspaceId, path, line, page: pageOfCard(w.i) } })));
       cleanup.push(explorer.stop);
     } else if (w.type === "editor") {
       const { projectEditor } = await import("./project-editor.ts");
       if (stopped) return;
       cleanup.push(projectEditor(host, {
-        api, owner, ward: w.i, project, state, remember,
-        changeProject: () => projectButton.click(), expand: () => expand(host), page: pageOfCard(w.i),
+        api, owner, ward: w.i, workspace: context?.binding.workspaceId, project, state, remember,
+        changeProject: () => showWorkspace(w), expand: () => expand(host), page: pageOfCard(w.i),
       }));
     } else if (w.type === "terminal") {
-      const caps = await api<ReturnType<typeof terminalCapabilities>>("capabilities");
+      const caps = await api<ReturnType<typeof terminalCapabilities>>("capabilities").catch(error => {
+        if (!context?.viewOnly) throw error;
+        return { shells: [] as string[], agents: { codex: false, claude: false } };
+      });
       if (stopped) return;
       const names = { shell: "Shell", codex: "Codex", claude: "Claude Code" };
       const sessions = el("div", "term-tabs");
@@ -201,10 +192,8 @@ async function mount(w: WardInstance) {
       const footer = el("div", "term-footer");
       const status = el("span", "term-status", "Loading sessions…");
       status.setAttribute("role", "status");
-      projectButton.className = "term-project";
-      projectButton.replaceChildren(icon("folder"), el("span", undefined, project?.name ?? "Project"));
-      projectButton.title = project?.root ?? "Change project";
-      projectButton.setAttribute("aria-label", "Change project");
+      const sessionOwner = el('span', 'workspace-session-owner'); sessionOwner.setAttribute('aria-live', 'polite');
+      projectButton.classList.add("term-project");
       const toolButton = (id: string, label: string, fn: () => unknown) => {
         const b = button(label, fn);
         b.className = "term-tool";
@@ -219,12 +208,12 @@ async function mount(w: WardInstance) {
       expandButton.classList.add("term-expand");
       bar.classList.add("term-toolbar");
       bar.replaceChildren(sessions, ...(shareView ? [] : [newButton, more]), expandButton);
-      footer.append(...(shareView ? [] : [projectButton]), status);
+      footer.append(...(shareView ? [] : [projectButton]), sessionOwner, status);
       surface.append(panesHost, empty);
       content.replaceChildren(surface, footer);
 
       // The ward owns the session LIST and the groups; every pane owns its session.
-      let list: SessionView[] = [], launching = false, changingControl = false, listOk = false, streamReady = false, failure = "";
+      let list: SessionView[] = [], launching = false, changingControl = false, listOk = false, listComplete = true, streamReady = false, failure = "", availabilityNote = '';
       let zoomed: string | undefined, treeSig = "", sessionOptions = "";
       let groups: Node[] = (Array.isArray(state.groups) ? state.groups : []).map(parseNode).filter((n): n is Node => n !== null);
       let prefs = readPrefs();
@@ -240,7 +229,9 @@ async function mount(w: WardInstance) {
       const titleOf = (id: string) => { const s = list.find(x => x.id === id); return s ? (s.title === s.kind ? names[s.kind] : s.title) : id; };
       const save = () => { state.groups = groups; return remember(); };
       function syncGroups() {
-        const next = reconcile(groups, visibleIds());
+        const visible = visibleIds();
+        if (!listComplete) for (const id of [...groups.flatMap(leaves), ...(state.tabs ?? [])]) if (!state.closedSessions?.includes(id) && !visible.includes(id)) visible.push(id);
+        const next = reconcile(groups, visible);
         if (JSON.stringify(next) !== JSON.stringify(groups)) { groups = next; void save(); }
       }
       function refreshList(): Promise<void> {
@@ -249,16 +240,21 @@ async function mount(w: WardInstance) {
         clearTimeout(retryList);
         refreshing = (async () => {
           try {
-            const next: SessionView[] = await api("sessions", { project: state.project });
+            const response = await api<SessionView[] | { sessions: SessionView[]; unavailable?: unknown[]; complete?: boolean }>('sessions', { project: state.project });
             if (stopped) return;
+            const next = Array.isArray(response) ? response : response.sessions;
+            const complete = Array.isArray(response) || response.complete !== false;
+            listComplete = complete;
+            availabilityNote = !Array.isArray(response) && response.unavailable?.length ? 'Some session sources are unavailable' : '';
+            if (!complete) for (const previous of list) if (!next.some(s => s.id === previous.id)) next.push({ ...previous, state: 'interrupted', terminationReason: 'owner-offline' });
             list = next;
             const ids = new Set(list.map(s => s.id));
-            if (state.tabs?.some(id => !ids.has(id)) || state.closedSessions?.some(id => !ids.has(id))) {
+            if (complete && (state.tabs?.some(id => !ids.has(id)) || state.closedSessions?.some(id => !ids.has(id)))) {
               state.tabs = state.tabs?.filter(id => ids.has(id)); state.closedSessions = state.closedSessions?.filter(id => ids.has(id));
               await save();
             }
             listOk = true;
-            if (state.session && !list.some(s => s.id === state.session && tabVisible(s))) { state.session = undefined; autoAttach = true; }
+            if (complete && state.session && !list.some(s => s.id === state.session && tabVisible(s))) { state.session = undefined; autoAttach = true; }
             syncGroups();
             if (!state.session) {
               const visible = list.filter(tabVisible);
@@ -376,6 +372,10 @@ async function mount(w: WardInstance) {
       if (!shareView) surface.after(keys);
       function draw() {
         const p = focused(), session = p?.session;
+        const placement = session as (SessionView & { ownerRuntimeId?: string; ownerName?: string; hostName?: string; virtualCwd?: string }) | undefined;
+        const ownerName = placement?.ownerName ?? placement?.hostName ?? (placement?.ownerRuntimeId === context?.ownerRuntimeId ? context?.ownerName : context?.mounts.find(m => m.runtimeId === placement?.ownerRuntimeId)?.runtimeName);
+        sessionOwner.textContent = placement?.ownerRuntimeId ? `${session?.state === 'running' && p?.connected && streamReady ? 'Running' : 'Session'} on ${ownerName ?? placement.ownerRuntimeId}` : '';
+        sessionOwner.title = placement?.virtualCwd ? `Working folder: ${placement.virtualCwd}. Existing sessions stay on their original machine.` : '';
         const writable = !!p && p.writable();
         empty.hidden = !!p || !listOk;
         newButton.disabled = launching;
@@ -386,7 +386,7 @@ async function mount(w: WardInstance) {
         take.hidden = session?.state !== "running" || !!p?.canType();
         take.disabled = !p?.connected || !streamReady || changingControl;
         take.textContent = p?.uncertain ? "Review & take control" : "Take control";
-        restart.hidden = !session || !!session.command || session.state === "running";
+        restart.hidden = !session || !!session.command || session.state === "running" || ['remote-process-unconfirmed', 'owner-offline'].includes(session.terminationReason ?? '');
         restart.disabled = !p?.connected || launching;
         keys.hidden = !showKeys || !session || session.state !== "running";
         keys.querySelectorAll<HTMLButtonElement>("button").forEach(b => { b.disabled = !writable; });
@@ -395,7 +395,8 @@ async function mount(w: WardInstance) {
           session.state !== "running" ? terminalExitLabel(session) : changingControl ? "Saving…" :
           p?.uncertain ? "Input unconfirmed · review the screen" :
           writable ? session.agentInput ? "Shared with Rime" : "You’re in control" : session.owner ? "Viewing · controlled elsewhere" : "Viewing only";
-        if (status.textContent !== text) status.textContent = text;
+        const statusText = !why && availabilityNote ? `${text} · ${availabilityNote}` : text;
+        if (status.textContent !== statusText) status.textContent = statusText;
         status.dataset.state = !listOk || !streamReady || (p && (!p.connected || p.uncertain)) ? "attention" : writable ? "active" : "idle";
         status.title = session ? `${names[session.kind]} · ${session.agentInput ? "You and Rime can both type in this session" : "Rime input is off; you can keep typing"}` : "";
       }
@@ -641,10 +642,11 @@ async function mount(w: WardInstance) {
       }
       const start = button("Open terminal", () => launch());
       start.className = "btn-primary";
+      if (context?.viewOnly) start.title = `A new session starts on ${context.newSessionRuntimeName ?? 'this machine'}; existing sessions keep their original machine.`;
       const agentChoices = el("div", "term-agent-choices");
       agentChoices.append(button("Codex", () => sessionDialog("codex")), button("Claude Code", () => sessionDialog("claude")));
       const mark = el("span", "dev-empty-icon"); mark.append(icon("code"));
-      empty.append(mark, el("h3", undefined, "A terminal for your project"),
+      empty.append(mark, el("h3", undefined, "A terminal for your workspace"),
         el("p", undefined, "Open a shell, or work with a terminal agent."), start, agentChoices);
 
       function sessionDialog(initial: TerminalKind = "shell") {
@@ -659,6 +661,11 @@ async function mount(w: WardInstance) {
         for (const [value, name] of Object.entries(names)) program.add(new Option(name, value));
         program.value = initial;
         const shell = select("Shell", [...new Set<string>(caps.shells)]);
+        const cwd = input('Working folder'); cwd.value = '/';
+        const folderChoices = el('datalist'); folderChoices.id = `workspace-folders-${crypto.randomUUID()}`;
+        for (const mount of context?.viewOnly ? [{ mountPath: '/' }] : context?.binding.mounts ?? []) folderChoices.append(new Option(mount.mountPath, mount.mountPath));
+        cwd.setAttribute('list', folderChoices.id);
+        let launchCaps = caps, capsLoading = false, capsRevision = 0;
         const agentInput = el("input"); agentInput.type = "checkbox";
         agentInput.checked = true;
         const agentField = el("label", "switch term-rime-control", "Let Rime control");
@@ -676,29 +683,40 @@ async function mount(w: WardInstance) {
           taskField.hidden = kind === "shell";
           shellField.hidden = kind !== "shell";
           options.hidden = kind !== "shell";
-          const missing = kind !== "shell" && !caps.agents[kind];
-          submit.disabled = missing;
+          const missing = kind !== "shell" && !launchCaps.agents[kind];
+          submit.disabled = missing || capsLoading;
           submit.textContent = kind === "shell" ? "Open terminal" : `Start ${names[kind]}`;
           availability.replaceChildren();
           if (kind !== "shell") {
-            availability.append(document.createTextNode(missing ? `${names[kind]} isn’t installed on this desktop. ` : "Uses your existing local sign-in. "));
+            availability.append(document.createTextNode(missing ? `Managed ${names[kind]} sessions are unavailable at this location. Use a shell for agents installed on an SSH host. ` : "Uses the sign-in at this location. "));
             const link = el("a", "link", "Setup guide ↗");
             link.href = kind === "codex" ? "https://developers.openai.com/codex/cli" : "https://code.claude.com/docs/en/setup";
             link.target = "_blank"; link.rel = "noopener noreferrer";
             availability.append(link);
           }
         };
-        actions.before(field("Program", program), taskField, availability, agentField,
+        actions.before(field("Program", program), field('Working folder', cwd), folderChoices, taskField, availability, agentField,
           el("p", "term-help", "You can always type. Leave this on for Rime to use the same session with you."), options);
         program.onchange = syncProgram;
+        cwd.onchange = async () => {
+          const revision = ++capsRevision; capsLoading = true; syncProgram(); error.hidden = true;
+          try {
+            const next = await api<ReturnType<typeof terminalCapabilities>>('capabilities', { path: workspacePath(cwd.value), ...(context?.viewOnly ? { newSession: true } : {}) });
+            if (revision !== capsRevision || !d.open) return;
+            launchCaps = next; shell.replaceChildren(); for (const option of next.shells) shell.add(new Option(option, option));
+          } catch (e) { error.textContent = (e as Error).message; error.hidden = false; }
+          finally { if (revision === capsRevision) { capsLoading = false; syncProgram(); } }
+        };
         syncProgram();
+        if (context?.viewOnly) cwd.dispatchEvent(new Event('change'));
         form.onsubmit = async e => {
           e.preventDefault();
+          if (capsLoading) return;
           submit.disabled = true;
           error.hidden = true;
           try {
             const kind = program.value as TerminalKind;
-            await launch({ kind, agentInput: agentInput.checked, ...(kind === "shell" ? { shell: shell.value } : { task: task.value }),
+            await launch({ kind, cwd: workspacePath(cwd.value), agentInput: agentInput.checked, ...(kind === "shell" ? { shell: shell.value } : { task: task.value }),
               title: `${names[kind]} ${list.filter(s => s.kind === kind && !s.command).length + 1}` });
             d.close();
           } catch (e) {
@@ -821,6 +839,18 @@ async function mount(w: WardInstance) {
             const title = await askText("Session name");
             if (title?.trim()) { await api("configure", { id: target.id, title }, "POST"); await refreshList(); }
           });
+          if (target.terminationReason === 'remote-process-unconfirmed') action('Confirm remote process stopped…', () => {
+            const { d, form, actions, error, submit } = workspaceDialog('Confirm remote process stopped');
+            const check = el('input'); check.type = 'checkbox';
+            const label = el('label', 'workspace-field'); label.append(check, document.createTextNode('I verified on the remote host that this process has stopped.'));
+            actions.before(el('p', 'workspace-help', 'The SSH connection ended without confirming process termination. Verify the host using another connection before releasing this session.'), label);
+            submit.textContent = 'Release stopped session'; submit.disabled = true; check.onchange = () => { submit.disabled = !check.checked; };
+            form.onsubmit = async event => {
+              event.preventDefault(); if (!check.checked) return; submit.disabled = true;
+              try { await api('reconcile', { id: target.id, confirmedStopped: true }, 'POST'); await refreshList(); d.close(); }
+              catch (e) { error.textContent = (e as Error).message; error.hidden = false; submit.disabled = false; }
+            }; d.onclose = () => d.remove();
+          });
           if (target.state === "running") {
             action("Interrupt process", () => p?.interrupt(), !p?.canType());
             menu.append(el("hr"));
@@ -830,7 +860,7 @@ async function mount(w: WardInstance) {
                 await refreshList();
               }
             }, !listOk, true);
-          } else if (!target.command) action("Delete session…", () => deleteSaved(target), !listOk, true);
+          } else if (!target.command) action("Delete session…", () => deleteSaved(target), !listOk || ['remote-process-unconfirmed', 'owner-offline'].includes(target.terminationReason ?? ''), true);
         }
       });
       let taskDialog: HTMLDialogElement | undefined;
@@ -934,7 +964,7 @@ async function mount(w: WardInstance) {
           const targets = records.filter(s => selection.has(s.id) && (action === "end" ? s.state === "running" : s.state !== "running"));
           if (applying || !targets.length) return;
           if (!await confirmAction(action === "end" ? `End ${targets.length} selected sessions? Their processes will stop; saved screens remain.` :
-            `Delete ${targets.length} selected saved sessions and their terminal history? Project files and native CLI conversations are kept.`)) return;
+            `Delete ${targets.length} selected saved sessions and their terminal history? Workspace files and native CLI conversations are kept.`)) return;
           applying = true; drawTasks();
           try {
             const results = await Promise.allSettled(targets.map(s => api(action === "end" ? "sessions" : "session-history", { id: s.id }, "DELETE")));
@@ -1028,10 +1058,10 @@ async function mount(w: WardInstance) {
           loading = true;
           try {
             if (document.hidden) return;
-            const result = await api<{ sessions: SessionResourceView[]; error?: string }>("session-resources", { project: state.project, history: String(history.checked) });
+            const result = await api<{ sessions: SessionResourceView[]; error?: string; unavailable?: unknown[] }>("session-resources", { project: state.project, history: history.checked });
             if (!d.open) return;
             records = result.sessions; drawTasks();
-            error.textContent = result.error ?? ""; error.hidden = !result.error;
+            error.textContent = result.error ?? (result.unavailable?.length ? 'Some session sources are unavailable; their saved entries are retained.' : ''); error.hidden = !error.textContent;
           } catch (e) { error.textContent = (e as Error).message; error.hidden = false; }
           finally { loading = false; if (d.open) timer = setTimeout(() => void refresh(), 2000); }
         }
@@ -1042,7 +1072,8 @@ async function mount(w: WardInstance) {
         void refresh();
       }
       async function deleteSaved(target: SessionView) {
-        if (!await confirmAction(`Delete ${target.title} and its saved terminal history? Project files and Codex or Claude conversations are kept.`)) return false;
+        if (['owner-offline', 'remote-process-unconfirmed'].includes(target.terminationReason ?? '')) throw Error('Reconnect the source and confirm the session stopped before deleting its history.');
+        if (!await confirmAction(`Delete ${target.title} and its saved terminal history? Workspace files and Codex or Claude conversations are kept.`)) return false;
         await api("session-history", { id: target.id }, "DELETE");
         state.closedSessions = state.closedSessions?.filter(id => id !== target.id);
         state.tabs = state.tabs?.filter(id => id !== target.id);
@@ -1067,14 +1098,14 @@ async function mount(w: WardInstance) {
           (at + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
       };
       // Declared last: the stream notifies its listener synchronously (a `null` on connect).
-      const stream = terminalEvents(w.device ?? readPages().find(p => p.id === pageOfCard(w.i))?.device ?? "local", w.i, event => {
+      const stream = terminalEvents(shareView ? w.device ?? 'local' : `workspace:${w.i}`, w.i, event => {
         if (stopped) return;
         if (!event) { streamReady = false; for (const p of panes.values()) p.event(null); draw(); return; }
         if (event.type === "reset") { streamReady = true; void refreshList(); for (const p of panes.values()) p.event(event); return; }
         if (event.type === "session") {
           if (!event.data) { void refreshList(); return; }
           const next = event.data as SessionView;
-          if (next.project !== state.project) return;
+          if (!list.some(s => s.id === next.id) && next.project !== state.project && !context?.binding.mounts.some(m => m.rootId === next.project)) return;
           const at = list.findIndex(s => s.id === next.id);
           if (at < 0) list.unshift(next); else list[at] = next;
           if (listOk) syncGroups();
@@ -1112,18 +1143,24 @@ async function mount(w: WardInstance) {
     } else {
       const output = el("pre", "dev-diff");
       content.append(output);
+      const gitFolder = select('Workspace folder', []);
+      for (const mount of context?.binding.mounts ?? [{ mountPath: '/' }]) gitFolder.add(new Option(mount.mountPath, mount.mountPath));
+      gitFolder.value = state.gitFolder && [...gitFolder.options].some(option => option.value === state.gitFolder) ? state.gitFolder : '/';
       const refresh = async () => {
-        const g = await api<Awaited<ReturnType<typeof gitView>>>("git", { project: state.project });
-        output.textContent = `${g.status}\n${g.diff}\n${g.worktrees}`;
+        const path = gitFolder.value;
+        const g = await api<Awaited<ReturnType<typeof gitView>>>("git", { project: state.project, path });
+        if (path === gitFolder.value) output.textContent = `${g.status ?? ''}\n${g.diff ?? ''}\n${g.worktrees ?? ''}`;
       };
+      gitFolder.onchange = () => { state.gitFolder = gitFolder.value; void remember().then(refresh).catch(e => { output.textContent = e.message; }); };
       bar.append(
+        gitFolder,
         button("Refresh", refresh),
         button("New worktree", async () => {
           const name = await askText("Worktree name");
           if (name) {
             await api(
               "worktree",
-              { project: state.project, name, op: "add" },
+              { project: state.project, path: gitFolder.value, name, op: "add" },
               "POST",
             );
             await refresh();
@@ -1136,7 +1173,7 @@ async function mount(w: WardInstance) {
           if (name) {
             await api(
               "worktree",
-              { project: state.project, name, op: "remove" },
+              { project: state.project, path: gitFolder.value, name, op: "remove" },
               "POST",
             );
             await refresh();

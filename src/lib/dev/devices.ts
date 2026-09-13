@@ -245,6 +245,7 @@ export const forwardHeaders = [
   "if-range",
   "content-length",
   "x-rimeward-rtc", // ICE the server minted for a browser stream a desktop hosts (lib/browser/rtc.ts)
+  "x-rimeward-agent-hops", // Bound forwarding through retired conversation owners.
 ];
 export function allowedRelayPath(value: string, remote = false, agent = false) {
   if (value.length > 8192 || !value.startsWith("/") || value.startsWith("//"))

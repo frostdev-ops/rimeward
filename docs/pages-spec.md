@@ -1,12 +1,12 @@
 # Pages — spec (draft 1, 2026-09-03)
 
-> Workspace extension, 2026-09-06: each runtime owns its own pages and layout. A page may
-> reference a default `project` ID. **Open project** reuses that project's editor page or
-> creates an ordinary page containing Editor, Terminal, and Changes; it is not a new page
-> type. Development wards inherit the page project unless configured explicitly. Editor
-> includes a left file explorer; a separate Project files ward remains optional. Native
-> processes and recovery data stay on the desktop when a page/view detaches. Remote clients
-> operate that runtime through `/runtime/<device>/…`, with no server-side layout replica.
+> Workspace extension, 2026-09-13: Workspace wards supply filesystem context through
+> explicit `WardInstance.workspace` Leylines. Pages organize the shared dashboard and do
+> not select a consumer's folder or execution runtime. The legacy `project` metadata is
+> retained only while its original runtime completes migration. Workspace definitions
+> sync as opaque root references; physical paths, credentials, buffers and native sessions
+> remain on their owning machines. Existing sessions retain their owner when viewed on a
+> different device. Editor includes a left file explorer; Files is available separately.
 > See [development workspaces](development-workspaces.md) for the current implementation.
 
 > Status 2026-09-03: shipped, all phases. Deviations: the list editor lives in

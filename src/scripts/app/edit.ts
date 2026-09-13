@@ -23,6 +23,8 @@ import type { PageDef } from '../../lib/wards.ts';
 import { popOutWard } from './ward-window.ts';
 import { popoutWard } from './ward-view.ts';
 import { dialog } from './workspace-dialogs.ts';
+import { WORKSPACE_CONSUMERS } from '../../lib/dev/workspace-contract.ts';
+import { reloadHolds } from './logic.ts';
 
 const state = new Map<string, WardInstance>();
 let grid: HTMLElement;
@@ -353,7 +355,7 @@ const layoutOf = (): WardInstance[] =>
 
 /** Field order is not stable across Object.assign, so compare a fixed shape. */
 const layoutKey = (l: WardInstance[]) =>
-  JSON.stringify(l.map((w) => [w.i, w.type, w.size, w.title ?? null, w.hidden ?? false, w.in ?? null, w.page ?? null, w.device ?? null, w.theme ?? null, w.config ?? null]));
+  JSON.stringify(l.map((w) => [w.i, w.type, w.size, w.title ?? null, w.hidden ?? false, w.in ?? null, w.page ?? null, w.device ?? null, w.workspace ?? null, w.workspaceVersion ?? null, w.theme ?? null, w.config ?? null]));
 
 function record(): void {
   syncGroups();
@@ -412,6 +414,18 @@ async function saveDraft(): Promise<boolean> {
     publishLayout(layout);
   }
   return ok;
+}
+
+/** Read-only snapshot for the Workspace save to commit settings and arrangement together. */
+export function workspaceDraft(): { layout: WardInstance[]; pages: PageDef[]; base: { layout: WardInstance[]; pages: PageDef[] } } | undefined {
+  if (!grid || !savedBase) return;
+  if (pendingSecrets.size || noteMoves.size) throw Error('Save the pending credentials or note moves with Done before changing Workspace settings.');
+  return structuredClone({ layout: layoutOf(), pages: readPages(), base: savedBase });
+}
+export function applyWorkspaceLayout(layout: WardInstance[], pages?: PageDef[]): void {
+  if (!grid) return;
+  savedBase = structuredClone({ layout, pages: pages ?? readPages() });
+  applyLayout(layout, reloadHolds, isEditing(), pages);
 }
 
 /** Outside edit mode every action persists immediately; inside, Done saves. */
@@ -616,7 +630,15 @@ function applySize(node: HTMLElement, w: WardInstance, size: WardSize, refresh =
   return rects;
 }
 
-function removeWard(node: HTMLElement, w: WardInstance): void {
+function removeWard(node: HTMLElement, w: WardInstance, flushed = false): void {
+  if (w.type === 'editor' && !flushed) {
+    void import('./workspace.ts').then(module => module.flushWorkspaceEditors([w.i])).then(() => removeWard(node, w, true)).catch(e => toast((e as Error).message, undefined, true));
+    return;
+  }
+  if (w.type === 'workspace' && [...state.values()].some(consumer => consumer.workspace === w.i)) {
+    toast('Disconnect the linked wards before removing this Workspace.', undefined, true);
+    return;
+  }
   const parent = gridOf(node);
   const index = [...parent.children].indexOf(node);
   // A group leaves alone: its wards step out into its place (nothing is lost
@@ -665,9 +687,12 @@ function duplicateWard(node: HTMLElement, w: WardInstance): void {
     ...(w.title ? { title: w.title } : {}),
     ...(w.hidden ? { hidden: true } : {}),
     ...(w.page ? { page: w.page } : {}),
+    ...(w.workspace ? { workspace: w.workspace } : {}),
+    ...((WORKSPACE_CONSUMERS as readonly string[]).includes(w.type) ? { workspaceVersion: 1 as const } : {}),
     ...(w.theme ? { theme: { ...w.theme } } : {}),
     ...(w.config ? { config: JSON.parse(JSON.stringify(w.config)) } : {}),
   };
+  if (copy.type === 'workspace' && copy.config) copy.config = { ...copy.config, workspaceId: crypto.randomUUID(), revision: 1 };
   state.set(copy.i, copy);
   const shell = newShell(copy);
   if (!shell) return;
@@ -729,8 +754,8 @@ function highlight(nodes: HTMLElement[], held: Set<string>): void {
 
 /** Same fields, ignoring key order (both sides come out of validateLayout). */
 const sameCfg = (a: WardInstance, b: WardInstance) =>
-  JSON.stringify([a.title ?? null, a.hidden ?? false, a.config ?? null]) ===
-  JSON.stringify([b.title ?? null, b.hidden ?? false, b.config ?? null]);
+  JSON.stringify([a.title ?? null, a.hidden ?? false, a.workspace ?? null, a.workspaceVersion ?? null, a.config ?? null]) ===
+  JSON.stringify([b.title ?? null, b.hidden ?? false, b.workspace ?? null, b.workspaceVersion ?? null, b.config ?? null]);
 
 let applying = false;
 let queued: { layout: WardInstance[]; pages?: PageDef[] } | null = null;
@@ -1499,6 +1524,9 @@ function wardMenu(x: number, y: number, node: HTMLElement, w: WardInstance): voi
       }
     }
     if (CATALOG[w.type]?.configurable) m.append(menuItem('settings', 'Configure…', () => openDialog(w)));
+    if ((WORKSPACE_CONSUMERS as readonly string[]).includes(w.type)) m.append(menuItem('folder', 'Workspace connection…', () => {
+      void import('./workspace.ts').then(module => module.linkWorkspace(w)).catch(e => toast((e as Error).message, undefined, true));
+    }));
     if (CATALOG[w.type]?.share) {
       const item = menuItem('share', 'Share…', () => openShareDialog({ kind: 'ward', target: w.i, title: wardTitle(w) })) as HTMLButtonElement;
       if (!canShare()) { item.disabled = true; item.title = 'Sharing needs a server'; }
@@ -2251,6 +2279,10 @@ let editingId: string | null = null;
 let addInto: HTMLElement | null = null;
 
 function openDialog(existing?: WardInstance, into: HTMLElement | null = null): void {
+  if (existing?.type === 'workspace') {
+    void import('./workspace.ts').then(m => m.configureWorkspace(existing)).catch(e => toast((e as Error).message, undefined, true));
+    return;
+  }
   const els = dialogEls();
   if (!els) return;
   els.dialog.querySelector('form')!.reset();
@@ -2496,6 +2528,11 @@ function bootDialog(): void {
       return;
     }
     const t = editingId ? state.get(editingId)!.type : type.value;
+    if (t === 'workspace') {
+      const name = title.value.trim(); dialog.close();
+      void import('./workspace.ts').then(m => m.configureWorkspace(undefined, name)).catch(e => toast((e as Error).message, undefined, true));
+      return;
+    }
     const cfg = readConfig(dialog, t);
     if (cfg === null) {
       err.textContent = TASK_TYPES.has(t)
@@ -2530,6 +2567,7 @@ function bootDialog(): void {
         i: newId('w'),
         type: t,
         size: CATALOG[t]?.defaultSize ?? '2x1',
+        ...((WORKSPACE_CONSUMERS as readonly string[]).includes(t) ? { workspaceVersion: 1 as const } : {}),
       };
       if (title.value.trim()) w.title = title.value.trim();
       if (Object.keys(cfg).length > 0) w.config = cfg;

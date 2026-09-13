@@ -1,5 +1,5 @@
 import type { beginSignIn, pollSignIn, onboarding } from "../../lib/dev/remote.ts";
-import { desktopApi, chooseProject } from "./workspace-dialogs.ts";
+import { desktopApi } from "./workspace-dialogs.ts";
 import { el } from "./dom.ts";
 function required<T extends HTMLElement>(selector: string, parent: ParentNode = document): T {
   const element = parent.querySelector<T>(selector);
@@ -134,14 +134,11 @@ required("#setup-local").onclick = () =>
     .then(() => desktopApi("onboard", { home: "local" }))
     .then(() => location.assign("/dash"))
     .catch(report);
-required("#setup-project").onclick = async () => {
+required("#setup-workspace").onclick = async () => {
   try {
-    const p = await chooseProject();
-    if (!p) return;
-    const { page } = await desktopApi<{ page: string }>("open-project", { project: p.id });
     await cancel();
     await desktopApi("onboard", { home: "local" });
-    location.assign(`/dash#p=${page}`);
+    location.assign('/dash?add-workspace=1');
   } catch (e) {
     report(e);
   }

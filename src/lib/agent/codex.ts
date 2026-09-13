@@ -7,7 +7,6 @@ import { codexContext, type ModelContext } from './context.ts';
 import { getDb } from '../db.ts';
 import { getAgentAccount, storeAgentAccount, deleteAgentAccount, accountMeta, agentKey } from './accounts.ts';
 import {
-  isTransient,
   recordAgentStatus,
   usageLine,
   type AgentProvider,
@@ -254,6 +253,7 @@ type OutputItem = {
   name?: string;
   call_id?: string;
   arguments?: string;
+  input?: string;
   content?: { type?: string; text?: string; refusal?: string }[];
 };
 
@@ -269,6 +269,8 @@ export function readItems(items: OutputItem[]): { text: string; calls: AgentTool
       }
     } else if (item.type === 'function_call' && item.name) {
       calls.push({ call_id: item.call_id ?? '', name: item.name, arguments: item.arguments ?? '{}' });
+    } else if (item.type === 'custom_tool_call' && item.name) {
+      calls.push({ call_id: item.call_id ?? '', name: item.name, arguments: item.input ?? '', type: 'custom' });
     }
   }
   return { text, calls };
@@ -279,24 +281,25 @@ export function repairResponsesItems(items: unknown[], keepOpen: Set<string>): u
   const answered = new Set<string>();
   for (const it of items) {
     const o = it as { type?: string; call_id?: string };
-    if (o?.type === 'function_call_output' && o.call_id) answered.add(o.call_id);
+    if (o?.type && ['function_call_output', 'custom_tool_call_output'].includes(o.type) && o.call_id) answered.add(`${o.type}:${o.call_id}`);
   }
   const called = new Set<string>();
   const out: unknown[] = [];
   for (const it of items) {
     const o = it as { type?: string; call_id?: string };
     // An output whose call was truncated away is as fatal as the reverse.
-    if (o?.type === 'function_call_output' && o.call_id && !called.has(o.call_id)) continue;
+    if (o?.type && ['function_call_output', 'custom_tool_call_output'].includes(o.type) && o.call_id && !called.has(`${o.type}:${o.call_id}`)) continue;
     out.push(it);
-    if (o?.type === 'function_call' && o.call_id) {
-      called.add(o.call_id);
-      if (!answered.has(o.call_id) && !keepOpen.has(o.call_id)) {
+    if ((o?.type === 'function_call' || o?.type === 'custom_tool_call') && o.call_id) {
+      const type = `${o.type}_output`;
+      called.add(`${type}:${o.call_id}`);
+      if (!answered.has(`${type}:${o.call_id}`) && !keepOpen.has(o.call_id)) {
         out.push({
-          type: 'function_call_output',
+          type,
           call_id: o.call_id,
           output: JSON.stringify({
             interrupted: true,
-            note: 'This call never ran — the user moved on, or the server restarted while it waited to be confirmed. Nothing was done. Offer it again if it is still wanted.',
+            note: 'No completed result was recorded for this call. Inspect current state before repeating any mutation; the conversation may have been interrupted or restarted.',
           }),
         });
       }
@@ -354,9 +357,28 @@ async function callCodex(call: ProviderCall, retriedAuth = false, retriedTransie
   return callResponses(call, codexTransport, retriedAuth, retriedTransient);
 }
 
-async function callResponses(call: ProviderCall, transport: Transport, retriedAuth = false, retriedTransient = false, noReasoning = false): Promise<ProviderResult> {
+/** Only a typed rejection of a custom tool we actually offered permits a JSON retry. */
+export function unsupportedCustomTool(body: string, tools: { type: string }[]): boolean {
+  try {
+    const e = JSON.parse(body)?.error;
+    const index = typeof e?.param === 'string' ? /^tools\[(\d+)\]\.type$/.exec(e.param)?.[1] : undefined;
+    return index !== undefined && tools[Number(index)]?.type === 'custom' && ['unsupported_value', 'unsupported_parameter'].includes(e.code);
+  } catch { return false; }
+}
+const jsonOnlyModels = new Map<string, number>();
+export function responseTools(tools: ProviderCall['tools'], raw: boolean) {
+  return tools.map(t => raw && t.inputFormat === 'text'
+    ? { type: 'custom', name: t.name, description: `${t.description} Send only the patch text; do not wrap it in JSON or include a reason.`, format: { type: 'text' } }
+    : { type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false });
+}
+async function callResponses(call: ProviderCall, transport: Transport, retriedAuth = false, retriedTransient = false, noReasoning = false, jsonOnly = false): Promise<ProviderResult> {
   const auth = await transport.headers(call.userId);
   const tag = transport.name;
+  const capabilityKey = `${tag}:${call.model}`;
+  const offersText = call.tools.some(t => t.inputFormat === 'text');
+  const raw = offersText && !jsonOnly && (jsonOnlyModels.get(capabilityKey) ?? 0) < Date.now() && (tag === 'openai' ||
+    (await listCodexModels(call.userId).catch(() => [])).find(m => m.id === call.model)?.applyPatch === 'freeform');
+  const tools = responseTools(call.tools, raw);
 
   let res: Response;
   try {
@@ -377,7 +399,7 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
         include: ['reasoning.encrypted_content'],
         instructions: call.instructions,
         input: normalizeInput(call.items),
-        tools: call.tools.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })),
+        tools,
         tool_choice: 'auto',
         parallel_tool_calls: true, // independent calls in one round — core.ts runs the batch concurrently
         // Cache routing, keyed per conversation like the Codex CLI keys per
@@ -392,20 +414,21 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
   } catch (err) {
     if (call.signal?.aborted) throw new CodexError(`${tag}: interrupted`);
     const e = new CodexError(`${tag}: network (${err instanceof Error ? err.message : err})`, { cause: err });
-    if (!call.relayRequestId && !retriedTransient && isTransient(e)) {
-      await new Promise((r) => setTimeout(r, 1200));
-      return callResponses(call, transport, retriedAuth, true, noReasoning);
-    }
+    // A dropped response does not establish that inference never started.
     throw e;
   }
 
   if (res.status === 401 && !retriedAuth && transport.on401) {
     transport.on401(call.userId);
-    return callResponses(call, transport, true, retriedTransient, noReasoning);
+    return callResponses(call, transport, true, retriedTransient, noReasoning, jsonOnly);
   }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     const body = text.slice(0, 300);
+    if (transport.name === 'openai' && res.status === 400 && raw && !jsonOnly && unsupportedCustomTool(text, tools)) {
+      jsonOnlyModels.set(capabilityKey, Date.now() + 60 * 60_000);
+      return callResponses(call, transport, retriedAuth, retriedTransient, noReasoning, true);
+    }
     // The OpenAI API answers a model without reasoning with a structured
     // {error: {code: "unsupported_parameter", param: "reasoning"}} — that one
     // retry drops the parameter and nothing else. Read the code and param, not
@@ -413,12 +436,12 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
     // invalid effort (code "invalid_value", param "reasoning.effort") or anything
     // from the codex backend must stay the error it is.
     if (transport.name === 'openai' && res.status === 400 && !noReasoning && unsupportedReasoning(text)) {
-      return callResponses(call, transport, retriedAuth, retriedTransient, true);
+      return callResponses(call, transport, retriedAuth, retriedTransient, true, jsonOnly);
     }
     const err = Object.assign(new CodexError(`${tag}: ${res.status} ${body}`), { status: res.status });
-    if (!call.relayRequestId && !retriedTransient && isTransient(err)) {
+    if (!call.relayRequestId && !retriedTransient && res.status === 429) {
       await new Promise((r) => setTimeout(r, 1200));
-      return callResponses(call, transport, retriedAuth, true, noReasoning);
+      return callResponses(call, transport, retriedAuth, true, noReasoning, jsonOnly);
     }
     throw err;
   }
@@ -426,7 +449,6 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
   type Completed = { output?: OutputItem[]; usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } } };
   const streamed: OutputItem[] = [];
   let completed: Completed | undefined;
-  let visible = false;
   try {
     if (!res.body) throw Error('missing response stream');
     await readSse(res.body, payload => {
@@ -434,7 +456,7 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
       let ev: any;
       try { ev = JSON.parse(payload); } catch { return; } // a non-JSON frame is skipped, as before streaming
       if (ev.type === 'response.output_text.delta' || ev.type === 'response.refusal.delta') {
-        if (typeof ev.delta === 'string' && ev.delta) { visible = true; call.onTextDelta?.(ev.delta); }
+        if (typeof ev.delta === 'string' && ev.delta) call.onTextDelta?.(ev.delta);
       } else if (ev.type === 'response.output_item.done' && ev.item) streamed.push(ev.item);
       else if (ev.type === 'response.completed') completed = ev.response;
       else if (ev.type === 'response.failed' || ev.type === 'response.incomplete' || ev.type === 'error')
@@ -444,10 +466,7 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
     if (!completed) throw Error('response stream ended before completion');
   } catch (err) {
     const e = new CodexError(`${tag}: stream (${err instanceof Error ? err.message : err})`, { cause: err });
-    if (!visible && !call.signal?.aborted && !call.relayRequestId && !retriedTransient && isTransient(e)) {
-      await new Promise((r) => setTimeout(r, 1200));
-      return callResponses(call, transport, retriedAuth, true, noReasoning);
-    }
+    // Partial reasoning/tool input is still inference, even without visible prose.
     throw e;
   }
   const items = completed?.output?.length ? completed.output : streamed;
@@ -455,7 +474,7 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
   if (!text && !calls.length) throw new CodexError(`${tag}: empty response`);
   for (const fn of calls) {
     if (!fn.call_id) throw new CodexError(`${tag}: incomplete tool call`);
-    try { JSON.parse(fn.arguments); } catch { throw new CodexError(`${tag}: tool call ${fn.name} carried malformed arguments`); }
+    if (fn.type !== 'custom') try { JSON.parse(fn.arguments); } catch { throw new CodexError(`${tag}: tool call ${fn.name} carried malformed arguments`); }
   }
   const u = completed?.usage;
   return { text, calls, items, ...(u?.input_tokens ? { usage: { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens ?? 0, output: u.output_tokens } } : {}) };
@@ -475,6 +494,7 @@ export interface CodexModel {
   /** Reasoning efforts the model accepts, in the backend's order. */
   efforts: string[];
   context?: ModelContext;
+  applyPatch?: 'freeform' | 'function';
 }
 
 export function listCodexModels(userId: number): Promise<CodexModel[]> {
@@ -498,6 +518,7 @@ export function listCodexModels(userId: number): Promise<CodexModel[]> {
           max_context_window?: number;
           effective_context_window_percent?: number;
           auto_compact_token_limit?: number;
+          apply_patch_tool_type?: string;
         }[];
       };
       const list = (data.models ?? [])
@@ -509,6 +530,7 @@ export function listCodexModels(userId: number): Promise<CodexModel[]> {
           ...(m.description ? { description: m.description } : {}),
           efforts: (m.supported_reasoning_levels ?? []).map((l) => l.effort),
           context: codexContext(m),
+          ...(m.apply_patch_tool_type === 'freeform' || m.apply_patch_tool_type === 'function' ? { applyPatch: m.apply_patch_tool_type as 'freeform' | 'function' } : {}),
         }));
       if (!list.length) throw new Error('codex models: empty list');
       setSetting(`agent_models:codex:${userId}`, JSON.stringify(list));
@@ -579,7 +601,7 @@ export const openaiProvider: AgentProvider = {
     }
   },
   userItem: (text) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }),
-  toolOutputItem: (callId, json) => ({ type: 'function_call_output', call_id: callId, output: json }),
+  toolOutputItem: (callId, json, type) => ({ type: type === 'custom' ? 'custom_tool_call_output' : 'function_call_output', call_id: callId, output: json }),
   repairItems: repairResponsesItems,
 };
 
@@ -599,6 +621,6 @@ export const codexProvider: AgentProvider = {
     }
   },
   userItem: (text) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }),
-  toolOutputItem: (callId, json) => ({ type: 'function_call_output', call_id: callId, output: json }),
+  toolOutputItem: (callId, json, type) => ({ type: type === 'custom' ? 'custom_tool_call_output' : 'function_call_output', call_id: callId, output: json }),
   repairItems: repairResponsesItems,
 };

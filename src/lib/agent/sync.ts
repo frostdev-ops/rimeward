@@ -1,5 +1,6 @@
 import { readSse } from './stream.ts';
 import { REMOTE_DESKTOP_HEADER, REMOTE_DESKTOP_PROTOCOL } from '../dev/remote-desktop-contract.ts';
+import { WORKSPACE_FORMAT,WORKSPACE_FORMAT_HEADER,requireWorkspaceLayoutVersion } from '../dev/workspace-migration.ts';
 import { modelFailure } from "./diagnostics.ts";
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.ts";
@@ -15,13 +16,14 @@ import {
   refreshWorkRecord,
   syncManifest,
   syncRecord,
-  installRecord,
+  installRecordGuarded,
   validateRecord,
   preserveConflict,
   type SyncRecord,
 } from "./sync-store.ts";
 import { NOTE_KEY, resolveNoteConflict, validateNoteRecord } from '../note-sync.ts';
 import { NOTE_FORMAT, NOTE_FORMAT_HEADER, noteRecordNeedsFormat } from '../notebook-pages.ts';
+import { CHAT_FORMAT, CHAT_FORMAT_HEADER, chatRecordNeedsFormat, peerFormat } from './chat-format.ts';
 import type {
   AgentProviderId,
   ProviderCall,
@@ -81,7 +83,7 @@ async function request(
     ...init,
     redirect: "error",
     signal: init.signal ?? AbortSignal.timeout(15000),
-    headers: { ...init.headers, [REMOTE_DESKTOP_HEADER]: String(REMOTE_DESKTOP_PROTOCOL), [NOTE_FORMAT_HEADER]: String(NOTE_FORMAT), authorization: `Bearer ${token}` },
+    headers: { ...init.headers, [WORKSPACE_FORMAT_HEADER]:String(WORKSPACE_FORMAT), [REMOTE_DESKTOP_HEADER]: String(REMOTE_DESKTOP_PROTOCOL), [NOTE_FORMAT_HEADER]: String(NOTE_FORMAT), [CHAT_FORMAT_HEADER]: String(CHAT_FORMAT), authorization: `Bearer ${token}` },
   });
   if (response.status === 426) throw Object.assign(new Error('Update Rimeward before synchronizing this dashboard. Your local dashboard is preserved.'), { status: 426 });
   if (!response.ok && !(response.status === 409 && suffix === "")) {
@@ -145,6 +147,8 @@ export function syncRime(user: number, force = false): Promise<void> {
         config: Record<string, unknown>;
         manifest: { key: string; hash: string }[];
         noteFormat?: number;
+        chatFormat?: number;
+        workspaceFormat?: number;
       };
       if (
         typeof remote.profile !== "string" ||
@@ -152,6 +156,7 @@ export function syncRime(user: number, force = false): Promise<void> {
         !Array.isArray(remote.manifest)
       )
         throw Error("Invalid Rime server response.");
+      requireWorkspaceLayoutVersion(instanceDashboard(user).layout,remote.workspaceFormat);
       const previous = sharedRime(user);
       let changed =
         !last?.online ||
@@ -174,13 +179,15 @@ export function syncRime(user: number, force = false): Promise<void> {
       const instance = remote.manifest.find(r => r.key === INSTANCE_KEY);
       if (instance && !getSetting(`instance:joined:${user}`)) {
         const record = await request(connection.server, connection.token, `?key=${encodeURIComponent(INSTANCE_KEY)}`).then(r => r.json()) as SyncRecord;
-        const { dashboard, wardIds } = mergeInstance(JSON.parse(record.payload), instanceDashboard(user), connection.id, localWardsWithContent(user));
+        const localRuntimeId = getSetting('workspace:runtime-id') ?? undefined;
+        const { dashboard, wardIds } = mergeInstance(JSON.parse(record.payload), instanceDashboard(user), connection.id, localWardsWithContent(user), localRuntimeId);
         const payload = JSON.stringify(dashboard);
         // Preserve the pre-join dashboard before any re-keying or layout replacement.
         const original = JSON.stringify(instanceDashboard(user));
         setSetting(`instance:before-join:${user}`, original);
         await moveLocalWardState(user, wardIds);
-        installRecord(user, { key: INSTANCE_KEY, payload, hash: createHash('sha256').update(payload).digest('hex') });
+        if (localRuntimeId && localRuntimeId !== connection.id) (await import('../dev/agent-placement.ts')).remapLocalAgentRuntime(user, localRuntimeId, connection.id);
+        await installRecordGuarded(user, { key: INSTANCE_KEY, payload, hash: createHash('sha256').update(payload).digest('hex') });
         setSetting(`instance:joined:${user}`, remote.profile);
         getDb().prepare('INSERT INTO agent_sync_baselines VALUES(?,?,?,?) ON CONFLICT(user_id,profile,key) DO UPDATE SET hash=excluded.hash')
           .run(user, remote.profile, INSTANCE_KEY, record.hash);
@@ -205,13 +212,14 @@ export function syncRime(user: number, force = false): Promise<void> {
           )
           .run(user, remote.profile, key, hash);
       let dashboardRecovered = false;
-      const receive = (record: SyncRecord) => {
+      const receive = async (record: SyncRecord) => {
         changed = true;
         if (record.key === INSTANCE_KEY) instanceChanged = true;
         // Re-read after network I/O: an editor or agent may have written in the meantime.
         refreshWorkRecord(user, record.key);
         const current = syncRecord(user, record.key);
-        if ((remote.noteFormat ?? 1) < NOTE_FORMAT && noteRecordNeedsFormat(current)) return;
+        if (peerFormat(remote.noteFormat) < NOTE_FORMAT && noteRecordNeedsFormat(current)) return;
+        if (peerFormat(remote.chatFormat) < CHAT_FORMAT && (chatRecordNeedsFormat(current) || chatRecordNeedsFormat(record))) return;
         if (
           current &&
           current.hash !== record.hash &&
@@ -238,7 +246,8 @@ export function syncRime(user: number, force = false): Promise<void> {
             }
           } else preserveConflict(user, current);
         }
-        installRecord(user, record);
+        try { await installRecordGuarded(user, record); }
+        catch(error){if(record.key!==INSTANCE_KEY)throw error;if(!db.prepare('SELECT 1 FROM agent_sync_conflicts WHERE user_id=? AND key=? AND payload=?').get(user,record.key,record.payload))preserveConflict(user,record);dashboardRecovered=true;return;}
         acknowledge(record.key, record.hash);
       };
       // Attachments first (history opens immediately), then notebooks before their notes.
@@ -246,9 +255,10 @@ export function syncRime(user: number, force = false): Promise<void> {
       const keys = [...new Set([...local.keys(), ...other.keys()])].sort(
         (a, b) => rank(a) - rank(b) || a.localeCompare(b),
       );
-      let notesPaused = false;
+      let notesPaused = false, chatsPaused = false;
       for (const key of keys) {
-        if ((remote.noteFormat ?? 1) < NOTE_FORMAT && noteRecordNeedsFormat(syncRecord(user, key))) { notesPaused = true; continue; }
+        if (peerFormat(remote.noteFormat) < NOTE_FORMAT && noteRecordNeedsFormat(syncRecord(user, key))) { notesPaused = true; continue; }
+        if (peerFormat(remote.chatFormat) < CHAT_FORMAT && chatRecordNeedsFormat(syncRecord(user, key))) { chatsPaused = true; continue; }
         const ours = local.get(key),
           theirs = other.get(key),
           base = bases.get(key);
@@ -263,7 +273,7 @@ export function syncRime(user: number, force = false): Promise<void> {
             `?key=${encodeURIComponent(key)}`,
           ).then((r) => r.json())) as SyncRecord;
           if (record.key !== key) throw Error("Unexpected Rime sync record.");
-          receive(record);
+          await receive(record);
         } else {
           const record = syncRecord(user, key);
           if (!record) continue;
@@ -281,14 +291,14 @@ export function syncRime(user: number, force = false): Promise<void> {
             record: SyncRecord | null;
           };
           if (result.ok) acknowledge(key, record.hash);
-          else if (result.record?.key === key) receive(result.record);
+          else if (result.record?.key === key) await receive(result.record);
           else
             throw Error(
               "Rime sync changed during reconciliation; retrying later.",
             );
         }
       }
-      statuses.set(user, { online: true, syncing: false, at: Date.now(), ...(dashboardRecovered ? { error: 'Concurrent dashboard changes: local settings kept. Open Rime History → Recovered version · instance/dashboard to review or restore the other version.' } : notesPaused ? { error: 'New document formats are saved locally. Update the server to sync them.' } : {}) });
+      statuses.set(user, { online: true, syncing: false, at: Date.now(), ...(dashboardRecovered ? { error: 'Concurrent dashboard changes: local settings kept. Open Rime History → Recovered version · instance/dashboard to review or restore the other version.' } : notesPaused ? { error: 'New document formats are saved locally. Update the server to sync them.' } : chatsPaused ? { error: 'Conversations on providers this server does not sync yet are kept locally. Update the server to sync them.' } : {}) });
       if (changed) {
         const { broadcast } = await import("../logic-engine.ts");
         broadcast(user, "refresh", { type: "memory" });
@@ -333,6 +343,7 @@ export async function sharedModel(
   provider: AgentProviderId,
   call: ProviderCall,
 ): Promise<ProviderResult | null> {
+  if (call.backend) return null;
   const connection = await rimeConnection(user),
     shared = sharedRime(user);
   const endpoint = call.endpoint;
