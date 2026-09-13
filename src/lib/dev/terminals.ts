@@ -1,5 +1,5 @@
 import { terminalEnv } from "./environment.ts";
-import { LEGACY_MODES, PERMISSION_MODES, cliPermissions, prepareCliLaunch, cliLaunchReady, type CliLaunch, type CliOrigin } from "./cli-bridge.ts";
+import { LEGACY_MODES, PERMISSION_MODES, cliPermissions, prepareCliLaunch, cliLaunchReady, cliInputBlocker, type CliLaunch, type CliOrigin } from "./cli-bridge.ts";
 export { terminalEnv } from "./environment.ts";
 import fs from "node:fs";
 import path from "node:path";
@@ -67,6 +67,7 @@ interface Live {
   /** Every input writer invalidates a pending model-added Enter. */
   inputSequence: number;
   pendingSend?: boolean;
+  commandObservation?: { id: string; owner: string; at: number; sequence: number; inputSequence: number };
   input?: Socket;
   exited: Promise<void>;
   term: Headless;
@@ -653,6 +654,72 @@ export function writeSession(
   s.inputSequence++;
   s.pty.write(binary ? Buffer.from(data, "latin1") : data);
 }
+/** Recognize only the CLI's own empty/typed input line, never clear an existing
+ * draft or assume a menu, a shell, or a permission prompt is a command editor.
+ * Unknown layouts fail closed; a cursor before any remaining text is not empty. */
+function commandLine(s: Live, expected = ''): boolean {
+  const buffer = s.term.buffer.active;
+  let index = buffer.baseY + buffer.cursorY;
+  let line = buffer.getLine(index);
+  if (!line || line.translateToString(true, buffer.cursorX).trim()) return false;
+  let before = line.translateToString(false, 0, buffer.cursorX);
+  while (line.isWrapped) {
+    // Reconstruct only visible soft-wrapped input, not scrollback from an older
+    // prompt or text whose beginning is no longer observable.
+    if (--index < buffer.baseY) return false;
+    line = buffer.getLine(index);
+    if (!line) return false;
+    before = line.translateToString(false) + before;
+  }
+  return /^[❯›]\s*/u.test(before.trimStart()) &&
+    before.trimStart().replace(/^[❯›]\s*/u, '').trimEnd() === expected;
+}
+
+function commandBlocker(row: Row, s: Live | undefined, settling = false): string | null {
+  if (row.kind !== 'claude' && row.kind !== 'codex') return 'Slash commands require a Claude Code or Codex session, not a shell or command log.';
+  if (!s || s.closing || row.state !== 'running') return 'The CLI is not running.';
+  if (!row.agent_input) return 'Let Rime control is off.';
+  const parked = cliInputBlocker(row.id);
+  if (parked) return parked;
+  if (row.phase && row.phase !== 'done' && row.phase !== 'waiting-input') return `The CLI is ${row.phase}; wait for its input prompt.`;
+  if ((!settling && s.pendingSend) || s.pendingBytes || s.queuedBytes) return 'Terminal input or output is still settling; read it again after it settles.';
+  return null;
+}
+
+/** Bound to this live process, reader, output AND input generations, so an
+ * unseen human keystroke invalidates it too. Only model-facing reads issue it. */
+export function commandObservation(user: number, id: string, owner: string) {
+  const row = rowOf(user, id), s = live.get(id);
+  if (row.kind !== 'claude' && row.kind !== 'codex') return undefined;
+  if (s) s.commandObservation = undefined;
+  const blocked = commandBlocker(row, s);
+  if (blocked || !s || !commandLine(s)) return {
+    ready: false,
+    detail: blocked ?? 'No empty CLI command prompt was recognized. Preserve any draft; do not clear it or guess menu keys.',
+  };
+  const observation = crypto.randomUUID();
+  s.commandObservation = { id: observation, owner, at: Date.now(), sequence: s.sequence, inputSequence: s.inputSequence };
+  return { ready: true, observation, expiresInSeconds: 30, detail: 'One-use command input observation. Use only a command supported by this CLI; submission is not proof it was accepted.' };
+}
+
+/** Explicit slash commands: no bracketed paste, menu navigation, guessed
+ * approvals, or retry after even a possibly delivered write. */
+export async function commandSession(user: number, id: string, owner: string, observation: string, command: string, signal?: AbortSignal) {
+  const s = running(user, id), row = rowOf(user, id);
+  claimInput(row, owner);
+  const seen = s.commandObservation;
+  if (!seen || seen.id !== observation || seen.owner !== owner) throw new DevError('Read this terminal first and use its one-use commandInput.observation.', 409);
+  s.commandObservation = undefined;
+  if (Date.now() - seen.at > 30_000 || seen.sequence !== s.sequence || seen.inputSequence !== s.inputSequence)
+    throw new DevError('The terminal changed or the observation expired. Nothing was written; read it again.', 409);
+  const blocked = commandBlocker(row, s);
+  if (blocked || !commandLine(s)) throw new DevError(blocked ?? 'The empty command prompt changed. Nothing was written.', 409);
+  if (typeof command !== 'string' || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(command) ||
+      !/^\/[a-z][a-z0-9:_-]*(?: +[^\r\n]*)?$/i.test(command.trim()))
+    throw new DevError('Supply one slash command and optional arguments, without newlines, tabs, escape sequences or other control characters.');
+  return inputSession(user, id, owner, command.trim(), true, signal, true);
+}
+
 /** Model-facing insertion/submission. UI/live input and explicit control workflows
  *  keep using raw writeSession; a PTY write is not acknowledgement from the CLI. */
 export async function inputSession(
@@ -662,6 +729,7 @@ export async function inputSession(
   data: string,
   send = true,
   signal?: AbortSignal,
+  command = false,
 ) {
   if (typeof send !== 'boolean') throw new DevError("send must be a boolean.");
   if (typeof data !== 'string') throw new DevError("Input must be a string.");
@@ -682,7 +750,8 @@ export async function inputSession(
   }
 
   if (s.pendingSend) throw new DevError("Another input is still settling. Nothing was written; read the terminal after its receipt before continuing.", 409);
-  const paste = s.term.modes.bracketedPasteMode;
+  const initialPaste = s.term.modes.bracketedPasteMode;
+  const paste = !command && initialPaste;
   if (!paste && /[\n\t]/.test(text)) throw new DevError(
     "Multiline or tabbed text needs bracketed-paste support. Nothing was written. Read the ready prompt and retry, or use send:false only for intentional raw input (newlines can execute commands).",
   );
@@ -692,7 +761,7 @@ export async function inputSession(
     // Keep the same per-write size cap, including any paste framing.
     writeSession(user, id, owner, input);
     const sequence = s.inputSequence;
-    const receipt = { sent: true, inputMode: paste ? 'bracketed-paste' : 'text', enterAdded: false };
+    const receipt = { sent: true, inputMode: command ? 'slash-command' : paste ? 'bracketed-paste' : 'text', enterAdded: false };
     try {
       // Claude/Ink commits a paste through a render/effect before handling Enter;
       // writing text+CR in one PTY chunk can leave CR inside that paste. A separate
@@ -703,7 +772,11 @@ export async function inputSession(
       if (running(user, id) !== s) throw new DevError("The terminal process changed.");
       claimInput(rowOf(user, id), owner);
       if (s.inputSequence !== sequence) throw new DevError("Other input arrived while the text was settling.");
-      if (s.term.modes.bracketedPasteMode !== paste) throw new DevError("The terminal input mode changed while the text was settling.");
+      if (s.term.modes.bracketedPasteMode !== initialPaste) throw new DevError("The terminal input mode changed while the text was settling.");
+      if (command) {
+        const blocked = commandBlocker(rowOf(user, id), s, true);
+        if (blocked || !commandLine(s, text)) throw new DevError(blocked ?? 'The CLI did not show the exact command at its input cursor; Enter was withheld.');
+      }
     } catch (error) {
       return { ...receipt, submission: 'withheld', detail: `${error instanceof Error ? error.message : 'Input cancelled.'} Text was already written; no Enter was added. Read the same terminal before continuing; do not replay the text.` };
     }

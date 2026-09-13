@@ -1960,6 +1960,15 @@ export async function runChildRun(args: Record<string, unknown>, ctx: ToolCtx): 
   const provider = await getProvider(sel.provider, sel.endpoint);
   // ---- the commit boundary: everything from here to markRan is synchronous, so the backend this
   // attempt was ADMITTED on cannot move between the last check and the thread that carries its context.
+  // Provider loading also awaited. A user's Resume belongs to the chat they were
+  // looking at, not a retired thread that happened to be active before preflight.
+  // Refuse before creating/copying the child or detaching its task receipt.
+  if (ctx.signal?.aborted) throw new Error('cancelled before it started');
+  if (resume && ctx.user && activeConversationRow(userId, ward)?.id !== parent.id)
+    throw Object.assign(new Error('This chat changed while the child run was being prepared. Reopen Tasks and resume from the intended chat.'), { status: 409 });
+  const commitCfg = agentWardConfig(userId, ward);
+  if (!commitCfg) throw new Error('agent ward is gone from the layout');
+  if (resume) Object.assign(childCfg, narrowConfig(userId, childCfg, commitCfg));
   const admitted = resume ? resume.conv!.endpoint_url : pinnableBackend(userId, sel.endpoint);
   if (resume && resume.conv!.endpoint) {
     if (!admitted) throw new Error(`child run ${resumeOf} did not record which server "${resume.conv!.endpoint}" pointed at; start a new child with spawn_agent instead`);

@@ -220,6 +220,14 @@ export function cliState(session: string): { phase: CliPhase; lastMessage?: stri
   return { phase: e.phase, ...(e.lastMessage ? { lastMessage: e.lastMessage } : {}), ...(first ? { pending: { id: first.id, tool: first.tool, input: first.input, at: first.at } } : {}) };
 }
 
+/** Typed CLI commands must never answer a hook's parked permission or question. */
+export function cliInputBlocker(session: string): string | null {
+  const entry = registry.get(session);
+  if (entry?.pending.size) return 'A CLI permission request is waiting; use terminal_decide, not terminal input.';
+  if (entry?.questions.size) return 'A CLI question is waiting; use terminal_answer, not terminal input.';
+  return null;
+}
+
 /** Rime's answer to a parked permission request. False when there is nothing to answer. */
 export function decideCli(user: number, session: string, request: string, decision: 'allow' | 'deny', reason?: string): boolean {
   const e = registry.get(session);

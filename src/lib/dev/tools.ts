@@ -27,6 +27,8 @@ import {
   listSessions,
   readSession,
   inputSession,
+  commandObservation,
+  commandSession,
   waitSession,
   interruptSession,
   closeSession,
@@ -316,11 +318,11 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   },
   terminal_read: wrap(
     "read",
-    "Inspect the current rendered terminal screen (plain text) and session state; session.sequence advances with output. For a CLI Rime launched, session.phase reports waiting-permission / waiting-input / done and session.lastMessage its last reply. Empty output or an idle screen does not prove a task completed. Unknown permission screens require attention. raw:true adds the ordered raw terminal bytes (escape sequences included) — large; use only to inspect exact output.",
+    "Inspect the current rendered terminal screen (plain text) and session state; session.sequence advances with output. For a CLI Rime launched, session.phase reports waiting-permission / waiting-input / done and session.lastMessage its last reply. A recognized empty Claude Code/Codex prompt also returns commandInput.observation for one terminal_command within 30 seconds; otherwise commandInput explains why it is not ready. Empty output or an idle screen does not prove a task completed. Unknown permission screens require attention. raw:true adds the ordered raw terminal bytes (escape sequences included) — large; use only to inspect exact output.",
     schema({ ...session, after: { type: "number" }, raw: { type: "boolean", description: "Include raw ordered output bytes since after (default false: rendered screen only)" }, review: { type: "boolean", description: "Read the durable task review and evidence as paginated JSON text instead of terminal output" }, cursor: { type: "number", description: "Review continuation from next" } }, ["runtime", "session"]),
     (a, c) => {
       const result = rendered(readSession(c.userId, a.session, a.after, a.review === true), a.raw);
-      if (!a.review) return result;
+      if (!a.review) return { ...result, commandInput: commandObservation(c.userId, a.session, owner(c)) };
       const all = JSON.stringify({ review: result.session.review, evidence: result.session.evidence });
       const cursor = Math.max(0, Math.floor(Number(a.cursor)) || 0);
       let text = all.slice(cursor, cursor + 9000);
@@ -345,7 +347,7 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ), backgroundable: true, cancellable: true },
   terminal_input: wrap(
     "write",
-    "Insert text and send it with one Enter by default (send:true). Read the latest screen first; Let Rime control must be on (agentInput:true). send:false writes exact raw input without adding Enter; supplied control keys still act. Pure control/mixed control sequences stay raw, without an extra Enter. A trailing CR on ordinary text is submitted once, not twice. Multiline text needs bracketed-paste support. Receipts report PTY writes and whether Enter was written or withheld, not CLI acceptance or task completion. Never replay uncertain input or guess approval keys. Sending does not authorize prompt approval; turning the toggle off stops Rime input.",
+    "Insert text and send it with one Enter by default (send:true). Prefer terminal_command for Claude Code/Codex slash commands: it requires a fresh one-use observation and avoids pasting commands as prose. Read the latest screen first; Let Rime control must be on (agentInput:true). send:false writes exact raw input without adding Enter; supplied control keys still act. Pure control/mixed control sequences stay raw, without an extra Enter. A trailing CR on ordinary text is submitted once, not twice. Multiline text needs bracketed-paste support. Receipts report PTY writes and whether Enter was written or withheld, not CLI acceptance or task completion. Never replay uncertain input or guess approval keys. Sending does not authorize prompt approval; turning the toggle off stops Rime input.",
     schema(
       {
         ...session,
@@ -355,6 +357,16 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
       ["runtime", "session", "data"],
     ),
     (a, c) => inputSession(c.userId, a.session, owner(c), a.data, a.send, c.signal),
+  ),
+  terminal_command: wrap(
+    "confirm",
+    "Submit one supported Claude Code/Codex slash command using commandInput.observation from a fresh terminal_read. Requires an empty recognized CLI prompt and Let Rime control. Observations expire after 30 seconds and are consumed once; any other input/output invalidates them. Sends command text without bracketed paste, then one Enter only if the exact command is still at the prompt. Never clears drafts, answers approvals/questions, navigates menus, or assumes acceptance. Inspect terminal_read afterward; do not replay uncertain or withheld input. Use only a command shown by this CLI or explicitly supplied by the user, with authorization for its effects. Interactive shells are refused.",
+    schema({
+      ...session,
+      observation: str("One-use commandInput.observation from terminal_read on this session."),
+      command: str("One native slash command, optionally followed by arguments, e.g. /help. No raw keys, tabs or newlines."),
+    }, ["runtime", "session", "observation", "command"]),
+    (a, c) => commandSession(c.userId, a.session, owner(c), a.observation, a.command, c.signal),
   ),
   terminal_interrupt: wrap(
     "write",
