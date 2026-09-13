@@ -4,7 +4,7 @@ import os from 'node:os';
 import { stripVTControlCharacters } from 'node:util';
 import crypto from 'node:crypto';
 import type { Stats as Attributes, Client } from 'ssh2';
-import { DevError, workDb, claimLease, leaseOwner, releaseLease, emitDev, reserveDirectoryMutation, assertNoDirectoryMutation, isWorkspaceWorker } from './runtime.ts';
+import { DevError, workDb, claimLease, leaseOwner, releaseLease, emitDev, reserveDirectoryMutation, assertNoDirectoryMutation, isWorkspaceWorker, requireWorkspaceRuntime } from './runtime.ts';
 import { addProject, projectPath, bufferKey, treePage, readPage, readBuffer, searchPage, editBuffer, gitView, worktreeOp, bufferCopies, decode, encode, hash, MAX_FILE, type BufferRow } from './projects.ts';
 import { analyzeFile } from './lint.ts';
 import { applyProjectBytes, applyProjectPatch } from './apply-patch.ts';
@@ -25,6 +25,25 @@ export function roots(user:number):WorkspaceRoot[] { return (db().prepare('SELEC
 export async function defaultRoot(user:number) {
   const documents = process.env.RIMEWARD_DOCUMENTS_DIR ?? path.join(os.homedir(),'Documents');
   const root = path.join(documents,'Rimeward','workspace'); await fs.mkdir(root,{recursive:true}); return registerRoot(user,{root});
+}
+export async function browseWorkspaceFolders(user:number,args:Record<string,unknown>) {
+  requireWorkspaceRuntime();
+  const requested=String(args.path??''),cursor=Number(args.cursor??0);
+  if(requested.includes('\0')||requested.length>4096||!Number.isSafeInteger(cursor)||cursor<0)throw new DevError('Invalid folder selection.');
+  let directory:string,names:string[];
+  const paths=args.connection?path.posix:path;
+  if(requested&&!paths.isAbsolute(requested))throw new DevError('Choose an absolute folder path.');
+  if(args.connection){
+    const {sftp}=await sshSession(user,String(args.connection));
+    directory=await sftpCall<string>(cb=>sftp.realpath(requested||'.',cb));
+    const entries=await sftpCall<import('ssh2').FileEntryWithStats[]>(cb=>sftp.readdir(directory,cb));
+    names=entries.filter(entry=>entry.attrs.isDirectory()&&!entry.attrs.isSymbolicLink()).map(entry=>entry.filename);
+  }else{
+    directory=await fs.realpath(requested||os.homedir());
+    names=(await fs.readdir(directory,{withFileTypes:true})).filter(entry=>entry.isDirectory()).map(entry=>entry.name);
+  }
+  names=names.filter(name=>name!=='.'&&name!=='..').sort((a,b)=>a.localeCompare(b));
+  return {path:directory,parent:paths.dirname(directory),folders:names.slice(cursor,cursor+100).map(name=>({name,path:paths.join(directory,name)})),...(cursor+100<names.length?{next:cursor+100}:{})};
 }
 export async function registerRoot(user:number,args:Record<string,unknown>):Promise<WorkspaceRoot> {
   if (typeof args.root !== 'string' || !args.root || args.root.includes('\0')) throw new DevError('Choose an absolute workspace folder.');

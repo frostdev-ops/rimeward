@@ -8,7 +8,7 @@ import type { WardInstance, PageDef } from '../wards.ts';
 import { isDesktop, isWorkspaceWorker, DevError, workDb } from './runtime.ts';
 import { rimeConnection, instanceRequest } from './remote.ts';
 import { listDevices, relayRequest } from './devices.ts';
-import { defaultRoot, rootOperation, roots, registerRoot } from './workspace-roots.ts';
+import { defaultRoot, rootOperation, roots, registerRoot, browseWorkspaceFolders } from './workspace-roots.ts';
 import { configureSsh, sshConnections } from './workspace-ssh.ts';
 import { runWorkspacePatch, runWorkspaceTransfer, workspacePatchStatus } from './workspace-patch.ts';
 import { searchWorkspace } from './workspace-read.ts';
@@ -32,6 +32,7 @@ async function dispatch(user:number,runtimeId:string,action:string,args:Record<s
     if(action==='legacy'){const views=Object.fromEntries((workDb().prepare('SELECT ward,json FROM ward_state WHERE user_id=?').all(user) as {ward:string;json:string}[]).map(r=>[r.ward,JSON.parse(r.json)]));return {projects:roots(user),views,sessions:(await import('./terminals.ts')).listSessions(user)};}
     if(action==='default')return defaultRoot(user);
     if(action==='register')return registerRoot(user,args);
+    if(action==='browse-folders')return browseWorkspaceFolders(user,args);
     if(action==='ssh')return configureSsh(user,args);
     if(action==='operation')return rootOperation(user,String(args.rootId),String(args.operation),args.args as Record<string,unknown>,String(args.owner),signal);
     throw new DevError('Unknown workspace host operation.');

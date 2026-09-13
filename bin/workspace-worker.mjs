@@ -34,6 +34,7 @@ const server = http.createServer(async(request,response)=>{
     else if(action==='legacy'){const {workDb}=await import('../src/lib/dev/runtime.ts');const {listSessions}=await import('../src/lib/dev/terminals.ts');value={projects:root.roots(account),views:Object.fromEntries(workDb().prepare('SELECT ward,json FROM ward_state WHERE user_id=?').all(account).map(row=>[row.ward,JSON.parse(row.json)])),sessions:listSessions(account)};}
     else if(action==='default')value=await root.defaultRoot(account);
     else if(action==='register')value=await root.registerRoot(account,args);
+    else if(action==='browse-folders')value=await root.browseWorkspaceFolders(account,args);
     else if(action==='ssh')value=await ssh.configureSsh(account,args);
     else if(action==='operation')value=await root.rootOperation(account,String(args.rootId),String(args.operation),args.args??{},String(args.owner),abort.signal);
     else throw Error('Unsupported worker operation.');

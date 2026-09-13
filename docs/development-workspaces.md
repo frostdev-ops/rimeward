@@ -6,6 +6,8 @@ The Tauri app runs the existing Astro 7 backend and Rimeward harness locally. No
 
 ## Use
 
+Workspace folder selection opens a directory browser with Home, Parent, and clickable subfolders on local desktops, connected desktops, server workers, and SSH locations. The local desktop also offers its system folder picker. Once a folder is selected, its `.md` files appear in the instruction-file selector; files in subfolders can be selected by entering their relative path. Only the selected instruction file is loaded.
+
 1. Build with `npm run desktop:build` (Rust and platform build prerequisites required; `npm ci` installs the pinned Tauri CLI). No separate Node installation is required on the installed user's machine.
 2. On first launch, enter your Rimeward address and approve the connection in your browser, or continue without connecting. **Open Rimeward** opens one dashboard. There is no local/server mode or workspace selector. The desktop shell always opens its authenticated local application so local projects keep working during an outage.
 3. Add a **Workspace** ward, choose its primary folder and any additional folders, then connect Rime, Terminal, Editor, Files, or Changes through Workspace Leylines. The primary folder appears at `/`; additional folders appear at named paths such as `/data`. Each folder may live on a connected Rimeward runtime or an SSH host reached through one. Select instruction files explicitly inside each folder; an empty selection loads none. A Workspace does not create or move pages or other wards. Editor includes a file explorer; Files remains available separately.

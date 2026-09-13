@@ -105,20 +105,45 @@ export async function linkWorkspace(consumer: WardInstance): Promise<void> {
   };
 }
 
-async function registerFolder(runtime: WorkspaceRuntime): Promise<RuntimeRoot | null> {
+async function registerFolder(runtime: WorkspaceRuntime, nativePicker: boolean): Promise<RuntimeRoot | null> {
   const { d, form, actions, error, submit } = dialog(`Folder · ${runtime.name}`);
   const path = textInput('Folder path', runtime.defaultDirectory ?? ''); path.required = true;
   const connection = el('select', 'input'); connection.setAttribute('aria-label', 'Folder location');
   connection.add(new Option(`On ${runtime.name}`, ''));
   for (const ssh of runtime.connections ?? []) connection.add(new Option(`${ssh.name} · SSH ${ssh.host}`, ssh.id));
   const create = el('input'); create.type = 'checkbox';
-  const browse = action('Choose folder…', async () => {
+  const browse = action('System folder picker…', async () => {
     const result = await workspaceApi<{ path: string | null }>({ action: 'folder', runtimeId: runtime.id });
-    if (result.path) path.value = result.path;
+    if (result.path) await loadFolders(result.path);
   });
-  connection.onchange = () => { browse.disabled = !!connection.value; path.value = connection.value ? '' : runtime.defaultDirectory ?? ''; };
-  actions.before(field('Folder location', connection), field('Folder path', path), browse, field('Create this folder if it does not exist', create));
+  const folders = el('div', 'workspace-directory-list'), status = el('p', 'workspace-help'); status.setAttribute('role', 'status');
+  let sequence = 0, current = '', parent = '';
+  const home = action('Home folder', () => loadFolders(''));
+  const up = action('Parent folder', () => loadFolders(parent)); up.disabled = true;
+  const loadFolders = async (target: string, cursor = 0): Promise<void> => {
+    const request = ++sequence; submit.disabled = home.disabled = up.disabled = path.disabled = create.disabled = true;
+    status.textContent = 'Loading folders…';
+    try {
+      const result = await workspaceApi<{ path: string; parent: string; folders: { name: string; path: string }[]; next?: number }>({ action: 'browse-folders', runtimeId: runtime.id, connection: connection.value, path: target, cursor });
+      if (request !== sequence || !d.open) return;
+      current = result.path; parent = result.parent; path.value = current; create.checked = false;
+      if (!cursor) folders.replaceChildren();
+      folders.querySelector('[data-more-folders]')?.remove();
+      for (const folder of result.folders) { const button = action(folder.name, () => loadFolders(folder.path)); button.prepend(icon('folder')); folders.append(button); }
+      if (result.next !== undefined) {
+        const more = action('More folders…', () => loadFolders(current, result.next)); more.dataset.moreFolders = ''; folders.append(more);
+      }
+      status.textContent = folders.childElementCount ? 'Open a folder, then choose Use folder to select it.' : 'No subfolders. Choose Use folder to select this folder.';
+    } catch (e) {
+      if (request === sequence && d.open) status.textContent = `Could not open folder: ${(e as Error).message}`;
+    } finally {
+      if (request === sequence && d.open) { submit.disabled = home.disabled = path.disabled = create.disabled = false; up.disabled = !current || current === parent; }
+    }
+  };
+  connection.onchange = () => { browse.disabled = !!connection.value; path.value = ''; current = parent = ''; folders.replaceChildren(); void loadFolders(''); };
+  actions.before(field('Folder location', connection), field('Selected folder / optional path', path), home, up, folders, status, ...(nativePicker ? [browse] : []), field('Create this folder if it does not exist', create));
   submit.textContent = 'Use folder';
+  void loadFolders('');
   return new Promise(resolve => {
     let result: RuntimeRoot | null = null;
     d.onclose = () => { d.remove(); resolve(result); };
@@ -215,7 +240,7 @@ export async function configureWorkspace(existing?: WardInstance, title = '', pa
     const folder = action('Choose another folder…', async () => {
       const selected = inventory.runtimes.find(r => r.id === runtime.value);
       if (!selected) throw Error('This location is unavailable.');
-      const result = await registerFolder(selected); if (!result || !d.open) return;
+      const result = await registerFolder(selected, inventory.runtimes[0] === selected && selected.kind === 'desktop'); if (!result || !d.open) return;
       selected.roots = [...(selected.roots ?? []).filter(r => r.id !== result.id), result]; fillRoots(result.id); instructions.value = ''; void detectInstructions();
     });
     const instructions = textInput('Instruction file', saved?.instructionsPath ?? ''); instructions.placeholder = 'AGENTS.md or CLAUDE.md';
