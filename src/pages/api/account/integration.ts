@@ -6,6 +6,7 @@ import {
  integrationURL,
 } from "../../../lib/broker-client.ts";
 import { attemptSession } from "../../../lib/oauth-attempts.ts";
+import { sessionId } from "../../../lib/auth.ts";
 import { isDesktop } from "../../../lib/dev/runtime.ts";
 import {
 	nativeDesktop,
@@ -51,9 +52,19 @@ export const POST: APIRoute = async ({ request, locals, cookies }) => {
 			if (b.action === "start")
 				setSetting(`integration_remote:${user}:${result.id}`, connection.id);
 		} else if (b.action === "start")
-			result = await startIntegration(user, b.provider, session, b.options);
+			// A relayed start carries the desktop's own binding, never this browser's
+			// session: only the browser's own start may skip the confirmation hop.
+			result = await startIntegration(
+				user,
+				b.provider,
+				session,
+				b.options,
+				session === sessionId(cookies),
+			);
 		else if (b.action === "poll")
 			result = await pollIntegration(user, String(b.id), session);
+		else if (b.action === "open")
+			result = integrationURL(user, String(b.id), session);
 		else if (b.action === "cancel") {
 			await cancelIntegration(user, String(b.id), session);
 			result = { status: "cancelled" };

@@ -5,6 +5,12 @@ for (const host of document.querySelectorAll<HTMLElement>(
 		status = host.querySelector<HTMLElement>("[role=status]")!,
 		link = host.querySelector<HTMLAnchorElement>("a")!;
 	const key = `integration:${location.origin}:${host.dataset.integration}`;
+	// A local grant is authorized in this very browser, so there is no code to
+	// carry to a second device: the link goes straight to the provider.
+	const note = (d: { local?: boolean; code?: string; destination?: string }) =>
+		d.local
+			? `Continue with ${(host.dataset.integration ?? "").replace(/^./, (c) => c.toUpperCase())} in your browser`
+			: `Confirm code ${d.code} in your browser · ${d.destination}`;
 	let id = sessionStorage.getItem(key) ?? "",
 		timer: ReturnType<typeof setTimeout> | undefined;
 	const access=host.querySelector<HTMLSelectElement>('[data-access]');
@@ -30,7 +36,7 @@ for (const host of document.querySelectorAll<HTMLElement>(
 	async function poll() {
 		try {
 			const data = await call("poll");
-      if(data.verificationUrl){link.href=data.verificationUrl;link.hidden=false;status.textContent=`Confirm code ${data.code} in your browser · ${data.destination}`;}
+      if(data.verificationUrl){link.href=data.verificationUrl;link.hidden=false;status.textContent=note(data);}
 			if (data.status === "connected") {
 				status.textContent = "Connected";
 				sessionStorage.removeItem(key);
@@ -52,7 +58,7 @@ for (const host of document.querySelectorAll<HTMLElement>(
 			const data = await call("start");
 			id = data.id;
 			sessionStorage.setItem(key, id);
-			status.textContent = `Confirm code ${data.code} in your browser · ${data.destination}`;
+			status.textContent = note(data);
 			link.href = data.verificationUrl;
 			link.hidden = false;
 			void poll();

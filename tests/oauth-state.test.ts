@@ -71,5 +71,6 @@ test('takeConnectState only accepts the session that started the flow', () => {
   assert.equal(takeConnectState(grafted, cookieFor(theirs)), null, 'cross-session callback');
 
   assert.equal(takeConnectState(mintState('notion', attacker), cookieFor(undefined)), null, 'no session');
-  assert.equal(takeConnectState(mintState('google-sso'), cookieFor(mine)), null, 'sso state is not a connect state');
+  // A sign-in state carries no userId: it is not a connect state whoever presents it.
+  assert.equal(takeConnectState(mintState('google'), cookieFor(mine)), null, 'sso state is not a connect state');
 });

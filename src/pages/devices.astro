@@ -1,8 +1,9 @@
 ---
 import AppLayout from '../layouts/AppLayout.astro';
 import { isDesktop } from '../lib/dev/runtime.ts';
+import { configuredOrigin } from '../lib/app-config.ts';
 if(isDesktop())return Astro.redirect('/desktop/start?setup=1');
-const server=(import.meta.env.PUBLIC_BASE_URL||Astro.url.origin);
+const server=configuredOrigin()??Astro.url.origin;
 ---
 <AppLayout title="Rimeward connections" search={false}>
   <main class="mx-auto max-w-3xl p-6">

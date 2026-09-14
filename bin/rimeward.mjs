@@ -22,7 +22,7 @@ class Usage extends Error {}
 const USAGE = `usage: rimeward <command> [options]
 
   users list
-  users create <email> [--admin] [--password <pw> | --sso]
+  users create <email> [--admin] [--password <pw>]
   users passwd <email> [--password <pw>]
   users role <email> admin|member
   users delete <email>
@@ -83,7 +83,6 @@ async function users(args) {
   const { values: v, positionals: [sub, email, extra] } = parse('users', args, {
     admin: { type: 'boolean' },
     password: { type: 'string' },
-    sso: { type: 'boolean' },
   });
   const u = await lib('users.ts');
   const byEmail = (e) => {
@@ -100,14 +99,8 @@ async function users(args) {
     case 'create': {
       const e = String(email ?? '').trim().toLowerCase();
       if (!EMAIL_RE.test(e)) throw new Error(`not an email address: ${email ?? ''}`);
-      if (v.password && v.sso) throw new Usage('--password and --sso are exclusive');
       if (u.emailInUse(e)) throw new Error(`email already in use: ${e}`);
       const role = v.admin ? 'admin' : 'member';
-      if (v.sso) {
-        const id = u.createUser(e, null, role);
-        out(`created: ${id} ${e} ${role} (SSO invite, no password)`);
-        return;
-      }
       const pw = v.password || u.generatePassword();
       const id = u.createUser(e, pw, role);
       out(`created: ${id} ${e} ${role}`);
@@ -141,7 +134,7 @@ async function users(args) {
 }
 
 // ------------------------------------------------------------- settings
-const HIDDEN_KEY = /^(secret:|mcp_token:|comms_)|token/i;
+const HIDDEN_KEY = /^(secret:|config:|mcp_token:|comms_)|token/i;
 
 async function settings(args) {
   const { positionals: [sub, key, value] } = parse('settings', args);
@@ -158,21 +151,27 @@ async function settings(args) {
     }
     case 'get': {
       if (!key) throw new Usage(groupUsage('settings'));
+      // `set` routes a known key through saveConfig, which stores it as `config:<KEY>`
+      // (sealed when it is a secret). Read it back the same way.
+      const { CONFIG, config } = await lib('app-config.ts');
+      if (key in CONFIG) { out(config(key)); return; }
       const val = s.getSetting(key);
       if (val === null) throw new Error(`no such setting: ${key}`);
       out(val);
       return;
     }
     case 'set':
-      if (!key || value === undefined) throw new Usage(groupUsage('settings'));
-      s.setSetting(key, value);
-      out(`set: ${key}`);
+    case 'unset': {
+      if (!key || (sub === 'set' && value === undefined)) throw new Usage(groupUsage('settings'));
+      const { CONFIG, saveConfig } = await lib('app-config.ts');
+      // A key the app knows about is validated, encrypted and audited; anything
+      // else is still a raw settings row.
+      if (key in CONFIG) saveConfig(key, sub === 'set' ? value : null, null);
+      else if (sub === 'set') s.setSetting(key, value);
+      else s.deleteSetting(key);
+      out(`${sub}: ${key}`);
       return;
-    case 'unset':
-      if (!key) throw new Usage(groupUsage('settings'));
-      s.deleteSetting(key);
-      out(`unset: ${key}`);
-      return;
+    }
     default:
       throw new Usage(groupUsage('settings'));
   }
@@ -394,7 +393,7 @@ async function doctor() {
   if (db) {
     const { userCount } = await lib('users.ts');
     const n = userCount();
-    say(n ? 'ok' : 'fail', n ? `users: ${n}` : 'users: no users — run: rimeward users create <email> --admin');
+    say(n ? 'ok' : 'fail', n ? `users: ${n}` : 'users: no users — open /setup in a browser to create the first administrator');
   }
 
   // The registry loaded when the database opened (the migrations check above).

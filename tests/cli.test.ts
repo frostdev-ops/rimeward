@@ -48,14 +48,15 @@ test('users create prints a generated password once; list shows it', () => {
   assert.equal(run(['users', 'create', 'admin@test.io']).code, 1, 'duplicate refused');
   assert.equal(run(['users', 'create', 'not-an-email']).code, 1);
 
-  const sso = run(['users', 'create', 'guest@test.io', '--sso']);
-  assert.equal(sso.code, 0, sso.err);
-  assert.doesNotMatch(sso.out, /^password:/m);
+  const supplied = run(['users', 'create', 'guest@test.io', '--password', 'hunter22']);
+  assert.equal(supplied.code, 0, supplied.err);
+  assert.doesNotMatch(supplied.out, /^password:/m, 'a supplied password is not echoed');
+  assert.equal(run(['users', 'create', 'nosignin@test.io', '--sso']).code, 2, '--sso made rows nothing could sign in to');
 
   const list = run(['users', 'list']);
   assert.equal(list.code, 0);
   assert.match(list.out, /^1 admin@test.io admin password=yes created=/m);
-  assert.match(list.out, /^2 guest@test.io member password=no created=/m);
+  assert.match(list.out, /^2 guest@test.io member password=yes created=/m);
 });
 
 test('users role, passwd, and the last-admin / last-user guards', () => {
@@ -64,8 +65,6 @@ test('users role, passwd, and the last-admin / last-user guards', () => {
   assert.match(demote.err, /only admin/);
 
   assert.equal(run(['users', 'role', 'guest@test.io', 'admin']).code, 0);
-  // An unlinked SSO-only row is not a usable replacement administrator.
-  assert.equal(run(['users', 'role', 'admin@test.io', 'member']).code, 1);
   const pw = run(['users', 'passwd', 'guest@test.io', '--password', 'hunter22']);
   assert.equal(pw.code, 0, pw.err);
   assert.match(pw.out, /session/);
@@ -94,6 +93,14 @@ test('settings set/get/list/unset', () => {
   const missing = run(['settings', 'get', 'site_name']);
   assert.equal(missing.code, 1);
   assert.match(missing.err, /no such setting/);
+
+  // A key the app knows about is stored as config:<KEY>, so get has to read it back
+  // the same way; unset falls back to the environment.
+  assert.equal(run(['settings', 'set', 'PUBLIC_BASE_URL', 'https://example.com']).code, 0);
+  assert.equal(run(['settings', 'get', 'PUBLIC_BASE_URL']).out, 'https://example.com\n');
+  assert.match(run(['settings', 'list']).out, /^config:PUBLIC_BASE_URL = <hidden>$/m);
+  assert.equal(run(['settings', 'unset', 'PUBLIC_BASE_URL']).code, 0);
+  assert.equal(run(['settings', 'get', 'PUBLIC_BASE_URL']).out, 'http://localhost:4321\n');
 });
 
 test('splash writes the site rows and validates the cards file', () => {
@@ -157,7 +164,7 @@ test('doctor: 0 on the seeded dir, 1 on an empty one', () => {
 
   const empty = run(['doctor'], DATA_EMPTY);
   assert.equal(empty.code, 1);
-  assert.match(empty.out, /^fail users: no users — run: rimeward users create <email> --admin$/m);
+  assert.match(empty.out, /^fail users: no users — open \/setup in a browser to create the first administrator$/m);
 });
 
 test('backup then restore round-trips the db and the data dirs', () => {

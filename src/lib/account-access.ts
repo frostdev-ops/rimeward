@@ -5,6 +5,7 @@ import { getDb } from "./db.ts";
 import { getSetting, setSetting } from "./settings.ts";
 import {
 	createUser,
+	deleteUser,
 	getUserByEmail,
 	getUser,
 	setUserPassword,
@@ -125,7 +126,14 @@ export async function inviteAccount(
 	if (getUserByEmail(email)) throw new Error("Account already exists");
 	const id = createUser(email, null, role);
 	getDb().prepare("UPDATE users SET status='pending' WHERE id=?").run(id);
-	await sendAction(id, "invite");
+	// The row and the email are one invitation: a row nobody was told about only
+	// makes the retry fail with "Account already exists".
+	try {
+		await sendAction(id, "invite");
+	} catch (err) {
+		deleteUser(id);
+		throw err;
+	}
 	audit(actor, "user.invited", String(id));
 }
 /** The link's action row, without spending it: what a public route checks before it

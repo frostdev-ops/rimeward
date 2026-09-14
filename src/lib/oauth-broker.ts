@@ -45,7 +45,7 @@ const digest = (s: string) =>
 export function beginBroker(
 	provider: OAuthProvider,
 	user?: number,
-	options: { readonly?: boolean; teams?: boolean } = {},
+	options: { readonly?: boolean; teams?: boolean; local?: boolean } = {},
 ) {
 	if (!oauthProviders.includes(provider)) throw new Error("Unknown provider");
 	const prefix = {
@@ -86,6 +86,9 @@ export function beginBroker(
 			JSON.stringify({
 				readonly: options.readonly === true,
 				teams: options.teams === true,
+				// The public broker route passes an unauthenticated caller's own JSON as
+				// options and never a user: a grant is local only when this server started it.
+				local: options.local === true && user !== undefined,
 			}),
 		);
 	return {
@@ -290,4 +293,21 @@ export function rejectBroker(id: string, user: number) {
 			"UPDATE oauth_broker_grants SET status='failed',delivery_enc='' WHERE id=? AND user_id=? AND status='authorizing'",
 		)
 		.run(id, user);
+}
+/** Where a connect callback sends the browser back to: a local grant was started
+ *  in this same browser's session, so it skips the broker confirmation page. A row
+ *  swept mid-consent is gone, and only the caller still knows the provider — a
+ *  browser that never saw the broker page must not be sent to it. */
+export function brokerDone(
+	id: string,
+	provider: string,
+	error?: "denied" | "failed",
+): string {
+	const g = getDb()
+		.prepare("SELECT options_json FROM oauth_broker_grants WHERE id=?")
+		.get(id) as { options_json: string } | undefined;
+	if (!g) return `/account?err=${provider}-failed`;
+	if (JSON.parse(g.options_json).local === true)
+		return error ? `/account?err=${provider}-${error}` : "/account#accounts";
+	return `/oauth/broker?done=1${error ? `&error=${error}` : ""}`;
 }

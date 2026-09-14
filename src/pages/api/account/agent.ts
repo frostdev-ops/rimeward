@@ -1,7 +1,7 @@
 import type { APIRoute } from 'astro';
 import { setSetting } from '../../../lib/settings.ts';
 import { storeAgentAccount, deleteAgentAccount, storeEndpoint, deleteEndpoint, mask } from '../../../lib/agent/accounts.ts';
-import { codexOauthStart, codexOauthFinish, codexOauthCancel, codexDisconnect } from '../../../lib/agent/codex.ts';
+import { codexDisconnect } from '../../../lib/agent/codex.ts';
 import { parseRounds } from '../../../lib/agent/provider.ts';
 import { storeBrowserbaseKey } from '../../../lib/browser/browserbase.ts';
 
@@ -45,22 +45,8 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     return back('ok=agent-key');
   }
 
-  if (action === 'codex-start') {
-    codexOauthStart(userId);
-    return back('ok=codex-start');
-  }
-  if (action === 'codex-cancel') {
-    codexOauthCancel(userId);
-    return back('ok=agent-cleared');
-  }
-  if (action === 'codex-finish') {
-    try {
-      const email = await codexOauthFinish(userId, String(form.get('pasted') ?? ''));
-      return back(`connected=${encodeURIComponent(`ChatGPT${email ? ` (${email})` : ''}`)}`);
-    } catch (err) {
-      return back(`err=${encodeURIComponent(err instanceof Error ? err.message : 'sign-in failed')}`);
-    }
-  }
+  // Starting/finishing a ChatGPT sign-in lives in /api/account/oauth, which binds
+  // the attempt to the browser's own session; these form posts could not be polled.
   if (action === 'codex-disconnect') {
     codexDisconnect(userId);
     return back('ok=agent-cleared');

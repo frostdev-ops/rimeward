@@ -14,6 +14,7 @@ import {
 import { storeLink, type Provider } from "./linked-accounts.ts";
 import { isDesktop } from "./dev/runtime.ts";
 import {
+	authorizeBroker,
 	beginBroker,
 	pollBroker,
 	acknowledgeBroker,
@@ -27,7 +28,11 @@ interface ClientGrant {
 	key: string;
 	code: string;
 	verificationUrl: string;
+	/** In-process broker: poll/ack/cancel run here rather than over HTTP. */
 	local: boolean;
+	/** No code to confirm — the link goes straight to the provider. What the
+	 *  account page tells the person, and what the grant records as its `local`. */
+	skip?: boolean;
 }
 export async function brokerRequest(
 	origin: string,
@@ -52,6 +57,7 @@ export async function startIntegration(
 	provider: OAuthProvider,
 	session: string,
 	options: { readonly?: boolean; teams?: boolean } = {},
+	own = false,
 ) {
 	const local = !isDesktop() && config("OAUTH_USE_BROKER") !== "true";
 	const origin = local ? publicOrigin() : config("OAUTH_BROKER_URL");
@@ -59,8 +65,12 @@ export async function startIntegration(
 		throw new Error(
 			"Choose an OAuth broker in Admin settings before connecting",
 		);
+	// The grant's own `local` is narrower than this one: it means "this browser
+	// started it and skips the hop", which is what a connect callback reads to
+	// decide where to send the finishing browser (brokerDone). ClientGrant.local
+	// below stays the in-process flag the poll/ack/cancel path needs.
 	const grant = local
-		? beginBroker(provider, user, options)
+		? beginBroker(provider, user, { ...options, local: own })
 		: await brokerRequest(origin, { action: "start", provider, options });
 	if (
 		!/^[\w-]{20,80}$/.test(grant.id) ||
@@ -68,13 +78,22 @@ export async function startIntegration(
 		!/^[A-F0-9]{12}$/.test(grant.code)
 	)
 		throw new Error("Invalid broker response");
+	// A local grant started by THIS browser's own session is already bound to it, so
+	// the confirmation hop is pure friction: authorize it here and send the browser
+	// straight to the provider. A start relayed here from a paired desktop (own=false)
+	// is finished in a browser with no session on this server, so it keeps the hop —
+	// the broker page's sign-in is what binds it. The desktop/broker path is unchanged.
 	const data: ClientGrant = {
 		origin,
 		id: grant.id,
 		key: grant.key,
 		code: grant.code,
-		verificationUrl: `${origin}/oauth/broker?code=${grant.code}`,
+		verificationUrl:
+			local && own
+				? authorizeBroker(grant.code, user)
+				: `${origin}/oauth/broker?code=${grant.code}`,
 		local,
+		skip: local && own,
 	};
 	const attempt = startAttempt(
 		user,
@@ -87,6 +106,7 @@ export async function startIntegration(
 		...attemptView(attempt),
 		verificationUrl: data.verificationUrl,
 		code: grant.code,
+		local: data.skip,
 	};
 }
 export async function pollIntegration(
@@ -125,28 +145,33 @@ export async function pollIntegration(
 	if (result.status === "ready") {
 		const tok = result.tokens as BrokerTokens;
 		claimAttempt(user, id);
-		completeAttempt(user, id, () => {
-			storeLink({
-				userId: user,
-				provider: attempt.provider as Provider,
-				label: tok.label,
-				refreshToken: tok.refresh_token ?? tok.access_token,
-				accessToken: tok.access_token,
-				expiresInSec: tok.refresh_token ? (tok.expires_in ?? 3600) : undefined,
-				scopes: tok.scope,
-				meta: {
-					...tok.meta,
-					rotating: !!tok.refresh_token,
-					broker: !data.local,
-				},
+		try {
+			completeAttempt(user, id, () => {
+				storeLink({
+					userId: user,
+					provider: attempt.provider as Provider,
+					label: tok.label,
+					refreshToken: tok.refresh_token ?? tok.access_token,
+					accessToken: tok.access_token,
+					expiresInSec: tok.refresh_token ? (tok.expires_in ?? 3600) : undefined,
+					scopes: tok.scope,
+					meta: {
+						...tok.meta,
+						rotating: !!tok.refresh_token,
+						broker: !data.local,
+					},
+				});
+				setSetting(`broker_receipt:${id}`, sealToken(JSON.stringify(data)));
+				if (!data.local)
+					setSetting(
+						`broker_connection:${user}:${attempt.provider}`,
+						sealToken(JSON.stringify(data)),
+					);
 			});
-			setSetting(`broker_receipt:${id}`, sealToken(JSON.stringify(data)));
-			if (!data.local)
-				setSetting(
-					`broker_connection:${user}:${attempt.provider}`,
-					sealToken(JSON.stringify(data)),
-				);
-		});
+		} catch (err) {
+			failAttempt(user, id);
+			throw err;
+		}
 		if (data.local) acknowledgeBroker(data.id, data.key);
 		else
 			await brokerRequest(data.origin, {
@@ -211,5 +236,5 @@ export async function disconnectBrokerConnection(
 export function integrationURL(user:number,id:string,session:string){
   const row=attemptOf(user,id,session);
   if(!['pending','authorizing'].includes(row.status))throw new Error('Sign-in expired or completed');
-  const data=attemptData<ClientGrant>(row);return {verificationUrl:data.verificationUrl,code:data.code};
+  const data=attemptData<ClientGrant>(row);return {verificationUrl:data.verificationUrl,code:data.code,local:data.skip===true};
 }

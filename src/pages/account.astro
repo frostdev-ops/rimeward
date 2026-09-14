@@ -71,6 +71,9 @@ if (notionLink) {
 
 const ok = Astro.url.searchParams.get('ok');
 const err = Astro.url.searchParams.get('err');
+// What a connect callback leaves behind when consent was refused or the grant went
+// missing (lib/oauth-broker.ts brokerDone): a slug, not a sentence.
+const connectErr = /^(google|microsoft|notion|zoho)-(denied|failed)$/.exec(err ?? '');
 const connected = Astro.url.searchParams.get('connected');
 
 const PROVIDERS = [
@@ -137,10 +140,10 @@ const TABS = [
     {ok === 'password' && <p class="banner banner-ok">Password updated. Other sessions were signed out.</p>}
     {connected && <p class="banner banner-ok">{connected} connected.</p>}
     {ok?.startsWith('agent') && <p class="banner banner-ok">Agent settings saved.</p>}
-    {ok === 'codex-start' && <p class="banner banner-info">ChatGPT sign-in started — follow the two steps in the Agent section.</p>}
     {err === 'short' && <p class="banner banner-err">Password must be at least 10 characters.</p>}
     {err === 'wrong' && <p class="banner banner-err">Current password is incorrect.</p>}
-    {err && !['short', 'wrong'].includes(err) && <p class="banner banner-err">{err}</p>}
+    {connectErr && <p class="banner banner-err">{PROVIDERS.find(p => p.id === connectErr[1])?.name ?? connectErr[1]} {connectErr[2] === 'denied' ? 'access was not granted' : 'could not finish connecting'}. Start the connection again below.</p>}
+    {err && !connectErr && !['short', 'wrong'].includes(err) && <p class="banner banner-err">{err}</p>}
 
     {/* Sticky under the app header. The strip owns the border and clips; the
         scroller inside carries the tabs and the sliding indicator, so nothing

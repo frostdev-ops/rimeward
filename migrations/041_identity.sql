@@ -24,3 +24,4 @@ CREATE INDEX oauth_attempt_owner ON oauth_attempts(user_id,provider,created_at);
 
 CREATE TABLE legacy_google_users (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE);
 INSERT INTO legacy_google_users SELECT id FROM users;
+CREATE INDEX login_identity_user ON login_identities(user_id);

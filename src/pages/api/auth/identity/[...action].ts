@@ -33,6 +33,9 @@ export const GET: APIRoute = async ({ params, url, cookies, redirect }) => {
 			name = `identity_${state}`;
 		const cookie = cookies.get(name)?.value;
 		cookies.delete(name, { path: "/" });
+		// The state echo this replaced. Nothing reads it any more; this is where a
+		// browser still carrying one hands it back.
+		cookies.delete("rimeward_sso", { path: "/" });
 		const result = await finishIdentity(
 			id,
 			url,

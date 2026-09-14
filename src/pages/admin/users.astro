@@ -4,13 +4,16 @@ import { getDb } from '../../lib/db.ts';
 import { listUsers } from '../../lib/users.ts';
 import { sessionId } from '../../lib/auth.ts';
 import { takeSetting } from '../../lib/settings.ts';
-import { WORKSPACE_DOMAIN } from '../../lib/google-sso.ts';
 import { cardsToLines, siteInfo } from '../../lib/site.ts';
 import { updateState } from '../../lib/updates.ts';
 
 const me = Astro.locals.user!;
 const users = listUsers();
 const identities=getDb().prepare('SELECT user_id,connector,issuer,subject FROM login_identities').all() as {user_id:number;connector:string;issuer:string;subject:string}[];
+// How a row can actually sign in. Neither a password nor an identity means
+// nobody can — the bug an invitation exists to avoid.
+const signIn = (u: { id: number; has_password: unknown }) =>
+  [u.has_password ? 'password' : null, ...identities.filter((i) => i.user_id === u.id).map((i) => i.connector)].filter(Boolean).join(' + ');
 const site = siteInfo();
 const updates = await updateState();
 
@@ -96,7 +99,7 @@ const OK_MESSAGES: Record<string, string> = {
                 <td>
                   <span class="pill" data-status={u.role}>{u.role}</span>
                 </td>
-                <td class="hidden text-ink-muted sm:table-cell">{u.has_password ? 'password + SSO' : 'SSO only'}</td>
+                <td class="hidden text-ink-muted sm:table-cell">{signIn(u) || (u.status === 'pending' ? 'invitation pending' : <span class="text-err">no sign-in method</span>)}</td>
                 <td class="text-right">
                   <details class="relative inline-block text-left">
                     <summary class="btn cursor-pointer list-none px-2 py-1 text-xs">Manage</summary>

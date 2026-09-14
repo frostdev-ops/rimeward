@@ -1,4 +1,4 @@
-import { deliverBroker,rejectBroker } from '../../../../lib/oauth-broker.ts';
+import { brokerDone,deliverBroker,rejectBroker } from '../../../../lib/oauth-broker.ts';
 import type { APIRoute } from 'astro';
 import { takeConnectState } from '../../../../lib/oauth.ts';
 import { decodeIdToken } from '../../../../lib/google-sso.ts';
@@ -9,7 +9,7 @@ export const prerender = false;
 
 export const GET: APIRoute = async ({ url, cookies, redirect }) => {
   const pending = takeConnectState(url.searchParams.get('state') ?? '', cookies);
-  if(pending?.brokerId && pending.userId && url.searchParams.has('error')){rejectBroker(pending.brokerId,pending.userId);return redirect('/oauth/broker?done=1&error=denied',303);}
+  if(pending?.brokerId && pending.userId && url.searchParams.has('error')){rejectBroker(pending.brokerId,pending.userId);return redirect(brokerDone(pending.brokerId,'microsoft','denied'),303);}
   if (!pending || pending.provider !== 'microsoft' || !pending.userId)
     return redirect('/account?err=ms-connect', 303);
 
@@ -31,7 +31,7 @@ export const GET: APIRoute = async ({ url, cookies, redirect }) => {
     const claims = tokens.id_token
       ? (decodeIdToken(tokens.id_token) as { email?: string; preferred_username?: string })
       : {};
-    if(pending.brokerId){deliverBroker(pending.brokerId,pending.userId,{...tokens,label:claims.email??claims.preferred_username??'Microsoft'});return redirect('/oauth/broker?done=1',303);}
+    if(pending.brokerId){deliverBroker(pending.brokerId,pending.userId,{...tokens,label:claims.email??claims.preferred_username??'Microsoft'});return redirect(brokerDone(pending.brokerId,'microsoft'),303);}
     storeLink({
       userId: pending.userId,
       provider: 'microsoft',
@@ -43,7 +43,7 @@ export const GET: APIRoute = async ({ url, cookies, redirect }) => {
     });
     return redirect('/dash?connected=Microsoft', 303);
   } catch (err) {
-    if(pending.brokerId){rejectBroker(pending.brokerId,pending.userId);return redirect('/oauth/broker?done=1&error=failed',303);}
+    if(pending.brokerId){rejectBroker(pending.brokerId,pending.userId);return redirect(brokerDone(pending.brokerId,'microsoft','failed'),303);}
     console.error('[connect microsoft] token exchange failed');
     return redirect('/account?err=ms-connect', 303);
   }

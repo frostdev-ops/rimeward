@@ -10,7 +10,7 @@ import { setSetting, sweepSettings, takeSetting } from './settings.ts';
 const TTL_MS = 15 * 60 * 1000;
 
 export interface PendingState {
-  provider: 'google-sso' | 'google' | 'microsoft' | 'notion' | 'zoho';
+  provider: 'google' | 'microsoft' | 'notion' | 'zoho';
   userId?: number;
   /** Microsoft only: the Mail.Send-less retry after a tenant denies consent. */
   readonly?: boolean;

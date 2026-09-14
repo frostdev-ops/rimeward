@@ -28,13 +28,9 @@ Do not put OAuth client secrets in ward text, browser URLs, or repository files.
 
 ## Accounts and sign-in
 
-Create a password user with the CLI or administer users through the app. For a Google SSO-only user, the CLI supports:
+Create a password user with the CLI or administer users through the app. Every account needs a password or a linked sign-in identity, because nothing could sign in to a row with neither.
 
-```sh
-node bin/rimeward.mjs users create you@example.com --sso
-```
-
-Without `SSO_WORKSPACE_DOMAIN`, Google sign-in is restricted to invited addresses. Setting that variable permits accounts from the specified Workspace domain to sign in without individual invitations; its first user becomes admin. Use it only if that domain-wide enrollment is intended.
+Registration defaults to invitations: an administrator adds an address in **Admin → Users**, and the invited person sets a password or links an identity from the emailed link. `SSO_WORKSPACE_DOMAIN` does not open registration on its own — it restricts which email domains may self-register, and only when the registration policy is `approval` or `open`. Accounts created under `approval` stay pending until an administrator activates them. The first administrator comes from `/setup` on an empty installation, never from a sign-in.
 
 Use distinct accounts for people who need access. Pairing and Remote Desktop permissions belong to the owning account; this release does not provide general cross-account desktop sharing.
 

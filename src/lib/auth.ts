@@ -4,7 +4,6 @@ import { getDb } from './db.ts';
 import { revokeRemoteSessions } from './dev/remote-desktop-events.ts';
 
 export const SESSION_COOKIE = 'rimeward_session';
-export const SSO_STATE_COOKIE = 'rimeward_sso';
 /** Only this fixed continuation survives login; never accept a redirect URL. */
 export function afterLogin(cookies: {get(name:string):{value:string}|undefined;delete(name:string,opts:{path:string}):void}):string {
   const broker=cookies.get('rimeward_broker')?.value;cookies.delete('rimeward_broker',{path:'/'});
