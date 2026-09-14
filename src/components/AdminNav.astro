@@ -1,0 +1,24 @@
+---
+// The one admin console nav. Same `.link` tokens and flex/gap row the pages
+// hand-rolled, so dropping it in shifts nothing.
+interface Props {
+  current: 'users' | 'settings' | 'monitors';
+}
+const { current } = Astro.props;
+const LINKS: [string, string, string][] = [
+  ['users', '/admin/users', 'Users'],
+  ['settings', '/admin/settings', 'Settings'],
+  ['monitors', '/admin/monitors', 'Monitors'],
+  ['dash', '/dash', '← Dashboard'],
+];
+---
+
+<span class="flex flex-wrap gap-3">
+  {
+    LINKS.map(([id, href, label]) => (
+      <a href={href} class={`link ${id === 'dash' ? 'back-link' : ''} ${id === current ? 'underline' : ''}`.trim()} aria-current={id === current ? 'page' : undefined}>
+        {id === 'dash' || id === current ? label : `${label} →`}
+      </a>
+    ))
+  }
+</span>

@@ -37,9 +37,21 @@ import { acceptInvite,beginIdentity,discoveryTransport,resolveIdentity,saveIdent
 import { POST as identityPost } from "../src/pages/api/auth/identity/[...action].ts";
 
 test("installer must prove ownership and cannot replay setup", () => {
-	ensureSetupToken();
+	// The token is printed at boot too: under Docker/pm2 the file is out of reach.
+	const logged: string[] = [];
+	const log = console.log;
+	console.log = (...a: unknown[]) => void logged.push(a.join(" "));
+	try {
+		ensureSetupToken();
+	} finally {
+		console.log = log;
+	}
 	assert.equal(needsSetup(), true);
 	const token = fs.readFileSync(`${DATA_DIR}/setup-token`, "utf8");
+	assert.ok(
+		logged.some((l) => l.includes("/setup") && l.includes(token)),
+		logged.join("|"),
+	);
 	assert.throws(() =>
 		claimInstallation(
 			"wrong",
@@ -356,6 +368,15 @@ test("only Microsoft's own xms_edov stands in for email_verified",()=>{
 test("only real connector IDs can be deleted",()=>{
 	for(const id of ["google","microsoft","Bad","../evil",""])
 		assert.throws(()=>deleteIdentityConnector(id,1),/Unknown connector/);
+	// A well-formed id that was never configured is a no-op: reporting success while
+	// clearing identity_admin_verified silently re-locks PASSWORD_LOGIN=false.
+	const rows=()=>(getDb().prepare("SELECT count(*) AS n FROM auth_audit").get() as {n:number}).n;
+	setSetting("identity_admin_verified","1:google");
+	const before=rows();
+	deleteIdentityConnector("ghost-oidc",1);
+	assert.equal(getSetting("identity_admin_verified"),"1:google");
+	assert.equal(rows(),before);
+	getDb().prepare("DELETE FROM settings WHERE key='identity_admin_verified'").run();
 });
 test("an installation with no administrator left can still configure its way back in",()=>{
 	const admin=(getDb().prepare("SELECT id FROM users WHERE role='admin'").get() as {id:number}).id;

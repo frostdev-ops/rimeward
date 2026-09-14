@@ -114,19 +114,22 @@ export function saveIdentityConnector(c: IdentityConnector, actor: number, clear
 	})();
 }
 /** Sign-in rows for a removed connector stay: they are inert without it and revive if it returns. */
-export function deleteIdentityConnector(id: string, actor: number) {
+export function deleteIdentityConnector(id: string, actor: number): boolean {
 	// The builtins are configured through CONFIG, never through the connector list.
 	if (
 		!/^[a-z][a-z0-9-]{1,39}$/.test(id) ||
 		["google", "microsoft"].includes(id)
 	)
 		throw new Error("Unknown connector");
-	getDb().transaction(() => {
+	return getDb().transaction(() => {
 		const before = adminCount();
 		const list = JSON.parse(getSetting("identity_connectors") ?? "[]") as Omit<
 			IdentityConnector,
 			"clientSecret"
 		>[];
+		// A replay (or a typo) must not report success, write an audit row and clear
+		// identity_admin_verified — that silently re-locks PASSWORD_LOGIN=false.
+		if (!list.some((x) => x.id === id)) return false;
 		setSetting(
 			"identity_connectors",
 			JSON.stringify(list.filter((x) => x.id !== id)),
@@ -136,6 +139,7 @@ export function deleteIdentityConnector(id: string, actor: number) {
 		audit(actor, "identity.removed", id);
 		if (before > 0 && adminCount() === 0)
 			throw new Error("This would lock out every administrator");
+		return true;
 	})();
 }
 /** One discovery per (issuer, client, secret) for five minutes, single-flight. Starting a
