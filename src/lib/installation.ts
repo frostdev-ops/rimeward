@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { DATA_DIR, getDb } from "./db.ts";
 import { createUser, userCount } from "./users.ts";
-import { audit, saveConfig } from "./app-config.ts";
+import { audit, configuredOrigin, saveConfig } from "./app-config.ts";
 import { getSetting, setSetting } from "./settings.ts";
 
 const file = () => path.join(DATA_DIR, "setup-token");
@@ -15,17 +15,22 @@ export function needsSetup() {
 export function setupDone() {
 	return getSetting("setup_done") !== null;
 }
-/** Created once with exclusive permissions; only the installer can read it. */
+/** The token exists on disk until it is claimed. */
+export const setupTokenPresent = () => fs.existsSync(file());
+/** Created once with exclusive permissions; only the installer can read it. Printed at
+ *  boot too — under Docker or pm2 the file is not somewhere the installer can reach. */
 export function ensureSetupToken() {
 	if (!needsSetup()) return;
+	let token = crypto.randomBytes(32).toString("base64url");
 	try {
-		fs.writeFileSync(file(), crypto.randomBytes(32).toString("base64url"), {
-			mode: 0o600,
-			flag: "wx",
-		});
+		fs.writeFileSync(file(), token, { mode: 0o600, flag: "wx" });
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		token = fs.readFileSync(file(), "utf8");
 	}
+	console.log(
+		`[setup] Open ${configuredOrigin() ?? "http://<host>:<port>"}/setup and enter the installation token: ${token}`,
+	);
 }
 export function claimInstallation(
 	token: string,

@@ -5,7 +5,7 @@ import { readDesktopState, readDesktopCheckpoint, saveDesktopState } from './des
 type Permissions = { screen: boolean; input: boolean };
 const native = (window as unknown as { __TAURI__?: { core: { invoke<T>(command: string, args: unknown): Promise<T> } } }).__TAURI__?.core;
 const entry = document.querySelector<HTMLButtonElement>('#macos-permissions');
-if (native && entry && document.querySelector('meta[name="fd-mac-user"]')) {
+if (native && document.querySelector('meta[name="fd-mac-user"]')) {
   const invoke = (action: string) => native.invoke<Permissions>('macos_permissions', { action });
   let dialog: HTMLDialogElement | undefined, busy = false, relaunching = false, raising = false;
   let armed = readDesktopState<boolean>('permission-pending') === true;
@@ -22,7 +22,7 @@ if (native && entry && document.querySelector('meta[name="fd-mac-user"]')) {
   if (armed && saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
     window.addEventListener('load', () => requestAnimationFrame(() => scrollTo(saved.x, saved.y)), { once: true });
   }
-  entry.hidden = false;
+  if (entry) entry.hidden = false;
   const open = async () => {
     if (dialog?.open) return;
     const d = el('dialog', 'fd-dialog macos-permissions-dialog'); dialog = d;
@@ -75,7 +75,7 @@ if (native && entry && document.querySelector('meta[name="fd-mac-user"]')) {
     d.showModal();
     try { await refresh(); } catch (error) { status.textContent = String(error); }
   };
-  entry.onclick = () => { void open(); };
+  if (entry) entry.onclick = () => { void open(); };
   window.addEventListener('fd:desktop-expanded-restored', () => {
     if (dialog?.open) { raising = true; dialog.close(); }
   });
@@ -85,11 +85,11 @@ if (native && entry && document.querySelector('meta[name="fd-mac-user"]')) {
   // await every recovery write; background checkpoints never interrupt a user.
   window.addEventListener('blur', () => { if (armed && !busy) void checkpoint().catch(() => {}); });
   void invoke('status').then(p => {
-    entry.textContent = p.screen && p.input ? 'Mac permissions' : 'Set up Mac permissions';
+    if (entry) entry.textContent = p.screen && p.input ? 'Mac permissions' : 'Set up Mac permissions';
     document.querySelectorAll<HTMLElement>('[data-macos-permissions]').forEach(b => { b.hidden = false; });
     if (readDesktopCheckpoint('permission-dialog') === true || ((!p.screen || !p.input) && !readDesktopState('permission-intro-seen'))) {
       try { saveDesktopState('permission-intro-seen', true); } catch { /* Setup stays available if storage is full. */ }
       void open();
     }
-  }).catch(() => { entry.hidden = true; });
+  }).catch(() => { if (entry) entry.hidden = true; });
 }

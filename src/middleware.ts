@@ -49,7 +49,6 @@ ensureKnowledge();
 // land on them; each one re-checks the session itself), and static assets.
 const PUBLIC_PREFIXES = [
   '/login',
-  '/setup',
   '/register',
   '/recover',
   '/api/auth/identity/',
@@ -77,7 +76,7 @@ const PUBLIC_PREFIXES = [
   '/apple-touch-icon',
 ];
 
-const ADMIN_PREFIXES = ['/admin', '/api/users', '/api/admin'];
+const ADMIN_PREFIXES = ['/admin', '/api/users', '/api/admin', '/setup'];
 
 export const onRequest = defineMiddleware(async (context, next) => {
   const native=nativeRequest(context);
@@ -92,6 +91,9 @@ export const onRequest = defineMiddleware(async (context, next) => {
   }
   if (needsSetup() && ['/', '/login'].includes(pathname)) return context.redirect('/setup',303);
   if (pathname === '/') return next();
+  // Only the claim step is public, and only while there is nobody to claim it:
+  // every later wizard step is an ADMIN_PREFIXES page with a real session.
+  if (pathname === '/setup' && needsSetup()) return next();
   if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return next();
 
   const cookie = sessionId(context.cookies);

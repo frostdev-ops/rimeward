@@ -1,6 +1,7 @@
 import type { beginSignIn, pollSignIn, onboarding } from "../../lib/dev/remote.ts";
 import { desktopApi } from "./workspace-dialogs.ts";
 import { el } from "./dom.ts";
+import { gate, valley } from "../valley/index.ts";
 function required<T extends HTMLElement>(selector: string, parent: ParentNode = document): T {
   const element = parent.querySelector<T>(selector);
   if (!element) throw new Error(`Setup control is missing: ${selector}`);
@@ -21,6 +22,8 @@ function step(value: "connect" | "approve" | "ready") {
     else li.removeAttribute("aria-current");
   });
   status.dataset.error = "false";
+  // The terrain descends as the connection progresses.
+  void valley.then(h => h?.setDepth({ connect: 0, approve: 0.5, ready: 1 }[value]));
 }
 const report = (e: unknown) => {
   status.dataset.error = "true";
@@ -42,7 +45,7 @@ const action = (label: string, fn: () => Promise<unknown>) => {
 async function openServer(_id: string) {
   status.textContent = "Opening your workspace…";
   await desktopApi("onboard", { home: "local" });
-  location.assign('/dash');
+  gate(() => location.assign('/dash'));
 }
 function showConnected(p: { id: string; server: string; email?: string }) {
   connected.hidden = false;
@@ -132,13 +135,13 @@ required("#setup-cancel").onclick = () =>
 required("#setup-local").onclick = () =>
   void cancel()
     .then(() => desktopApi("onboard", { home: "local" }))
-    .then(() => location.assign("/dash"))
+    .then(() => gate(() => location.assign("/dash")))
     .catch(report);
 required("#setup-workspace").onclick = async () => {
   try {
     await cancel();
     await desktopApi("onboard", { home: "local" });
-    location.assign('/dash?add-workspace=1');
+    gate(() => location.assign('/dash?add-workspace=1'));
   } catch (e) {
     report(e);
   }

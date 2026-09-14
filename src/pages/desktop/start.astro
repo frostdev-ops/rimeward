@@ -1,12 +1,21 @@
 ---
-import AppLayout from '../../layouts/AppLayout.astro';
+import ValleyLayout from '../../layouts/ValleyLayout.astro';
 import Icon from '../../components/Icon.astro';
 import {isDesktop} from '../../lib/dev/runtime.ts';
 if(!isDesktop())return new Response('Desktop setup is available in the app.',{status:404});
 Astro.response.headers.set('cache-control','no-store');
+// First run carries no app header, so the two things AppLayout does for the
+// desktop happen here: consume the one-shot restore cookie a native relaunch
+// set, and stamp the marker desktop-state.ts / macos-permissions.ts read.
+const me = Astro.locals.user!;
+const restoring = process.platform === 'darwin' && Astro.cookies.get('rimeward_ui_restore')?.value === '1';
+if (restoring) Astro.cookies.delete('rimeward_ui_restore', { path: '/' });
 ---
-<AppLayout title="Welcome to Rimeward" search={false}>
-  <main class="desktop-setup" data-setup={Astro.url.searchParams.has('setup')?'1':'0'} data-step="connect">
+<ValleyLayout title="Welcome to Rimeward" wide>
+  <Fragment slot="head">
+    {process.platform === 'darwin' && <meta name="fd-mac-user" content={String(me.userId)} data-restore={restoring ? '1' : undefined} />}
+  </Fragment>
+  <div class="desktop-setup w-full" data-setup={Astro.url.searchParams.has('setup')?'1':'0'} data-step="connect">
     <header class="setup-intro">
       <p class="setup-eyebrow"><span></span> YOUR WORKSPACE, CONNECTED</p>
       <h1>Make yourself at home.</h1>
@@ -63,6 +72,9 @@ Astro.response.headers.set('cache-control','no-store');
       <div id="computer-access-policies" class="flex flex-col gap-3"></div>
     </section>
     <p class="setup-footnote">Rime’s chats, memories, and workspace connections stay in sync. Folder contents stay on their original machines.<br />Unlinked tools start in Documents/Rimeward/workspace on this computer.</p>
-  </main>
-  <script>import '../../scripts/app/desktop-setup.ts';</script>
-</AppLayout>
+  </div>
+  <script>
+    import '../../scripts/app/desktop-setup.ts';
+    import '../../scripts/app/macos-permissions.ts';
+  </script>
+</ValleyLayout>
