@@ -1,5 +1,5 @@
 ---
-import BaseLayout from '../layouts/BaseLayout.astro';
+import ValleyLayout from '../layouts/ValleyLayout.astro';
 import { recoverAccount, redeemAction, limitAccountAction } from '../lib/account-access.ts';
 import { identityConnectors } from '../lib/identity.ts';
 import { config } from '../lib/app-config.ts';
@@ -15,5 +15,20 @@ if(Astro.request.method==='POST')try{
 const connectors=token?identityConnectors().filter(c=>c.enabled):[];
 const passwords=config('PASSWORD_LOGIN')==='true';
 ---
-<BaseLayout title="Account access — Rimeward"><main class="mx-auto max-w-xl px-4 py-10"><h1 class="page-title">Account access</h1>
-{error&&<p role="alert" class="banner banner-err">{error}</p>}{message?<p role="status">{message}</p>:<Fragment>{connectors.map(c=><form method="post" action={`/api/auth/identity/${c.id}/invite`} class="my-4"><input type="hidden" name="token" value={token}/><button class="btn">Continue with {c.name}</button></form>)}{(!token||passwords)&&<form method="post" class="grid gap-4 my-4">{token?<label>New password<input name="password" class="input" type="password" minlength="12" maxlength="1024" required autocomplete="new-password"/></label>:<label>Email<input class="input" name="email" type="email" required autocomplete="username"/></label>}<button class="btn-primary">Continue</button></form>}{token&&!passwords&&!connectors.length&&<p>Ask your administrator for access.</p>}</Fragment>}<a href="/login" class="link">Sign in</a></main></BaseLayout>
+<ValleyLayout title="Account access — Rimeward">
+  <div class="valley-card">
+    <h1 class="valley-title">Account access</h1>
+    {error&&<p id="form-error" role="alert" tabindex="-1" class="banner banner-err mb-0">{error}</p>}
+    {message?<p role="status">{message}</p>:<Fragment>
+      {connectors.map(c=><form method="post" action={`/api/auth/identity/${c.id}/invite`} class="valley-form"><input type="hidden" name="token" value={token}/><button type="submit" class="valley-submit">Continue with {c.name}</button></form>)}
+      {(!token||passwords)&&<form method="post" class="valley-form">
+        {token?<div class="valley-field"><label for="password">New password</label><input id="password" name="password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password"/></div>
+        :<div class="valley-field"><label for="email">Email</label><input id="email" name="email" type="email" required autocomplete="username"/></div>}
+        <button type="submit" class="valley-submit">Continue</button>
+      </form>}
+      {token&&!passwords&&!connectors.length&&<p>Ask your administrator for access.</p>}
+    </Fragment>}
+  </div>
+
+  <div class="valley-foot"><a href="/login" class="link">Sign in</a></div>
+</ValleyLayout>

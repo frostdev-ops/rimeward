@@ -1,5 +1,5 @@
 ---
-import BaseLayout from '../layouts/BaseLayout.astro';
+import ValleyLayout from '../layouts/ValleyLayout.astro';
 import { registerAccount, limitAccountAction } from '../lib/account-access.ts';
 let error='', done=false;
 Astro.response.headers.set('Cache-Control','no-store');
@@ -9,7 +9,22 @@ if(Astro.request.method==='POST')try{
   await registerAccount(String(form.get('email')??''),String(form.get('password')??''));done=true;
 }catch(e){error=(e as Error).message;}
 ---
-<BaseLayout title="Create account — Rimeward"><main class="mx-auto max-w-xl px-4 py-10"><h1 class="page-title">Create your account</h1>
-{error&&<p role="alert" class="banner banner-err">{error}</p>}
-{done?<p role="status">Check your email to continue. An administrator may need to approve your account.</p>:<form method="post" class="grid gap-4 my-4"><label>Email<input name="email" type="email" class="input" required autocomplete="username"/></label><label>Password<input name="password" type="password" minlength="12" maxlength="1024" class="input" required autocomplete="new-password"/></label><button class="btn-primary">Create account</button></form>}
-<a href="/login" class="link">Sign in</a></main></BaseLayout>
+<ValleyLayout title="Create account — Rimeward">
+  <div class="valley-card">
+    <h1 class="valley-title">Create your account</h1>
+    {error&&<p id="form-error" role="alert" tabindex="-1" class="banner banner-err mb-0">{error}</p>}
+    {done?<p role="status">Check your email to continue. An administrator may need to approve your account.</p>:<form method="post" class="valley-form">
+      <div class="valley-field">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" required autocomplete="username" />
+      </div>
+      <div class="valley-field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password" />
+      </div>
+      <button type="submit" class="valley-submit">Create account</button>
+    </form>}
+  </div>
+
+  <div class="valley-foot"><a href="/login" class="link">Sign in</a></div>
+</ValleyLayout>

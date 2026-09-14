@@ -88,6 +88,9 @@ export const applyHeaderScene = (cfg: SceneConfig | null): void => apply(HEADER,
 
 /** Boot both from what the server stamped on <html> (theme.ts themeHtmlAttrs). */
 export function bootBackground(): void {
+  // A valley page (ValleyLayout) already owns the backdrop with its terrain at
+  // the same z-index; a signed-in user's saved scene would paint over it.
+  if (document.getElementById('valley-canvas')) return;
   const d = document.documentElement.dataset;
   for (const [raw, fn] of [
     [d.bgCfg, applyBackground],

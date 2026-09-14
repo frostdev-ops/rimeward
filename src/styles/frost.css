@@ -2189,7 +2189,9 @@ dialog.fd-dialog-full {
    or not it can be seen; frozen, the filtered layer is rasterized once and
    cached. Paused rather than removed so nothing jumps during the fade-in. */
 body:has(#splash-canvas.live) .splash-ground::before,
-body:has(#splash-canvas.live) .splash-ground::after {
+body:has(#splash-canvas.live) .splash-ground::after,
+body:has(#valley-canvas.live) .splash-ground::before,
+body:has(#valley-canvas.live) .splash-ground::after {
   animation-play-state: paused;
 }
 .splash-ground .emblem {
@@ -2286,6 +2288,447 @@ body:has(#splash-canvas.live) .splash-ground::after {
   border-color: rgb(23 200 244 / 0.9);
   background: rgb(23 200 244 / 0.16);
   box-shadow: 0 0 32px rgb(23 200 244 / 0.25);
+}
+
+/* ---------------------------------------------------------------- valley */
+
+/* "A form on the splash terrain": /login, /register, /recover, the setup
+   wizard and the desktop first run all share this chrome (ValleyLayout.astro)
+   — the splash ground, a terrain canvas, a dark pool, one glass card. One
+   deliberate dark look, independent of the theme toggle (like the splash). */
+
+#valley-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 0.8s ease;
+}
+#valley-canvas.live {
+  opacity: 1;
+}
+/* The terrain IS the backdrop here, even for a signed-in user whose saved
+   theme paints one (/desktop/start is not a public page): no photo, no veil,
+   no aurora over it. background.ts declines the scene canvas to match. */
+body:has(#valley-canvas)::before,
+body:has(#valley-canvas)::after {
+  display: none;
+}
+
+.valley-wrap {
+  position: relative;
+  z-index: 1;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.75rem;
+  padding: 1.5rem;
+  /* The valley is dark whatever theme the user saved, so the shared components
+     that DO read tokens (.banner, .btn, .input, the desktop .setup-* cards)
+     resolve to glass here — no per-component valley variants. The hard-coded
+     card/field/submit below are unaffected either way. */
+  color-scheme: dark;
+  --color-surface: rgb(10 22 38 / 0.62);
+  --color-surface-2: rgb(2 8 16 / 0.45);
+  --color-line: rgb(111 220 255 / 0.14);
+  --color-line-strong: rgb(111 220 255 / 0.26);
+}
+/* Dark pool behind the card so the scene never fights the form. */
+.valley-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: min(94vw, 42rem);
+  height: 36rem;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(closest-side, rgb(2 8 16 / 0.6), transparent 72%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.valley-mark {
+  width: min(78vw, 22rem);
+  height: auto;
+  filter: drop-shadow(0 0 24px rgb(23 200 244 / 0.35)) drop-shadow(0 1px 2px rgb(0 0 0 / 0.6));
+  user-select: none;
+  animation: valley-rise 0.55s var(--fd-spring) both;
+}
+
+.valley-card {
+  width: min(94vw, 24rem);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.5rem;
+  border-radius: 1rem;
+  border: 1px solid rgb(111 220 255 / 0.16);
+  background: rgb(10 22 38 / 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    0 24px 64px rgb(0 0 0 / 0.5),
+    inset 0 1px 0 rgb(234 246 249 / 0.06);
+  color: #e8f2fa;
+  animation: valley-rise 0.6s var(--fd-spring) 0.1s both;
+}
+
+.valley-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  animation: valley-rise 0.5s var(--fd-spring) 0.3s both;
+}
+.valley-field label {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #8fa8c0;
+}
+.valley-field input {
+  display: block;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgb(111 220 255 / 0.18);
+  background: rgb(2 8 16 / 0.45);
+  font-size: 1rem;
+  color: #e8f2fa;
+  transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+}
+.valley-field input:focus {
+  outline: none;
+  border-color: rgb(23 200 244 / 0.7);
+  box-shadow: 0 0 0 3px rgb(23 200 244 / 0.15);
+  background: rgb(2 8 16 / 0.65);
+}
+/* Chrome autofill paints a light yellow box; keep the glass dark. */
+.valley-field input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px #0b1830 inset;
+  -webkit-text-fill-color: #e8f2fa;
+  caret-color: #e8f2fa;
+}
+
+.valley-submit {
+  min-height: 2.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid transparent;
+  background: linear-gradient(135deg, #17c8f4, #2e6db4);
+  color: #04121f;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: filter 0.2s, transform 0.15s, box-shadow 0.2s;
+}
+.valley-submit:hover,
+.valley-submit:focus-visible {
+  filter: brightness(1.12);
+  box-shadow: 0 4px 24px rgb(23 200 244 / 0.35);
+}
+.valley-submit:active {
+  transform: translateY(1px);
+}
+
+.valley-foot {
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  color: #5c7189;
+  animation: valley-rise 0.5s var(--fd-spring) 0.4s both;
+}
+
+@keyframes valley-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+
+/* ----------------------------------------------------- valley: card copy */
+
+.valley-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #e8f2fa;
+}
+.valley-lede {
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: #8fa8c0;
+}
+
+/* A radio/checkbox row that tints itself when picked. */
+.valley-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgb(111 220 255 / 0.16);
+  background: rgb(2 8 16 / 0.3);
+  font-size: 0.85rem;
+  color: #e8f2fa;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+.valley-choice:hover {
+  border-color: rgb(111 220 255 / 0.34);
+}
+.valley-choice:has(:checked) {
+  border-color: rgb(23 200 244 / 0.7);
+  background: rgb(23 200 244 / 0.1);
+}
+.valley-choice input {
+  margin-top: 0.15rem;
+  accent-color: #17c8f4;
+}
+
+/* What the wizard decided so far: a <dl> with a state dot per value. */
+.valley-summary {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+}
+.valley-summary dt {
+  color: #8fa8c0;
+}
+.valley-summary dd {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: #e8f2fa;
+}
+.valley-summary dd[data-state]::before {
+  content: '';
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #5c7189;
+}
+.valley-summary dd[data-state='ok']::before {
+  background: #34d399;
+  box-shadow: 0 0 8px rgb(52 211 153 / 0.5);
+}
+.valley-summary dd[data-state='warn']::before {
+  background: #fbbf24;
+  box-shadow: 0 0 8px rgb(251 191 36 / 0.45);
+}
+.valley-summary dd[data-state='off']::before {
+  background: #5c7189;
+}
+
+.valley-skip {
+  align-self: center;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.375rem;
+  background: none;
+  border: 0;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  color: #5c7189;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.valley-skip:hover {
+  color: #8fa8c0;
+}
+/* The only two things in the valley with no focus style of their own. */
+.valley-skip:focus-visible,
+.valley-steps a:focus-visible {
+  outline: 2px solid rgb(23 200 244 / 0.7);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------- valley: rail */
+
+.valley-rail {
+  width: min(94vw, 34rem);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  animation: valley-rise 0.5s var(--fd-spring) 0.05s both;
+}
+.valley-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.75rem;
+  list-style: none;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #47586c;
+}
+.valley-steps li[data-done] {
+  color: #8fa8c0;
+}
+/* A completed step you can go back to is a link and says so; one with no
+   destination (the one-time claim) is a <span>, dimmer than both. */
+.valley-steps a {
+  border-radius: 0.25rem;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgb(111 220 255 / 0.35);
+}
+.valley-steps a:hover {
+  color: #6fdcff;
+}
+.valley-steps li[data-done] span {
+  color: #5c7189;
+}
+.valley-steps li[aria-current] {
+  color: #e8f2fa;
+  font-weight: 600;
+}
+.valley-count {
+  margin-left: auto;
+  flex: none;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  color: #5c7189;
+}
+
+/* The Rimeward mark AS the progress indicator: one arm per step, the newest
+   drawing itself on. NEVER put a CSS transform on those <g> elements — it
+   replaces the rotate() presentation attribute and collapses the crystal. */
+.valley-crystal {
+  flex: none;
+  width: 2.75rem;
+  height: 2.75rem;
+  --valley-delay: 0s;
+}
+.valley-crystal > g > g {
+  opacity: 0.16;
+}
+.valley-crystal[data-lit='1'] > g > g:nth-of-type(-n + 1),
+.valley-crystal[data-lit='2'] > g > g:nth-of-type(-n + 2),
+.valley-crystal[data-lit='3'] > g > g:nth-of-type(-n + 3),
+.valley-crystal[data-lit='4'] > g > g:nth-of-type(-n + 4),
+.valley-crystal[data-lit='5'] > g > g:nth-of-type(-n + 5),
+.valley-crystal[data-lit='6'] > g > g:nth-of-type(-n + 6) {
+  opacity: 1;
+}
+/* The newest arm: stroke it on, then drop the diamond tip in behind it. The
+   tip is the arm's one fill-only path; everything else in the arm is stroked. */
+:is(
+  .valley-crystal[data-lit='1'] > g > g:nth-of-type(1),
+  .valley-crystal[data-lit='2'] > g > g:nth-of-type(2),
+  .valley-crystal[data-lit='3'] > g > g:nth-of-type(3),
+  .valley-crystal[data-lit='4'] > g > g:nth-of-type(4),
+  .valley-crystal[data-lit='5'] > g > g:nth-of-type(5),
+  .valley-crystal[data-lit='6'] > g > g:nth-of-type(6)
+) > path[stroke] {
+  stroke-dasharray: 180;
+  stroke-dashoffset: 180;
+  animation: valley-draw 0.7s var(--fd-ease) var(--valley-delay) forwards;
+}
+:is(
+  .valley-crystal[data-lit='1'] > g > g:nth-of-type(1),
+  .valley-crystal[data-lit='2'] > g > g:nth-of-type(2),
+  .valley-crystal[data-lit='3'] > g > g:nth-of-type(3),
+  .valley-crystal[data-lit='4'] > g > g:nth-of-type(4),
+  .valley-crystal[data-lit='5'] > g > g:nth-of-type(5),
+  .valley-crystal[data-lit='6'] > g > g:nth-of-type(6)
+) > path[fill] {
+  opacity: 0;
+  animation: valley-tip 0.35s var(--fd-ease) calc(var(--valley-delay) + 0.5s) forwards;
+}
+/* Step one is the crystal's birth: the hexagon draws (perimeter ≈ 900 user
+   units), the hub lights, and only then does arm one start. */
+.valley-crystal[data-lit='1'] {
+  --valley-delay: 0.9s;
+}
+.valley-crystal[data-lit='1'] > g > polygon {
+  stroke-dasharray: 900;
+  stroke-dashoffset: 900;
+  animation: valley-draw 0.9s var(--fd-ease) forwards;
+}
+.valley-crystal[data-lit='1'] > g > circle {
+  opacity: 0;
+  animation: valley-tip 0.3s var(--fd-ease) 0.7s forwards;
+}
+@keyframes valley-draw {
+  to { stroke-dashoffset: 0; }
+}
+@keyframes valley-tip {
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .valley-crystal :is(polygon, circle, path) {
+    animation: none;
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------- valley: wide + phone */
+
+/* The desktop first run: taller content, so top-aligned with a wider pool. */
+.valley-wrap.wide {
+  justify-content: flex-start;
+  padding-top: 3.5rem;
+  gap: 1.25rem;
+}
+.valley-wrap.wide .valley-mark {
+  width: min(60vw, 15rem);
+}
+.valley-wrap.wide::before {
+  top: 40%;
+  width: min(96vw, 60rem);
+  height: 44rem;
+}
+/* The desktop's own cards sit on the glass card's ground — they get its lift,
+   but NOT a second backdrop-filter (the /perf audit stays at one). */
+.valley-wrap .setup-card {
+  box-shadow: 0 24px 64px rgb(0 0 0 / 0.5);
+}
+
+/* A stepped flow on a phone is a bottom sheet. /login (no rail) is untouched. */
+@media (max-width: 639px) {
+  .valley-wrap.has-rail {
+    justify-content: flex-end;
+    padding: 1.5rem 0 0;
+    gap: 1.25rem;
+  }
+  /* Full width, not fit-content: the steps strip is what gives, so the crystal
+     and the count keep their places on the row. */
+  .valley-wrap.has-rail .valley-rail {
+    width: 100%;
+    padding: 0 1.25rem;
+  }
+  /* One scrolling row rather than a wrapped block — every step stays in the
+     page (and in the a11y tree), the earlier ones a swipe away. */
+  .valley-wrap.has-rail .valley-steps {
+    flex-wrap: nowrap;
+    min-width: 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: none;
+    /* overflow-x: auto makes this a scroll box on both axes — leave room for
+       the 2px-offset focus ring instead of clipping it. */
+    padding-block: 4px;
+    margin-block: -4px;
+  }
+  .valley-wrap.has-rail .valley-steps::-webkit-scrollbar {
+    display: none;
+  }
+  .valley-wrap.has-rail .valley-card {
+    width: 100%;
+    border-radius: 1rem 1rem 0 0;
+    border-bottom: 0;
+    padding-bottom: calc(1.5rem + env(safe-area-inset-bottom));
+    order: 1; /* last (the foot keeps order 0), so the sheet's square edge meets the screen's */
+  }
 }
 
 /* ---------------------------------------------------------------- motion */

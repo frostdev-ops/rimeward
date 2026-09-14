@@ -1,0 +1,74 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import { RimewardLockup, RimewardMark, brandSrc } from '../lib/brand.ts';
+import { siteInfo } from '../lib/site.ts';
+
+// "A form on the splash terrain": the ground layer, the valley canvas and a
+// dark pool with a glass card on it. /login is the plain case; a multi-step
+// flow passes `rail` and the camera descends a little further each step.
+interface Props {
+  title: string;
+  rail?: { steps: string[]; slugs?: string[]; current: number; label?: string };
+  /** 0 = the arrival look, 1 = the floor. Defaults to the rail's progress. */
+  depth?: number;
+  /** Top-aligned, smaller mark, wider pool — the desktop first run. */
+  wide?: boolean;
+}
+
+const { title, rail, depth, wide = false } = Astro.props;
+const site = siteInfo();
+const wordmark = brandSrc('wordmark');
+
+const dive = depth ?? (rail ? rail.current / Math.max(1, rail.steps.length - 1) : 0);
+// The crystal has exactly six arms, so any step count maps onto 1..6 — never a
+// dead 0 (≥13 steps), and the last step always lights all six.
+const lit = rail ? (rail.current === 0 ? 1 : Math.max(1, Math.min(6, Math.ceil((6 * (rail.current + 1)) / rail.steps.length)))) : 0;
+---
+
+<BaseLayout title={title}>
+  <slot name="head" slot="head" />
+
+  <div class="splash-ground"></div>
+  <canvas id="valley-canvas" aria-hidden="true" data-depth={dive.toFixed(3)}></canvas>
+
+  <main class:list={['valley-wrap', { 'has-rail': !!rail, wide }]}>
+    {
+      wordmark ? (
+        <img src={wordmark} alt={site.name} class="valley-mark" loading="eager" />
+      ) : (
+        <RimewardLockup class="valley-mark" aria-label={site.name} />
+      )
+    }
+
+    {
+      rail && (
+        <nav class="valley-rail" aria-label={rail.label ?? 'Progress'}>
+          <RimewardMark class="valley-crystal" data-lit={lit} aria-hidden="true" />
+          {/* role="list": Safari drops list semantics under list-style: none. */}
+          <ol class="valley-steps" role="list">
+            {rail.steps.map((label, i) => (
+              <li aria-current={i === rail.current ? 'step' : undefined} data-done={i < rail.current ? '' : undefined}>
+                {/* An empty slug is a step with no destination (a one-time
+                    claim) — a <span>, styled apart from the links beside it. */}
+                {i < rail.current ? (
+                  rail.slugs?.[i] !== '' ? <a href={`?step=${rail.slugs?.[i] ?? i}`}>{label}</a> : <span>{label}</span>
+                ) : (
+                  label
+                )}
+              </li>
+            ))}
+          </ol>
+          <p class="valley-count">Step {rail.current + 1} of {rail.steps.length}</p>
+        </nav>
+      )
+    }
+
+    <slot />
+  </main>
+
+  <script is:inline>document.getElementById('form-error')?.focus();document.querySelector('.valley-steps [aria-current]')?.scrollIntoView({block:'nearest',inline:'center'});</script>
+
+  <script>
+    import '../scripts/valley/index.ts';
+  </script>
+</BaseLayout>
