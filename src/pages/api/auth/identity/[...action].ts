@@ -80,9 +80,8 @@ export const POST: APIRoute = async ({
 		let token: string | undefined;
 		if (action === "invite") {
 			// Public and unauthenticated, and a start runs OIDC discovery: nothing happens
-			// until the invitation is real. The retry window belongs to the invitation, not
-			// to clientAddress — behind a reverse proxy that is one address for every
-			// visitor, so a stranger could spend the whole window for everybody.
+			// until the invitation is real. The window belongs to the invitation — that is
+			// the scarce thing being spent here, not the caller's address.
 			token = String((await request.formData()).get("token") ?? "").trim();
 			const invite = token ? peekAction(token) : null;
 			if (invite?.purpose !== "invite")

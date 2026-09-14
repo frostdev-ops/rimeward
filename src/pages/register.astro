@@ -1,10 +1,11 @@
 ---
 import ValleyLayout from '../layouts/ValleyLayout.astro';
 import { registerAccount, limitAccountAction } from '../lib/account-access.ts';
+import { clientIp } from '../lib/net-guard.ts';
 let error='', done=false;
 Astro.response.headers.set('Cache-Control','no-store');
 if(Astro.request.method==='POST')try{
-  limitAccountAction('register:'+Astro.clientAddress);
+  limitAccountAction('register:'+clientIp(Astro.request, Astro.clientAddress));
   const form=await Astro.request.formData();
   await registerAccount(String(form.get('email')??''),String(form.get('password')??''));done=true;
 }catch(e){error=(e as Error).message;}

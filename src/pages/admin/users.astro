@@ -1,5 +1,6 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
+import AdminNav from '../../components/AdminNav.astro';
 import { getDb } from '../../lib/db.ts';
 import { listUsers } from '../../lib/users.ts';
 import { sessionId } from '../../lib/auth.ts';
@@ -37,7 +38,7 @@ const OK_MESSAGES: Record<string, string> = {
   <main class="mx-auto max-w-3xl px-4 py-10">
     <div class="page-head">
       <h1 class="page-title">Users</h1>
-      <span class="flex gap-3"><a href="/admin/settings" class="link">Settings →</a><a href="/admin/monitors" class="link">Monitors →</a><a href="/dash" class="back-link link">← Dashboard</a></span>
+      <AdminNav current="users" />
     </div>
 
     {ok && <p class="banner banner-ok">{OK_MESSAGES[ok] ?? ok}</p>}

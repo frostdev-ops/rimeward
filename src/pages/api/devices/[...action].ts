@@ -15,6 +15,7 @@ import {
   limitDeviceAuth,
 } from "../../../lib/dev/device-auth.ts";
 import { runtimeNavigation } from "../../../lib/dev/navigation.ts";
+import { clientIp } from "../../../lib/net-guard.ts";
 export const ALL: APIRoute = async ({
   params,
   request,
@@ -28,7 +29,7 @@ export const ALL: APIRoute = async ({
     const body = request.method === "GET" ? {} : await request.json();
     let value: unknown;
     if (request.method === "POST" && action === "authorize") {
-      limitDeviceAuth(`start:${clientAddress}`, 10);
+      limitDeviceAuth(`start:${clientIp(request, clientAddress)}`, 10);
       value = beginDeviceAuth(body.name, body.platform, body.protocol);
     } else if (request.method === "POST" && action === "token") {
       value = pollDeviceAuth(body.device_code);

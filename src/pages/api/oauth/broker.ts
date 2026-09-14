@@ -7,6 +7,7 @@ import {
 	refreshBroker,
 } from "../../../lib/oauth-broker.ts";
 import { limitAccountAction } from "../../../lib/account-access.ts";
+import { clientIp } from "../../../lib/net-guard.ts";
 export const POST: APIRoute = async ({ request, clientAddress }) => {
 	if (request.headers.has("origin"))
 		return new Response("Native broker client required", { status: 403 });
@@ -16,7 +17,7 @@ export const POST: APIRoute = async ({ request, clientAddress }) => {
 		const b = JSON.parse(text);
 		let result: unknown;
 		if (b.action === "start") {
-			limitAccountAction(`broker:${clientAddress}`);
+			limitAccountAction(`broker:${clientIp(request, clientAddress)}`);
 			result = beginBroker(b.provider, undefined, b.options);
 		} else if (b.action === "poll")
 			result = pollBroker(String(b.id), String(b.key));

@@ -2,7 +2,7 @@
 import BaseLayout from '../../layouts/BaseLayout.astro';
 import { brokerByCode,authorizeBroker } from '../../lib/oauth-broker.ts';
 let error='',grant;const code=Astro.url.searchParams.get('code')??'';
-Astro.response.headers.set('Cache-Control','no-store');Astro.response.headers.set('Referrer-Policy','no-referrer');
+Astro.response.headers.set('Cache-Control','no-store');Astro.response.headers.set('Referrer-Policy','strict-origin');
 if(!Astro.url.searchParams.has('done'))try{grant=brokerByCode(code);if(Astro.request.method==='POST')return Astro.redirect(authorizeBroker(code,Astro.locals.user!.userId),303);}catch(e){error=(e as Error).message;}
 ---
 <BaseLayout title="Connect provider — Rimeward"><main class="mx-auto max-w-xl px-4 py-10"><h1 class="page-title">Connect your provider</h1>

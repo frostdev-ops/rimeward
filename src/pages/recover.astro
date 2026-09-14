@@ -3,10 +3,11 @@ import ValleyLayout from '../layouts/ValleyLayout.astro';
 import { recoverAccount, redeemAction, limitAccountAction } from '../lib/account-access.ts';
 import { identityConnectors } from '../lib/identity.ts';
 import { config } from '../lib/app-config.ts';
-Astro.response.headers.set('Cache-Control','no-store');Astro.response.headers.set('Referrer-Policy','no-referrer');
+import { clientIp } from '../lib/net-guard.ts';
+Astro.response.headers.set('Cache-Control','no-store');Astro.response.headers.set('Referrer-Policy','strict-origin');// origin only (never the token); no-referrer would send Origin: null on the POST, which csrf.ts refuses
 let error='', message='';const token=Astro.url.searchParams.get('token')??'';
 if(Astro.request.method==='POST')try{
-  limitAccountAction('recover:'+Astro.clientAddress);
+  limitAccountAction('recover:'+clientIp(Astro.request, Astro.clientAddress));
   const form=await Astro.request.formData();
   if(token)message=redeemAction(token,String(form.get('password')??''))==='active'?'Account ready. You can sign in.':'Email verified. Your account is awaiting administrator approval.';
   else {await recoverAccount(String(form.get('email')??'')).catch(()=>{});message='If this account is eligible, an email will arrive with the next step.';}

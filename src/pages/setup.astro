@@ -52,7 +52,7 @@ if (Astro.request.method === 'POST') {
       if (form.get('action') === 'test') { await verifyMail(me.email); return Astro.redirect('?step=email&mail=ok',303); }
       return Astro.redirect('?step=policy',303);
     }
-    if (step === 'policy') { if (!skip) saveConfigForm(form,['REGISTRATION_POLICY','SSO_WORKSPACE_DOMAIN'],actor); return Astro.redirect('?step=sso',303); }
+    if (step === 'policy') { saveConfigForm(form,['REGISTRATION_POLICY','SSO_WORKSPACE_DOMAIN'],actor); return Astro.redirect('?step=sso',303); }
     if (step === 'sso') { if (!skip) saveConfigForm(form,SSO_KEYS,actor); return Astro.redirect('?step=review',303); }
   } catch(e) { error = (e as Error).message; }
 }
