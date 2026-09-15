@@ -66,9 +66,50 @@ another method.
 
 ## Provider connections
 
-Start ChatGPT connections under Account → Agent and other providers under Connected accounts. Paired desktops default to the
-connected server; ChatGPT also offers an explicit local destination. Each attempt
-is bound to its destination and cannot follow a later server switch.
+Start ChatGPT connections under Account → Agent and other providers under Connected accounts. A paired
+desktop manages both installations from **/desktop/providers**, which always belongs to that desktop:
+one card for this desktop, one for the connected server, each showing and changing only its own
+connection. Neither Disconnect unpairs the desktop, ends a Rimeward session, revokes a CLI login or
+touches the other installation.
+
+Each card is rendered against the identity it manages — this installation's id and sync profile, and
+for the server the pairing and its profile as well — and every write carries that identity back. A form
+left open across an unpair, a server switch or an account replacement is refused, not applied to
+whichever connection is now current. Remote writes travel only over the pairing the desktop already
+holds; no server address, user id or bearer token is ever taken from the page.
+
+The destination choice for a new ChatGPT sign-in is rendered by the runtime that can offer it, so a
+paired desktop whose server is unreachable can still start a local sign-in. A standalone desktop is
+offered only the local scope. Each attempt is bound to its destination when it starts and cannot follow
+a later server switch, and a local and a server attempt can be in progress at once without either
+adopting the other's callback.
+
+**Which connection serves a model call** is a separate question from which account a form changes, and
+from where a conversation runs. Model access on the provider page is one of: *Automatic — connected
+server preferred* (the legacy behaviour, and still the default), *This runtime only*, or *Connected
+server only*. It is stored on the runtime that owns the run and is never synchronized: "this runtime"
+would mean a different machine somewhere else. The route is resolved once when a turn is admitted and
+held for that whole turn — its tool rounds, its compaction and any child it starts — so no round can
+be billed to a different installation than the one the composer names. That includes the account: if
+the connection behind it is replaced mid-turn, the next request stops with a message instead of
+running on the replacement. A failure after the request was sent is reported; nothing is re-sent
+anywhere else.
+
+The preference decides where a NEW conversation goes. A conversation that has already run is pinned
+to the backend it was admitted on, and that pin outranks the preference: a conversation admitted here
+is never relayed, one admitted on a server is never served locally, and where the two disagree the
+turn is refused rather than redirected. A conversation that never recorded which backend served it —
+one last used before that was recorded — is refused on a runtime that has been connected to a server,
+because unknown history is not evidence that it ran here; start a new chat on the endpoint instead.
+
+Dashboard synchronization and model access are reported separately. A note, workspace or conversation
+format the server cannot yet carry pauses that sync and says so; it does not move model calls to
+another account.
+
+Clip dictation records here and uploads from here, so it needs a key on this runtime. A key that lives
+only on the connected server is reported as unavailable for dictation rather than advertised. A ChatGPT
+login dictates through the live voice route instead, which does relay; a voice call keeps the
+installation it started on for its heartbeat and stop.
 
 ChatGPT opens the system browser with a temporary callback listener at
 `http://localhost:1455/auth/callback`. A busy port falls back to the labelled

@@ -1,7 +1,7 @@
 import type { APIRoute } from 'astro';
 import { getDashboard } from '../../../../lib/dashboard.ts';
 import { limitDeviceAuth } from '../../../../lib/dev/device-auth.ts';
-import { AUDIO_MAX, transcribeAudio, transcriptionRoute } from '../../../../lib/agent/transcribe.ts';
+import { AUDIO_MAX, transcribeAudio, transcriptionStatus } from '../../../../lib/agent/transcribe.ts';
 
 export const prerender = false;
 
@@ -20,8 +20,7 @@ export const GET: APIRoute = ({ params, locals }) => {
   const ward = String(params.ward);
   const check = guard(locals, ward);
   if (check.error) return check.error;
-  const route = transcriptionRoute(check.user!, ward);
-  return Response.json({ available: !!route, via: route?.via ?? null }, { headers });
+  return Response.json(transcriptionStatus(check.user!, ward), { headers });
 };
 
 /** One recording in, its text out. The transcript goes to the composer's draft — never to a turn. */

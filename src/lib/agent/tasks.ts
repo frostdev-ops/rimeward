@@ -4,7 +4,7 @@ import { getDb } from '../db.ts';
 import { broadcast } from '../logic-engine.ts';
 import { activeConversationRow, addMessage, appendItems, getConversation, transcript, userItemFor, type ConvRow } from './conversations.ts';
 import { agentConfigured } from './provider.ts';
-import { endpointUrlOf } from './accounts.ts';
+import { recordedBackendCheck } from './route.ts';
 import type { AgentProviderId } from '../wards.ts';
 import type { Dialect } from './provider.ts';
 import type { ToolCtx, ToolDef } from './tools.ts';
@@ -227,8 +227,10 @@ function admitResume(ctx: ToolCtx, id: string): Row {
   // refusal costs no reservation. (Same wording, one meaning.)
   if (conv.endpoint) {
     if (!conv.endpoint_url) throw Error(`child run ${id} did not record which server "${conv.endpoint}" pointed at; start a new child with spawn_agent instead`);
-    const here = endpointUrlOf(ctx.userId, conv.endpoint);
-    if (here !== conv.endpoint_url) throw Error(`endpoint "${conv.endpoint}" now points at ${here ?? 'nothing'}; child run ${id} ran against ${conv.endpoint_url} and is not moved to another server`);
+    // One identity check for every caller: a local URL against this runtime's alias, a connected
+    // server's pin against that server's own profile and attestation (agent/route.ts).
+    const moved = recordedBackendCheck(ctx.userId, conv.endpoint, conv.endpoint_url);
+    if (moved) throw Error(`child run ${id} is not moved to another server: ${moved}`);
   }
   return r;
 }

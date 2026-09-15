@@ -5,19 +5,28 @@
 // configured provider (openai, compat with its endpoint name and base URL) and the model a thread ran on.
 // Pure: no db, ships nowhere but the server and desktop runtimes.
 
-export const CHAT_FORMAT = 2;
+// Format 3 carries a compat backend recorded as a CONNECTED SERVER's (`server:<profile>:<url>`, see
+// agent/route.ts). A format-2 reader would read that string as an ordinary base URL - it would refuse
+// every continuation rather than mis-serve one, but refusing is not understanding, so such records
+// are held back and the peer is told to update, exactly as note formats are.
+export const CHAT_FORMAT = 4;
 export const CHAT_FORMAT_HEADER = 'x-rime-chat-format';
 /** Providers a format-1 peer accepts in a chat record. */
 const FORMAT_1_PROVIDERS = new Set(['codex', 'openrouter']);
+/** A backend recorded as a connected server's, which only a format-3 reader can interpret. */
+const REMOTE_BACKEND_PREFIX = 'server:';
 
-/** True when this chat record needs format 2 — a provider a format-1 peer's validation refuses. The
+/** True when this chat record needs a NEWER format than a legacy peer's — a provider format 1 refuses,
+ *  or a connected-server backend only format 3 can interpret. The
  *  optional `model` and `endpointUrl` fields ride format 1 too: old validation ignores unknown fields
  *  and stores the payload verbatim. */
 export function chatRecordNeedsFormat(record?: { key?: unknown; payload?: unknown } | null): boolean {
   if (!record || typeof record.key !== 'string' || !record.key.startsWith('chat/') || typeof record.payload !== 'string' || record.payload === 'null') return false;
   try {
-    const chat = JSON.parse(record.payload) as { provider?: unknown } | null;
-    return !!chat && typeof chat === 'object' && !FORMAT_1_PROVIDERS.has(String(chat.provider));
+    const chat = JSON.parse(record.payload) as { provider?: unknown; endpointUrl?: unknown } | null;
+    if (!chat || typeof chat !== 'object') return false;
+    if (typeof chat.endpointUrl === 'string' && chat.endpointUrl.startsWith(REMOTE_BACKEND_PREFIX)) return true;
+    return !FORMAT_1_PROVIDERS.has(String(chat.provider));
   } catch {
     return false;
   }

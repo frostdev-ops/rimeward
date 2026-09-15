@@ -19,12 +19,15 @@ import {
   AGENT_PROVIDERS,
   type ProviderCall,
 } from "../../../../lib/agent/provider.ts";
-import { listEndpoints } from "../../../../lib/agent/accounts.ts";
+import { listEndpoints, normalizeEndpoint } from "../../../../lib/agent/accounts.ts";
+import { PROVIDER_CONTRACT } from "../../../../lib/agent/contract.ts";
+import { credentialId } from "../../../../lib/agent/route.ts";
 import { getDashboard } from "../../../../lib/dashboard.ts";
 import { INSTANCE_KEY, instanceDashboard } from '../../../../lib/dev/instance.ts';
 import {
   acceptRecordGuarded,
   profileId,
+  installationId,
   syncManifest,
   syncRecord,
   SYNC_RECORD_MAX,
@@ -90,7 +93,12 @@ export const ALL: APIRoute = async ({
         if (!value)
           return Response.json({ error: "Record not found." }, { status: 404 });
       } else {
-        const endpoints = listEndpoints(user).map((e) => e.name);
+        const rows = listEndpoints(user);
+        const endpoints = rows.map((e) => e.name);
+        // Non-secret backend IDENTITY per endpoint NAME. A name is a per-runtime alias; the desktop
+        // pins a relayed conversation to this value and this server re-checks it where it builds the
+        // outgoing request. No key, no path secrets - the same normalized base URL history compares.
+        const endpointBackends = Object.fromEntries(rows.map((e) => [e.name, normalizeEndpoint(e.url)]).filter(([, url]) => !!url));
         const providers = Object.fromEntries(AGENT_PROVIDERS.map((p) => [p, p === 'compat' ? endpoints.length > 0 : agentConfigured(user, p)])) as Record<(typeof AGENT_PROVIDERS)[number], boolean>;
         const config = getDashboard(user).find((w) => w.type === "agent")
           ?.config ?? { provider: providers.codex ? "codex" : "openrouter" };
@@ -107,8 +115,19 @@ export const ALL: APIRoute = async ({
               : "openrouter";
         value = {
           profile: profileId(user),
+          runtime: installationId(),
           providers,
           endpoints,
+          endpointBackends,
+          // A non-secret GENERATION per provider this server offers: it changes when the account
+          // behind one is replaced. A desktop pins the generation its turn was admitted against and
+          // sends it back, and the check below is this server answering for its own accounts rather
+          // than the desktop believing its own cache.
+          generations: Object.fromEntries([
+            ...AGENT_PROVIDERS.filter((p) => p !== 'compat').map((p) => [p, credentialId(user, p) ?? '']),
+            ...rows.map((e) => [`compat:${e.name}`, credentialId(user, 'compat', e.name) ?? '']),
+          ]),
+          capabilities: PROVIDER_CONTRACT,
           config: { provider, model, effort, ...(provider === 'compat' && typeof endpoint === 'string' ? { endpoint } : {}) },
           // A client on the older chat format is not shown conversation records it cannot take: they
           // stay here, whole, for clients that can (no tombstone, no 426 mid-sync for it).
@@ -122,7 +141,19 @@ export const ALL: APIRoute = async ({
       }
     } else if (request.method === "GET" && params.action === "models") {
       const which = url.searchParams.get("provider") ?? "codex";
-      if (which === "codex") {
+      if (url.searchParams.has('routeContract')) {
+        if (!isAgentProvider(which)) throw Error('Unknown provider.');
+        const endpoint = url.searchParams.get('endpoint');
+        const expected = url.searchParams.get('generation');
+        const matches = () => url.searchParams.get('routeContract') === '2' &&
+          url.searchParams.get('runtime') === installationId() && url.searchParams.get('profile') === profileId(user) &&
+          !!expected && expected === credentialId(user, which, endpoint);
+        if (!matches()) throw Object.assign(Error('The catalog source changed.'), { status: 409 });
+        const { modelCatalog } = await import('../../../../lib/agent/models.ts');
+        const catalog = await modelCatalog(user, which, endpoint);
+        if (!matches()) throw Object.assign(Error('The catalog source changed during lookup.'), { status: 409 });
+        value = { ...catalog, runtime: installationId(), profile: profileId(user), generation: expected, routeContract: 2 };
+      } else if (which === "codex") {
         const { listCodexModels } = await import(
           "../../../../lib/agent/codex.ts"
         );
@@ -159,9 +190,15 @@ export const ALL: APIRoute = async ({
       }
     } else if (request.method === 'POST' && params.action === 'voice') {
       const body = await voiceBody(request);
+      const contract = request.headers.get('x-rime-provider-contract');
+      const generation = request.headers.get('x-rime-provider-generation') ?? undefined;
+      if (contract && (contract !== '2' || request.headers.get('x-rime-provider-runtime') !== installationId() ||
+          request.headers.get('x-rime-provider-profile') !== profileId(user) ||
+          (body.action === 'start' && (!generation || generation !== credentialId(user, 'codex')))))
+        return Response.json({ error: 'The admitted voice owner or credential changed.' }, { status: 409 });
       if (typeof body.ward !== 'string' || !getDashboard(user).some(w => w.i === body.ward && w.type === 'agent'))
         return Response.json({ error: 'Agent ward unavailable.' }, { status: 404, headers: { 'cache-control': 'no-store' } });
-      value = await voiceAction(user, body.ward, `device:${device.id}`, body);
+      value = await voiceAction(user, body.ward, `device:${device.id}`, body, generation);
     } else if (request.method === 'POST' && params.action === 'tool') {
       limitDeviceAuth(`rime-tool:${user}`, 240);
       const body = await bodyOf(request);
@@ -195,6 +232,34 @@ export const ALL: APIRoute = async ({
       )
         throw Error("Invalid model request.");
       const endpoint = body.provider === "compat" ? String(body.endpoint ?? "") : undefined;
+      if (body.routeContract !== undefined && (body.routeContract !== 2 || body.runtime !== installationId() ||
+          body.profile !== profileId(user) || typeof body.generation !== 'string' || !body.generation))
+        return Response.json({ error: 'The admitted serving installation, account or route contract changed.' }, { status: 409 });
+      // The account this desktop believes it is talking to, verified HERE. Comparing its own cached
+      // copy would only prove what it already believed; this is the server saying who it is.
+      if (body.profile !== undefined && (typeof body.profile !== "string" || body.profile !== profileId(user)))
+        return Response.json(
+          { error: "This server account is not the one this conversation was admitted on. Nothing was run." },
+          { status: 409, headers: { "cache-control": "no-store" } },
+        );
+      // …and the PROVIDER account within it: a ChatGPT connection replaced here between a turn's
+      // admission and this round is a different billing identity, and the turn stops rather than
+      // continuing on it.
+      if (body.generation !== undefined) {
+        const here = credentialId(user, body.provider, body.provider === "compat" ? String(body.endpoint ?? "") : null) ?? "";
+        if (typeof body.generation !== "string" || body.generation !== here)
+          return Response.json(
+            { error: "The provider connection on this server changed while that turn was running. Nothing was run on the replacement — send the message again to use it." },
+            { status: 409, headers: { "cache-control": "no-store" } },
+          );
+      }
+      // The desktop may demand that this endpoint NAME still stand for a specific backend. Carried
+      // into the call so the check happens where the request is built, not a moment earlier. A
+      // constraint that cannot be honoured is REFUSED - never dropped so the call proceeds unbound.
+      if (body.backend !== undefined && (typeof body.backend !== "string" || !body.backend || body.backend.length > 300))
+        throw Error("Unsupported backend constraint.");
+      const backend = body.backend as string | undefined;
+      if (backend && body.provider !== "compat") throw Error("A backend constraint applies to an endpoint.");
       if (!agentConfigured(user, body.provider, endpoint))
         return Response.json(
           { error: "Provider not configured on the server." },
@@ -210,6 +275,8 @@ export const ALL: APIRoute = async ({
         model: body.model,
         effort: typeof body.effort === "string" ? body.effort : undefined,
         child,
+        ...(backend ? { backend } : {}),
+        ...(typeof body.generation === 'string' ? { credential: body.generation } : {}),
         instructions: body.instructions,
         items: body.items,
         tools: body.tools,

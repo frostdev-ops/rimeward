@@ -6,6 +6,8 @@ Rime is the agent in your workspace. The model provides reasoning; Rimeward supp
 
 Open **Account → Agent** and configure the provider you want. Then choose the provider/model in the agent ward's configuration or inherit the Rime default.
 
+On a desktop connected to a server, open **Provider connections** (`/desktop/providers`) instead. That page always belongs to this desktop, online or not, and shows one card per installation: this desktop, and the connected server. Each card's Connect, Reconnect and Disconnect act only on its own connection — Disconnect never unpairs the desktop, ends your Rimeward session, revokes a coding CLI's login, or touches the other installation. A card that was rendered against a connection you have since replaced or unpaired refuses its own writes rather than applying them to whatever is current now.
+
 | Provider | What you supply |
 | --- | --- |
 | ChatGPT backend (Codex) | The account connection offered by Rimeward. Availability depends on that account and service. |
@@ -16,6 +18,34 @@ Open **Account → Agent** and configure the provider you want. Then choose the 
 Model lists expose provider-reported capabilities where available. Not every model supports tools or images, and a local server exposing a chat API does not guarantee reliable agent behavior. Prices, model access, and quotas belong to the provider. Rimeward does not include model credits.
 
 A conversation stays with the provider it began on. To change provider, start a new conversation or explicitly delegate work to a child using that provider. Rime can choose another available model within its provider at a round boundary. An unavailable model is reported rather than silently substituted.
+
+## Choose which connection serves the model
+
+Three separate things are true at once, and the composer says two of them: **Runs on …** is the runtime coordinating the conversation, its tools and its workspace; **Model access via …** is the installation whose credential serves and bills the request. Opening a desktop-owned conversation in a browser does not move either — "this runtime" always means the conversation's owner, never the computer you are looking at.
+
+**Model access** on the Provider connections page picks between:
+
+- **Automatic — connected server preferred.** The connected server when it is reachable and offers this provider; otherwise this runtime's own credential for the same provider. This is what Rimeward has always done, and it remains the default.
+- **This runtime only.** Only this installation's connection. The server's provider defaults, its endpoint names and its model catalog are not used at all, so a ward cannot inherit a model it has no credential for.
+- **Connected server only.** Only the designated server. If it is unavailable the turn fails and says so; a local credential is never used instead.
+
+The choice is stored on the runtime that owns the run and is never synchronized — "this runtime" would name a different machine elsewhere. It changes where inference goes; it never moves where a conversation runs, and never widens tool permissions.
+
+A route is resolved once, when a turn is admitted, and held for that whole turn: every tool round, the compaction that turn triggers, and any child it starts use it. A request that fails after it was sent is reported — it is not re-sent to another account, and no tool action is repeated. If the connected server, its account, or the credential on this runtime changes mid-turn, the next request stops with a message instead of continuing somewhere else.
+
+The preference decides where a **new** conversation goes. A conversation that has already run is pinned to the backend that admitted it, and the pin wins: one admitted on this runtime is never relayed, one admitted on a server is never served here, and a disagreement between the two is a refusal rather than a redirect. The composer says which is which — **Model access via …** while a turn is running is the source actually serving it; **Next turn via …** while idle is what the next one would use.
+
+A conversation that never recorded which backend served it (one last used before that was recorded) is refused on a runtime that has ever been connected to a server: unknown history is not evidence that it ran here. Start a new chat on the endpoint as it stands, or continue it where it ran. A runtime that has never connected to a server keeps serving such conversations, because there was nowhere else they could have run.
+
+Dashboard synchronization and model access are reported separately. A note, conversation or workspace format your server cannot carry yet pauses that sync and says so; it does not move model calls to a different account.
+
+An OpenAI-compatible endpoint NAME means different things on different machines, so a conversation the server serves is pinned to that server's **account** as well as the backend it attests, and is never handed to a local endpoint of the same name — including while the server is unreachable. Two servers can both call an endpoint `http://localhost:11434/v1`; they are not the same backend, and the recorded account is what tells them apart. A server too old to attest a backend leaves the conversation marked as its own, without an address: such a conversation still runs there, and **Continue here** declines it rather than crediting it with an identity nobody verified. Older conversations that never recorded a source are not backfilled from today's settings, and conversations carrying a server-side pin are held back from servers too old to read them (you are told, and nothing is dropped).
+
+## Dictation and voice
+
+A ChatGPT login dictates through the live voice route, which relays to the connected server when that is the route in use; a call keeps the installation it started on for its heartbeat and stop, even if the connection or preference changes underneath it.
+
+Clip dictation (record, send, get text back) uploads from the machine you are on, so it needs an OpenAI key, an OpenRouter key, or an OpenAI-compatible endpoint **on that runtime**. A key that lives only on the connected server is reported as unavailable for dictation rather than offered and then found missing.
 
 ## Use a local model
 

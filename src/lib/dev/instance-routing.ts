@@ -3,7 +3,7 @@ import { browserWard, getDashboard, getPages } from '../dashboard.ts';
 import { getSetting } from '../settings.ts';
 import { sharedRime, syncRime } from '../agent/sync.ts';
 import { isDesktop, DevError } from './runtime.ts';
-import { rimeConnection, instanceRequest } from './remote.ts';
+import { DESTINATION_BOUND, rimeConnection, instanceRequest } from './remote.ts';
 import { listDevices, relayRequest } from './devices.ts';
 import { wardDevice } from './instance.ts';
 import { secretEqual } from './native.ts';
@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import { backgroundPath } from '../backgrounds.ts';
 import { shareDevRelay } from '../share-dev.ts';
 import { rtcIce, withRtcHeader } from '../browser/rtc.ts';
+import { isCredentialAction } from '../agent/provider-scope.ts';
 
 const localPaths = /^\/(?:_astro\/|api\/(?:native\/|logout(?:\?|$)|runtime(?:\?|$)|dashboard(?:\?|$)|instance(?:\/|\?|$)|dev\/|store\/|agent\/models(?:\?|$)|logic\/stream(?:\?|$)|account\/(?:theme|background)(?:\?|$))|desktop\/|dash(?:\/|\?|$)|brand\/|favicon|apple-touch-icon)/;
 const wardPath = /^\/api\/(?:(?:agent|browser(?:\/stream)?|note|notebook|comms)\/([^/?]+)|agent\/([^/?]+)\/voice)$/;
@@ -25,8 +26,22 @@ export async function routeInstance(context: APIContext): Promise<Response | und
   if (!user) return;
   const { request, url } = context;
   const path = url.pathname + url.search;
-  // Update discovery belongs to this runtime, even when the desktop is paired.
-  if (url.pathname === '/api/account/oauth' || url.pathname === '/api/account/integration') return;
+  // Sign-in and provider management name their own destination (lib/dev/remote.ts DESTINATION_BOUND):
+  // they stay here and forward explicitly, so page placement can never pick the account they write.
+  if (DESTINATION_BOUND.test(url.pathname)) return;
+  // Refuse ambiguous legacy credential writes BEFORE middleware can forward them. A stale local
+  // Account page is not authorization to mutate the server that happens to be connected now.
+  if (isDesktop() && url.pathname === '/api/account/agent' && request.method === 'POST') {
+    const form = await request.clone().formData().catch(() => null);
+    const raw = String(form?.get('action') ?? '');
+    const action = /^(openrouter|openai|brave|exa)-key$/.test(raw) ? 'key' : raw;
+    if (isCredentialAction(action) && (request.headers.has('x-rimeward-native-token') ||
+        request.headers.get('x-rimeward-relayed') === '1' || getSetting(`instance:joined:${user}`) ||
+        sharedRime(user) || await rimeConnection(user).catch(() => undefined))) {
+      return Response.json({ error: 'Open Provider connections on this desktop and choose the installation to change.' },
+        { status: 409, headers: { 'cache-control': 'no-store' } });
+    }
+  }
   if (url.pathname === '/api/update' || url.pathname === '/api/update/desktop') return;
   // Workspace APIs resolve immutable session owners and mounted roots themselves.
   if (url.pathname === '/api/workspaces') return;
@@ -58,10 +73,13 @@ export async function routeInstance(context: APIContext): Promise<Response | und
     // leave local screens available and refuse remote integration calls.
     try { connection = await rimeConnection(user); }
     catch {
+      if (url.pathname === '/account') return context.redirect('/desktop/server-unavailable', 303);
       if (!localPaths.test(path)) return Response.json({ error: 'Pairing unavailable. Reconnect this desktop.' }, { status: 503 });
     }
   }
   const joined = desktop && !!getSetting(`instance:joined:${user}`);
+  if (joined && url.pathname === '/account' && !connection)
+    return context.redirect('/desktop/server-unavailable', 303);
   if (desktop && joined && url.pathname.startsWith('/api/bg/')) {
     const name = url.pathname.slice('/api/bg/'.length).replace(/^\d+-/, `${user}-`);
     const file = backgroundPath(user, name);
@@ -104,7 +122,7 @@ export async function routeInstance(context: APIContext): Promise<Response | und
     if (!desktop || !connection || !joined || device === connection.id) return;
     if (url.pathname === '/account') {
       await syncRime(user, true);
-      if (sharedRime(user)?.online === false) return;
+      if (!sharedRime(user)?.online) return context.redirect('/desktop/server-unavailable', 303);
     }
     if (localPaths.test(path)) return;
     if (url.pathname.startsWith('/api/') || url.pathname === '/account' || url.pathname.startsWith('/admin')) {

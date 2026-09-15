@@ -6,7 +6,8 @@ import { openToken } from '../crypto.ts';
 import { cached } from '../cache.ts';
 import { codexContext, type ModelContext } from './context.ts';
 import { getDb } from '../db.ts';
-import { getAgentAccount, storeAgentAccount, deleteAgentAccount, accountMeta, agentKey } from './accounts.ts';
+import { getAgentAccount, storeAgentAccount, deleteAgentAccount, accountMeta, agentKey, credentialGeneration } from './accounts.ts';
+import { credentialId } from './route.ts';
 import {
   recordAgentStatus,
   usageLine,
@@ -53,6 +54,7 @@ interface PendingOauth {
   state: string;
   url: string;
   at: number;
+  generation: string;
 }
 
 const pendingKey = (userId: number) => `codex_oauth_pending:${userId}`;
@@ -80,7 +82,7 @@ export function codexOauthStart(userId: number, session = String(userId), destin
       codex_cli_simplified_flow: 'true',
       state,
     }).toString();
-  const data = { verifier, state, url, at: Date.now() };
+  const data = { verifier, state, url, at: Date.now(), generation: credentialGeneration(userId, 'codex') };
   const attempt = startAttempt(userId,'codex',destination,session,data);
   const pending: PendingOauth = { ...data, id: attempt.id };
   setSetting(pendingKey(userId),attempt.id);
@@ -96,6 +98,9 @@ export function codexOauthCancel(userId: number, id = getSetting(pendingKey(user
 export async function codexOauthFinish(userId: number, pasted: string, id?: string): Promise<string> {
   const pending = codexOauthPending(userId,id);
   if (!pending) throw new Error('no sign-in in progress (or it expired) — click "Connect ChatGPT" again');
+  const stillOwnsConnection = () => pending.generation === credentialGeneration(userId, 'codex') &&
+    getSetting(pendingKey(userId)) === pending.id;
+  if (!stillOwnsConnection()) throw new Error('This sign-in was superseded or its connection changed. Start again from the current provider card.');
 
   const candidate = pasted.trim();
   let url: URL;
@@ -137,17 +142,30 @@ export async function codexOauthFinish(userId: number, pasted: string, id?: stri
   const claims = jwtClaims(tok.id_token) as
     | { email?: string; 'https://api.openai.com/auth'?: { chatgpt_account_id?: string } }
     | null;
-  completeAttempt(userId,pending.id, () => storeAgentAccount({
+  completeAttempt(userId,pending.id, () => {
+    if (!stillOwnsConnection()) throw new Error('The connection changed during sign-in; its replacement was not modified.');
+    storeAgentAccount({
     userId,
     provider: 'codex',
     token: tok.refresh_token!,
     label: claims?.email ?? '',
     accessToken: tok.access_token,
     meta: { account_id: claims?.['https://api.openai.com/auth']?.chatgpt_account_id ?? '', id_token: tok.id_token ?? '' },
-  }));
+  });
+  });
   if (getSetting(pendingKey(userId)) === pending.id) deleteSetting(pendingKey(userId));
   return claims?.email ?? '';
   } catch (error) { failAttempt(userId,pending.id);throw error; }
+}
+
+/** Every ChatGPT sign-in attempt still live on THIS installation, by explicit id. The single
+ *  `codex_oauth_pending:<user>` pointer only ever names one; the attempt table can hold several (a
+ *  paste-flow retry, two windows), and a card must be able to show its own without adopting another's
+ *  callback. */
+export function codexAttempts(userId: number, session: string): { id: string; destination: string; status: string; expiresAt: number }[] {
+  return getDb()
+    .prepare("SELECT id,destination,status,expires_at AS expiresAt FROM oauth_attempts WHERE user_id=? AND session_hash=? AND provider='codex' AND status IN ('pending','authorizing','completing') AND expires_at>? ORDER BY created_at DESC")
+    .all(userId, createHash('sha256').update(session).digest('hex'), Date.now()) as { id: string; destination: string; status: string; expiresAt: number }[];
 }
 
 export function codexDisconnect(userId: number): void {
@@ -160,6 +178,7 @@ export function codexDisconnect(userId: number): void {
 interface LiveTokens {
   access_token: string;
   account_id: string;
+  credential: string;
 }
 
 /** Refresh lazily — only when the access token expires within 5 minutes. */
@@ -174,10 +193,11 @@ async function refreshCodexTokens(userId: number): Promise<LiveTokens> {
   const row = getAgentAccount(userId, 'codex');
   if (!row) throw new CodexError('codex: not connected — connect ChatGPT under Account → Agent');
   const meta = accountMeta(row);
+  const generation = credentialGeneration(userId, 'codex');
   const accountId = String(meta.account_id ?? '');
   const exp = Number(jwtClaims(row.access_token || undefined)?.exp ?? 0);
   if (row.access_token && exp * 1000 - Date.now() > 5 * 60 * 1000) {
-    return { access_token: row.access_token, account_id: accountId };
+    return { access_token: row.access_token, account_id: accountId, credential: generation };
   }
 
   let refreshToken: string;
@@ -210,16 +230,20 @@ async function refreshCodexTokens(userId: number): Promise<LiveTokens> {
     label: row.label,
     accessToken: fresh.access_token ?? row.access_token,
     meta: { ...meta, id_token: fresh.id_token ?? meta.id_token },
+    refreshGeneration: generation,
   });
-  return { access_token: fresh.access_token ?? row.access_token, account_id: accountId };
+  return { access_token: fresh.access_token ?? row.access_token, account_id: accountId, credential: generation };
 }
 
 /** 401-mid-flight recovery: blank the stored access token so the next
  *  ensureFreshTokens is forced through a refresh. */
-function poisonAccessToken(userId: number): void {
-  getDb()
-    .prepare(`UPDATE agent_accounts SET access_token = '' WHERE user_id = ? AND provider = 'codex'`)
-    .run(userId);
+/** Invalidate ONLY the access token that received the 401. A reconnect between the request and its
+ *  answer replaces the row; blanking unconditionally would break the new account's fresh token and the
+ *  retry would then run on an identity the caller never chose. False = the credential already moved. */
+function poisonAccessToken(userId: number, used: string): boolean {
+  return getDb()
+    .prepare(`UPDATE agent_accounts SET access_token = '' WHERE user_id = ? AND provider = 'codex' AND access_token = ?`)
+    .run(userId, used).changes > 0;
 }
 
 // ---------------------------------------------------------------- wire shapes
@@ -335,16 +359,25 @@ export function repairResponsesItems(items: unknown[], keepOpen: Set<string>): u
 interface Transport {
   name: 'codex' | 'openai';
   url: string;
-  headers(userId: number): Promise<Record<string, string>>;
-  /** 401 recovery — codex re-refreshes once; an API key is just wrong. */
-  on401?(userId: number): void;
+  /** `credential` is the account generation the CALL was admitted against (route.ts credentialId).
+   *  Checked after the tokens are in hand and again on every recursive retry, so a reconnect to
+   *  another account — including one that lands between a 401 and its retry — refuses rather than
+   *  billing the replacement. */
+  headers(userId: number, credential?: string): Promise<Record<string, string>>;
+  /** 401 recovery — codex re-refreshes once, on the SAME account generation; an API key is just wrong.
+   *  False means the stored credential changed under the request: do not retry. */
+  on401?(userId: number, used: string): boolean;
 }
 
 const codexTransport: Transport = {
   name: 'codex',
   url: 'https://chatgpt.com/backend-api/codex/responses',
-  async headers(userId) {
+  async headers(userId, credential) {
     const tokens = await ensureFreshTokens(userId);
+    // After the await, not before: what matters is that the headers about to be sent belong to the
+    // account this call was admitted on. An ordinary token rotation keeps the same generation.
+    if (credential && (tokens.credential !== credential || credentialId(userId, 'codex') !== credential))
+      throw new CodexError('codex: the ChatGPT connection changed while this request was being prepared. Nothing was sent on the replacement account — send it again.');
     return { Authorization: `Bearer ${tokens.access_token}`, 'chatgpt-account-id': tokens.account_id, 'OpenAI-Beta': 'responses=experimental', originator: 'codex_cli_rs' };
   },
   on401: poisonAccessToken,
@@ -354,9 +387,11 @@ const OPENAI_API = 'https://api.openai.com/v1';
 const openaiTransport: Transport = {
   name: 'openai',
   url: `${OPENAI_API}/responses`,
-  async headers(userId) {
+  async headers(userId, credential) {
     const key = agentKey(userId, 'openai');
     if (!key) throw new CodexError('openai: no API key — add one under Account → Agent');
+    if (credential && credentialId(userId, 'openai') !== credential)
+      throw new CodexError('openai: the API key changed while this request was being prepared. Nothing was sent on the replacement — send it again.');
     return { Authorization: `Bearer ${key}` };
   },
 };
@@ -390,7 +425,7 @@ export function responseTools(tools: ProviderCall['tools'], raw: boolean) {
     : { type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false });
 }
 async function callResponses(call: ProviderCall, transport: Transport, retriedAuth = false, retriedTransient = false, noReasoning = false, jsonOnly = false): Promise<ProviderResult> {
-  const auth = await transport.headers(call.userId);
+  const auth = await transport.headers(call.userId, call.credential);
   const tag = transport.name;
   const capabilityKey = `${tag}:${call.model}`;
   const offersText = call.tools.some(t => t.inputFormat === 'text');
@@ -437,7 +472,8 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
   }
 
   if (res.status === 401 && !retriedAuth && transport.on401) {
-    transport.on401(call.userId);
+    if (!transport.on401(call.userId, (auth.Authorization ?? '').replace(/^Bearer /, '')))
+      throw new CodexError(`${tag}: the ChatGPT connection changed while this request was in flight. It was not retried on the replacement account — send it again.`);
     return callResponses(call, transport, true, retriedTransient, noReasoning, jsonOnly);
   }
   if (!res.ok) {
@@ -519,10 +555,17 @@ export interface CodexModel {
   applyPatch?: 'freeform' | 'function';
 }
 
-export function listCodexModels(userId: number): Promise<CodexModel[]> {
-  return cached(`codex:models:${userId}`, 60 * 60_000, async () => {
+export async function listCodexModels(userId: number): Promise<CodexModel[]> {
+  return (await listCodexCatalog(userId)).models;
+}
+export function listCodexCatalog(userId: number): Promise<ModelList<CodexModel>> {
+  const generation = credentialGeneration(userId, 'codex');
+  const storedKey = `agent_models:codex:${userId}:${generation}`;
+  return cached(`codex:models:${userId}:${generation}`, 60 * 60_000, async () => {
     try {
       const tokens = await ensureFreshTokens(userId);
+      if (tokens.credential !== generation || credentialGeneration(userId, 'codex') !== generation)
+        throw Error('ChatGPT connection changed during model discovery.');
       const res = await fetch(`https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`, {
         headers: { Authorization: `Bearer ${tokens.access_token}`, 'chatgpt-account-id': tokens.account_id, originator: 'codex_cli_rs' },
         signal: AbortSignal.timeout(10_000),
@@ -555,12 +598,14 @@ export function listCodexModels(userId: number): Promise<CodexModel[]> {
           ...(m.apply_patch_tool_type === 'freeform' || m.apply_patch_tool_type === 'function' ? { applyPatch: m.apply_patch_tool_type as 'freeform' | 'function' } : {}),
         }));
       if (!list.length) throw new Error('codex models: empty list');
-      setSetting(`agent_models:codex:${userId}`, JSON.stringify(list));
-      return list;
+      if (credentialGeneration(userId, 'codex') !== generation) throw Error('ChatGPT connection changed during model discovery.');
+      const view: ModelList<CodexModel> = { models: list, source: 'live', at: Date.now() };
+      setSetting(storedKey, JSON.stringify(view));
+      return view;
     } catch (err) {
-      const stored = JSON.parse(getSetting(`agent_models:codex:${userId}`) ?? '[]') as CodexModel[];
-      if (!stored.length) throw err;
-      return stored.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) }));
+      const stored = JSON.parse(getSetting(storedKey) ?? 'null') as ModelList<CodexModel> | null;
+      if (!stored?.models?.length) throw err;
+      return { ...stored, source: 'cache', models: stored.models.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) })) };
     }
   });
 }
@@ -585,11 +630,13 @@ export interface ModelList<M> {
 }
 
 export function listOpenAIModels(userId: number): Promise<ModelList<ApiModel>> {
-  const stored = `agent_models:openai:${userId}`;
-  return cached(`openai:models:${userId}`, 60 * 60_000, async () => {
+  const generation = credentialGeneration(userId, 'openai');
+  const stored = `agent_models:openai:${userId}:${generation}`;
+  return cached(`openai:models:${userId}:${generation}`, 60 * 60_000, async () => {
     try {
       const key = agentKey(userId, 'openai');
       if (!key) throw new Error('openai: no API key');
+      if (credentialGeneration(userId, 'openai') !== generation) throw Error('OpenAI connection changed during model discovery.');
       const res = await fetch(`${OPENAI_API}/models`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
       if (!res.ok) throw new Error(`openai models ${res.status}`);
       const data = (await res.json()) as { data?: { id?: unknown; created?: unknown }[] };
@@ -598,6 +645,7 @@ export function listOpenAIModels(userId: number): Promise<ModelList<ApiModel>> {
         .map((m) => ({ id: String(m.id), name: String(m.id), ...(typeof m.created === 'number' ? { created: m.created } : {}) }))
         .sort((a, b) => (b.created ?? 0) - (a.created ?? 0) || a.id.localeCompare(b.id));
       if (!list.length) throw new Error('openai models: empty list');
+      if (credentialGeneration(userId, 'openai') !== generation) throw Error('OpenAI connection changed during model discovery.');
       const at = Date.now();
       setSetting(stored, JSON.stringify({ at, models: list }));
       return { models: list, source: 'live' as const, at };

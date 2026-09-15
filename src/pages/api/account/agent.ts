@@ -1,68 +1,41 @@
 import type { APIRoute } from 'astro';
-import { setSetting } from '../../../lib/settings.ts';
-import { storeAgentAccount, deleteAgentAccount, storeEndpoint, deleteEndpoint, mask } from '../../../lib/agent/accounts.ts';
-import { codexDisconnect } from '../../../lib/agent/codex.ts';
-import { parseRounds } from '../../../lib/agent/provider.ts';
-import { storeBrowserbaseKey } from '../../../lib/browser/browserbase.ts';
+import { isDesktop } from '../../../lib/dev/runtime.ts';
+import { rimeConnection } from '../../../lib/dev/remote.ts';
+import { sharedRime } from '../../../lib/agent/sync.ts';
+import { applyProviderWrite, isCredentialAction, runtimeBinding } from '../../../lib/agent/provider-scope.ts';
 
 export const prerender = false;
 
-/** Per-user agent credentials + knobs. Form POST-back, account-page style. */
+/** Per-user agent credentials + knobs, as the server's own Account page posts them. Form POST-back,
+ *  account-page style — the same writes /api/account/provider applies, through one implementation.
+ *
+ *  On a desktop joined to a server this page's HTML is the SERVER's (lib/dev/instance-routing.ts), so
+ *  a credential post arriving here means the page was rendered while the server was unreachable. Which
+ *  account it meant is then genuinely ambiguous, so it is refused and sent to the scoped page where
+ *  the destination is named. Account knobs are not credentials and stay local. */
 export const POST: APIRoute = async ({ request, locals, redirect }) => {
   const userId = locals.user!.userId;
   const form = await request.formData();
-  const action = String(form.get('action') ?? '');
+  const raw = String(form.get('action') ?? '');
   const back = (q: string) => redirect(`/account?${q}#agent`, 303);
+  const action = /^(openrouter|openai|brave|exa)-key$/.test(raw) ? 'key' : raw;
+  const provider = action === 'key' ? raw.replace('-key', '') : undefined;
 
-  if (action === 'openrouter-key' || action === 'openai-key' || action === 'brave-key' || action === 'exa-key') {
-    const provider = action.replace('-key', '') as 'openrouter' | 'openai' | 'brave' | 'exa';
-    const key = String(form.get('key') ?? '').trim();
-    if (!key) {
-      deleteAgentAccount(userId, provider);
-      return back(`ok=agent-cleared`);
-    }
-    storeAgentAccount({ userId, provider, token: key, label: mask(key) });
-    return back(`ok=agent-key`);
+  if (isCredentialAction(action) && isDesktop()) {
+    if (request.headers.has('x-rimeward-native-token') || request.headers.get('x-rimeward-relayed') === '1')
+      return new Response('Open provider settings on this desktop directly.', { status: 403 });
+    const connection = await rimeConnection(userId).catch(() => undefined);
+    if (connection && sharedRime(userId))
+      return back(`err=${encodeURIComponent('This desktop is connected to a server. Choose which connection to change on the provider page.')}`);
   }
-
-  // An OpenAI-compatible endpoint: a name, a base URL (https, or http to this
-  // machine), an optional key — sealed like every other credential.
-  if (action === 'endpoint-add') {
-    try {
-      storeEndpoint(userId, { name: String(form.get('name') ?? ''), url: String(form.get('url') ?? ''), key: String(form.get('key') ?? '') });
-      return back('ok=agent-key');
-    } catch (err) {
-      return back(`err=${encodeURIComponent(err instanceof Error ? err.message : 'bad endpoint')}`);
-    }
+  let result: string;
+  if (isCredentialAction(action) && form.get('binding') !== runtimeBinding(userId))
+    return back(`err=${encodeURIComponent('This provider form is stale or from an older client. Reload Account or open Provider connections before changing a credential.')}`);
+  try {
+    result = applyProviderWrite(userId, { action, provider, key: form.get('key'), name: form.get('name'), url: form.get('url'), enabled: form.get('enabled'), rounds: form.get('rounds') });
+  } catch (err) {
+    return back(`err=${encodeURIComponent(err instanceof Error ? err.message : 'unknown-action')}`);
   }
-  if (action === 'endpoint-remove') {
-    deleteEndpoint(userId, String(form.get('name') ?? ''));
-    return back('ok=agent-cleared');
-  }
-
-  if (action === 'browserbase-key') {
-    storeBrowserbaseKey(userId, String(form.get('key') ?? '').trim());
-    return back('ok=agent-key');
-  }
-
-  // Starting/finishing a ChatGPT sign-in lives in /api/account/oauth, which binds
-  // the attempt to the browser's own session; these form posts could not be polled.
-  if (action === 'codex-disconnect') {
-    codexDisconnect(userId);
-    return back('ok=agent-cleared');
-  }
-
-  if (action === 'shell-network') {
-    setSetting(`agent_shell_network:${userId}`, form.get('enabled') === 'on' ? 'true' : 'false');
-    return back('ok=agent-saved');
-  }
-  if (action === 'rounds') {
-    // 0 = unlimited. A blank or junk field leaves the current value alone —
-    // parseRounds is the same check the reader uses, so the two cannot drift.
-    const n = parseRounds(form.get('rounds'));
-    if (n !== null) setSetting(`agent_rounds:${userId}`, String(n));
-    return back('ok=agent-saved');
-  }
-
-  return back('err=unknown-action');
+  return back(/Cleared|removed|Disconnected/.test(result) ? 'ok=agent-cleared'
+    : action === 'shell-network' || action === 'rounds' ? 'ok=agent-saved' : 'ok=agent-key');
 };

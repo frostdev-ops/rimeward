@@ -68,6 +68,7 @@ import { commandHelp } from './commands.ts';
 import { runTask, listTasks, backgroundTasks, taskNotices, toolFailure, childJob, isLive, assertChildCapacity, assertTaskCapacity, stampJob, cancelledBy, resumeSource, admittedResume, markRan, stopLabel, MAX_CHILDREN, type AgentTask } from './tasks.ts';
 import { copyTranscript, stampConversationModel } from './conversations.ts';
 import { endpointOf, endpointUrlOf, machineLocalEndpoint } from './accounts.ts';
+import { isRemotePin, recordedBackendCheck, resolveProviderRoute, routeLabel, routeReceipt, type ProviderRouteReceipt, type ResolvedProviderRoute } from './route.ts';
 import { installationId } from './sync-store.ts';
 import { dictationKind } from './transcribe.ts';
 import { isCommsType } from '../comms/types.ts';
@@ -860,7 +861,7 @@ async function loop(
   // A child run acts as its ward (config, permissions, tools) in its own thread; its
   // steers, interrupts and aborts are keyed by its task so they never cross the ward's.
   const child = cfg.conv.task_id ?? undefined;
-  const ctx: ToolCtx = { userId: cfg.conv.user_id, ward: cfg.conv.ward, conv: cfg.conv.id, via: cfg.via, cli: cfg.wardCfg.permissions, ...(child ? { task: child, signal: cfg.signal } : {}) };
+  const ctx: ToolCtx = { userId: cfg.conv.user_id, ward: cfg.conv.ward, conv: cfg.conv.id, via: cfg.via, cli: cfg.wardCfg.permissions, ...(cfg.provider.route ? { route: cfg.provider.route } : {}), ...(child ? { task: child, signal: cfg.signal } : {}) };
   const key = child ? taskKey(child) : wardKey(ctx.userId, ctx.ward);
   const bootstrapAbort = new AbortController();
   aborts.set(key, bootstrapAbort);
@@ -974,7 +975,10 @@ async function loop(
   effective.set(key, { ...cfg.wardCfg });
   // What this thread runs on, recorded before the first call: the model, and for compat the BACKEND
   // the endpoint name resolves to right now — its alias may be repointed later, this may not change.
-  stampConversationModel(cfg.conv.id, model, pinnableBackend(ctx.userId, cfg.conv.endpoint));
+  stampConversationModel(cfg.conv.id, model, pinnableBackend(ctx.userId, cfg.conv.endpoint, cfg.provider.route));
+  // What the composer reports while this turn runs: the source it was ADMITTED on.
+  const runKey = `${ctx.userId}:${cfg.conv.ward}`;
+  if (cfg.provider.route && !child) runningRoutes.set(runKey, routeReceipt(cfg.provider.route));
   pendingModel.delete(key); // nothing a previous turn left behind applies to this one
   let limits = await cfg.provider.context?.(ctx.userId, model).catch(() => undefined);
   const usage = () => contextUsage(cfg.conv.id, cfg.provider.id, model, items, instructions, tools, limits);
@@ -1000,7 +1004,7 @@ async function loop(
       model = switched.model;
       effort = switched.effort ?? effort;
       effective.set(key, { ...cfg.wardCfg, model, effort });
-      stampConversationModel(cfg.conv.id, model, pinnableBackend(ctx.userId, cfg.conv.endpoint));
+      stampConversationModel(cfg.conv.id, model, pinnableBackend(ctx.userId, cfg.conv.endpoint, cfg.provider.route));
       limits = await cfg.provider.context?.(ctx.userId, model).catch(() => undefined);
       if (child) stampJob(child, { provider: switched.provider, model, endpoint: switched.endpoint });
       emit?.({ type: 'note', text: `Model for the rest of this run: ${model} (${effort})` });
@@ -1288,6 +1292,7 @@ async function loop(
   return done({ reply, steps });
   } finally {
     aborts.delete(key);
+    runningRoutes.delete(runKey);
     // A failed or paused turn must close its receipts, never leave them for
     // the hourly recovery sweep or inject unread agent traffic into a later turn.
     for (const s of absorbed) s.fail?.('the receiving turn ended before answering — not retried');
@@ -1490,8 +1495,8 @@ export function runChatTurn(userId: number, ward: string, body: ChatBody, emit: 
   return onChain(userId, ward, async () => {
     const wardCfg = agentWardConfig(userId, ward);
     if (!wardCfg) throw new Error('not an agent ward');
-    const provider = await getProvider(wardCfg.provider, wardCfg.endpoint);
     const conv = activeConversation(userId, ward, wardCfg.provider, wardCfg.endpoint);
+    const provider = await turnProvider(userId, wardCfg, conv);
     if (livePendingConfirm(conv)?.name === 'ask_user_question') throw Error('Answer the waiting question before continuing this conversation.');
     expireStaleConfirm(conv, provider);
 
@@ -1554,8 +1559,8 @@ export function resolveConfirmTurn(
   return onChain(userId, ward, async () => {
     const wardCfg = agentWardConfig(userId, ward);
     if (!wardCfg) throw new Error('not an agent ward');
-    const provider = await getProvider(wardCfg.provider, wardCfg.endpoint);
     const conv = activeConversation(userId, ward, wardCfg.provider, wardCfg.endpoint);
+    const provider = await turnProvider(userId, wardCfg, conv);
     const proposed = livePendingConfirm(conv);
     const question = proposed?.name === 'ask_user_question' ? parseUserQuestion(proposed.args) : undefined;
     // Validate before consuming the parked call, so an invalid/stale form cannot discard it.
@@ -1752,7 +1757,7 @@ export function runHeadlessTurn(
     if (livePendingConfirm(conv)) {
       return 'skipped — a confirmation is pending on this ward and an unattended run must not decide it';
     }
-    const provider = await getProvider(wardCfg.provider, wardCfg.endpoint);
+    const provider = await turnProvider(userId, wardCfg, conv);
     if (source.valid && !source.valid()) return 'skipped — monitor changed before delivery';
     if (source.kind === 'monitor') takeHeadlessSlot(userId,ward);
     expireStaleConfirm(conv, provider); // only an already-dead row survives to here
@@ -1913,8 +1918,8 @@ export async function runChildRun(args: Record<string, unknown>, ctx: ToolCtx): 
     // has to still be behind it, or this would continue the work against a different server.
     if (resume.conv.endpoint) {
       if (!resume.conv.endpoint_url) throw new Error(`child run ${resumeOf} did not record which server "${resume.conv.endpoint}" pointed at; start a new child with spawn_agent instead`);
-      const here = endpointUrlOf(userId, resume.conv.endpoint);
-      if (here !== resume.conv.endpoint_url) throw new Error(`endpoint "${resume.conv.endpoint}" now points at ${here ?? 'nothing'}; child run ${resumeOf} ran against ${resume.conv.endpoint_url} and is not moved to another server`);
+      const why = recordedBackendCheck(userId, resume.conv.endpoint, resume.conv.endpoint_url);
+      if (why) throw new Error(`child run ${resumeOf} is not moved to another server: ${why}`);
     }
   }
   const route = resume ? { provider: resume.conv!.provider, endpoint: resume.conv!.endpoint ?? undefined, model: resume.job.model! } : null;
@@ -1936,7 +1941,14 @@ export async function runChildRun(args: Record<string, unknown>, ctx: ToolCtx): 
   // BEFORE the handoff detaches: a refused fork is an
   // error to the caller with the parent still running, never a stopped parent
   // and a dead child.
-  const provider = await getProvider(sel.provider, sel.endpoint);
+  // A child runs on the source its PARENT turn was admitted on when it stays on that route — a
+  // preference or a connection that changed mid-turn must not send this context somewhere else.
+  // A spawn that deliberately picks another provider or endpoint resolves its own, once.
+  // A RESUME is not the parent's route: the attempt being continued has its own recorded backend,
+  // and that record decides where it may run.
+  const inherited = !resume && ctx.route && sel.provider === parent.provider && (sel.endpoint ?? null) === (parent.endpoint ?? null) ? ctx.route : undefined;
+  const provider = await turnProvider(userId, { provider: sel.provider, ...(sel.endpoint ? { endpoint: sel.endpoint } : {}) }, resume?.conv, inherited);
+  if (provider.route?.blocked) throw new Error(provider.route.blocked);
   // ---- the commit boundary: everything from here to markRan is synchronous, so the backend this
   // attempt was ADMITTED on cannot move between the last check and the thread that carries its context.
   // Provider loading also awaited. A user's Resume belongs to the chat they were
@@ -1948,11 +1960,11 @@ export async function runChildRun(args: Record<string, unknown>, ctx: ToolCtx): 
   const commitCfg = agentWardConfig(userId, ward);
   if (!commitCfg) throw new Error('agent ward is gone from the layout');
   if (resume) Object.assign(childCfg, narrowConfig(userId, childCfg, commitCfg));
-  const admitted = resume ? resume.conv!.endpoint_url : pinnableBackend(userId, sel.endpoint);
+  const admitted = resume ? resume.conv!.endpoint_url : pinnableBackend(userId, sel.endpoint, provider.route);
   if (resume && resume.conv!.endpoint) {
     if (!admitted) throw new Error(`child run ${resumeOf} did not record which server "${resume.conv!.endpoint}" pointed at; start a new child with spawn_agent instead`);
-    const here = endpointUrlOf(userId, resume.conv!.endpoint);
-    if (here !== admitted) throw new Error(`endpoint "${resume.conv!.endpoint}" now points at ${here ?? 'nothing'}; child run ${resumeOf} ran against ${admitted} and is not moved to another server`);
+    const why = recordedBackendCheck(userId, resume.conv!.endpoint, admitted);
+    if (why) throw new Error(`child run ${resumeOf} is not moved to another server: ${why}`);
   }
   const conv = childConversation(userId, ward, sel.provider, sel.endpoint ?? null, job);
   // The thread carries its backend from the start: the turn loop's own stamp is write-once, so a later
@@ -2036,7 +2048,9 @@ export async function selectRunModel(ctx: ToolCtx, raw: { model?: unknown; effor
   const cfg = effectiveConfig(ctx); // an effort-only switch keeps the model this run is on
   if (!cfg) throw new Error('not an agent ward');
   const route = { provider: conv.provider, endpoint: conv.endpoint ?? undefined };
-  const selected = await validateSelection(ctx.userId, { ...route, model: raw.model, effort: raw.effort }, { ...route, model: cfg.model, effort: cfg.effort });
+  // Checked against the catalog of the source this RUN was admitted on: a switch mid-turn stays on
+  // that installation, so the list it is validated against must be that installation's too.
+  const selected = await validateSelection(ctx.userId, { ...route, model: raw.model, effort: raw.effort }, { ...route, model: cfg.model, effort: cfg.effort }, ctx.route);
   pendingModel.set(runKey(ctx), selected);
   return { selected, note: `applies from this run's next round; the ward's own setting is unchanged${selected.unverified ? ' (no live catalog confirmed the id)' : ''}` };
 }
@@ -2110,6 +2124,9 @@ export async function wardSurface(userId: number, ward: string): Promise<{
   workspace?: WorkspaceBinding;
   ownerRuntimeId?: string;
   ownerName?: string;
+  /** Which connection serves and bills this ward's model calls, said separately from where the
+   *  conversation RUNS: "Runs on <owner>" and "Model access via <source>" are both true at once. */
+  modelAccess: { label: string; live: boolean; blocked?: string } & ProviderRouteReceipt;
   live?: LiveTurn;
   /** Coding CLI mode: what the ward runs at, and what Default would make it — refreshed every repaint. */
   permissions: { effective: CliPermissions; inherited: CliPermissions };
@@ -2134,7 +2151,7 @@ export async function wardSurface(userId: number, ward: string): Promise<{
     // Expired while parked: decline it now so the thread isn't stuck.
     else void getProvider(wardCfg.provider, wardCfg.endpoint).then((p) => expireStaleConfirm(conv, p));
   }
-  const provider = await getProvider(wardCfg.provider, wardCfg.endpoint);
+  const provider = await turnProvider(userId, wardCfg, conv);
   const limits = configured ? await provider.context?.(userId, wardCfg.model).catch(() => undefined) : undefined;
   // A thread of another dialect (the ward's provider changed and no turn has
   // retired it yet) cannot be measured against this provider.
@@ -2149,6 +2166,17 @@ export async function wardSurface(userId: number, ward: string): Promise<{
     workspace: conv ? recordedWorkspace(conv.id) : undefined,
     ownerRuntimeId,
     ownerName: isDesktop() ? os.hostname() : 'Rimeward server',
+    // WHERE this conversation is billed, separately from where it RUNS. While a turn is running
+    // this is the receipt it was ADMITTED on, not a fresh reading of today's preference: the two can
+    // differ, and the one that matters is the one actually serving.
+    modelAccess: (() => {
+      const live = runningRoutes.get(`${userId}:${ward}`);
+      if (live) return { label: live.server ? `Connected server · ${live.server}` : isDesktop() ? 'This desktop' : 'This server', ...live, live: true as const };
+      const next = provider.route
+        ? { label: routeLabel(provider.route), ...routeReceipt(provider.route), ...(provider.route.blocked ? { blocked: provider.route.blocked } : {}) }
+        : { label: 'This server', policy: 'automatic' as const, via: 'local' as const, reason: 'this server' };
+      return { ...next, live: false as const };
+    })(),
     live: conv ? liveTurn(userId, conv.id) : undefined,
     transcript: conv ? liveTurn(userId, conv.id)?.transcript ?? transcript(conv.id) : [],
     pending,
@@ -2214,7 +2242,7 @@ export async function runCommand(userId: number, ward: string, name: string, arg
       const wardCfg = agentWardConfig(userId, ward);
       if (!wardCfg) throw new Error('not an agent ward');
       const before = conversationSize(conv.id);
-      const provider = await getProvider(wardCfg.provider, wardCfg.endpoint);
+      const provider = await turnProvider(userId, wardCfg, conv);
       const done = await onChain(userId, ward, () => compactIfNeeded(conv, provider, wardCfg.model, true, args));
       const focused = args ? ` Kept in full: “${args.slice(0, 60)}”.` : '';
       if (!done) {
@@ -2271,16 +2299,38 @@ export function clearThread(userId: number, ward: string): void {
  *  there (sync.ts sharedModel), and that server's backend is not something this runtime can name: the
  *  thread records "not recorded" rather than a local URL its calls never reach. Where this does answer,
  *  the answer is binding — the thread's calls are pinned to it and are never relayed afterwards. */
-export function pinnableBackend(userId: number, endpoint: string | null | undefined): string | null {
+export function pinnableBackend(userId: number, endpoint: string | null | undefined, route?: ResolvedProviderRoute): string | null {
   if (!endpoint) return null;
+  // With a resolved route the answer is that route's own backend identity: `server:<profile>:<url>`
+  // for a relayed thread - the serving ACCOUNT as well as the address, because two servers can both
+  // call an endpoint `http://localhost:11434/v1` and they are not the same backend - and the local
+  // URL otherwise. A blocked route records nothing: an unusable route is not an identity.
+  if (route) return route.blocked ? null : route.via === 'server' ? route.remoteBackend ?? null : endpointUrlOf(userId, endpoint);
   const local = endpointUrlOf(userId, endpoint);
   if (!local) return null;
   if (isDesktop()) {
     const shared = sharedRime(userId);
-    if (shared?.online && (shared.endpoints ?? []).includes(endpoint)) return null;
+    if (shared?.reachable && shared.authority !== false && (shared.endpoints ?? []).includes(endpoint)) return null;
   }
   return local;
 }
+
+/** The provider a turn runs on, with ONE route resolved for the whole turn - its tool rounds, its
+ *  compaction, its children. The conversation's RECORDED backend is handed to the resolver, which
+ *  either honours it or blocks the turn: a thread admitted here is never relayed and a thread
+ *  admitted on a server is never served locally, whatever the preference says today. */
+async function turnProvider(userId: number, cfg: { provider: AgentProviderId; endpoint?: string }, conv?: { id: number; endpoint_url: string | null } | null, inherited?: ResolvedProviderRoute) {
+  // A child, a compaction and a resumed attempt run under the route their parent turn was admitted
+  // on, not under whatever the settings say by the time they start.
+  if (inherited) return getProvider(cfg.provider, cfg.endpoint, inherited);
+  const recorded = cfg.provider === 'compat' ? conv?.endpoint_url ?? null : null;
+  const unpinned = cfg.provider === 'compat' && !!cfg.endpoint && !!conv && !conv.endpoint_url && conversationSize(conv.id).items > 0;
+  return getProvider(cfg.provider, cfg.endpoint, await resolveProviderRoute(userId, cfg.provider, cfg.endpoint, { recorded, unpinned }));
+}
+
+/** The receipt of the route a RUNNING turn was admitted on, per ward, so the composer reports the
+ *  source actually in use rather than recomputing today's preference beside a live turn. */
+const runningRoutes = new Map<string, ProviderRouteReceipt>();
 
 export function continueBlocker(userId:number,ward:string,chat:{ key:string; provider:AgentProviderId; endpoint?:string|null; endpointUrl?:string|null; device?:string }):string|null {
   const cfg=agentWardConfig(userId,ward);
@@ -2292,8 +2342,10 @@ export function continueBlocker(userId:number,ward:string,chat:{ key:string; pro
     // An endpoint NAME is a per-runtime alias. Identity is the URL the thread recorded when it ran.
     const here=endpointUrlOf(userId,chat.endpoint);
     if(!chat.endpointUrl)return `This conversation did not record which server "${chat.endpoint}" pointed at when it ran — the name alone does not prove ${here??'this endpoint'} is the same backend. Start a new chat on this endpoint instead.`;
-    if(here!==chat.endpointUrl)return `Endpoint "${chat.endpoint}" here points at ${here??'nothing'}; this conversation ran against ${chat.endpointUrl}. Endpoint names are per runtime and can be repointed: continue it where that server is, or point "${chat.endpoint}" back at it first.`;
-    if(chat.key.split('/')[1]!==installationId()&&machineLocalEndpoint(chat.endpointUrl))return `This conversation ran on ${chat.device??'another runtime'} against ${chat.endpointUrl}. That address is resolved per machine, so there is no way to establish that it means the same server here. Continue it on ${chat.device??'that runtime'}.`;
+    const why=recordedBackendCheck(userId,chat.endpoint,chat.endpointUrl);
+    if(why)return `This conversation is not moved to another server: ${why}. Continue it where that backend is, or start a new chat on the endpoint as it stands.`;
+    // A machine-local address means one thing per machine; a server-side pin is the server's own.
+    if(!isRemotePin(chat.endpointUrl)&&chat.key.split('/')[1]!==installationId()&&machineLocalEndpoint(chat.endpointUrl))return `This conversation ran on ${chat.device??'another runtime'} against ${chat.endpointUrl}. That address is resolved per machine, so there is no way to establish that it means the same server here. Continue it on ${chat.device??'that runtime'}.`;
   }
   return null;
 }
@@ -2336,7 +2388,13 @@ export function continueChat(userId:number,ward:string,key:string,choice:{ model
       const now=agentWardConfig(userId,ward);
       if(!now||now.provider!==cfg.provider||(now.endpoint??null)!==(cfg.endpoint??null)||now.model!==cfg.model)throw Error('This ward’s provider or model changed while the conversation was being prepared. Nothing was continued — open History and try again.');
       if((activeConversationRow(userId,ward)?.id??null)!==(before?.id??null))throw Error('This ward opened another chat while the conversation was being prepared. Nothing was continued — open History and try again.');
-      if(chat.provider==='compat'&&chat.endpoint&&endpointUrlOf(userId,chat.endpoint)!==(chat.endpointUrl??null))throw Error(`Endpoint "${chat.endpoint}" was repointed while the conversation was being prepared; it no longer resolves to ${chat.endpointUrl}. Nothing was continued.`);
+        // The same identity check the admission made, re-read here: a local alias repointed, or a
+        // server replaced, between validation and this transaction refuses rather than copies.
+        if(chat.provider==='compat'&&chat.endpoint){
+          if(!chat.endpointUrl)throw Error(`This conversation did not record which backend "${chat.endpoint}" served. Nothing was continued.`);
+          const moved=recordedBackendCheck(userId,chat.endpoint,chat.endpointUrl);
+          if(moved)throw Error(`"${chat.endpoint}" changed while the conversation was being prepared: ${moved}. Nothing was continued.`);
+        }
       if(cfg.model!==model){
         const layout=getDashboard(userId),w=layout.find(x=>x.i===ward);
         if(w){ w.config={...w.config,model}; saveDashboard(userId,layout); wardModelChanged=true; }

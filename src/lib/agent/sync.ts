@@ -5,7 +5,6 @@ import { modelFailure } from "./diagnostics.ts";
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.ts";
 import { cached } from '../cache.ts';
-import type { CodexModel } from './codex.ts';
 import type { VoiceAction, VoiceReply } from './voice.ts';
 import { getSetting, setSetting } from "../settings.ts";
 import { isDesktop } from "../dev/runtime.ts";
@@ -29,20 +28,43 @@ import type {
   ProviderCall,
   ProviderResult,
 } from "./provider.ts";
+import type { ResolvedProviderRoute } from "./route.ts";
 
 interface SharedRime {
   server: string;
+  pair?: string;
+  runtime?: string;
   profile: string;
   providers: Record<AgentProviderId, boolean>;
   /** The server's OpenAI-compatible endpoints, by name. */
   endpoints?: string[];
+  /** Per endpoint name, the backend the SERVER attests it resolves to. A name is an alias; this is
+   *  the identity a relayed conversation is pinned to and the server re-checks where it dispatches. */
+  backends?: Record<string, string>;
+  /** A non-secret generation per provider the server offers (`codex`, `openrouter`, `openai`,
+   *  `compat:<name>`): it changes when the ACCOUNT behind one is replaced. A turn pins the value it
+   *  was admitted against and the server re-checks it at dispatch. */
+  generations?: Record<string, string>;
+  /** What this server's Rime contract supports. Absent/0 = an older server; callers fail closed
+   *  rather than degrading a guarantee. */
+  caps?: { providerScope?: number; routePin?: number };
   config: Record<string, unknown>;
 }
 interface SyncStatus {
+  /** The last reconciliation succeeded - dashboards, notes, history. */
   online: boolean;
+  /** The SERVER answered. A payload/format problem leaves this true: a note that cannot sync must
+   *  never move model access to another billing account. */
+  reachable: boolean;
+  /** Its IDENTITY was established on the last contact: it answered as the profile we are joined to.
+   *  Reachability alone is not authority - a server that answers as a different account, or answers
+   *  something unreadable, makes the capabilities stored here describe a connection we do not have,
+   *  so they stop being eligible even though the socket works. */
+  authority: boolean;
   syncing: boolean;
   at: number;
   error?: string;
+  failure?: 'transport' | 'authority';
 }
 const statuses = new Map<number, SyncStatus>();
 const pending = new Map<number, Promise<void>>();
@@ -53,7 +75,7 @@ export function sharedRime(user: number): (SharedRime & SyncStatus) | null {
   try {
     return {
       ...(JSON.parse(raw) as SharedRime),
-      ...(statuses.get(user) ?? { online: false, syncing: false, at: 0 }),
+      ...(statuses.get(user) ?? { online: false, reachable: false, authority: false, syncing: false, at: 0 }),
     };
   } catch {
     return null;
@@ -71,7 +93,7 @@ export function syncStatus(user: number) {
   };
 }
 export function disconnectRime(user: number) {
-  statuses.set(user, { online: false, syncing: false, at: 0 });
+  statuses.set(user, { online: false, reachable: false, authority: false, syncing: false, at: 0 });
 }
 async function request(
   server: string,
@@ -111,12 +133,24 @@ async function request(
 }
 
 /** Paired signaling only; voice media never enters sharedModel or sync records. */
-export async function sharedVoice(user: number, ward: string, action: VoiceAction): Promise<VoiceReply | null> {
+export async function sharedVoice(user: number, ward: string, action: VoiceAction, pin?: { serverId?: string; profile?: string; runtime?: string; credential?: string }): Promise<VoiceReply | null> {
   if (!isDesktop()) return null;
   const connection = await rimeConnection(user);
   if (!connection) return null;
+  const shared = sharedRime(user);
+  // A pinned session is answered by the installation that HOLDS it or by nobody: control of a live
+  // call must never be sent to whichever server is designated now.
+  if (!pin?.runtime || !shared || connection.id !== pin.serverId || shared.profile !== pin.profile || shared.runtime !== pin.runtime || shared.pair !== connection.id || (shared.caps?.routePin ?? 0) < 2)
+    throw Object.assign(new Error('This call was started on a different connected server than the one designated now. It was not controlled from here.'), { status: 409 });
+  // Null means "not the server's call": the caller then uses this runtime's own ChatGPT connection.
+  // A paired desktop whose server is unreachable must reach that branch, not throw inside the relay.
+  if (!shared?.reachable || shared.authority !== true || (action.action === 'start' && !shared.providers.codex)) return null;
+  if (action.action === 'start' && (!pin.credential || pin.credential !== shared.generations?.codex))
+    throw Error('The admitted voice credential changed. No call was started elsewhere.');
   const response = await request(connection.server, connection.token, '/voice', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
+    method: 'POST', headers: { 'content-type': 'application/json',
+      'x-rime-provider-contract': '2', 'x-rime-provider-runtime': pin.runtime,
+      'x-rime-provider-profile': shared.profile, 'x-rime-provider-generation': pin.credential ?? '' },
     body: JSON.stringify({ ...action, ward }), signal: AbortSignal.timeout(action.action === 'start' ? 90_000 : 15_000),
   });
   return await response.json() as VoiceReply;
@@ -127,6 +161,10 @@ export function syncRime(user: number, force = false): Promise<void> {
   if (running) return running;
   const last = statuses.get(user);
   if (!force && last && Date.now() - last.at < 15000) return Promise.resolve();
+  let answered = false;
+  // Its identity, separately from its reachability: only a round that read a matching profile
+  // re-establishes it, and a round that read a WRONG one destroys it.
+  let identified = false;
   const promise = (async () => {
     try {
       const connection = await rimeConnection(user);
@@ -136,14 +174,22 @@ export function syncRime(user: number, force = false): Promise<void> {
       }
       statuses.set(user, {
         online: last?.online ?? false,
+        reachable: last?.reachable ?? false,
+        authority: last?.authority ?? false,
         syncing: true,
         at: Date.now(),
       });
       const response = await request(connection.server, connection.token);
+      // From here the server has answered: everything after this is OUR payload's business.
+      answered = true;
       const remote = (await response.json()) as {
         profile: string;
+        runtime?: string;
         providers: SharedRime["providers"];
         endpoints?: unknown;
+        endpointBackends?: unknown;
+        generations?: unknown;
+        capabilities?: { providerScope?: unknown; routePin?: unknown };
         config: Record<string, unknown>;
         manifest: { key: string; hash: string }[];
         noteFormat?: number;
@@ -154,27 +200,53 @@ export function syncRime(user: number, force = false): Promise<void> {
         typeof remote.profile !== "string" ||
         !remote.providers ||
         !Array.isArray(remote.manifest)
-      )
+      ) {
+        identified = false;
         throw Error("Invalid Rime server response.");
-      requireWorkspaceLayoutVersion(instanceDashboard(user).layout,remote.workspaceFormat);
+      }
       const previous = sharedRime(user);
       let changed =
         !last?.online ||
         JSON.stringify(previous?.config) !== JSON.stringify(remote.config);
-      if (previous && previous.profile !== remote.profile)
+      if (previous && previous.profile !== remote.profile) {
+        identified = false;
         throw Error(
           "This local Rime belongs to another server account. Its data has not been sent to this account.",
         );
+      }
+      if (previous?.runtime && previous.pair === connection.id && previous.runtime !== remote.runtime) {
+        identified = false;
+        throw Error('This pairing answered as a different serving installation. Its capabilities were not adopted.');
+      }
+      identified = true;
+      const still = await rimeConnection(user);
+      if (still?.id !== connection.id || still.server !== connection.server) {
+        identified = false;
+        throw Error('The designated server changed during synchronization.');
+      }
       setSetting(
         `rime:shared:${user}`,
         JSON.stringify({
           server: connection.server,
+          pair: connection.id,
+          runtime: typeof remote.runtime === 'string' ? remote.runtime : '',
           profile: remote.profile,
           providers: remote.providers,
           endpoints: Array.isArray(remote.endpoints) ? remote.endpoints.filter((e): e is string => typeof e === 'string') : [],
+          backends: remote.endpointBackends && typeof remote.endpointBackends === 'object' && !Array.isArray(remote.endpointBackends)
+            ? Object.fromEntries(Object.entries(remote.endpointBackends as Record<string, unknown>).filter(([, v]) => typeof v === 'string')) as Record<string, string>
+            : {},
+          generations: remote.generations && typeof remote.generations === 'object' && !Array.isArray(remote.generations)
+            ? Object.fromEntries(Object.entries(remote.generations as Record<string, unknown>).filter(([, v]) => typeof v === 'string')) as Record<string, string>
+            : {},
+          caps: {
+            providerScope: Number(remote.capabilities?.providerScope) || 0,
+            routePin: Number(remote.capabilities?.routePin) || 0,
+          },
           config: remote.config,
         }),
       );
+      requireWorkspaceLayoutVersion(instanceDashboard(user).layout,remote.workspaceFormat);
       let instanceChanged = !last?.online;
       const instance = remote.manifest.find(r => r.key === INSTANCE_KEY);
       if (instance && !getSetting(`instance:joined:${user}`)) {
@@ -300,7 +372,7 @@ export function syncRime(user: number, force = false): Promise<void> {
             );
         }
       }
-      statuses.set(user, { online: true, syncing: false, at: Date.now(), ...(dashboardRecovered ? { error: 'Concurrent dashboard changes: local settings kept. Open Rime History → Recovered version · instance/dashboard to review or restore the other version.' } : notesPaused ? { error: 'New document formats are saved locally. Update the server to sync them.' } : chatsPaused ? { error: 'Conversations on providers this server does not sync yet are kept locally. Update the server to sync them.' } : {}) });
+      statuses.set(user, { online: true, reachable: true, authority: true, syncing: false, at: Date.now(), ...(dashboardRecovered ? { error: 'Concurrent dashboard changes: local settings kept. Open Rime History → Recovered version · instance/dashboard to review or restore the other version.' } : notesPaused ? { error: 'New document formats are saved locally. Update the server to sync them.' } : chatsPaused ? { error: 'Conversations this server does not sync yet — a provider or a server-side endpoint it cannot record — are kept locally. Update the server to sync them.' } : {}) });
       if (changed) {
         const { broadcast } = await import("../logic-engine.ts");
         broadcast(user, "refresh", { type: "memory" });
@@ -313,8 +385,13 @@ export function syncRime(user: number, force = false): Promise<void> {
         }
       }
     } catch (e) {
+      // 426 is the peer refusing OUR format - it answered, so it is reachable.
+      const spoke = answered || typeof (e as { status?: number }).status === 'number';
       statuses.set(user, {
         online: false,
+        reachable: spoke,
+        authority: spoke && identified,
+        failure: spoke ? 'authority' : 'transport',
         syncing: false,
         at: Date.now(),
         error: e instanceof Error ? e.message : "Rime sync failed.",
@@ -344,12 +421,21 @@ export async function sharedModel(
   user: number,
   provider: AgentProviderId,
   call: ProviderCall,
+  pin?: ResolvedProviderRoute,
 ): Promise<ProviderResult | null> {
   const connection = await rimeConnection(user),
     shared = sharedRime(user);
   const endpoint = call.endpoint;
   const offered = provider === 'compat' ? !!endpoint && (shared?.endpoints ?? []).includes(endpoint) : !!shared?.providers[provider];
-  if (!connection || !shared?.online || !offered)
+  // A route resolved at turn admission names ONE pairing and ONE server profile. If either changed
+  // since, the turn stops here; its context is never sent to a different account.
+  // (No connection at all falls through to the caller's "not available" message: gone is not changed.)
+  if (pin?.server && connection && (connection.id !== pin.server.id || shared?.profile !== pin.server.profile || shared.runtime !== pin.server.runtime || shared.pair !== connection.id))
+    throw Object.assign(new Error('The connected server or its account changed during this turn. Nothing was sent to the new one - start the next turn to use it.'), { status: 409 });
+  // An attested backend the server cannot confirm is a refusal, not a silent downgrade.
+  if ((shared?.caps?.routePin ?? 0) < 2 || !pin?.server?.runtime || !pin.serverCredential)
+    throw Object.assign(new Error(`Update the connected server: it cannot confirm which backend "${endpoint}" serves, and this conversation is pinned to it.`), { status: 426 });
+  if (!connection || !shared?.reachable || shared.authority === false || !offered)
     return null;
   const requestId = randomUUID();
   let accepted = false;
@@ -365,6 +451,13 @@ export async function sharedModel(
           stream: true,
           provider,
           endpoint,
+          ...(call.remoteBackend ? { backend: call.remoteBackend } : {}),
+          // The instance AND the provider account this turn was admitted against. The SERVER checks
+          // both: comparing our own cached copies here would only prove what we already believed.
+          ...(pin?.server ? { profile: pin.server.profile } : {}),
+          runtime: pin.server.runtime,
+          routeContract: 2,
+          ...(pin?.serverCredential ? { generation: pin.serverCredential } : {}),
           child: call.child === true,
           requestId,
           model: call.model,
@@ -419,46 +512,49 @@ export async function sharedModel(
   }
 }
 
+/** The connected server's ChatGPT catalog, with ENVELOPE provenance - live or cache, and when. Keyed
+ *  by the serving profile as well as its origin, so one host answering for two accounts, or the same
+ *  account re-created, never serves the other's list. Null when this is not the server's catalog to
+ *  give. */
 export async function sharedCodexModels(
   user: number,
-): Promise<CodexModel[] | null> {
-  if (!isDesktop()) return null;
-  await syncRime(user);
-  const connection = await rimeConnection(user);
-  if (!connection) return null;
-  const key = `agent_models:shared:${user}:${connection.server}`;
-  try {
-    if (!sharedRime(user)?.online) throw Error('offline');
-    return await cached(key, 3600_000, async () => {
-      const response = await request(connection.server, connection.token, '/models');
-      const models = await response.json() as CodexModel[];
-      setSetting(key, JSON.stringify(models));
-      return models;
-    });
-  } catch {
-    const stored = JSON.parse(getSetting(key) ?? '[]') as CodexModel[];
-    return stored.length ? stored.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) })) : null;
-  }
+  pin?: ResolvedProviderRoute,
+): Promise<SharedCatalogView | null> {
+  return sharedCatalog(user, 'codex', undefined, pin);
 }
 
 /** The server's catalog for a provider it offers and the desktop cannot ask itself
  *  (an API key or endpoint that lives only there), with the provenance the server
  *  reported; served from the last stored copy — marked so — when it cannot be
  *  asked. Null when not paired/offered. */
-export async function sharedCatalog(user: number, provider: AgentProviderId, endpoint?: string | null): Promise<SharedCatalogView | null> {
-  if (!isDesktop()) return null;
+export async function sharedCatalog(user: number, provider: AgentProviderId, endpoint?: string | null, pin?: ResolvedProviderRoute): Promise<SharedCatalogView | null> {
+  if (!isDesktop() || !pin?.server || pin.via !== 'server' || pin.blocked) return null;
+  const serving = pin.server, admittedGeneration = pin.serverCredential;
+  if (!admittedGeneration) return null;
   await syncRime(user);
   const connection = await rimeConnection(user);
   const shared = sharedRime(user);
   const offered = provider === 'compat' ? !!endpoint && (shared?.endpoints ?? []).includes(endpoint) : !!shared?.providers[provider];
-  if (!connection || !shared?.online || !offered) return null;
-  const key = `agent_models:shared:${user}:${connection.server}:${provider}:${endpoint ?? ''}`;
+  if (!connection || !shared?.reachable || shared.authority !== true || !offered) return null;
+  const generation = shared.generations?.[provider === 'compat' ? `compat:${endpoint}` : provider];
+  if (connection.id !== pin.server.id || shared.pair !== connection.id ||
+      shared.runtime !== pin.server.runtime || shared.profile !== pin.server.profile ||
+      generation !== pin.serverCredential || (shared.caps?.routePin ?? 0) < 2)
+    throw Error('The admitted catalog source changed; no other source was queried.');
+  // Keyed by the serving PROFILE and, for a compat alias, the backend that server attests behind it:
+  // a repointed alias or a replaced account gets its own entry rather than the previous one's list.
+  const key = `agent_models:shared:v2:${user}:${connection.id}:${shared.runtime}:${shared.profile}:${generation}:${provider}:${endpoint ?? ''}:${pin.remoteBackend ?? ''}`;
   try {
     return await cached(key, 3600_000, async () => {
-      const response = await request(connection.server, connection.token, `/models?provider=${provider}${endpoint ? `&endpoint=${encodeURIComponent(endpoint)}` : ''}`);
-      const body = (await response.json()) as SharedCatalogView | { id: string; name: string }[];
-      // An older server answers a bare list: provenance unknown, so never "live".
-      const view: SharedCatalogView = Array.isArray(body) ? { source: 'cache', models: body } : { source: body.source, ...(body.fetchedAt ? { fetchedAt: body.fetchedAt } : {}), models: body.models ?? [] };
+      const query = new URLSearchParams({ provider, routeContract: '2', runtime: serving.runtime,
+        profile: serving.profile, generation: admittedGeneration });
+      if (endpoint) query.set('endpoint', endpoint);
+      const response = await request(connection.server, connection.token, `/models?${query}`);
+      const body = (await response.json()) as SharedCatalogView & { runtime?: string; profile?: string; generation?: string; routeContract?: number };
+      if (body.routeContract !== 2 || body.runtime !== serving.runtime || body.profile !== serving.profile ||
+          body.generation !== pin.serverCredential || !Array.isArray(body.models))
+        throw Error('The catalog response did not verify the admitted source.');
+      const view: SharedCatalogView = { source: body.source, ...(body.fetchedAt ? { fetchedAt: body.fetchedAt } : {}), models: body.models };
       setSetting(key, JSON.stringify(view));
       return view;
     });
@@ -481,7 +577,7 @@ export async function sharedTool(user: number, ward: string, name: string, args:
   if (!isDesktop() || !serverTool(name)) return null;
   const connection = await rimeConnection(user);
   if (!connection) return null;
-  if (!sharedRime(user)?.online) throw Error('This service needs a connection. Your local project tools remain available.');
+  if (!sharedRime(user)?.reachable || sharedRime(user)?.authority === false) throw Error('This service needs a connection. Your local project tools remain available.');
   const response = await request(connection.server, connection.token, '/tool', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, ward, args }),
   });

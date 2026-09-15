@@ -1,5 +1,6 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getDb } from '../db.ts';
+import { getSetting, setSetting } from '../settings.ts';
 import { sealToken, openToken } from '../crypto.ts';
 import { ENDPOINT_NAME_RE } from '../wards.ts';
 import { isLoopbackAddress, isPrivateAddress } from '../net-guard.ts';
@@ -9,6 +10,18 @@ import { isLoopbackAddress, isPrivateAddress } from '../net-guard.ts';
 // and codex refresh is custom anyway. Sealed at rest like everything long-lived.
 
 export type AgentAccountProvider = 'codex' | 'openrouter' | 'openai' | 'brave' | 'exa' | `compat:${string}`;
+
+/** Local opaque revision, not a display label or a digest of a secret. Deletion also advances it,
+ * so a remove/recreate cannot revive a stale form. Ordinary authenticated token rotation preserves it. */
+export function credentialGeneration(user: number, provider: string): string {
+  const key = `agent_credential_generation:${user}:${provider}`;
+  let value = getSetting(key);
+  if (!value) { value = randomUUID(); setSetting(key, value); }
+  return value;
+}
+export function replaceCredentialGeneration(user: number, provider: string): void {
+  setSetting(`agent_credential_generation:${user}:${provider}`, randomUUID());
+}
 
 export interface AgentAccount {
   user_id: number;
@@ -34,7 +47,13 @@ export function storeAgentAccount(opts: {
   label?: string;
   accessToken?: string;
   meta?: Record<string, unknown>;
+  /** Internal refresh only: the existing credential must still own this revision. */
+  refreshGeneration?: string;
 }): void {
+  getDb().transaction(() => {
+  if (opts.refreshGeneration !== undefined &&
+      (!getAgentAccount(opts.userId, opts.provider) || credentialGeneration(opts.userId, opts.provider) !== opts.refreshGeneration))
+    throw new Error('Provider connection changed during refresh; the replacement was not modified.');
   getDb()
     .prepare(
       `INSERT INTO agent_accounts (user_id, provider, label, token_enc, access_token, meta_json)
@@ -53,10 +72,15 @@ export function storeAgentAccount(opts: {
       opts.accessToken ?? '',
       JSON.stringify(opts.meta ?? {})
     );
+  if (opts.refreshGeneration === undefined) replaceCredentialGeneration(opts.userId, opts.provider);
+  })();
 }
 
 export function deleteAgentAccount(userId: number, provider: AgentAccountProvider): void {
-  getDb().prepare('DELETE FROM agent_accounts WHERE user_id = ? AND provider = ?').run(userId, provider);
+  getDb().transaction(() => {
+    getDb().prepare('DELETE FROM agent_accounts WHERE user_id = ? AND provider = ?').run(userId, provider);
+    replaceCredentialGeneration(userId, provider);
+  })();
 }
 
 /** For key-style providers the sealed token IS the credential. */

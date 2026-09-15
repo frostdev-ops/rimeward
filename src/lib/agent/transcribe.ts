@@ -1,6 +1,8 @@
 import { isDesktop } from '../dev/runtime.ts';
 import { agentKey, endpointOf } from './accounts.ts';
 import { agentConfigured } from './provider.ts';
+import { localProviderPresent, serverOffers } from './route.ts';
+import { sharedRime } from './sync.ts';
 import { pinnedRequest } from './shell.ts';
 import { agentWardConfig } from './ward-config.ts';
 
@@ -33,10 +35,15 @@ export type TranscribeRoute =
  * is then billed where the conversation is, on the provider the person picked — and only the two
  * account-wide credentials are fallen back to. A compat endpoint is never chosen for them: the name
  * of someone's own server is a choice, not a default.
+ *
+ * Clip transcription is a LOCAL-CREDENTIAL feature: every path below (OpenAI /audio/transcriptions,
+ * a compat endpoint's, and OpenRouter's audio chat part) posts from this runtime with a key stored on
+ * this runtime. There is no bounded audio relay, so a credential that lives only on the connected
+ * server is reported unavailable rather than advertised and then searched for here.
  */
 export function transcriptionRoute(userId: number, ward: string): TranscribeRoute | null {
   const cfg = agentWardConfig(userId, ward);
-  const has = (provider: 'openai' | 'openrouter' | 'compat', endpoint?: string) => agentConfigured(userId, provider, endpoint ?? null);
+  const has = (provider: 'openai' | 'openrouter' | 'compat', endpoint?: string) => localProviderPresent(userId, provider, endpoint ?? null);
   if (cfg?.provider === 'compat' && cfg.endpoint && has('compat', cfg.endpoint)) return { via: 'compat', endpoint: cfg.endpoint };
   if (cfg?.provider === 'openai' && has('openai')) return { via: 'openai' };
   if (cfg?.provider === 'openrouter' && has('openrouter') && cfg.model) return { via: 'openrouter', model: cfg.model };
@@ -45,10 +52,28 @@ export function transcriptionRoute(userId: number, ward: string): TranscribeRout
   return null;
 }
 
-/** 'live' = the ChatGPT conversation route; 'clip' = record and send; null = neither is connected. */
+/** 'live' = the ChatGPT conversation route (it relays, so a server connection counts); 'clip' = record
+ *  and send from here; null = neither is connected. */
 export function dictationKind(userId: number, ward: string): 'live' | 'clip' | null {
   if (agentConfigured(userId, 'codex', null)) return 'live';
   return transcriptionRoute(userId, ward) ? 'clip' : null;
+}
+
+/** What the composer is told before it records: whether a clip can be transcribed here and, when it
+ *  cannot, whether the reason is that the only credential lives on the connected server. */
+export function transcriptionStatus(userId: number, ward: string): { available: boolean; via: string | null; reason?: string } {
+  const route = transcriptionRoute(userId, ward);
+  if (route) return { available: true, via: route.via };
+  const cfg = agentWardConfig(userId, ward);
+  const shared = sharedRime(userId);
+  const remoteOnly = (['openai', 'openrouter'] as const).some((p) => serverOffers(shared, p)) ||
+    (cfg?.provider === 'compat' && !!cfg.endpoint && serverOffers(shared, 'compat', cfg.endpoint));
+  return {
+    available: false, via: null,
+    reason: remoteOnly
+      ? 'Dictation records here and sends the audio from here, so it needs a key on this runtime. The connected server\u2019s key is not used for it.'
+      : 'Nothing on this runtime can turn speech into text yet.',
+  };
 }
 
 export interface Transcript {
@@ -69,7 +94,7 @@ export async function transcribeAudio(
   const route = transcriptionRoute(userId, ward);
   if (!route) {
     throw fail(
-      'Nothing connected here can turn speech into text. Add an OpenAI API key or OpenRouter under Account → Agent, or point this ward at an OpenAI-compatible endpoint that serves /audio/transcriptions. A ChatGPT login dictates through the live voice route instead.',
+      `${transcriptionStatus(userId, ward).reason} Add an OpenAI API key or OpenRouter on this runtime, or point this ward at an OpenAI-compatible endpoint that serves /audio/transcriptions. A ChatGPT login dictates through the live voice route instead.`,
       503,
     );
   }

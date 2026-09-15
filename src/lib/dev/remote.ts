@@ -19,7 +19,12 @@ import {
   forwardHeaders,
   relaySocket,
 } from "./devices.ts";
-interface Pair {
+/** The account paths whose DESTINATION is chosen by the desktop, not by page placement: they stay on
+ *  this runtime and forward explicitly when the user picked the server. Both the local-routing
+ *  exception (instance-routing.ts) and the stable OAuth binding below read this one list, so a new
+ *  scoped path can never gain one without the other. */
+export const DESTINATION_BOUND = /^\/api\/account\/(?:oauth|integration|provider)(?:\?|$)/;
+export interface Pair {
   server: string;
   id: string;
   token: string;
@@ -42,10 +47,41 @@ export async function nativeDesktop(op: string, value?: unknown) {
 }
 let pairs: Pair[] = [];
 let loaded = false;
-/** The first configured Rime server is the shared profile; other pairs remain workspace connections. */
+/** The DESIGNATED shared-profile server; other pairs remain workspace connections. The first pair
+ *  ever connected becomes it, but removing it never promotes another into provider/account authority:
+ *  a replacement is an explicit choice (setPrimaryServer), because promotion would silently move which
+ *  account a conversation is billed to. */
+const primaryKey = (user: number) => `rime:primary:${user}`;
+const NO_PRIMARY = 'none';
 export async function rimeConnection(user:number) {
   await remotePairs(user);
-  return pairs[0];
+  if (!pairs.length) return undefined;
+  const chosen = getSetting(primaryKey(user));
+  if (chosen === NO_PRIMARY) return undefined;
+  const first = pairs[0];
+  if (!chosen) { if (first) setSetting(primaryKey(user), first.id); return first; }
+  return pairs.find((p) => p.id === chosen);
+}
+/** Which server holds provider/account authority, and every pairing that could. */
+export async function primaryServer(user: number) {
+  const list = await remotePairs(user);
+  const chosen = getSetting(primaryKey(user));
+  const id = chosen === NO_PRIMARY ? null : chosen || list[0]?.id || null;
+  return { id, pairs: list, designated: !!chosen && chosen !== NO_PRIMARY };
+}
+/** A newly connected server takes provider authority only when it is the ONLY one: after an explicit
+ *  un-designation (unpairDesktop) with other pairings still present, the choice stays the person's. */
+function adoptPrimary(user: number, id: string) {
+  const chosen = getSetting(primaryKey(user));
+  if (!chosen || (chosen === NO_PRIMARY && pairs.length === 1)) setSetting(primaryKey(user), id);
+}
+export async function setPrimaryServer(user: number, id: string) {
+  const list = await remotePairs(user);
+  if (!list.some((p) => p.id === id)) throw new DevError('Connect this server first.', 404);
+  setSetting(primaryKey(user), id);
+  serverSessions.delete(id);
+  disconnectRime(user);
+  return { ok: true };
 }
 const serverSessions = new Map<string, { id: string; expiresAt: string }>();
 const controls = new Map<string, WebSocket>();
@@ -216,6 +252,7 @@ export async function pollSignIn(user: number, id: string) {
     const next = [...pairs, p];
     await vault("set", JSON.stringify(next));
     pairs = next;
+    adoptPrimary(user, p.id);
     connect(p);
     ensureRimeSync(user);
     s.result = {
@@ -289,19 +326,36 @@ async function createServerSession(p: Pair) {
 /** Authenticated streaming transport for the connected instance. Never retry a mutation. */
 export async function instanceRequest(user: number, path: string, request: Request): Promise<Response> {
   const pair = await rimeConnection(user);
-  if (!pair || !path.startsWith('/') || path.startsWith('//')) throw new DevError('Connection unavailable.', 503);
+  if (!pair) throw new DevError('Connection unavailable.', 503);
+  return instanceRequestOn(pair, user, path, request);
+}
+/**
+ * The same transport against an ALREADY RESOLVED pairing. A caller that validated a destination —
+ * a scoped provider write, an OAuth attempt bound to one server — passes that connection through
+ * rather than letting the transport look the designated server up again: re-resolving between the
+ * check and the send is how an admitted write reaches a different account.
+ */
+export async function instanceRequestOn(pair: Pair, user: number, path: string, request: Request, oauthSession?: string): Promise<Response> {
+  if (!path.startsWith('/') || path.startsWith('//')) throw new DevError('Connection unavailable.', 503);
   const session = await serverSession(pair);
+  if (DESTINATION_BOUND.test(path)) {
+    const designated = await rimeConnection(user);
+    if (designated?.id !== pair.id || designated.server !== pair.server || designated.token !== pair.token)
+      throw new DevError('The destination changed before dispatch. Nothing was sent to its replacement.', 409);
+  }
   const headers = new Headers({ cookie: `rimeward_session=${session.id}` });
   for (const key of forwardHeaders) {
     const value = request.headers.get(key);
     if (value) headers.set(key, value);
   }
   // OAuth attempts survive a runtime restart without sharing a browser session.
-  if (/^\/api\/account\/(?:oauth|integration)(?:\?|$)/.test(path)) {
+  if (DESTINATION_BOUND.test(path)) {
     const key = `oauth_native_binding:${user}:${pair.id}`;
     let stored = getSetting(key);
     if (!stored) { stored = sealToken(crypto.randomBytes(32).toString('base64url')); setSetting(key, stored); }
-    headers.set('x-rimeward-oauth-binding', openToken(stored));
+    const binding = openToken(stored);
+    headers.set('x-rimeward-oauth-binding', oauthSession
+      ? crypto.createHmac('sha256', binding).update(oauthSession).digest('hex') : binding);
   }
   // A same-origin request on the desktop remains same-origin at the server.
   headers.set('origin', pair.server);
@@ -358,12 +412,16 @@ export async function pairDesktop(
   const next = [...pairs, p];
   await vault("set", JSON.stringify(next));
   pairs = next;
+  adoptPrimary(user, p.id);
   connect(p);
   ensureRimeSync(user);
   return { id: p.id };
 }
 export async function unpairDesktop(user: number, id: string) {
   await remotePairs(user);
+  // Removing the designated server leaves NO shared profile until one is chosen again.
+  if (getSetting(primaryKey(user)) === id || (!getSetting(primaryKey(user)) && pairs[0]?.id === id))
+    setSetting(primaryKey(user), NO_PRIMARY);
   const next = pairs.filter((p) => p.id !== id);
   await vault("set", JSON.stringify(next));
   pairs = next;

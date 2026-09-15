@@ -17,7 +17,9 @@ import { ALERT_MODES } from './api/account/prefs.ts';
 import { getAgentAccount, listEndpoints } from '../lib/agent/accounts.ts';
 import EmbeddingSettings from '../components/EmbeddingSettings.astro';
 import { browserbaseKey } from '../lib/browser/browserbase.ts';
-import { codexOauthPending } from '../lib/agent/codex.ts';
+import { codexAttempts } from '../lib/agent/codex.ts';
+import { isDesktop } from '../lib/dev/runtime.ts';
+import { oauthRuntimeBinding, runtimeBinding } from '../lib/agent/provider-scope.ts';
 import { agentLastError, agentRounds } from '../lib/agent/provider.ts';
 import { sharedRime, syncRime } from '../lib/agent/sync.ts';
 
@@ -94,7 +96,14 @@ const icloudLink = links.get('icloud');
 await syncRime(me.userId);
 const sharedAgent = sharedRime(me.userId);
 const codexAccount = getAgentAccount(me.userId, 'codex');
-const codexPending = codexAccount ? null : codexOauthPending(me.userId);
+const agentBinding = runtimeBinding(me.userId);
+// Sign-in attempts still live on THIS installation, by explicit id - shown, not merely computed.
+const codexLive: ReturnType<typeof codexAttempts> = [];
+// The destination choice is a CAPABILITY of this runtime, rendered here. It used to depend on a
+// marker that only exists on server-proxied HTML, so an offline desktop could not start a local
+// sign-in at all. A standalone desktop has no server to offer, so it stays implicitly local.
+const localScope = isDesktop();
+const canChooseDestination = localScope && !!sharedAgent;
 const AGENT_KEYS = [
   { id: 'openrouter', name: 'OpenRouter API key', hint: 'powers the openrouter provider — openrouter.ai/keys' },
   { id: 'openai', name: 'OpenAI API key', hint: 'powers the openai provider (the OpenAI API, billed to your key) — platform.openai.com/api-keys' },
@@ -968,12 +977,13 @@ const TABS = [
       <div class="card mb-6 p-4">
         <h2 class="section-title mb-3">Agent</h2>
         <p class="mb-3 text-xs text-ink-muted">
-          {sharedAgent ? 'Rime uses your connected server by default. Credentials configured below are local fallbacks.' : 'Credentials for Rime. Choose a provider in the ward configuration, or let Rime use the available account.'}
+          {sharedAgent ? 'These credentials belong to this runtime. Model access follows the policy shown on Provider connections.' : 'Credentials for Rime. Choose a provider in the ward configuration, or let Rime use the available account.'}
         </p>
         {sharedAgent && (
           <p class="banner text-xs" data-rime-connection>
-            <strong>{new URL(sharedAgent.server).host}</strong> · {sharedAgent.online ? 'Connected — server provider access is active.' : 'Offline — using local Rime files and history.'}
-            {' '}Provider credentials stay on the server. Configure a local provider below to run Rime while it is unavailable.
+            <strong>{new URL(sharedAgent.server).host}</strong> · {sharedAgent.reachable ? 'Reachable.' : 'Not reachable.'} Model access is shown separately on Provider connections.
+            {!sharedAgent.online && sharedAgent.reachable ? ' Dashboard sync is behind, which does not change where model calls go.' : ''}
+            {' '}Provider credentials stay on the server. <a class="link" href="/desktop/providers">Manage provider connections</a> to see and change each side separately.
           </p>
         )}
         {agentErr && (
@@ -991,12 +1001,13 @@ const TABS = [
                 : 'Unofficial Codex backend, billed to your ChatGPT plan — may break without notice.'}
             </p>
           </div>
-          {codexAccount && <form method="post" action="/api/account/agent"><button name="action" value="codex-disconnect" class="btn">Disconnect</button></form>}
+          {codexAccount && <form method="post" action="/api/account/agent"><input type="hidden" name="binding" value={agentBinding}/><button name="action" value="codex-disconnect" class="btn">Disconnect</button></form>}
         </div>
         <section class="space-y-2 py-3"><h3>Sign-in identities</h3>{identityConnectors().filter(c=>c.enabled).map(c=><form method="post" action={`/api/auth/identity/${c.id}/link`}><button class="btn">Link {c.name} for sign-in</button></form>)}</section>
-        <section data-codex-connect class="space-y-2 border-b border-line py-3">
-          <a data-local-settings hidden class="link" href="/desktop/settings">This desktop’s settings</a>
-          <label data-destination hidden>Connect to<select class="input" data-target><option value="default">Connected server</option><option value="local">This desktop only</option></select></label>
+        <section data-codex-connect data-scope="account" data-native={localScope ? '1' : undefined} data-destination="local" data-oauth-binding={oauthRuntimeBinding(me.userId)} class="space-y-2 border-b border-line py-3">
+          <a data-local-settings hidden={!localScope} class="link" href="/desktop/providers">Manage this desktop’s provider connections</a>
+          <label data-destination hidden={!canChooseDestination}>Connect to<select class="input" data-target><option value="default">Connected server</option><option value="local">This desktop only</option></select></label>
+          {codexLive.length > 0 && <p class="text-xs text-ink-muted">Sign-in in progress on this installation: {codexLive.map(a => a.destination).join(', ')}.</p>}
           <button type="button" data-start class="btn-primary">{codexAccount?'Reconnect ChatGPT':'Connect ChatGPT'}</button>
           <p role="status" aria-live="polite" class="text-xs">{sharedAgent?'Local connection · This desktop':'Connect to this account'}</p>
           <a data-open hidden class="link" target="_blank" rel="noreferrer">Continue in browser</a>
@@ -1018,6 +1029,7 @@ const TABS = [
         {agentKeys.map((k) => (
           <form method="post" action="/api/account/agent" class="flex items-center gap-2 border-b border-line py-3">
             <input type="hidden" name="action" value={`${k.id}-key`} />
+            <input type="hidden" name="binding" value={agentBinding} />
             <div class="min-w-0 flex-1">
               <p class="text-sm font-medium">{k.name}</p>
               <p class="truncate text-xs text-ink-muted">{k.label ? `saved: ${k.label}` : k.hint}</p>
@@ -1035,6 +1047,7 @@ const TABS = [
           {agentEndpoints.map((e) => (
             <form method="post" action="/api/account/agent" class="mt-2 flex items-center gap-2 text-xs">
               <input type="hidden" name="action" value="endpoint-remove" />
+              <input type="hidden" name="binding" value={agentBinding} />
               <input type="hidden" name="name" value={e.name} />
               <span class="min-w-0 flex-1 truncate"><strong>{e.name}</strong> · {e.url}{e.label ? ` · key ${e.label}` : ' · no key'}</span>
               <button type="submit" class="btn min-h-0 px-2 py-1 text-xs">Remove</button>
@@ -1042,6 +1055,7 @@ const TABS = [
           ))}
           <form method="post" action="/api/account/agent" class="mt-2 flex flex-wrap items-center gap-2">
             <input type="hidden" name="action" value="endpoint-add" />
+            <input type="hidden" name="binding" value={agentBinding} />
             <input name="name" type="text" class="input min-h-0 w-28 px-2 py-1 text-xs" placeholder="name" aria-label="Endpoint name" pattern="[a-z0-9][a-z0-9-]{0,39}" required />
             <input name="url" type="url" class="input min-h-0 flex-1 px-2 py-1 text-xs" placeholder="https://host/v1" aria-label="Endpoint base URL" required />
             <input name="key" type="password" class="input min-h-0 w-40 px-2 py-1 text-xs" placeholder="key (optional)" aria-label="Endpoint API key (optional)" autocomplete="off" />
@@ -1051,6 +1065,7 @@ const TABS = [
 
         <form method="post" action="/api/account/agent" class="flex items-center gap-2 border-b border-line py-3">
           <input type="hidden" name="action" value="browserbase-key" />
+          <input type="hidden" name="binding" value={agentBinding} />
           <div class="min-w-0 flex-1">
             <p class="text-sm font-medium">Browserbase API key</p>
             <p class="truncate text-xs text-ink-muted">{bbLabel ? `saved: ${bbLabel}` : 'browser wards set to run on Browserbase — browserbase.com'}</p>

@@ -381,6 +381,11 @@ interface State {
   conversation?: number;
   ownerRuntimeId?: string;
   ownerName?: string;
+  /** Which connection serves and bills this ward's model calls - a different question from where the
+   *  conversation runs, and shown as its own line so neither is mistaken for the other. `live` marks
+   *  the receipt of a turn actually in flight; otherwise it describes what the NEXT turn would use,
+   *  which can differ, and `blocked` means no route can serve this conversation at all. */
+  modelAccess?: { label: string; policy: string; via: string; reason: string; server?: string; live?: boolean; blocked?: string };
   newChatRequest?: string;
   placementBlocked?: string;
   run?: string;
@@ -1114,7 +1119,7 @@ function paintStream(st: State) {
   st.frame = requestAnimationFrame(() => { st.frame = undefined; for (const ui of st.uis) if (ui.root.isConnected) buildLog(st, ui); });
 }
 
-function restoreSurface(st: State, data: { conversation?: number; transcript?: TranscriptMsg[]; live?: LiveTurn; ownerRuntimeId?: string; ownerName?: string; workspace?: { runOwnerRuntimeId?: string } | null }) {
+function restoreSurface(st: State, data: { conversation?: number; transcript?: TranscriptMsg[]; live?: LiveTurn; ownerRuntimeId?: string; ownerName?: string; modelAccess?: State['modelAccess']; workspace?: { runOwnerRuntimeId?: string } | null }) {
   // Only this run's in-flight items may outlive the snapshot: another tab's New
   // chat swaps the conversation, and its old messages must not be carried over.
   const old = st.items, sameRun = !!data.live && (!st.run || st.run === data.live.id) && (!st.conversation || st.conversation === data.conversation);
@@ -1126,6 +1131,7 @@ function restoreSurface(st: State, data: { conversation?: number; transcript?: T
   st.conversation = data.conversation; st.run = data.live?.id;
   st.ownerRuntimeId = nextOwner;
   st.ownerName = data.ownerName;
+  st.modelAccess = data.modelAccess;
   st.placementBlocked = undefined;
   st.items = itemsFrom(data.live?.transcript ?? data.transcript ?? []);
   const matched = new Set<Item>();
@@ -1295,8 +1301,17 @@ function paint(st: State): void {
     buildLog(st, ui);
     const placement = `${st.w.i}:${st.w.workspace ?? ''}`;
     if (ui.location.dataset.binding !== placement) { ui.location.replaceChildren(locationChip(st.w)); ui.location.dataset.binding = placement; }
-    ui.ownerLabel.textContent = st.ownerRuntimeId ? `${st.busy || st.remote ? 'Running' : 'Conversation'} on ${st.ownerName ?? st.ownerRuntimeId}` : '';
-    ui.ownerLabel.title = 'This conversation stays on its original runtime. New unlinked conversations start on the machine you are using.';
+    const runsOn = st.ownerRuntimeId ? `${st.busy || st.remote ? 'Running' : 'Conversation'} on ${st.ownerName ?? st.ownerRuntimeId}` : '';
+    // Only once there is a conversation to describe: an idle ward keeps an empty placement row. A
+    // running turn reports the source it was ADMITTED on; an idle one reports what the next turn
+    // would use, said as such — the two can differ and must not read the same.
+    const access = st.modelAccess
+      ? st.modelAccess.blocked ? 'Model access unavailable'
+        : st.modelAccess.live ? `Model access via ${st.modelAccess.label}`
+        : `Next turn via ${st.modelAccess.label}`
+      : '';
+    ui.ownerLabel.textContent = runsOn && access ? `${runsOn} · ${access}` : runsOn;
+    ui.ownerLabel.title = `This conversation stays on its original runtime. New unlinked conversations start on the machine you are using.${st.modelAccess ? `\n${st.modelAccess.blocked ?? `Model access: ${st.modelAccess.reason}.`}` : ''}`;
     const voicePhase = st.voiceState?.phase ?? 'idle';
     const voiceActive = voicePhase !== 'idle' && voicePhase !== 'error';
     const conversationMode = st.voiceState?.mode ?? 'off';
@@ -2824,7 +2839,13 @@ async function openHistory(w:WardInstance) {
       const {data:chat,status}=await getJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}&ward=${encodeURIComponent(w.i)}&key=${encodeURIComponent(key)}`);if(status!==200||!chat)throw Error('Conversation unavailable.');
       list.replaceChildren(el('h3',undefined,chat.title));
       // Identity first: where it ran and on what — a thread never records its model unless it ran on this build or later.
-      const identity=el('p','muted ag-history-identity',`Ran on ${routeOf(chat)}${chat.endpointUrl?` (${chat.endpointUrl})`:''} · model ${chat.model??'not recorded'}`);list.append(identity);
+      // A backend recorded as a connected server's carries that server's account id; show what it
+      // MEANS, not the raw pin, and never present an unattested one as an established address.
+      const backend=typeof chat.endpointUrl==='string'?chat.endpointUrl:'';
+      const where=!backend?'':backend.startsWith('server:')
+        ?(()=>{const rest=backend.slice(7),cut=rest.indexOf(':'),url=cut<0?'':rest.slice(cut+1);return url?` (a connected server's ${url})`:' (a connected server, backend not recorded)';})()
+        :` (${backend})`;
+      const identity=el('p','muted ag-history-identity',`Ran on ${routeOf(chat)}${where} · model ${chat.model??'not recorded'}`);list.append(identity);
       for(const m of chat.messages){const msg=el('div','ag-history-message');msg.append(el('strong',undefined,m.role==='user'?'You':'Rime'),markdown(m.text));list.append(msg);}
       const target=chat.target as {provider:string;endpoint:string|null;model:string}|null;
       const sameRoute=!!target&&target.provider===chat.provider&&(target.endpoint??null)===(chat.endpoint??null);

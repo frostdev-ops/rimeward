@@ -2,6 +2,8 @@ import { chromium, type BrowserContext } from 'playwright-core';
 import { openToken, sealToken } from '../crypto.ts';
 import { deleteSetting, getSetting, setSetting } from '../settings.ts';
 import { createHash } from 'node:crypto';
+import { getDb } from '../db.ts';
+import { replaceCredentialGeneration } from '../agent/accounts.ts';
 import { extensionRegistry, extensionZip, cleanExtensions } from './extensions.ts';
 
 // The hosted backend: a Browserbase session per ward, connected over CDP, so
@@ -27,8 +29,11 @@ export function browserbaseKey(userId: number): string | null {
 
 /** '' clears. */
 export function storeBrowserbaseKey(userId: number, key: string): void {
+  getDb().transaction(() => {
   if (key) setSetting(keyOf(userId), sealToken(key));
   else deleteSetting(keyOf(userId));
+  replaceCredentialGeneration(userId, 'browserbase');
+  })();
 }
 
 async function api<T>(key: string, path: string, body: unknown): Promise<T> {

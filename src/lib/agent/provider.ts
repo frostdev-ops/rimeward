@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { getSetting, setSetting } from '../settings.ts';
-import { getAgentAccount, agentKey, endpointOf } from './accounts.ts';
 import { isDesktop } from '../dev/runtime.ts';
-import { sharedRime, sharedModel, sharedCodexModels } from './sync.ts';
+import { installationId, profileId } from './sync-store.ts';
+import { sharedRime, sharedModel, sharedCodexModels, sharedCatalog } from './sync.ts';
+import { credentialId, isRemotePin, localProviderPresent, parseRemotePin, resolveProviderRoute, routePolicy, routeReceipt, serverOffers,
+  type ProviderRouteReceipt, type ResolvedProviderRoute } from './route.ts';
 import type { ModelContext } from './context.ts';
 import type { ThinkingProgress } from './stream.ts';
 import { AGENT_PROVIDERS, isAgentProvider, type AgentProviderId } from '../wards.ts';
@@ -53,8 +55,19 @@ export interface ProviderCall {
   /** provider 'compat': the BACKEND this thread was admitted on (a normalized base URL). An endpoint
    *  NAME is a per-runtime alias that can be repointed mid-thread; when this is set the call is refused
    *  unless the name still resolves to exactly it, and it is never relayed to another runtime. Checked
-   *  where the request is built, so nothing can change between the check and the send. */
+   *  where the request is built, so nothing can change between the check and the send.
+   *  A value prefixed `server:` means the CONNECTED SERVER's backend for that name (route.ts); such a
+   *  thread is never dispatched locally, however equal the alias. */
   backend?: string;
+  /** provider 'compat', relayed: the backend the SERVER attested for this endpoint name. Sent with the
+   *  relayed call so the server re-checks identity where it builds the outgoing request. */
+  remoteBackend?: string;
+  /** The non-secret credential GENERATION this call was admitted against (route.ts credentialId).
+   *  Carried into header construction and into the 401 retry, so a reconnect to another account
+   *  between rounds - or between a 401 and its retry - stops the call instead of billing the new one. */
+  credential?: string;
+  /** Which route served this call and why - recorded with the call, never a credential. */
+  route?: ProviderRouteReceipt;
   instructions: string;
   items: unknown[];
   tools: AgentToolSpec[];
@@ -90,6 +103,9 @@ export function usageLine(usage?: ProviderResult['usage']): string {
 
 export interface AgentProvider {
   id: AgentProviderId;
+  /** The inference route this instance is pinned to, once resolved. One provider object per turn,
+   *  voice session or one-shot, so every round of a tool loop is billed to the same installation. */
+  readonly route?: ResolvedProviderRoute;
   /** Absent on a bare test double: the id's own dialect then. */
   dialect?: Dialect;
   /** compat only: the endpoint this instance is bound to. */
@@ -198,16 +214,23 @@ export const DEFAULT_MODELS: Record<AgentProviderId, string> = {
  *  id missing from here still works if you type it. */
 export const CODEX_MODELS = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4-mini'];
 
+/** Can a run on this provider actually be admitted HERE, under the account's route preference? The
+ *  server half needs the server reachable (not merely a healthy sync), and "this runtime only" never
+ *  counts a server credential as configured. */
 export function agentConfigured(userId: number, provider: AgentProviderId, endpoint?: string | null): boolean {
-  const shared = sharedRime(userId);
-  if (shared?.online && (provider === 'compat' ? !!endpoint && (shared.endpoints ?? []).includes(endpoint) : shared.providers[provider])) return true;
-  if (provider === 'compat') return !!endpoint && !!endpointOf(userId, endpoint);
-  if (provider === 'openrouter' || provider === 'openai') return !!agentKey(userId, provider);
-  return !!getAgentAccount(userId, 'codex');
+  const policy = routePolicy(userId);
+  const shared = policy === 'runtime' ? null : sharedRime(userId);
+  // Reachable AND answering as the account we are joined to: capabilities stored from another
+  // profile describe a connection we do not have, and must not count as configured.
+  if (shared?.reachable && shared.authority !== false && serverOffers(shared, provider, endpoint)) return true;
+  if (policy === 'server') return false;
+  return localProviderPresent(userId, provider, endpoint);
 }
 
 export function defaultAgentProvider(userId: number): AgentProviderId {
-  const preferred = sharedRime(userId)?.config.provider;
+  // A runtime-only ward does not inherit the server's provider default: that default names a
+  // credential this runtime is not allowed to use.
+  const preferred = routePolicy(userId) === 'runtime' ? undefined : sharedRime(userId)?.config.provider;
   if (isAgentProvider(preferred) && preferred !== 'compat') return preferred;
   for (const p of ['codex', 'openrouter', 'openai'] as const) if (agentConfigured(userId, p)) return p;
   return 'openrouter';
@@ -252,12 +275,17 @@ export async function runModel(provider: AgentProvider, call: ProviderCall): Pro
     signal.addEventListener('abort', rejectAbort, { once: true });
   });
   let active = true;
-  const record: Record<string, unknown> = { id: call.relayRequestId ?? crypto.randomUUID(), provider: provider.id, model: call.model, conversation: call.cacheKey, startedAt: Date.now(), state: 'running' };
+  const record: Record<string, unknown> = { id: call.relayRequestId ?? crypto.randomUUID(), provider: provider.id, model: call.model, conversation: call.cacheKey, startedAt: Date.now(), state: 'running',
+    // The route receipt rides the existing bounded call record - requested policy and actual source,
+    // no credentials, no prompts.
+    ...(call.route ? { route: call.route } : {}), ...(call.endpoint ? { endpoint: call.endpoint } : {}) };
   record.instructionsHash = createHash('sha256').update(call.instructions).digest('hex');
   record.toolsHash = createHash('sha256').update(JSON.stringify(call.tools)).digest('hex');
   const startedAt = Date.now();
   const save = () => {
     try {
+      const route = call.route ?? (provider.route ? routeReceipt(provider.route) : undefined);
+      if (route) record.route = route;
       const key = `agent_model_calls:${call.userId}`;
       const rows = JSON.parse(getSetting(key) ?? '[]');
       setSetting(key, JSON.stringify([...(Array.isArray(rows) ? rows.filter(r => r.id !== record.id).slice(-39) : []), record]));
@@ -287,29 +315,89 @@ export async function runModel(provider: AgentProvider, call: ProviderCall): Pro
   }
 }
 
-export async function getProvider(id: AgentProviderId, endpoint?: string | null): Promise<AgentProvider> {
+/**
+ * One provider instance, pinned to ONE inference route. Pass the route when the caller already
+ * resolved it (a turn stamps its conversation before the first call); otherwise it is resolved on
+ * first use and then frozen for the life of this object - so a tool loop, its compaction and a
+ * child run cannot each pick a different installation.
+ */
+export async function getProvider(id: AgentProviderId, endpoint?: string | null, pinned?: ResolvedProviderRoute): Promise<AgentProvider> {
   // Dynamic so a request that never chats (status ticks, watchers sweeping an
   // empty table) doesn't load the SDK or the codex machinery.
   const provider = await (id === 'codex' || id === 'openai'
     ? import('./codex.ts').then((m) => (id === 'codex' ? m.codexProvider : m.openaiProvider))
     : import('./openrouter.ts').then((m) => (id === 'openrouter' ? m.openrouterProvider : m.compatProvider(endpoint ?? ''))));
-  return isDesktop() ? {
+  let resolved = pinned;
+  const routeFor = async (userId: number) => (resolved ??= await resolveProviderRoute(userId, id, endpoint));
+  const name = () => `${PROVIDER_NAMES[id]}${endpoint ? ` "${endpoint}"` : ''}`;
+  return {
     ...provider,
+    get route() { return resolved; },
     // The bound endpoint rides the typed call, so a server-only endpoint is
     // offered to the relay and a local one reaches the local provider.
     run: async(call) => {
-      const routed: ProviderCall = { ...call, ...(provider.endpoint ? { endpoint: provider.endpoint } : {}) };
-      // A call pinned to a backend stays on this runtime: the paired server's endpoint of the same
-      // name is a different server, and relaying would send this thread's context to it.
-      const go = async () => (call.backend ? provider.run(routed) : await sharedModel(call.userId, id, routed) ?? provider.run(routed));
-      return call.child ? withChildSlot(go, call.signal) : go();
+      const route = await routeFor(call.userId);
+      // Nothing is sent under a route that cannot honour what this conversation recorded.
+      if (route.blocked) throw new Error(route.blocked);
+      if (call.credential && route.via === 'local' && call.credential !== route.credential)
+        throw new Error('The admitted provider connection changed before dispatch; nothing was sent on the replacement.');
+      // The RECORDED constraint outranks the route, and a disagreement is refused rather than
+      // reconciled. Today's attestation is never substituted for a pin the thread already holds.
+      if (call.backend) {
+        const pin = parseRemotePin(call.backend);
+        const servedHere = pin && pin.runtime === installationId() && pin.profile === profileId(call.userId) && !!pin.url;
+        if (pin && route.via !== 'server' && !servedHere)
+          throw new Error(`This conversation was admitted on a connected server's "${call.endpoint ?? provider.endpoint ?? ''}" endpoint. A local endpoint of the same name is a different backend, so nothing was sent to it.`);
+        if (pin && route.server && (route.server.profile !== pin.profile || route.server.runtime !== pin.runtime))
+          throw new Error('This conversation was admitted on a different server account than the one connected now. Nothing was sent to it.');
+        if (!pin && route.via !== 'local')
+          throw new Error(`This conversation was admitted on this runtime's own "${call.endpoint ?? provider.endpoint ?? ''}" endpoint, so its context is not sent to the connected server. Set Model access to this runtime for it, or start a new chat on the server's endpoint.`);
+      }
+      // The pin this call must be served under: the one the thread recorded, else this route's own.
+      // The url half is the only part the relay sends; an empty one means the server attested none,
+      // and an unattested pin is carried as "remote, identity not established" rather than invented.
+      const attested = parseRemotePin(call.backend && isRemotePin(call.backend) ? call.backend : route.remoteBackend ?? '')?.url || undefined;
+      const routed: ProviderCall = { ...call, ...(provider.endpoint ? { endpoint: provider.endpoint } : {}), route: routeReceipt(route),
+        ...(route.via === 'server' && attested ? { remoteBackend: attested } : {}),
+        ...(route.via === 'local' && route.credential ? { credential: route.credential } : {}) };
+      if (route.via === 'local' && call.backend && isRemotePin(call.backend))
+        routed.backend = parseRemotePin(call.backend)!.url;
+      const go = async () => {
+        if (route.via === 'server') {
+          const result = await sharedModel(call.userId, id, routed, route);
+          if (result) return result;
+          // The route was fixed when this turn was admitted. A server that has since gone away is a
+          // failure, never a quiet switch to another account's credential.
+          throw new Error(`${name()} runs on the connected server${route.server ? ` (${route.server.host})` : ''} for this conversation, and it is not available. Nothing was sent anywhere else. ${route.policy === 'server' ? 'Change Model access on the provider page to use this runtime.' : 'Try again when it is reachable, or connect this provider here.'}`);
+        }
+        // The credential generation this turn was admitted against must still be the one here: a
+        // reconnect between tool rounds is a stop, not a change of billing account.
+        if (route.credential !== undefined) {
+          const now = credentialId(call.userId, id, provider.endpoint ?? endpoint ?? null);
+          if (now !== route.credential)
+            throw new Error(`The ${name()} connection on this runtime changed while this turn was running. Nothing was sent to the replacement — send the message again to use it.`);
+        }
+        // Absence was compared too. The concrete provider reports a missing credential; keeping
+        // that responsibility there also preserves injectable/offline providers without weakening
+        // the check against credentials appearing after this turn's admission.
+        return provider.run(routed);
+      };
+      return call.child && isDesktop() ? withChildSlot(go, call.signal) : go();
     },
     context: async(user, model) => {
-      if (id === 'codex') {
-        const shared = await sharedCodexModels(user);
-        if (shared) return shared.find((m) => m.id === model)?.context;
+      const route = await routeFor(user);
+      if (route.blocked) return undefined;
+      // A source-bound answer: a server route reads the server's catalog and nothing else, and a
+      // runtime-only route never reads it at all. A cached remote list is not evidence that a local
+      // credential can serve a model.
+      if (route.via === 'server') {
+        const shared = id === 'codex' ? await sharedCodexModels(user, route) : await sharedCatalog(user, id, endpoint, route);
+        return shared?.models.find((m) => m.id === model)?.context;
       }
-      return provider.context?.(user, model);
+      if (route.credential !== credentialId(user, id, endpoint)) throw Error('Provider connection changed during context lookup.');
+      const context = await provider.context?.(user, model);
+      if (route.credential !== credentialId(user, id, endpoint)) throw Error('Provider connection changed during context lookup.');
+      return context;
     },
-  } : provider;
+  };
 }

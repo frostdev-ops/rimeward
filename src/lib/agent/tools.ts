@@ -126,6 +126,9 @@ export interface ToolCtx {
   /** Set by runTask on a spawn: the child calls it once its arguments and route
    *  have validated — only then does the caller get a task id instead of the error. */
   detach?: () => void;
+  /** The inference route the RUNNING turn was admitted on. A child, a fork and a resume inherit it
+   *  rather than re-resolving from settings that may have moved since — never a tool argument. */
+  route?: import('./route.ts').ResolvedProviderRoute;
   /** Set only by the server on a person's own action (a Resume from the Tasks drawer) — never on a
    *  model's call. Backend-verified authority; a tool argument can never stand in for it. */
   user?: true;

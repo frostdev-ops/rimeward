@@ -2,7 +2,7 @@ import { OpenRouter } from '@openrouter/sdk';
 import { cached } from '../cache.ts';
 import { openrouterContext, type ModelContext } from './context.ts';
 import { getSetting, setSetting } from '../settings.ts';
-import { agentKey, endpointOf, normalizeEndpoint } from './accounts.ts';
+import { agentKey, credentialGeneration, endpointOf, normalizeEndpoint } from './accounts.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { pinnedRequest } from './shell.ts';
 import { sseParser, thinkingCounter } from './stream.ts';
@@ -176,6 +176,8 @@ export function chatStream(onText?: (delta: string) => void, onThinking?: Provid
 
 async function callOpenRouter(call: ProviderCall, retried = false): Promise<ProviderResult> {
   const key = agentKey(call.userId, 'openrouter');
+  if (call.credential && call.credential !== credentialGeneration(call.userId, 'openrouter'))
+    throw new Error('OpenRouter connection changed; this request was not sent on the replacement.');
   if (!key) throw new Error('openrouter: no API key — add one under Account → Agent');
   const or = new OpenRouter({ apiKey: key });
   let result: any;
@@ -280,8 +282,11 @@ const MODELS_KEY = 'agent_models:openrouter';
  * than an hour-stale one. The list is public data, so it is shared, not
  * per-user.
  */
-export function listOpenRouterModels(): Promise<ModelChoice[]> {
-  return cached('agent:models', MODELS_TTL_MS, async () => {
+export async function listOpenRouterModels(): Promise<ModelChoice[]> {
+  return (await listOpenRouterCatalog()).models;
+}
+export function listOpenRouterCatalog(): Promise<{ models: ModelChoice[]; source: 'live' | 'cache'; at: number }> {
+  return cached('agent:models:catalog', MODELS_TTL_MS, async () => {
     try {
       // No apiKey: the catalog is public, and this list is shared by every
       // user, so it must not depend on whose key happens to be configured.
@@ -306,13 +311,15 @@ export function listOpenRouterModels(): Promise<ModelChoice[]> {
       }
       if (!models.length) throw new Error('empty model list');
       models.sort((a, b) => a.name.localeCompare(b.name));
-      setSetting(MODELS_KEY, JSON.stringify({ at: Date.now(), models }));
-      return models;
+      const at = Date.now();
+      setSetting(MODELS_KEY, JSON.stringify({ at, models }));
+      return { models, source: 'live', at };
     } catch (err) {
       const stale = readStoredModels();
       if (stale.length) {
         console.error('[agent models] live list failed, serving the stored one:', err);
-        return stale.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) }));
+        const at = Number((JSON.parse(getSetting(MODELS_KEY) ?? '{}') as { at?: number }).at) || 0;
+        return { models: stale.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) })), source: 'cache', at };
       }
       throw err;
     }
@@ -368,6 +375,10 @@ export function fromWire(msg: { role?: string; content?: unknown; reasoning?: st
 async function callCompat(endpoint: string, call: ProviderCall): Promise<ProviderResult> {
   const target = endpointOf(call.userId, endpoint);
   if (!target) throw new Error(`compat: no endpoint "${endpoint}" — add it under Account → Agent`);
+  // The credential generation this call was admitted against, re-read where the request is built: an
+  // endpoint re-entered with another URL or key between rounds stops the turn rather than serving it.
+  if (call.credential && call.credential !== credentialGeneration(call.userId, `compat:${endpoint}`))
+    throw new Error(`endpoint "${endpoint}" was changed while this turn was running; nothing was sent to its replacement. Send the message again to use it.`);
   // The last word on where this thread's context goes, taken from the SAME resolution the request is
   // built from: an alias repointed since the thread was admitted cannot carry it to another server.
   if (call.backend && normalizeEndpoint(target.url) !== call.backend)
@@ -447,8 +458,9 @@ export function compatProvider(endpoint: string): AgentProvider {
 export function listCompatModels(userId: number, endpoint: string): Promise<{ models: ModelChoice[]; source: 'live' | 'cache'; at: number }> {
   const target = endpointOf(userId, endpoint);
   if (!target) return Promise.reject(new Error(`no endpoint "${endpoint}"`));
-  const stored = `agent_models:compat:${userId}:${endpoint}:${target.revision}`;
-  return cached(`compat:models:${userId}:${endpoint}:${target.revision}`, MODELS_TTL_MS, async () => {
+  const revision = `${credentialGeneration(userId, `compat:${endpoint}`)}:${target.revision}`;
+  const stored = `agent_models:compat:${userId}:${endpoint}:${revision}`;
+  return cached(`compat:models:${userId}:${endpoint}:${revision}`, MODELS_TTL_MS, async () => {
     try {
       const res = await pinnedRequest(`${target.url}/models`, { headers: target.key ? { Authorization: `Bearer ${target.key}` } : {}, timeoutMs: 10_000, allowLoopback: isDesktop() });
       if (res.status < 200 || res.status >= 300) throw new Error(`models ${res.status}`);

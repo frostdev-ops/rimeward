@@ -1,5 +1,6 @@
 import { getDashboard } from '../dashboard.ts';
 import { sharedRime } from './sync.ts';
+import { routePolicy } from './route.ts';
 import { PERMISSION_MODES, isPermissionMode, type PermissionMode } from '../dev/types.ts';
 import { defaultAgentProvider, isAgentProvider, DEFAULT_MODELS, AGENT_EFFORTS, type AgentEffort, type AgentProviderId } from './provider.ts';
 
@@ -33,7 +34,9 @@ export interface AgentWardConfig {
 export function agentWardConfig(userId: number, ward: string): AgentWardConfig | null {
   const w = getDashboard(userId).find((x) => x.i === ward && x.type === 'agent');
   if (!w) return null;
-  const shared = sharedRime(userId)?.config;
+  // A runtime-only ward does not inherit the connected server's provider/model defaults: they name a
+  // credential this ward is not allowed to use, and would fail admission rather than fall back.
+  const shared = routePolicy(userId) === 'runtime' ? undefined : sharedRime(userId)?.config;
   const provider: AgentProviderId = isAgentProvider(w.config?.provider) ? w.config.provider : defaultAgentProvider(userId);
   const c = { ...shared, ...(shared?.provider !== provider ? {model: undefined, effort: undefined} : {}), ...w.config } as Record<string, unknown>;
   return {
