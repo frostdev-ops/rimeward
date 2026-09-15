@@ -464,7 +464,7 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
     throw err;
   }
 
-  type Completed = { output?: OutputItem[]; usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } } };
+  type Completed = { output?: OutputItem[]; usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } } };
   const streamed: OutputItem[] = [];
   const thinking = thinkingCounter(call.onThinking);
   let completed: Completed | undefined;
@@ -499,7 +499,7 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
     if (fn.type !== 'custom') try { JSON.parse(fn.arguments); } catch { throw new CodexError(`${tag}: tool call ${fn.name} carried malformed arguments`); }
   }
   const u = completed?.usage;
-  return { text, calls, items, ...(u?.input_tokens !== undefined ? { usage: { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens, output: u.output_tokens } } : {}) };
+  return { text, calls, items, ...(u?.input_tokens !== undefined ? { usage: { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens, cacheWrite: u.input_tokens_details?.cache_write_tokens, output: u.output_tokens } } : {}) };
 }
 
 /** The backend's model list. It is gated on the CLI version it thinks it is
