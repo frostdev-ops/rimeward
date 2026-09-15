@@ -237,7 +237,7 @@ export function transcript(conversationId: number, limit = 60): TranscriptMsg[] 
 
 /** Both dialects mark a user turn this way (codex adds type:'message'). */
 const isUserMsg = (it: any): boolean =>
-  it?.role === 'user' && (it.type === 'message' || it.type === undefined);
+  it?.role === 'user' && !it.applicationContext && (it.type === 'message' || it.type === undefined);
 
 /** A tool RESULT in either dialect. The compaction boundary must never land on
  *  one: its call would go into the summary, the output would stay in the tail

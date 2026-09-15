@@ -268,7 +268,7 @@ test("runLoop runs a round's calls concurrently, streams every start first, and 
     assert.deepEqual(flow.map((e) => e.type), ['step_start', 'step_start', 'step', 'step']);
     assert.equal((flow[2] as { step: { tool: string } }).step.tool, 'fast_probe');
     // The record and the replay are in CALL order, tagged with the round.
-    assert.deepEqual(turn.steps.filter(s => s.tool !== 'search_tools').map((s) => [s.id, s.round, s.tool]), [['c1', 1, 'slow_probe'], ['c2', 1, 'fast_probe']]);
+    assert.deepEqual(turn.steps.filter(s => s.tool !== 'search_tools').map((s) => [s.id, s.round, s.tool]), [['c1', 0, 'slow_probe'], ['c2', 0, 'fast_probe']]);
     const outs = items.filter((it: any) => it.type === 'function_call_output' && !it.call_id.startsWith('discover-')).map((it: any) => it.call_id);
     assert.deepEqual(outs, ['c1', 'c2']);
   } finally {
@@ -439,14 +439,14 @@ test('runLoop emits full-request token estimates anchored to usage, without inve
   ]);
   const usage: Extract<AgentEvent, { type: 'usage' }>[] = [];
   await runLoop(cfgFor(u, provider), [], (e) => { if (e.type === 'usage') usage.push(e); });
-  assert.equal(usage.length, 3, 'one per model round, including discovery');
-  assert.equal(usage[1]!.input, 50_000);
-  assert.equal(usage[1]!.cached, 40_000);
+  assert.equal(usage.length, 2, 'one per model round');
+  assert.equal(usage[0]!.input, 50_000);
+  assert.equal(usage[0]!.cached, 40_000);
   assert.equal(usage[0]!.compactAt, null);
   assert.equal(usage[0]!.source, 'unknown');
-  assert.ok(usage[1]!.tokens > 50_000, 'includes measured instructions/tools and the new reply');
-  assert.ok(usage[2]!.tokens > usage[1]!.tokens, 'grows with the tool result');
-  assert.equal(usage[2]!.input, 50_000, 'keeps the last measured input when billing is absent');
+  assert.ok(usage[0]!.tokens > 50_000, 'includes measured instructions/tools and the new reply');
+  assert.ok(usage[1]!.tokens > usage[0]!.tokens, 'grows with the tool result');
+  assert.equal(usage[1]!.input, 50_000, 'keeps the last measured input when billing is absent');
 });
 
 test('runLoop banks work every round, not only at the end of the turn', async () => {

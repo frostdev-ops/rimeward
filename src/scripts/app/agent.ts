@@ -434,7 +434,7 @@ function paintContext(el: HTMLElement, c: State['context']): void {
   el.textContent = pct === null ? `~${kTokens(c.tokens)}` : `~${pct}%`;
   el.style.setProperty('--ag-ctx', `${Math.min(100, pct ?? 0)}%`);
   el.dataset.hot = String(c.compactAt !== null && c.tokens >= c.compactAt * .9);
-  const billed = c.input ? ` · last request ${kTokens(c.input)} input tokens, ${Math.round(100 * (c.cached ?? 0) / c.input)}% cached` : '';
+  const billed = c.input ? ` · last request ${kTokens(c.input)} input tokens, ${c.cached === undefined ? 'cache read unreported' : `${Math.round(100 * c.cached / c.input)}% cached`}${c.cacheWrite === undefined ? '' : `, ${kTokens(c.cacheWrite)} cache write tokens`}` : '';
   const capacity = c.window ? `${kTokens(c.window)} token window; compacts near ${kTokens(c.compactAt!)}${c.source === 'cache' ? ' (cached model limits)' : ''}` : 'model capacity unavailable';
   el.title = `${c.model}: approximately ${kTokens(c.tokens)} tokens including instructions, tools and conversation · ${capacity}${billed}. Unseen text and media are estimates.`;
   el.setAttribute('aria-label', pct === null ? `Approximately ${kTokens(c.tokens)} context tokens; capacity unknown` : `Context approximately ${pct}% full`);

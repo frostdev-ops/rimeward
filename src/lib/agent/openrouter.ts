@@ -189,7 +189,7 @@ async function callOpenRouter(call: ProviderCall, retried = false): Promise<Prov
           // fresh thread) and the newest message (the growing thread).
           messages: [
             { role: 'system', content: [{ type: 'text', text: call.instructions, cacheControl: EPHEMERAL }] },
-            ...(markLast(call.items) as any[]),
+            ...(markLast(call.items.map((item: any) => { const { applicationContext: _applicationContext, ...wire } = item; return wire; })) as any[]),
           ],
           ...(call.tools.length
             ? {
@@ -231,8 +231,9 @@ async function callOpenRouter(call: ProviderCall, retried = false): Promise<Prov
   // Store the assistant message verbatim (reasoningDetails included) so the
   // next request replays exactly what the model said.
   const input = Number(result?.usage?.promptTokens) || 0;
-  const cached = Number(result?.usage?.promptTokensDetails?.cachedTokens) || 0;
-  return { text, calls, items: [{ ...msg, role: 'assistant' }], ...(input ? { usage: { input, cached, output: result?.usage?.completionTokens } } : {}) };
+  const cached = result?.usage?.promptTokensDetails?.cachedTokens;
+  const cacheWrite = result?.usage?.promptTokensDetails?.cacheWriteTokens;
+  return { text, calls, items: [{ ...msg, role: 'assistant' }], ...(result?.usage?.promptTokens !== undefined ? { usage: { input, cached, cacheWrite, output: result?.usage?.completionTokens } } : {}) };
 }
 
 export const openrouterProvider: AgentProvider = {
@@ -413,8 +414,9 @@ async function callCompat(endpoint: string, call: ProviderCall): Promise<Provide
   const { text, calls } = readChatResponse(msg);
   if (!text && !calls.length) throw new Error(`compat (${endpoint}): empty response`);
   const input = Number(data.usage?.prompt_tokens) || 0;
-  const cachedTokens = Number(data.usage?.prompt_tokens_details?.cached_tokens) || 0;
-  return { text, calls, items: [msg], ...(input ? { usage: { input, cached: cachedTokens, output: Number(data.usage?.completion_tokens) || undefined } } : {}) };
+  const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens;
+  const cacheWrite = data.usage?.prompt_tokens_details?.cache_write_tokens;
+  return { text, calls, items: [msg], ...(data.usage?.prompt_tokens !== undefined ? { usage: { input, cached: cachedTokens, cacheWrite, output: data.usage?.completion_tokens } } : {}) };
 }
 
 /** One provider object per endpoint name; the URL and key are the user's rows, read per call. */

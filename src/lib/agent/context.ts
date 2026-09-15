@@ -45,6 +45,7 @@ export interface ContextUsage {
   source: ModelContext['source'] | 'unknown';
   input?: number;
   cached?: number;
+  cacheWrite?: number;
 }
 
 /** ponytail: approximate unseen text at four UTF-8 bytes/token; provider usage anchors
@@ -60,7 +61,7 @@ export function estimateTokens(value: unknown): number {
 }
 
 interface Measurement {
-  model: string; provider: AgentProviderId; input: number; cached: number;
+  model: string; provider: AgentProviderId; input: number; cached?: number; cacheWrite?: number;
   tokens: number; estimate: number; count: number; prefix: string;
 }
 const prefix = (items: unknown[], count: number) => createHash('sha256').update(JSON.stringify(items.slice(0, count))).digest('hex');
@@ -68,7 +69,7 @@ const keyOf = (conv: number) => `agent_context:${conv}`;
 
 export function recordContextUsage(conv: number, provider: AgentProviderId, model: string,
   items: unknown[], instructions: string, tools: AgentToolSpec[], usage: ProviderResult['usage'], outputItems: unknown[] = []): void {
-  if (!usage || !positive(usage.input)) return;
+  if (!usage || !Number.isSafeInteger(usage.input) || usage.input < 0) return;
   const next = [...items, ...outputItems];
   const estimate = estimateTokens({ instructions, tools, items: next });
   const output = positive(usage.output) ?? Math.max(0, estimate - estimateTokens({ instructions, tools, items }));
@@ -80,13 +81,13 @@ export function recordContextUsage(conv: number, provider: AgentProviderId, mode
 export function contextUsage(conv: number, provider: AgentProviderId, model: string,
   items: unknown[], instructions: string, tools: AgentToolSpec[], limits?: ModelContext | null): ContextUsage {
   let tokens = estimateTokens({ instructions, tools, items });
-  let measured: Partial<Pick<Measurement, 'input' | 'cached'>> = {};
+  let measured: Partial<Pick<Measurement, 'input' | 'cached' | 'cacheWrite'>> = {};
   try {
     const m = JSON.parse(getSetting(keyOf(conv)) ?? 'null') as Measurement | null;
     // Model switches, compaction and reconciled histories invalidate the old measurement.
     if (m && m.model === model && m.provider === provider && m.count <= items.length && m.prefix === prefix(items, m.count)) {
       tokens = Math.max(0, m.tokens + tokens - m.estimate);
-      measured = { input: m.input, cached: m.cached };
+      measured = { input: m.input, cached: m.cached, cacheWrite: m.cacheWrite };
     }
   } catch { /* No measurement yet. */ }
   return { model, tokens, window: limits?.window ?? null, compactAt: limits?.compactAt ?? null,

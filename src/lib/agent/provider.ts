@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { getSetting, setSetting } from '../settings.ts';
 import { getAgentAccount, agentKey, endpointOf } from './accounts.ts';
 import { isDesktop } from '../dev/runtime.ts';
@@ -76,15 +77,15 @@ export interface ProviderResult {
   /** Raw wire items — appended verbatim to the stored conversation. */
   items: unknown[];
   /** Prompt tokens billed, and how many of them the provider served from cache. */
-  usage?: { input: number; cached: number; output?: number };
+  usage?: { input: number; cached?: number; cacheWrite?: number; output?: number };
 }
 
 /** The status line for a successful call — the cache hit rate is the one
  *  number that says whether the prompt is laid out right. */
-export function usageLine(usage?: { input: number; cached: number }): string {
-  if (!usage?.input) return 'ok';
+export function usageLine(usage?: ProviderResult['usage']): string {
+  if (!usage) return 'ok';
   const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-  return `ok · ${k(usage.input)} in, ${k(usage.cached)} cached (${Math.round((100 * usage.cached) / usage.input)}%)`;
+  return `ok · ${k(usage.input)} in, ${usage.cached === undefined ? 'cache read unreported' : `${k(usage.cached)} cached (${usage.input ? Math.round((100 * usage.cached) / usage.input) : 0}%)`}${usage.cacheWrite === undefined ? '' : `, ${k(usage.cacheWrite)} cache write`}`;
 }
 
 export interface AgentProvider {
@@ -252,6 +253,8 @@ export async function runModel(provider: AgentProvider, call: ProviderCall): Pro
   });
   let active = true;
   const record: Record<string, unknown> = { id: call.relayRequestId ?? crypto.randomUUID(), provider: provider.id, model: call.model, conversation: call.cacheKey, startedAt: Date.now(), state: 'running' };
+  record.instructionsHash = createHash('sha256').update(call.instructions).digest('hex');
+  record.toolsHash = createHash('sha256').update(JSON.stringify(call.tools)).digest('hex');
   const startedAt = Date.now();
   const save = () => {
     try {
@@ -269,6 +272,7 @@ export async function runModel(provider: AgentProvider, call: ProviderCall): Pro
       onThinking: progress => { if (active && !signal.aborted) { record.firstThinkingMs ??= Date.now() - startedAt; record.thinking = { tokens: progress.tokens, estimated: progress.estimated }; call.onThinking?.(progress); } },
     }), cancelled]);
     record.state = 'completed';
+    record.usage = result.usage;
     return result;
   } catch (error) {
     record.state = call.signal?.aborted ? 'cancelled' : signal.aborted ? 'timeout' : 'failed';

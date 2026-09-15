@@ -1,27 +1,31 @@
 # Retrieval and background monitors
 
-Rime keeps seven bootstrap tools: `search_tools`, `search_knowledge`,
-`read_knowledge`, `ask_user_question`, `task_list`, `task_output`, and
-`task_cancel`. Before responding to each new user message, it preloads up to
-five additional tools from the raw message (up to 2,000 characters). User input
-arriving mid-turn is processed before the next model request. Monitor wakes and
-agent notifications reuse the retained set without automatic selection.
+Rime sends all permitted built-in and available MCP tools on the first request,
+sorted by name. Long built-in descriptions have authored provider summaries;
+parameter schemas and the registry's full reference remain intact. `search_tools`
+returns up to ten matching references with parameter details and never changes
+the callable catalog. Old retained-tool rows remain compatible but no longer
+gate availability.
 
-Preloading shares a two-second deadline across concurrent MCP catalog connections
-and hybrid retrieval. Timeout or retrieval failure falls back to keyword matches
-against available definitions. Stop cancels preparation; late results cannot
-change a request already in flight. A preparation status appears as
-“Loading relevant tools…”; no tool is executed by preloading.
+MCP initialization completes before inference, using the existing connection
+timeouts and turn cancellation. Unavailable servers produce a visible notice.
+Every round rechecks current definitions and permissions. Reasons, approvals,
+routing, workspace restrictions and MCP revision checks still apply. The complete
+catalog counts toward the context budget; an oversized instruction/catalog prefix
+is rejected before compaction. Provider-specific catalog limits may also reject a
+request; tools are never silently dropped to fit.
 
-Automatic matches and explicit `search_tools` results are retained as names in
-`agent_conversation_tools`, independently of compactable replay. New messages do
-not unload tools, and restart/compaction preserve the set. Every request resolves
-current schemas and permissions; unavailable tools are omitted without forgetting
-their names. A new or imported conversation starts fresh. Forks copying history
-also copy the retained names; independently spawned children start fresh. There
-is no total tool-count limit or silent eviction: schemas count toward the normal
-context budget. Reasons, approvals, routing, sandbox restrictions and MCP
-revision checks still apply. Explicit search loads at most ten schemas per call.
+Standing notes, application rules, persona and selected workspace instructions
+remain in the instruction block. Retrieved memories/skills and current child
+status are appended as a labeled application-context item at each turn boundary
+and persisted before inference. Historical context replays unchanged. These items
+are reference data, not authorization; they neither create transcript messages nor
+advance image retention. Both wire dialects strip the internal context marker.
+
+Cache read and write counts are optional: missing is distinct from zero. Bounded
+model-call diagnostics record usage and instruction/tool SHA-256 fingerprints,
+never prompt text. Permission/schema/instruction changes, compaction, image expiry,
+model/routing changes and provider cache policies can still reduce reuse.
 
 Search for `agent_help`, then select a topic: `general` (default), `computer`,
 `browser`, `sandbox`, `wards`, `leylines`, `memory`, or `delegation`. Use `all`
@@ -37,8 +41,8 @@ notepads, notebook text, transcripts, extracted attachment text and tool metadat
 are indexed per owner. Project files, raw images and untranscribed ink are not.
 Search reconciles changes and rechecks source revisions before returning
 excerpts. Rebuilding deletes derived data only. Standing notes remain in every
-prompt, with up to five memory/skill excerpts within an estimated 2,000 tokens;
-named skills are looked up independently of embeddings.
+prompt. Turn context includes up to five memory/skill excerpts within an estimated
+2,000 tokens; named skills are looked up independently of embeddings.
 
 Account → Agent → Semantic retrieval selects either the self-hosted
 Qwen3-Embedding-8B model or a cloud provider (OpenAI API, OpenRouter). The
@@ -172,6 +176,6 @@ The [prompt/tool comparison](validation/tool-token-comparison.json) uses the sam
 empty account fixture against commit `96fd0dc`: 122 tool schemas and about 33,077
 estimated tokens become seven schemas and 2,429 tokens (92.7% less), before any
 retrieved passages or explicitly named skills. This historical comparison predates
-automatic preloading and conversation retention; current requests also include
-retained and newly selected tool schemas. These are estimates, not provider
-billing/tokenizer measurements.
+the complete stable catalog. The current 134 built-ins estimate 29,070 tokens with
+provider summaries, versus 33,763 with full descriptions. These are estimates, not
+provider billing/tokenizer measurements or measured cache-hit rates.

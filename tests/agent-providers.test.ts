@@ -121,7 +121,7 @@ test('markLast puts a cache breakpoint on the newest message without touching th
 
 test('usageLine reports the cache hit rate, or plain ok without usage', () => {
   assert.equal(usageLine(undefined), 'ok');
-  assert.equal(usageLine({ input: 0, cached: 0 }), 'ok');
+  assert.equal(usageLine({ input: 0, cached: 0 }), 'ok · 0 in, 0 cached (0%)');
   assert.equal(usageLine({ input: 15_100, cached: 12_300 }), 'ok · 15.1k in, 12.3k cached (81%)');
   assert.equal(usageLine({ input: 900, cached: 0 }), 'ok · 900 in, 0 cached (0%)');
 });

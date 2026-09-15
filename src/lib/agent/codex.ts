@@ -233,7 +233,9 @@ export function normalizeInput(input: unknown): unknown {
   const items = typeof input === 'string' ? [{ role: 'user', content: input }] : input;
   if (!Array.isArray(items)) return items;
   const out: unknown[] = [];
-  for (const item of items) {
+  for (const raw of items) {
+    if (!raw || typeof raw !== 'object') { out.push(raw); continue; }
+    const { applicationContext: _applicationContext, ...item } = raw;
     const m = item as { role?: string; content?: unknown; type?: string; encrypted_content?: unknown };
     // A reasoning item with no encrypted payload is a bare `rs_…` id the
     // store:false backend cannot resolve — it 400s the whole request. Threads
@@ -497,7 +499,7 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
     if (fn.type !== 'custom') try { JSON.parse(fn.arguments); } catch { throw new CodexError(`${tag}: tool call ${fn.name} carried malformed arguments`); }
   }
   const u = completed?.usage;
-  return { text, calls, items, ...(u?.input_tokens ? { usage: { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens ?? 0, output: u.output_tokens } } : {}) };
+  return { text, calls, items, ...(u?.input_tokens !== undefined ? { usage: { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens, output: u.output_tokens } } : {}) };
 }
 
 /** The backend's model list. It is gated on the CLI version it thinks it is

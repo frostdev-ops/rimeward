@@ -435,7 +435,7 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   },
   search_tools: {
-    kind:'read', description:'Search capabilities or exact tool names not already callable. Loads up to five schemas for the next round (maximum ten) and retains them for this conversation across messages, restarts and compaction. Relevant tools may already be preloaded; use those directly. Discovery grants no authority.',
+    kind:'read', description:'Find detailed usage reference and parameter schemas for already-callable tools. Search grants no authority and does not change the tool catalog.',
     parameters:obj({ query:str('Capability to find, or exact tool name'), filters:{ type:'object',properties:{ kind:{ type:'string',enum:['read','write','confirm'] },server:str('MCP server name') },additionalProperties:false },limit:num('Default 5; maximum 10') },['query']),
     run:(a,ctx) => { if (!ctx.searchTools) throw Error('Tool discovery requires an agent turn.'); return ctx.searchTools(a as ToolSearch); },
   },
@@ -1895,16 +1895,49 @@ export function dirtiesNotion(name: string): boolean {
  * Tool specs for the provider call, with `reason` injected once for all tools
  * (the reason line IS the streaming UI — enforced in core.ts, not just asked).
  */
-export function aiTools(allow: 'all' | 'read-only', extra: Record<string, ToolDef> = {}, loaded?:ReadonlySet<string>, workspaceAvailable = true): AgentToolSpec[] {
+// Short provider copy; the registry remains the full usage reference. Schemas are unchanged.
+const TOOL_SUMMARIES: Record<string, string> = {
+  monitor: 'Manage persistent observation-only monitors in this conversation. Sources: terminal, file, browser, agent, note, notebook, HTTP, comms, Leylines events. Baselines do not trigger; events coalesce (default 5s); HTTP defaults 30s. Clearing the conversation deletes monitors. Semantic inference failure blocks delivery. Monitoring never authorizes actions. search_tools provides filter details.',
+  search_knowledge: 'Search memories, skills, notes, notebooks, transcripts and attachments with excerpts and source locators. Keyword fallback is explicit. Excludes project files.',
+  agent_help: 'Read operating guidance by topic; default general, all for full reference. Follow next as offset.',
+  read_note: 'Read a notepad ward by ward ID or notebook note by note ID. Returns text/transcribed ink or Markdown source; other page types return read-only summaries. Raw ink is not text.',
+  write_note: 'Append or replace plain text or Markdown in a notepad ward or notebook note. Supply read_note rev and etag to reject stale writes. Markdown is literal; empty replace clears text. Ink is untouched. Other page formats require their editors.',
+  list_notebooks: 'List notebooks, or one notebook’s sections and live note IDs/titles. Use read_note for bodies.',
+  search_notes: 'Search note titles, text and tags, or filter by notebook/tag/status. Returns metadata and snippets; paginate with offset. Raw ink is excluded.',
+  create_note: 'Create a plain-text note, standalone or in a notebook/section. Blank lines separate paragraphs; from seeds from a notebook template; properties use notebook schema IDs.',
+  update_note: 'Update note metadata, tags, section, notebook, properties, template, archive or recoverable trash. Empty notebook unfiles. Use write_note for text; purge_note permanently deletes trashed notes.',
+  ask_notebook: 'Ask the notebook’s model using up to eight matching notes, with sources (60 calls/hour). Use read_note for a specific note.',
+  remember: 'Save or replace one durable fact in /work/memory/<name>.md. Read existing facts with read_knowledge or bash scope:knowledge. Respect the user’s memory preferences.',
+  save_skill: 'Save or replace a procedure at /work/skills/<name>/SKILL.md. Read a skill before following it; use read_knowledge or bash scope:knowledge.',
+  set_theme: 'Update supplied theme keys; unspecified keys remain unchanged. Use get_theme for current values and uploaded image names. Search this tool’s reference for theme key ranges and scene/header options.',
+  add_ward: 'Add a catalog ward with valid type-specific config. Use agent_help topic:wards for the catalog. New MCP wards use confirm trust and no token; only the user can widen trust.',
+  add_edge: 'Add a Leyline automation: source, conditions, action, enabled. Use agent_help topic:leylines for triggers, actions, parameters and template variables.',
+  list_models: 'List available models with exact IDs, context limits, reasoning efforts, capabilities, prices and source freshness. Filter query; paginate cursor. Use exact IDs for set_model/spawn_agent.',
+  set_model: 'Change this run’s model/effort starting next round, within its pinned provider/endpoint. Use an exact list_models ID. Ward settings stay unchanged; use a child for another provider.',
+  spawn_agent: 'Start an unattended child with complete task/context; returns task_id. Inherits permissions and workspace, never widens them; gated tools decline and children cannot spawn. Optional model/provider must be available, never substituted. ask_agent messages it; task tools inspect/cancel it; completion arrives once.',
+  ask_agent: 'Message a peer ward or child task_id. Peers run unattended under their own policy; shared notes/work files remain shared. wait defaults true; false delivers later. mode queue/steer/interrupt controls delivery. Family messages always steer; reply_to answers child question #N, otherwise its oldest question. Check receipts with check_message. Child wait:false notes require explicit replies.',
+  task_resume: 'Continue this thread’s finished child as a new linked attempt with copied history and capped current permissions. Same model/provider/endpoint required; nothing is re-executed. Refuses user-stopped/unknown-stop runs, children of other threads, active later attempts, and calls from children. User resumes stopped runs in Tasks.',
+  chat_read: 'Read chat channels, stored messages (newest first), search, or provider-specific data. Use search_tools query:chat_read for provider op/args reference. Empty stored channels may backfill from the provider.',
+  chat_manage: 'Change chat structure through the ward bot: channels, threads, pins, roles, permissions, invites or nicknames. Use search_tools query:chat_manage for provider op/args reference. Requires user authorization and the ward approval policy.',
+  chat_moderate: 'Delete messages/channels or moderate members through the ward bot. Use search_tools query:chat_moderate for provider op/args reference. Destructive effects require user authorization and the ward approval policy.',
+  terminal_start: 'Reuse an interactive workspace shell/Codex/Claude session; newSession:true opens another. Initial instructions apply only to new sessions. Read screen before input: reused sessions may be busy or show a picker. CLI permissions cannot widen; check session.mode. Answer permission notices with terminal_decide and rime_ask with terminal_answer. Human-started sessions have no coordinator. Never install CLIs or guess credentials. Verify output/files; use terminal_exec for routine commands and apply_patch for authored edits.',
+  terminal_exec: 'Run a native workspace command under ward approval policy; may access files/network. Use background:true for long work and task_output for logs. Stop terminates this command only. Null exit_code indicates signal/cancellation; inspect receipts. Exit success is not proof of the requested change. Use apply_patch for authored edits; terminal_start for interactive sessions.',
+  terminal_input: 'Read latest screen first; requires agentInput:true. Inserts text then Enter by default; send:false writes raw bytes (control keys still act). Multiline needs bracketed paste. Prefer terminal_command for CLI slash commands. Receipt proves PTY delivery only; never replay uncertain input, guess approval keys or treat sending as authorization.',
+  terminal_command: 'Send an observed or user-supplied CLI slash command at an empty recognized prompt with agentInput enabled. Requires terminal_read one-use observation, expires in 30s or on input/output. Does not clear drafts or answer approvals. Read afterward; never replay uncertain/withheld input. No interactive shells.',
+  terminal_read: 'Read rendered screen and session state; raw:true includes ordered escape bytes. phase reports CLI waiting-permission/input/done. Recognized empty CLI prompts return a one-use terminal_command observation valid 30s. Idle/empty output is not completion; inspect unknown permission screens.',
+  apply_patch: 'Use for authored text-file edits in virtual workspace paths. Read relevant context first. Send *** Begin Patch / *** End Patch with Add/Update/Delete File, @@ hunks, optional Move to and End of File. Literal replacements; all files preflight, dirty/other-owned buffers abort. Maximum 20 operations, 1 MiB. Cross-mount moves use workspace_transfer. I/O failure may be partial: inspect workspace_receipt before retrying.',
+};
+
+export function aiTools(allow: 'all' | 'read-only', extra: Record<string, ToolDef> = {}, workspaceAvailable = true): AgentToolSpec[] {
   return Object.entries({ ...TOOLS, ...extra })
-    .filter(([name]) => !loaded || loaded.has(name))
     .filter(([, t]) => allow === 'all' || t.kind === 'read')
     .filter(([, t]) => workspaceAvailable || !t.requiresWorkspace)
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
     .map(([name, t]) => {
       const params = t.parameters as { properties?: Record<string, unknown>; required?: string[] };
       return {
         name,
-        description: t.description,
+        description: !extra[name] && TOOL_SUMMARIES[name] || t.description,
         ...(t.inputFormat ? { inputFormat: t.inputFormat } : {}),
         parameters: {
           ...params,
