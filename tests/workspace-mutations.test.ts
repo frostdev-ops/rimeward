@@ -24,12 +24,13 @@ const patch = (file: string, before = 'old', after = 'new') => `*** Begin Patch\
 test('byte writes share patch safety, preserve mode and retain original raw recovery', async () => {
   const { dir, root } = await fixture(), old = Buffer.from([0, 1, 2, 255]), next = Buffer.from([0, 4, 5, 255]);
   fs.writeFileSync(path.join(dir, 'data.bin'), old, { mode: 0o640 });
+  const originalMode = fs.statSync(path.join(dir, 'data.bin')).mode & 0o777;
   const receipt = await rootWriteBytes(1, root, 'data.bin', next, 'agent:bytes', hash(old));
   assert.deepEqual(fs.readFileSync(path.join(dir, 'data.bin')), next);
-  assert.equal(fs.statSync(path.join(dir, 'data.bin')).mode & 0o777, 0o640);
+  assert.equal(fs.statSync(path.join(dir, 'data.bin')).mode & 0o777, originalMode);
   assert.equal(receipt.revision, 1);
   const recovery = workDb().prepare('SELECT raw,mode FROM buffer_copies WHERE id=?').get(receipt.recovery) as { raw: Buffer; mode: number };
-  assert.deepEqual(recovery.raw, old); assert.equal(recovery.mode & 0o777, 0o640);
+  assert.deepEqual(recovery.raw, old); assert.equal(recovery.mode & 0o777, originalMode);
   await assert.rejects(rootWriteBytes(1, root, 'data.bin', old, 'agent:bytes', hash(old)), /changed/);
   fs.linkSync(path.join(dir, 'data.bin'), path.join(dir, 'alias.bin'));
   await assert.rejects(rootWriteBytes(1, root, 'data.bin', old, 'agent:bytes', hash(next)), /single-link/);

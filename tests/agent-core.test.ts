@@ -43,6 +43,7 @@ import { completeCommand, parseCommand } from '../src/lib/agent/commands.ts';
 import { agentRounds, parseRounds, ROUND_DEFAULT } from '../src/lib/agent/provider.ts';
 import type { AgentProvider, ProviderResult } from '../src/lib/agent/provider.ts';
 import { repairResponsesItems, codexProvider } from '../src/lib/agent/codex.ts';
+import { openrouterProvider } from '../src/lib/agent/openrouter.ts';
 import { localOwner } from '../src/lib/dev/native.ts';
 import { getProvider } from '../src/lib/agent/provider.ts';
 import { storeAttachment } from '../src/lib/agent/attachments.ts';
@@ -97,11 +98,12 @@ test('computer observations follow every tool reply in both dialects, including 
     for (const id of ['codex', 'openrouter'] as const) for (const pending of [false, true]) {
       const user = seedUser(`observation-${id}-${pending}@test`), provider = await getProvider(id);
       saveDashboard(user, [{ i: 'ag1', type: 'agent', size: '2x2', config: { provider: id, approvals: 'outbound' } }, { i: 'w1', type: 'weather', size: '2x1' }]);
-      const conv = activeConversation(user, 'ag1', id), previousRun = provider.run, previousContext = provider.context;
+      const adapter = id === 'codex' ? codexProvider : openrouterProvider;
+      const conv = activeConversation(user, 'ag1', id), previousRun = adapter.run, previousContext = adapter.context;
       const calls = [call('screen', 'computer_screenshot', { reason: 'Observe generated fixture' }), call('other', pending ? 'remove_ward' : 'get_layout', { ward: 'w1', reason: 'Second independent operation' })];
       let runs = 0;
-      provider.context = async () => undefined;
-      provider.run = async request => {
+      adapter.context = async () => undefined;
+      adapter.run = async request => {
         const missing = calls.filter(c => !request.tools.some(t => t.name === c.name));
         if (!runs && missing.length) {
           const searches = missing.map(c => call(`discover-${c.name}`,'search_tools',{ query:c.name,reason:'Load fixture capability' }));
@@ -132,7 +134,7 @@ test('computer observations follow every tool reply in both dialects, including 
           assert.ok(getDashboard(user).some(ward => ward.i === 'w1'), 'declined action did not execute');
         } else assert.equal(result.reply, 'verified');
         assert.equal(runs, 2);
-      } finally { provider.run = previousRun; provider.context = previousContext; }
+      } finally { adapter.run = previousRun; adapter.context = previousContext; }
     }
   } finally { TOOLS.computer_screenshot = original!; }
 });
@@ -382,14 +384,14 @@ test('a confirm whose call fell out of the replay is refused, not run', async ()
 test('a resumed confirm files each interjection\'s steps once and keeps the approved step', async () => {
   const u = seedUser('core-resume-file@x.dev');
   const conv = activeConversation(u, 'ag1', 'codex');
-  const provider = await getProvider('codex'), previousRun = provider.run;
+  const previousRun = codexProvider.run;
   const fake = fakeProvider([
     { text: '', calls: [call('p1', 'remove_ward', { ward: 'w1', reason: 'r' })], items: [{ type: 'function_call', ...call('p1', 'remove_ward', { ward: 'w1', reason: 'r' }) }] },
     { text: 'one', calls: [call('c1', 'get_layout', { reason: 'r' })], items: [{ type: 'function_call', ...call('c1', 'get_layout', { reason: 'r' }) }] },
     { text: 'two', calls: [call('c2', 'get_layout', { reason: 'r' })], items: [{ type: 'function_call', ...call('c2', 'get_layout', { reason: 'r' }) }] },
     { text: 'done', calls: [], items: [] },
   ]);
-  provider.run = fake.run;
+  codexProvider.run = fake.run;
   try {
     const items: unknown[] = [];
     const first = await runLoop(cfgFor(u, fake), items);
@@ -402,7 +404,7 @@ test('a resumed confirm files each interjection\'s steps once and keeps the appr
     // The fixture's search_tools detour is filed under "one" too; only the scripted ids matter here.
     const scripted = said.map((m) => (m.steps ?? []).map((s) => s.id).filter((id) => ['p1', 'c1', 'c2'].includes(String(id))));
     assert.deepEqual(scripted, [[], ['c1'], ['p1', 'c2']], 'no step is filed twice and the approved step is kept');
-  } finally { provider.run = previousRun; }
+  } finally { codexProvider.run = previousRun; }
 });
 
 test('confirm KV: consume-once, echo mismatch, cross-user probe burns the row', () => {

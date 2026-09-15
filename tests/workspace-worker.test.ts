@@ -4,13 +4,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import os from 'node:os';
 import { once } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { workerRequest } from '../src/lib/dev/workspace-worker-client.ts';
 
 test('worker routing provisions the authenticated account and never retries an uncertain mutation',async()=>{
-  const directory=await fs.mkdtemp('/tmp/rime-worker-rpc-'),supervisorPath=path.join(directory,'supervisor.sock'),workerPath=path.join(directory,'worker.sock');
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'rime-worker-rpc-'));
+  const socketDirectory=process.platform==='win32'?`\\\\.\\pipe\\${path.basename(directory)}`:directory;
+  const supervisorPath=path.join(socketDirectory,'supervisor.sock'),workerPath=path.join(socketDirectory,'worker.sock');
   const original=process.env.RIMEWARD_WORKER_SUPERVISOR_SOCKET;
   const ensured:unknown[]=[];let requests=0,disconnect=false;
   const worker=http.createServer(async(request,response)=>{

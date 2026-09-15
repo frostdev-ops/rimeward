@@ -2,13 +2,15 @@ import './_setup.ts';
 import { test,after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { rootEvents } from '../src/lib/dev/workspace-events.ts';
 import { addProject } from '../src/lib/dev/projects.ts';
 import { emitDev,workDb } from '../src/lib/dev/runtime.ts';
 import { localOwner } from '../src/lib/dev/native.ts';
 
 process.env.RIMEWARD_DESKTOP='1';process.env.RIMEWARD_NATIVE_TOKEN='event-fixture-only';
-const folder=fs.mkdtempSync('/tmp/rime-workspace-events-');after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+const folder=fs.mkdtempSync(path.join(os.tmpdir(),'rime-workspace-events-'));after(()=>fs.rmSync(folder,{recursive:true,force:true}));
 const user=localOwner(),project=addProject(user,folder);
 const timeouts=()=>process.getActiveResourcesInfo().filter(resource=>resource==='Timeout').length;
 test('workspace event streams filter sessions and dispose heartbeat resources on cancellation',async()=>{

@@ -114,7 +114,7 @@ try {
   await request("preset", { root: project });
   const dashboard = await fetch(base + "/dash", { headers: { cookie } });
   assert.equal(dashboard.status, 200);
-  assert.match(await dashboard.text(), /Project files/);
+  assert.match(await dashboard.text(), /Files/);
   const diagnostics = await request("lint", { project: p.id, path: "sample.ts", text: "const unused: any = 1;" });
   assert.ok(diagnostics.diagnostics.some((d) => d.code === "lint/suspicious/noExplicitAny"));
   const formatted = await request("format", { project: p.id, path: "sample.ts", text: "export const x=1" });
