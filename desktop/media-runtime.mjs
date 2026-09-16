@@ -95,6 +95,9 @@ if (!process.env.RIMEWARD_MEDIA_SDK && (!fs.existsSync(path.join(sdk, '.rimeward
     const cerbero = path.join(cache, 'cerbero'), commit = '59548269f4fd0f701818f0bafdb102959ec81e65';
     if (!fs.existsSync(cerbero)) run('git', ['clone', '--depth=1', '--branch', version, 'https://gitlab.freedesktop.org/gstreamer/cerbero.git', cerbero]);
     if (capture('git', ['rev-parse', 'HEAD'], { cwd: cerbero }).trim() !== commit) throw Error('Unexpected Cerbero source revision');
+    // zlib.net returned inconsistent downloads in CI. The maintainer's release matches the pinned checksum.
+    const zlibRecipe = path.join(cerbero, 'recipes/zlib.recipe');
+    fs.writeFileSync(zlibRecipe, fs.readFileSync(zlibRecipe, 'utf8').replace('https://zlib.net/fossils/zlib-%(version)s.tar.gz', 'https://github.com/madler/zlib/releases/download/v%(version)s/zlib-%(version)s.tar.gz'));
     // Keep upstream checksums/build fixes, but compile only the media plugins we ship.
     const recipes = path.join(cache, 'recipes'); fs.mkdirSync(recipes, { recursive: true });
     fs.copyFileSync(path.join(cerbero, 'recipes/custom.py'), path.join(recipes, 'custom.py'));
