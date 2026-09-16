@@ -832,6 +832,8 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
       refuseLayout();
       return;
     }
+    // Page assignment must validate against the incoming page list, including newly added pages.
+    if (pages) publishPages(pages);
     flip(() => {
       for (const [id, node] of gone) {
         node.remove();
@@ -886,7 +888,6 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
     // off stage (its poll waits) rather than painting into thin air.
     if (!local) savedBase = structuredClone({ layout: next, pages: pages ?? savedBase.pages });
     publishLayout(next);
-    if (pages) publishPages(pages);
     restage();
     refreshWardView();
     for (const w of added) {

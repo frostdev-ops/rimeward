@@ -573,11 +573,11 @@ export function biggestGap(events: { start: string; end: string; allDay: boolean
 export const DEFAULT_LAYOUT: WardInstance[] = [
   { i: 'host', type: 'service-group', size: '2x1', title: 'Host', config: { services: [...HOST_SERVICE_IDS] } },
   { i: 'incidents', type: 'incidents', size: '1x1' },
-  { i: 'weather', type: 'weather', size: '2x1' },
+  { i: 'weather', type: 'weather', size: '2x1', config: {} },
   { i: 'mail', type: 'mail', size: '2x2', config: { account: 'all' } },
   { i: 'calendar', type: 'calendar', size: '2x2' },
   { i: 'notion-db', type: 'notion-db', size: '2x2', config: { view: 'list' } },
-  { i: 'notion-capture', type: 'notion-page', size: '2x1', title: 'Quick capture', config: { show: ['add'] } },
+  { i: 'notion-capture', type: 'notion-page', size: '2x1', title: 'Quick capture', config: { show: ['add'], depth: 2 } },
   { i: 'notion-recent', type: 'notion-recent', size: '2x1' },
   // Every monitor in the registry; empty until an admin adds some.
   { i: 'services', type: 'service-group', size: '3x2', config: {} },

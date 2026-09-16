@@ -13,7 +13,7 @@ const clone = <T>(value: T): T => structuredClone(value);
 export function createDrawingPage(options: NotebookPageOptions): NotebookPageEngine {
   let doc = blankDrawing(), tool: Tool = 'select', sourceId: string | null = null, space = false, destroyed = false;
   let selected = new Set<string>(), undo: string[] = [], redo: string[] = [];
-  let width = 800, height = 560, wheelTimer: ReturnType<typeof setTimeout> | undefined;
+  let width = 800, height = 560;
   const prefix = `drawing-${crypto.randomUUID()}`;
   const element = el('section', 'nb-drawing'); element.setAttribute('aria-label', 'Drawing designer');
   const toolbar = el('div', 'nb-drawing-toolbar'); toolbar.setAttribute('role', 'toolbar'); toolbar.setAttribute('aria-label', 'Drawing tools');
@@ -101,7 +101,7 @@ export function createDrawingPage(options: NotebookPageOptions): NotebookPageEng
     doc.view.x += px / doc.view.zoom - px / zoom; doc.view.y += py / doc.view.zoom - py / zoom; doc.view.zoom = zoom;
     render(); viewChanged();
   }
-  function viewChanged() { clearTimeout(wheelTimer); wheelTimer = setTimeout(() => { if (!destroyed) options.onChange(); }, 180); }
+  function viewChanged() { if (!destroyed) options.onChange(); }
   function fit() { const b = drawingBounds(doc.nodes); doc.view.zoom = Math.max(.1, Math.min(2, (width - 40) / b.width, (height - 40) / b.height)); doc.view.x = b.x - (width / doc.view.zoom - b.width) / 2; doc.view.y = b.y - (height / doc.view.zoom - b.height) / 2; render(); viewChanged(); }
   function download(name: string, contents: string, mime: string) { status.textContent = 'Preparing export…'; void saveDocumentBlob(new Blob([contents], { type: mime }), name).then(message => { status.textContent = message; }).catch(error => { status.textContent = `Export failed: ${error.message}`; }); }
   function render() {
@@ -285,10 +285,12 @@ export function createDrawingPage(options: NotebookPageOptions): NotebookPageEng
   render(); properties(); message('Add a shape, or drag one onto the canvas.');
   return {
     element,
-    load(value) { finishDrag(true); clearTimeout(wheelTimer); doc = validateDrawing(value); selected.clear(); undo = []; redo = []; sourceId = null; render(); properties(); },
+    load(value) { finishDrag(true); doc = validateDrawing(value); selected.clear(); undo = []; redo = []; sourceId = null; render(); properties(); },
     serialize() { return clone(doc); },
     text() { return doc.nodes.map(n => `${n.type}: ${n.label}${n.data.length ? '\n' + n.data.map(d => `${d.label}: ${d.value}`).join(', ') : ''}`).join('\n') + (doc.connectors.length ? '\n' + doc.connectors.map(c => `${doc.nodes.find(n => n.id === c.from)?.label || c.from} → ${doc.nodes.find(n => n.id === c.to)?.label || c.to}${c.label ? ': ' + c.label : ''}`).join('\n') : ''); },
     focus() { svg.focus(); },
-    destroy() { destroyed = true; clearTimeout(wheelTimer); observer.disconnect(); drag = null; element.remove(); },
+    async flush() { finishDrag(); return true; },
+    dirty() { return !!drag && drag.before !== snapshot(); },
+    destroy() { destroyed = true; observer.disconnect(); drag = null; element.remove(); },
   };
 }

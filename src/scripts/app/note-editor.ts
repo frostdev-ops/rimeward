@@ -417,7 +417,7 @@ export function createDocumentEditor(o: EditorOptions): DocumentEditor {
         for (let i = ink.length - 1; i >= 0; i--) { const id = ink.get(i)?.id; if (id && ids.has(id)) ink.delete(i, 1); }
       });
     },
-    setEditable: (on: boolean) => { readOnly = !on; view.setProps({ editable: () => on }); },
+    setEditable: (on: boolean) => { readOnly = !on; view.setProps({ editable: () => !readOnly && everSynced }); },
     focus: () => view.focus(),
     destroy: () => {
       view.destroy();

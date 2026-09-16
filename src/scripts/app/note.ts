@@ -438,7 +438,9 @@ function documentMarkdown(html: string): string {
 async function changeFormat(st: State, value: string): Promise<void> {
   if (!st.target || !st.loaded || value === (st.pageType ?? 'document')) return;
   if (st.pageType && st.pageType !== 'markdown') { st.format.value = st.pageType; return; }
+  const target = st.target, gen = st.gen;
   if (!await confirmAction(`Switch to ${value === 'markdown' ? 'Markdown' : 'Document'}? The content is kept, but formatting that the other format cannot represent may change.`)) { st.format.value = st.pageType ?? 'document'; return; }
+  if (st.target !== target || st.gen !== gen || !st.loaded) return;
   if (value === 'markdown') {
     const source = documentMarkdown(st.editor ? st.editor.html() : st.doc.innerHTML);
     await replaceDocument(st, pageDocument('markdown', { source }));

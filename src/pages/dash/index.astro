@@ -26,6 +26,8 @@ if (isDesktop()) {
   const { getDb } = await import('../../lib/db.ts');
   Astro.locals.user!.theme = (getDb().prepare('SELECT theme FROM users WHERE id=?').get(userId) as { theme: string | null }).theme;
 }
+const { ensureWorkspaceMigration } = await import('../../lib/dev/workspaces.ts');
+await ensureWorkspaceMigration(userId);
 const layout = getDashboard(userId);
 const pages = getPages(userId);
 const popoutWard = Astro.url.searchParams.get('ward') || undefined;

@@ -33,15 +33,20 @@ export function createSlidesPage(options: NotebookPageOptions): NotebookPageEngi
   const object = () => slide().objects.find((o) => o.id === selected);
   const say = (message: string) => { status.textContent = message; };
   const snapshot = () => JSON.stringify(state);
-  function remember() {
-    const saved = snapshot(); if (undo.at(-1) === saved) return;
+  function remember(saved = snapshot()) {
+    if (undo.at(-1) === saved) return;
     undo.push(saved);
     // ponytail: bounded snapshots; use object deltas if large image decks need deeper undo.
     while (undo.length > 1 && (undo.length > 60 || undo.reduce((sum, entry) => sum + entry.length, 0) > 12_000_000)) undo.shift();
     redo.length = 0;
   }
   function changed() { options.onChange(); }
-  function edit(fn: () => void, all = true) { finishText(); remember(); fn(); changed(); all ? render() : paint(); }
+  function edit(fn: () => void, all = true) {
+    finishText(); const before = snapshot(), index = current, selection = selected;
+    try { fn(); normalizeSlides(state); }
+    catch (error) { state = JSON.parse(before); current = index; selected = selection; render(); say(error instanceof Error ? error.message : 'Unable to change the presentation.'); return; }
+    remember(before); changed(); all ? render() : paint();
+  }
   const button = (label: string, fn: () => void, parent: HTMLElement = toolbar) => {
     const b = el('button', 'nb-slides-button', label); b.type = 'button'; b.addEventListener('click', fn); parent.append(b); return b;
   };
@@ -139,7 +144,7 @@ export function createSlidesPage(options: NotebookPageOptions): NotebookPageEngi
     if (o) {
       if (o.kind === 'text') {
         const input = el('textarea'); input.value = o.text; input.maxLength = 20000;
-        input.addEventListener('focus', remember); input.addEventListener('input', () => { o.text = input.value; changed(); paint(); }); input.addEventListener('blur', renderStrip); field('Text', input);
+        input.addEventListener('focus', () => remember()); input.addEventListener('input', () => { o.text = input.value; changed(); paint(); }); input.addEventListener('blur', renderStrip); field('Text', input);
         number('Font size', o.fontSize, 8, 144, (n) => edit(() => { o.fontSize = n; }));
         color('Text color', o.color, (v) => edit(() => { o.color = v; }));
         const styles = el('div', 'nb-slides-actions'); inspector.append(styles);
@@ -180,7 +185,7 @@ export function createSlidesPage(options: NotebookPageOptions): NotebookPageEngi
     edit(() => { const [moved] = state.slides.splice(current, 1); state.slides.splice(next, 0, moved!); current = next; });
   }
   function render() { paint(); renderStrip(); renderInspector(); notes.value = slide().notes; }
-  notes.addEventListener('focus', remember); notes.addEventListener('input', () => { slide().notes = notes.value; changed(); });
+  notes.addEventListener('focus', () => remember()); notes.addEventListener('input', () => { slide().notes = notes.value; changed(); });
   let textObject: SlideObject | undefined;
   function finishText() {
     if (!textObject) return;
@@ -298,5 +303,5 @@ export function createSlidesPage(options: NotebookPageOptions): NotebookPageEngi
     dialog.addEventListener('close', () => { dialog.remove(); presentation = undefined; element.focus(); }); draw(); dialog.showModal();
   }
   render();
-  return { element, load(value) { finishText(); state = normalizeSlides(value); current = 0; selected = ''; undo.length = 0; redo.length = 0; render(); }, serialize() { return structuredClone(state); }, text() { return state.slides.map((s, i) => `Slide ${i + 1}: ${s.title}\n${s.objects.map((o) => o.text).filter(Boolean).join('\n')}${s.notes ? `\nSpeaker notes: ${s.notes}` : ''}`).join('\n\n'); }, focus() { canvas.focus(); }, destroy() { destroyed = true; finishText(); presentation?.close(); element.remove(); } };
+  return { element, load(value) { finishText(); state = normalizeSlides(value); current = 0; selected = ''; undo.length = 0; redo.length = 0; render(); }, serialize() { return structuredClone(state); }, text() { return state.slides.map((s, i) => `Slide ${i + 1}: ${s.title}\n${s.objects.map((o) => o.text).filter(Boolean).join('\n')}${s.notes ? `\nSpeaker notes: ${s.notes}` : ''}`).join('\n\n'); }, dirty() { return !!drag?.moved; }, async flush() { finishText(); finishDrag(); return true; }, focus() { canvas.focus(); }, destroy() { destroyed = true; finishText(); presentation?.close(); element.remove(); } };
 }

@@ -451,7 +451,7 @@ try {
   await expandedRime.getByRole('button',{name:'Chat history',exact:true}).click();
   const historyDialog=desktopPage.getByRole('dialog',{name:'Rime history'});
   await historyDialog.getByRole('button',{name:/Shared Rime history fixture/}).click();
-  await historyDialog.getByRole('button',{name:'Continue here',exact:true}).click();
+  await historyDialog.getByRole('button',{name:/^Continue (here|on .+)$/}).click();
   await historyDialog.waitFor({state:'hidden'});
   await expandedRime.getByRole('button',{name:'Close chat',exact:true}).click();
   await rime.getByRole('log',{name:'Conversation'}).getByText('Shared Rime history fixture',{exact:true}).waitFor();
@@ -509,11 +509,11 @@ try {
     await new Promise((r) => setTimeout(r, 100));
   }
   assert.ok(devices[0]?.online);
-  const session = await post(desktopPage, "/api/dev/sessions", {
-    project: p.id,
-    kind: "shell",
-    mode: "human",
-  });
+  const terminal = desktopPage.locator(`[data-wd="${preset.page}-terminal"]`);
+  await terminal.getByRole('button', { name: 'Open terminal', exact: true }).click();
+  const sessionTab = terminal.locator('[role=tab][data-session]').first();
+  await sessionTab.waitFor();
+  const session = { id: await sessionTab.getAttribute('data-session') };
   await post(desktopPage, "/api/dev/control", {
     id: session.id,
     owner: "client:pc",
@@ -528,34 +528,34 @@ try {
   // A project is an ordinary tab in the same instance, on desktop and phone.
   await localRequest('/api/agent/history', 'POST', { action: 'sync' });
   await phonePage.reload();
-  await phonePage.locator('#wd-pages').getByRole('button', { name: 'project', exact: true }).click();
+  await phonePage.locator(`#wd-pages [data-page-tab="${preset.page}"]`).click();
   await phonePage.waitForURL(origin + '/dash#p=' + preset.page);
   assert.equal(await phonePage.getByRole('button', { name: 'Workspaces', exact: true }).count(), 0);
   await phonePage.screenshot({ path: '/tmp/rimeward-workspaces-phone.png', animations: 'disabled' });
   await phonePage.waitForTimeout(1000);
   const remote = await phonePage.evaluate(
-    (id) => fetch("/api/dev/sessions?id=" + id).then((r) => r.json()),
-    session.id,
+    ({id, base}) => fetch(base + "/api/dev/sessions?id=" + id).then((r) => r.json()),
+    {id: session.id, base},
   );
   assert.ok(remote.screen.includes(marker));
-  await post(phonePage, "/api/dev/control", {
+  await post(phonePage, base + "/api/dev/control", {
     id: session.id,
     owner: "client:phone",
     takeover: true,
   });
-  await post(phonePage, "/api/dev/input", {
+  await post(phonePage, base + "/api/dev/input", {
     id: session.id,
     owner: "client:phone",
     data: "echo PHONE_CONTINUED\r",
   });
   const initial = await phonePage.evaluate(
-    (id) =>
-      fetch("/api/dev/buffer?project=" + id + "&path=hello.txt").then((r) =>
+    ({id, base}) =>
+      fetch(base + "/api/dev/buffer?project=" + id + "&path=hello.txt").then((r) =>
         r.json(),
       ),
-    p.id,
+    {id: p.id, base},
   );
-  await post(phonePage, "/api/dev/buffer", {
+  await post(phonePage, base + "/api/dev/buffer", {
     project: p.id,
     path: "hello.txt",
     text: marker,
@@ -656,7 +656,7 @@ try {
   assert.match(connectedServer.error, /Page list unavailable/);
   unavailableNavigation = false;
   await desktopPage.locator('#wd-pages').getByRole('button', { name: 'Home', exact: true }).click();
-  await desktopPage.locator('#wd-pages').getByRole('button', { name: 'project', exact: true }).click();
+  await desktopPage.locator(`#wd-pages [data-page-tab="${preset.page}"]`).click();
   assert.equal(new URL(desktopPage.url()).origin, localOrigin, 'page changes do not switch app origins');
   await desktopPage.locator("#wd-grid [data-wd-type=editor] .cm-content").filter({ hasText: marker + "_UI" }).waitFor();
   assert.deepEqual(errors, []);

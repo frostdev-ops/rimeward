@@ -64,7 +64,8 @@ export function createMarkdownPage(options: NotebookPageOptions): NotebookPageEn
         actions: issue.replacements.map(replacement => ({ name: replacement || 'Delete', apply(editor, from, to) { editor.dispatch({ changes: { from, to, insert: replacement } }); } })) }));
       view.dispatch(setDiagnostics(view.state, diagnostics));
       if (!found.length) toast('No grammar issues found.');
-    } finally { review.disabled = false; }
+    } catch (error) { if (!disposed) toast(error instanceof Error ? error.message : 'Grammar review failed.', undefined, true); }
+    finally { review.disabled = false; }
   };
   bindContextMenu(source, event => {
     if (event.shiftKey) return;

@@ -306,6 +306,21 @@ snapshots across text and structural changes. Shared selects, context menus and
 note-link suggestions use a top-layer overlay and visible-viewport positioning
 so dialog/card clipping cannot hide them.
 
+Documents show a Letter page boundary immediately, including blank documents in
+both editors, without inserting layout markup into saved content. Layout controls
+reset to the default when opening a document without explicit page setup.
+Spreadsheet cell and formula-bar drafts participate in autosave before losing
+focus; row/column edits preserve scientific-notation constants in formulas.
+Drawing view changes enter the shared save queue immediately, and drawing/slide
+drags finish before navigation. Slide duplication rejects changes that exceed the
+embedded-image limit, preserving the previous presentation.
+
+The collaborative editor waits for its first sync before enabling typing.
+Comments follow the selected passage through concurrent edits, find/replace drops
+stale matches, and delayed clipboard operations cancel if the document or
+selection changes. Format conversion also checks that its original document is
+still open after confirmation. Markdown grammar failures appear in the editor.
+
 ## Linked Notion database sheets
 
 **New page → Linked Notion database** opens a database shared with the connected

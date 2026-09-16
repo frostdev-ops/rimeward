@@ -58,7 +58,7 @@ try {
   assert.equal(await page.locator(`[data-wd="${workspace.i}"]`).count(),1,'one persistent Workspace ward');
   assert.equal(await page.locator('[data-wd-type=project-files]').count(),0,'file sidebar is integrated');
   // A mounted file keeps its virtual path after buffer reads, recovery, and saves.
-  const mountedDirectory = ward.locator('details').filter({ has: page.locator('summary').filter({ hasText: /^data$/ }) }).first();
+  const mountedDirectory = ward.locator('details').filter({ has: page.locator('summary .editor-file-name').filter({ hasText: /^data$/ }) }).first();
   await mountedDirectory.locator('summary').first().click();
   await mountedDirectory.getByRole('button',{name:'mounted.txt',exact:true}).click();
   const mountedCode = ward.locator('.cm-content');
@@ -144,7 +144,7 @@ try {
   await page.keyboard.press(mod+'+p');
   const quick=page.getByRole('dialog',{name:'Quick open',exact:true});
   await quick.getByRole('textbox',{name:'Quick open query'}).fill('package.json');
-  await quick.getByRole('button',{name:'package.json',exact:true}).first().click();
+  await quick.getByRole('button',{name:'/package.json',exact:true}).first().click();
   await code.filter({hasText:'orbital'}).waitFor();
   // Create and rename from explorer; these operate on the actual project.
   await ward.getByRole('button',{name:'File actions',exact:true}).click();
@@ -155,7 +155,7 @@ try {
   await ward.getByRole('tab',{name:'notes.txt',exact:true}).waitFor(); assert.ok(fs.existsSync(path.join(project,'notes.txt')));
   await ward.getByRole('button',{name:'File actions',exact:true}).click();
   await page.getByRole('menuitem',{name:'Rename…',exact:true}).click();
-  const rename=page.getByRole('dialog',{name:'Rename notes.txt',exact:true});
+  const rename=page.getByRole('dialog',{name:'Rename /notes.txt',exact:true});
   await rename.getByRole('textbox').fill('journal.txt'); await rename.getByRole('button',{name:'Continue'}).click();
   await ward.getByRole('tab',{name:'journal.txt',exact:true}).waitFor(); assert.ok(fs.existsSync(path.join(project,'journal.txt')));
   // Agents changing a dirty file produce a real diff and preserve both versions.
@@ -174,7 +174,7 @@ try {
   // Close a dirty tab without losing its desktop recovery, then restore it.
   await code.click(); await page.keyboard.press(mod+'+a'); await page.keyboard.insertText('export const recovered = true;\n');
   await ward.getByText('Unsaved · recovery stored',{exact:true}).waitFor();
-  await ward.getByRole('button',{name:'Close src/workspace.ts',exact:true}).click();
+  await ward.getByRole('button',{name:'Close /src/workspace.ts',exact:true}).click();
   await ward.getByRole('button',{name:'workspace.ts',exact:true}).click();
   await code.filter({hasText:'recovered'}).waitFor();
   await page.reload(); await ward.locator('.cm-content').filter({hasText:'recovered'}).waitFor();

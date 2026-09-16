@@ -201,7 +201,7 @@ export function attachWordRibbon({ editor, tools, changed: onChanged, title }: R
     dispatch(tr.setSelection(TextSelection.near(tr.doc.resolve(at + 2))).scrollIntoView()); view.focus();
   });
   button(layout, 'Page number', () => { dispatch(state().tr.replaceSelectionWith(s.nodes.page_number!.create({ n: String((pageAt() ? pages().findIndex((p) => p.pos === pageAt()!.pos) : 0) + 1) }))); view.focus(); });
-  const syncPage = () => { const page = pageAt(); if (!page) return; const [size, direction] = String(page.node.attrs.paper).split('-'); pageSize.value = size!; orientation.value = direction!; margins.value = String(parseFloat(styleValue(page.node.attrs.style as string, 'padding')) || 20); };
+  const syncPage = () => { const page = pageAt(); const [size, direction] = String(page?.node.attrs.paper ?? 'letter-portrait').split('-'); pageSize.value = size!; orientation.value = direction!; margins.value = String(parseFloat(styleValue(page?.node.attrs.style as string || '', 'padding')) || 20); };
   document.addEventListener('selectionchange', syncPage, { signal });
 
   // ---- review
@@ -220,10 +220,13 @@ export function attachWordRibbon({ editor, tools, changed: onChanged, title }: R
   const review = panel('Review');
   button(review, 'Find / Replace', () => findDialog());
   button(review, 'Add comment', async () => {
-    const { from, to, empty } = selection();
-    if (empty) { message('Select the passage to comment on.'); return; }
+    if (selection().empty) { message('Select the passage to comment on.'); return; }
+    const anchor = editor.anchor();
     const value = await askText('Comment');
     if (!value || disposed) return;
+    const range = anchor();
+    if (!range || range.from === range.to) { message('The selected passage changed. Select it again to comment.'); return; }
+    const { from, to } = range;
     dispatch(state().tr.addMark(from, to, s.marks.comment!.create({ comment: value, author: editor.track.author }))); view.focus();
   });
   button(review, 'Comments', () => commentsDialog());
@@ -260,6 +263,7 @@ export function attachWordRibbon({ editor, tools, changed: onChanged, title }: R
     query.placeholder = 'Find'; query.setAttribute('aria-label', 'Find text'); query.required = true; replacementInput.placeholder = 'Replace with'; replacementInput.setAttribute('aria-label', 'Replacement text'); matchCase.type = 'checkbox'; caseLabel.append(matchCase, ' Match case');
     actions.before(query, replacementInput, caseLabel);
     let searchAt = 0, found: { from: number; to: number } | null = null;
+    const stop = editor.onDocChange(() => { found = null; });
     const matches = (limit = Infinity) => {
       const { text, posAt } = textRuns(); const needle = query.value; if (!needle) return [];
       const hay = matchCase.checked ? text : text.toLocaleLowerCase(), term = matchCase.checked ? needle : needle.toLocaleLowerCase();
@@ -284,7 +288,7 @@ export function attachWordRibbon({ editor, tools, changed: onChanged, title }: R
       if (all.length) dispatch(tr);
       error.textContent = `Replaced ${all.length} matches.`; error.hidden = false; found = null; searchAt = 0;
     });
-    d.addEventListener('close', () => { if (!d.open) d.remove(); }); query.focus();
+    d.addEventListener('close', () => { if (!d.open) { stop(); d.remove(); } }); query.focus();
   }
   function commentsDialog() {
     const { d, form, actions, submit } = dialog('Comments'); submit.textContent = 'Done';
@@ -295,7 +299,7 @@ export function attachWordRibbon({ editor, tools, changed: onChanged, title }: R
       const item = document.createElement('article'), who = document.createElement('strong'), quote = document.createElement('blockquote'), body = document.createElement('p');
       who.textContent = (c.mark.attrs.author as string) || 'Comment'; quote.textContent = state().doc.textBetween(c.from, c.to, ' '); body.textContent = c.mark.attrs.comment as string;
       item.append(who, quote, body);
-      button(item, 'Go to passage', () => { d.close(); view.dispatch(state().tr.setSelection(TextSelection.create(state().doc, c.from, c.to)).scrollIntoView()); view.focus(); });
+      button(item, 'Go to passage', () => { const live = ranges(s.marks.comment!).find((r) => r.mark.eq(c.mark)); d.close(); if (live) { view.dispatch(state().tr.setSelection(TextSelection.create(state().doc, live.from, live.to)).scrollIntoView()); view.focus(); } });
       button(item, 'Resolve', () => { const live = ranges(s.marks.comment!).find((r) => r.mark.eq(c.mark)); if (live) dispatch(state().tr.removeMark(live.from, live.to, s.marks.comment!)); item.remove(); });
       list.append(item);
     }
@@ -311,12 +315,13 @@ export function attachWordRibbon({ editor, tools, changed: onChanged, title }: R
     if (event.detail !== -1) { const at = view.posAtCoords({ left: event.clientX, top: event.clientY }); if (at && state().selection.empty) view.dispatch(state().tr.setSelection(TextSelection.create(state().doc, at.pos))); }
     event.preventDefault(); event.stopPropagation();
     const { from, to, empty } = selection();
+    const before = state().doc, selected = state().selection;
     openMenu(event.clientX, event.clientY, (menu) => {
       const hint = document.createElement('div'); hint.className = 'ctx-label'; hint.textContent = 'Native spelling menu: Shift + right-click'; menu.append(hint);
       const clipboard = async (action: 'copy' | 'cut' | 'paste') => {
         try {
-          if (action === 'paste') { const value = await navigator.clipboard.readText(); if (!disposed) { editor.insertText(value); onChanged(); } }
-          else { await navigator.clipboard.writeText(state().doc.textBetween(from, to, '\n')); if (action === 'cut' && !disposed) dispatch(state().tr.deleteSelection()); }
+          if (action === 'paste') { const value = await navigator.clipboard.readText(); if (disposed) return; if (state().doc !== before || !state().selection.eq(selected)) return message('Paste canceled because the document or selection changed.'); editor.insertText(value); onChanged(); }
+          else { await navigator.clipboard.writeText(before.textBetween(from, to, '\n')); if (action === 'cut' && !disposed) { if (state().doc !== before || !state().selection.eq(selected)) return message('Text copied; cut canceled because the document or selection changed.'); dispatch(state().tr.deleteSelection()); } }
         } catch { message('Clipboard unavailable. Use the keyboard shortcut or Shift + right-click for the native menu.'); }
       };
       for (const action of ['copy', 'cut', 'paste'] as const) { const item = menuItem('copy', `${action[0]!.toUpperCase() + action.slice(1)}${action === 'paste' ? ' plain text' : ' text'}`, () => void clipboard(action)) as HTMLButtonElement; item.disabled = action !== 'paste' && empty; menu.append(item); }

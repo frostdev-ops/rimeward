@@ -38,7 +38,9 @@ export async function addWorkspaceUi(page, root, { name = 'Workspace fixture', w
   for (const ward of wards) {
     await card.getByRole('button', { name: 'Connect a ward…', exact: true }).click();
     const link = page.getByRole('dialog', { name: 'Connect a ward', exact: true });
-    await link.getByRole('combobox', { name: 'Ward', exact: true }).selectOption(ward);
+    const index = await link.locator('select[aria-label="Ward"]').evaluate((select, id) => [...select.options].find(option => option.value === id)?.index, ward);
+    await link.getByRole('button', { name: 'Ward', exact: true }).click();
+    await page.locator(`.fd-ss-opt[data-index="${index}"]`).click();
     await link.getByRole('button', { name: 'Connect', exact: true }).click();
     await link.waitFor({ state: 'hidden' });
   }

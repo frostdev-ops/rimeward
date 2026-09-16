@@ -66,7 +66,7 @@ export function createSpreadsheetPage(options: NotebookPageOptions): NotebookPag
   grid.addEventListener('pointerdown', event => { if (event.button !== 0) return; const target = (event.target as HTMLElement).closest<HTMLElement>('td,th'); if (!target || target.contains(editing)) return;
     if (target.dataset.column !== undefined) { finishEdit(); anchor = [0, +target.dataset.column]; active = [state.rows - 1, +target.dataset.column]; refreshSelection(); focusCell(); event.preventDefault(); }
     else if (target.dataset.rowHeader !== undefined) { finishEdit(); anchor = [+target.dataset.rowHeader, 0]; active = [+target.dataset.rowHeader, state.cols - 1]; refreshSelection(); focusCell(); event.preventDefault(); }
-    else if (target.dataset.all) { anchor = [0, 0]; active = [state.rows - 1, state.cols - 1]; refreshSelection(); focusCell(); event.preventDefault(); }
+    else if (target.dataset.all) { finishEdit(); anchor = [0, 0]; active = [state.rows - 1, state.cols - 1]; refreshSelection(); focusCell(); event.preventDefault(); }
     else if (target.dataset.row !== undefined) { move(+target.dataset.row, +target.dataset.col!, event.shiftKey); dragging = true; event.preventDefault(); }
   }, { signal });
   bindContextMenu(grid, event => {
@@ -126,6 +126,8 @@ export function createSpreadsheetPage(options: NotebookPageOptions): NotebookPag
     if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); move(mod ? event.key === 'Home' ? 0 : state.rows - 1 : active[0], event.key === 'Home' ? 0 : state.cols - 1, event.shiftKey); return; }
     if (!mod && !event.altKey && event.key.length === 1) { event.preventDefault(); startEdit(event.key); }
   }, { signal });
+  formula.addEventListener('input', () => options.onChange(), { signal });
+  grid.addEventListener('input', () => { if (editing) options.onChange(); }, { signal });
   formula.addEventListener('change', () => setValue(formula.value), { signal });
   formula.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); setValue(formula.value); focusCell(); } if (event.key === 'Escape') { formula.value = state.cells[cellName(...active)]?.value ?? ''; focusCell(); } }, { signal });
   address.addEventListener('keydown', event => { if (event.key !== 'Enter') return; event.preventDefault(); const pos = cellPosition(address.value.trim()); if (!pos || pos[0] >= state.rows || pos[1] >= state.cols) { report('Enter a cell address inside the current sheet.'); return; } move(...pos); }, { signal });
@@ -135,5 +137,6 @@ export function createSpreadsheetPage(options: NotebookPageOptions): NotebookPag
   grid.addEventListener('cut', event => { if (editing || !event.clipboardData) return; const b = bounds(); const rows = Array.from({ length: b.r1 - b.r0 + 1 }, (_, r) => Array.from({ length: b.c1 - b.c0 + 1 }, (_, c) => state.cells[cellName(b.r0 + r, b.c0 + c)]?.value ?? '')); event.clipboardData.setData('text/plain', writeDelimited(rows, '\t')); event.preventDefault(); change(() => eachSelected(name => { if (state.cells[name]) state.cells[name].value = ''; })); focusCell(); }, { signal });
   grid.addEventListener('paste', event => { if (editing || !event.clipboardData) return; event.preventDefault(); try { paste(parseDelimited(event.clipboardData.getData('text/plain'), '\t')); } catch (error) { report(error instanceof Error ? error.message : 'Unable to paste cells.'); } }, { signal });
   render();
-  return { element, load(value) { state = normalizeSheet(value); undo.length = redo.length = 0; anchor = [0, 0]; active = [0, 0]; render(); }, serialize() { const result = structuredClone(state); if (editing) { const name = cellName(...active); result.cells[name] = { ...result.cells[name], value: editing.value }; } return result; }, text() { const calculate = sheetEvaluator(state); return Object.keys(state.cells).filter(name => state.cells[name].value).map(name => `${name}: ${displayCell(state.cells[name], calculate(name))}`).join('\n'); }, focus() { focusCell(); }, destroy() { destroyed = true; controller.abort(); element.remove(); } };
+  function serialize() { const result = structuredClone(state); const value = editing?.value ?? (document.activeElement === formula ? formula.value : undefined); if (value !== undefined) { const name = cellName(...active); result.cells[name] = { ...result.cells[name], value }; } return result; }
+  return { element, load(value) { state = normalizeSheet(value); undo.length = redo.length = 0; anchor = [0, 0]; active = [0, 0]; render(); }, serialize, text() { const current = serialize(), calculate = sheetEvaluator(current); return Object.keys(current.cells).filter(name => current.cells[name].value).map(name => `${name}: ${displayCell(current.cells[name], calculate(name))}`).join('\n'); }, async flush() { finishEdit(); if (document.activeElement === formula) setValue(formula.value); return true; }, focus() { focusCell(); }, destroy() { destroyed = true; controller.abort(); element.remove(); } };
 }
