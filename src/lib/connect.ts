@@ -1,3 +1,4 @@
+import { config } from './app-config.ts';
 // Authorize-URL builders + code exchanges for the three data providers.
 // (SSO lives in google-sso.ts; this is the per-user "linked accounts" side.)
 import { secret } from './secrets.ts';
@@ -17,7 +18,7 @@ export const MS_SCOPES_READONLY = 'openid profile email offline_access Mail.Read
 /** The Microsoft identity endpoint's tenant segment: `common` (any account)
  *  unless the app registration is single-tenant, which only issues tokens
  *  through its own tenant id. */
-export const msTenant = (): string => (process.env.MS_TENANT_ID ?? '').trim() || 'common';
+export const msTenant = (): string => config('MS_TENANT_ID');
 
 // The Teams ward (lib/comms/teams.ts) speaks as the user: chats need the
 // delegated pair, team channels ChannelMessage.Read.All (admin consent in
@@ -87,6 +88,7 @@ export function zohoConnectUrl(state: string): string {
 /** Zoho's token host follows the data centre: the callback names it in
  *  `accounts-server`, and every later refresh has to use the same one. */
 export async function exchangeZohoCode(code: string, accountsBase: string): Promise<TokenResponse> {
+  accountsBase = zohoAccountsBase(accountsBase);
   const res = await fetch(`${accountsBase}/oauth/v2/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -134,6 +136,8 @@ export async function exchangeMicrosoftCode(code: string): Promise<TokenResponse
 
 export interface NotionTokenResponse {
   access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
   workspace_id?: string;
   workspace_name?: string;
   bot_id?: string;
@@ -149,4 +153,11 @@ export async function exchangeNotionCode(code: string): Promise<NotionTokenRespo
   });
   if (!res.ok) throw new Error(`notion token exchange failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
   return res.json();
+}
+
+export function zohoAccountsBase(value: string): string {
+  const allowed = ['https://accounts.zoho.com','https://accounts.zoho.eu','https://accounts.zoho.in','https://accounts.zoho.com.au','https://accounts.zoho.jp','https://accounts.zohocloud.ca'];
+  const base = value.replace(/\/$/,'');
+  if (!allowed.includes(base)) throw new Error('Unknown Zoho authorization region');
+  return base;
 }

@@ -17,10 +17,10 @@ const groups = (Object.keys(CATEGORIES) as Category[])
   .filter(([, es]) => es.length > 0);
 ---
 
-<dialog id="add-ward" class="fd-dialog fd-dialog-wide">
+<dialog id="add-ward" class="fd-dialog fd-dialog-wide" aria-labelledby="aw-dialog-heading">
   <form method="dialog" class="flex flex-col gap-3 p-4">
     <div class="flex items-center justify-between">
-      <h2 class="section-title" data-aw-heading>Add ward</h2>
+      <h2 id="aw-dialog-heading" class="section-title" data-aw-heading>Add ward</h2>
       <button type="button" class="btn min-h-0 px-2 py-1 text-xs" data-aw-close aria-label="Close"><Icon id="close" /></button>
     </div>
 
@@ -73,6 +73,9 @@ const groups = (Object.keys(CATEGORIES) as Category[])
       </div>
     </template>
 
+    <div data-cfg="workspace" class="hidden flex-col gap-3">
+      <p class="text-xs text-ink-faint">Choose folders on your connected computers or an SSH location, select instruction files, then connect your tools with Workspace Leylines.</p>
+    </div>
     <div data-cfg="remote-desktop" class="hidden flex-col gap-3">
       <p class="text-xs text-ink-faint">Choose the computer in the ward. Its target stays the same when you move it to another page. Manage access from Devices.</p>
       <div data-rd-access></div>
@@ -600,6 +603,7 @@ const groups = (Object.keys(CATEGORIES) as Category[])
           </select>
         </div>
       </div>
+      <p class="-mt-1 text-[10px] text-ink-faint">Tools and Approvals govern Rime’s own actions: Read-only allows no writes; Approvals says which writes pause for your Confirm. Rime can narrow these itself, never widen them.</p>
       <div class="flex gap-3">
         <div class="flex-1">
           <label class="label" for="aw-ag-cap">Unattended runs per hour <span class="text-ink-faint">(leylines, other agents, chat bots; 0 = no cap)</span></label>
@@ -609,6 +613,17 @@ const groups = (Object.keys(CATEGORIES) as Category[])
           <label class="label" for="aw-ag-rounds">Tool rounds per turn <span class="text-ink-faint">(blank = account setting, 0 = no cap)</span></label>
           <input id="aw-ag-rounds" name="ag-rounds" type="number" class="input" min="0" max="500" placeholder="account" />
         </div>
+      </div>
+      <div>
+        <label class="label" for="aw-ag-permissions">Coding CLI permissions</label>
+        <select id="aw-ag-permissions" name="ag-permissions" class="input">
+          <option value="" selected>Default</option>
+          <option value="read-only">Read-only · Claude plan mode / Codex read-only sandbox</option>
+          <option value="approvals">Approvals · the CLI asks before acting</option>
+          <option value="normal">Normal · Claude auto / Codex auto-review</option>
+          <option value="yolo">YOLO · skips permission prompts (Codex: its sandbox too)</option>
+        </select>
+        <p class="mt-1 text-[10px] text-ink-faint">The launch mode for the Claude Code and Codex sessions Rime starts; each CLI enforces it its own way, and OS permissions still apply. Default follows the paired server Rime’s setting on a desktop, else Normal. Their prompts reach Rime only while the conversation that started them is active; otherwise the CLI asks at the terminal. Sessions you start from a Terminal ward pick their own mode there. Codex keeps its hook-trust review (/hooks) separately; no mode grants it.</p>
       </div>
       <p class="mt-1 text-[10px] text-ink-faint">Credentials live in Account → Agent. Changing the provider starts a fresh conversation.</p>
     </div>

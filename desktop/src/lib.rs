@@ -27,6 +27,7 @@ mod updates;
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
+use tauri_plugin_deep_link::DeepLinkExt;
 
 #[derive(Default)]
 struct Shutdown(AtomicU8);
@@ -48,7 +49,9 @@ pub fn run() {
     {
         std::process::exit(input_guardian::run());
     }
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
+        .plugin(tauri_plugin_deep_link::init());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_autostart::init(
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -82,6 +85,25 @@ pub fn run() {
             permissions::macos_permissions
         ])
         .setup(|app| {
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                // A completion link only raises the window. Auth stays in the backend.
+                if event.urls().iter().any(|url| {
+                    url.scheme() == "rimeward"
+                        && url.host_str() == Some("oauth")
+                        && url.path() == "/complete"
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                        && url.fragment().is_none()
+                }) {
+                    if let Some(window) = handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            });
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            app.deep_link().register_all()?;
             #[cfg(target_os = "macos")]
             input_guardian::initialize(app.handle().clone());
             computer::initialize(app.path().app_data_dir()?);

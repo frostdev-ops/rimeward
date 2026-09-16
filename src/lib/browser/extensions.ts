@@ -1,3 +1,4 @@
+import { config } from '../app-config.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createPublicKey, generateKeyPairSync, randomUUID } from 'node:crypto';
@@ -24,7 +25,7 @@ interface Registry { extensions: BrowserExtension[] }
 
 export function extensionRoot(user: number, ward: string): string {
   if (!Number.isSafeInteger(user) || user < 1 || !/^[a-z0-9-]{1,32}$/.test(ward)) throw Error('Invalid browser owner');
-  return path.join(process.env.BROWSER_PROFILES ?? path.join(DATA_DIR, 'browser'), String(user), ward, 'rimeward-extensions');
+  return path.join(config('BROWSER_PROFILES') || path.join(DATA_DIR, 'browser'), String(user), ward, 'rimeward-extensions');
 }
 function writeRegistry(root: string, value: Registry): void {
   const temp = path.join(root, `${randomUUID()}.tmp`);

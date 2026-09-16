@@ -81,7 +81,7 @@ To go back: `node bin/rimeward.mjs update --rollback` swaps `.update/prev` back,
 Verify more than a successful homepage response:
 
 - Authorize a desktop through the public HTTPS origin and confirm its device WebSocket stays connected.
-- Open a project from a separate browser and verify a harmless read plus streamed terminal output.
+- Open a connected Workspace from a separate browser and verify a harmless read plus streamed terminal output.
 - Disconnect the desktop and confirm the interface reports it unavailable. Reconnect without replaying input.
 - Revoke a disposable pairing and confirm further access fails.
 - Check `no-store` responses and every proxy/CDN layer's buffering and cache exclusions.

@@ -419,3 +419,15 @@ test('a link comes back as the server’s address, never the caller’s origin',
   assert.equal(d.url, `${base}/s/${d.token}`);
   revokeShare(owner, d.share.id);
 });
+
+test('a suspended owner’s share stops resolving', () => {
+  const { share, token } = createShare(owner, { kind: 'ward', target: 'pad', role: 'view' });
+  assert.equal(resolveShare(share.id)?.id, share.id);
+  getDb().prepare("UPDATE users SET status='suspended' WHERE id=?").run(owner);
+  assert.equal(resolveShare(share.id), null, 'the row is unreachable while the owner is suspended');
+  assert.equal(findShareByToken(token!), null, 'and so is the link');
+  assert.equal(shareScope(share.id, null, token), 404);
+  getDb().prepare("UPDATE users SET status='active' WHERE id=?").run(owner);
+  assert.equal(resolveShare(share.id)?.id, share.id, 'reinstating the owner revives it');
+  revokeShare(owner, share.id);
+});

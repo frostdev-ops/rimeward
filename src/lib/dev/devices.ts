@@ -72,7 +72,7 @@ export function enrollment(code: string) {
     throw new DevError("Invalid enrollment.", 403);
   const row = getDb()
     .prepare(
-      "SELECT e.user_id,u.email FROM device_enrollments e JOIN users u ON u.id=e.user_id WHERE code_hash=? AND expires_at>?",
+      "SELECT e.user_id,u.email FROM device_enrollments e JOIN users u ON u.id=e.user_id WHERE code_hash=? AND expires_at>? AND u.status='active'",
     )
     .get(digest(code), Date.now()) as
     | { user_id: number; email: string }
@@ -245,6 +245,7 @@ export const forwardHeaders = [
   "if-range",
   "content-length",
   "x-rimeward-rtc", // ICE the server minted for a browser stream a desktop hosts (lib/browser/rtc.ts)
+  "x-rimeward-agent-hops", // Bound forwarding through retired conversation owners.
 ];
 export function allowedRelayPath(value: string, remote = false, agent = false) {
   if (value.length > 8192 || !value.startsWith("/") || value.startsWith("//"))

@@ -1,13 +1,14 @@
+import { startAttempt, attemptOf, attemptData, claimAttempt, completeAttempt, cancelAttempt, failAttempt } from '../oauth-attempts.ts';
 import { createHash, randomBytes } from 'node:crypto';
-import { readSse } from './stream.ts';
+import { readSse, thinkingCounter } from './stream.ts';
 import { getSetting, setSetting, deleteSetting } from '../settings.ts';
 import { openToken } from '../crypto.ts';
 import { cached } from '../cache.ts';
 import { codexContext, type ModelContext } from './context.ts';
 import { getDb } from '../db.ts';
-import { getAgentAccount, storeAgentAccount, deleteAgentAccount, accountMeta, agentKey } from './accounts.ts';
+import { getAgentAccount, storeAgentAccount, deleteAgentAccount, accountMeta, agentKey, credentialGeneration } from './accounts.ts';
+import { credentialId } from './route.ts';
 import {
-  isTransient,
   recordAgentStatus,
   usageLine,
   type AgentProvider,
@@ -27,7 +28,6 @@ import {
 
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'; // codex CLI public client
 const CODEX_REDIRECT = 'http://localhost:1455/auth/callback';
-const OAUTH_TTL_MS = 15 * 60 * 1000;
 const TIMEOUT_MS = 300_000; // a long reasoning round thinks for minutes; the relay client waits 330s, nginx 360s
 
 class CodexError extends Error {}
@@ -49,24 +49,24 @@ export function jwtClaims(jwt: string | undefined): Record<string, unknown> | nu
 // (redirect_uri is just a matching string at the token endpoint).
 
 interface PendingOauth {
+  id: string;
   verifier: string;
   state: string;
   url: string;
   at: number;
+  generation: string;
 }
 
 const pendingKey = (userId: number) => `codex_oauth_pending:${userId}`;
 
-export function codexOauthPending(userId: number): PendingOauth | null {
+export function codexOauthPending(userId: number, id = getSetting(pendingKey(userId)) ?? ''): PendingOauth | null {
   try {
-    const p = JSON.parse(getSetting(pendingKey(userId)) || 'null') as PendingOauth | null;
-    return p?.verifier && Date.now() - p.at < OAUTH_TTL_MS ? p : null;
-  } catch {
-    return null;
-  }
+    const attempt = attemptOf(userId,id);
+    return ['pending','authorizing'].includes(attempt.status) ? { ...attemptData<PendingOauth>(attempt), id } : null;
+  } catch { return null; }
 }
 
-export function codexOauthStart(userId: number): PendingOauth {
+export function codexOauthStart(userId: number, session = String(userId), destination = 'This account'): PendingOauth {
   const verifier = randomBytes(64).toString('base64url');
   const state = randomBytes(16).toString('base64url');
   const url =
@@ -82,19 +82,25 @@ export function codexOauthStart(userId: number): PendingOauth {
       codex_cli_simplified_flow: 'true',
       state,
     }).toString();
-  const pending: PendingOauth = { verifier, state, url, at: Date.now() };
-  setSetting(pendingKey(userId), JSON.stringify(pending));
+  const data = { verifier, state, url, at: Date.now(), generation: credentialGeneration(userId, 'codex') };
+  const attempt = startAttempt(userId,'codex',destination,session,data);
+  const pending: PendingOauth = { ...data, id: attempt.id };
+  setSetting(pendingKey(userId),attempt.id);
   return pending;
 }
 
-export function codexOauthCancel(userId: number): void {
-  deleteSetting(pendingKey(userId));
+export function codexOauthCancel(userId: number, id = getSetting(pendingKey(userId)) ?? ''): void {
+  try { cancelAttempt(userId,id); } catch {}
+  if (getSetting(pendingKey(userId)) === id) deleteSetting(pendingKey(userId));
 }
 
 /** Finish with the localhost URL the user pasted; returns the account email. */
-export async function codexOauthFinish(userId: number, pasted: string): Promise<string> {
-  const pending = codexOauthPending(userId);
+export async function codexOauthFinish(userId: number, pasted: string, id?: string): Promise<string> {
+  const pending = codexOauthPending(userId,id);
   if (!pending) throw new Error('no sign-in in progress (or it expired) — click "Connect ChatGPT" again');
+  const stillOwnsConnection = () => pending.generation === credentialGeneration(userId, 'codex') &&
+    getSetting(pendingKey(userId)) === pending.id;
+  if (!stillOwnsConnection()) throw new Error('This sign-in was superseded or its connection changed. Start again from the current provider card.');
 
   const candidate = pasted.trim();
   let url: URL;
@@ -103,6 +109,7 @@ export async function codexOauthFinish(userId: number, pasted: string): Promise<
   } catch {
     throw new Error('that does not look like an address — paste the FULL address of the localhost:1455 page');
   }
+  if(url.origin !== 'http://localhost:1455' || url.pathname !== '/auth/callback' || url.username || url.password) throw new Error('Use the registered localhost callback address');
   const code = url.searchParams.get('code');
   if (!code) {
     throw new Error(url.searchParams.get('error_description') ?? 'that address has no ?code= in it — paste the whole address bar');
@@ -111,6 +118,8 @@ export async function codexOauthFinish(userId: number, pasted: string): Promise<
     throw new Error('this link came from an older sign-in attempt — start again and use the newest one');
   }
 
+  claimAttempt(userId,pending.id);
+  try {
   const res = await fetch('https://auth.openai.com/oauth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -124,7 +133,8 @@ export async function codexOauthFinish(userId: number, pasted: string): Promise<
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
-    throw new Error(`token exchange failed (${res.status}) ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    failAttempt(userId,pending.id);
+    throw new Error(`Token exchange failed (${res.status}). Start again.`);
   }
   const tok = (await res.json()) as { id_token?: string; access_token?: string; refresh_token?: string };
   if (!tok.access_token || !tok.refresh_token) throw new Error('token exchange returned no tokens');
@@ -132,19 +142,34 @@ export async function codexOauthFinish(userId: number, pasted: string): Promise<
   const claims = jwtClaims(tok.id_token) as
     | { email?: string; 'https://api.openai.com/auth'?: { chatgpt_account_id?: string } }
     | null;
-  storeAgentAccount({
+  completeAttempt(userId,pending.id, () => {
+    if (!stillOwnsConnection()) throw new Error('The connection changed during sign-in; its replacement was not modified.');
+    storeAgentAccount({
     userId,
     provider: 'codex',
-    token: tok.refresh_token,
+    token: tok.refresh_token!,
     label: claims?.email ?? '',
     accessToken: tok.access_token,
     meta: { account_id: claims?.['https://api.openai.com/auth']?.chatgpt_account_id ?? '', id_token: tok.id_token ?? '' },
   });
-  codexOauthCancel(userId);
+  });
+  if (getSetting(pendingKey(userId)) === pending.id) deleteSetting(pendingKey(userId));
   return claims?.email ?? '';
+  } catch (error) { failAttempt(userId,pending.id);throw error; }
+}
+
+/** Every ChatGPT sign-in attempt still live on THIS installation, by explicit id. The single
+ *  `codex_oauth_pending:<user>` pointer only ever names one; the attempt table can hold several (a
+ *  paste-flow retry, two windows), and a card must be able to show its own without adopting another's
+ *  callback. */
+export function codexAttempts(userId: number, session: string): { id: string; destination: string; status: string; expiresAt: number }[] {
+  return getDb()
+    .prepare("SELECT id,destination,status,expires_at AS expiresAt FROM oauth_attempts WHERE user_id=? AND session_hash=? AND provider='codex' AND status IN ('pending','authorizing','completing') AND expires_at>? ORDER BY created_at DESC")
+    .all(userId, createHash('sha256').update(session).digest('hex'), Date.now()) as { id: string; destination: string; status: string; expiresAt: number }[];
 }
 
 export function codexDisconnect(userId: number): void {
+  getDb().prepare("UPDATE oauth_attempts SET status='cancelled',private_enc='' WHERE user_id=? AND provider='codex' AND status IN ('pending','authorizing','completing')").run(userId);
   deleteAgentAccount(userId, 'codex');
 }
 
@@ -153,17 +178,26 @@ export function codexDisconnect(userId: number): void {
 interface LiveTokens {
   access_token: string;
   account_id: string;
+  credential: string;
 }
 
 /** Refresh lazily — only when the access token expires within 5 minutes. */
-export async function ensureFreshTokens(userId: number): Promise<LiveTokens> {
+// ponytail: single-flight is per process; use a database lease before clustering refresh workers.
+const tokenRefreshes = new Map<number,Promise<LiveTokens>>();
+export function ensureFreshTokens(userId:number):Promise<LiveTokens> {
+  const existing=tokenRefreshes.get(userId);if(existing)return existing;
+  const pending=refreshCodexTokens(userId).finally(()=>tokenRefreshes.delete(userId));
+  tokenRefreshes.set(userId,pending);return pending;
+}
+async function refreshCodexTokens(userId: number): Promise<LiveTokens> {
   const row = getAgentAccount(userId, 'codex');
   if (!row) throw new CodexError('codex: not connected — connect ChatGPT under Account → Agent');
   const meta = accountMeta(row);
+  const generation = credentialGeneration(userId, 'codex');
   const accountId = String(meta.account_id ?? '');
   const exp = Number(jwtClaims(row.access_token || undefined)?.exp ?? 0);
   if (row.access_token && exp * 1000 - Date.now() > 5 * 60 * 1000) {
-    return { access_token: row.access_token, account_id: accountId };
+    return { access_token: row.access_token, account_id: accountId, credential: generation };
   }
 
   let refreshToken: string;
@@ -188,6 +222,7 @@ export async function ensureFreshTokens(userId: number): Promise<LiveTokens> {
     throw Object.assign(new CodexError(`codex: token refresh rejected (${res.status})`), { status: res.status });
   }
   const fresh = (await res.json()) as { id_token?: string; access_token?: string; refresh_token?: string };
+  if(getAgentAccount(userId,'codex')?.token_enc!==row.token_enc)throw new CodexError('ChatGPT connection changed; retry with the current account');
   storeAgentAccount({
     userId,
     provider: 'codex',
@@ -195,16 +230,20 @@ export async function ensureFreshTokens(userId: number): Promise<LiveTokens> {
     label: row.label,
     accessToken: fresh.access_token ?? row.access_token,
     meta: { ...meta, id_token: fresh.id_token ?? meta.id_token },
+    refreshGeneration: generation,
   });
-  return { access_token: fresh.access_token ?? row.access_token, account_id: accountId };
+  return { access_token: fresh.access_token ?? row.access_token, account_id: accountId, credential: generation };
 }
 
 /** 401-mid-flight recovery: blank the stored access token so the next
  *  ensureFreshTokens is forced through a refresh. */
-function poisonAccessToken(userId: number): void {
-  getDb()
-    .prepare(`UPDATE agent_accounts SET access_token = '' WHERE user_id = ? AND provider = 'codex'`)
-    .run(userId);
+/** Invalidate ONLY the access token that received the 401. A reconnect between the request and its
+ *  answer replaces the row; blanking unconditionally would break the new account's fresh token and the
+ *  retry would then run on an identity the caller never chose. False = the credential already moved. */
+function poisonAccessToken(userId: number, used: string): boolean {
+  return getDb()
+    .prepare(`UPDATE agent_accounts SET access_token = '' WHERE user_id = ? AND provider = 'codex' AND access_token = ?`)
+    .run(userId, used).changes > 0;
 }
 
 // ---------------------------------------------------------------- wire shapes
@@ -218,7 +257,9 @@ export function normalizeInput(input: unknown): unknown {
   const items = typeof input === 'string' ? [{ role: 'user', content: input }] : input;
   if (!Array.isArray(items)) return items;
   const out: unknown[] = [];
-  for (const item of items) {
+  for (const raw of items) {
+    if (!raw || typeof raw !== 'object') { out.push(raw); continue; }
+    const { applicationContext: _applicationContext, ...item } = raw;
     const m = item as { role?: string; content?: unknown; type?: string; encrypted_content?: unknown };
     // A reasoning item with no encrypted payload is a bare `rs_…` id the
     // store:false backend cannot resolve — it 400s the whole request. Threads
@@ -254,6 +295,7 @@ type OutputItem = {
   name?: string;
   call_id?: string;
   arguments?: string;
+  input?: string;
   content?: { type?: string; text?: string; refusal?: string }[];
 };
 
@@ -269,6 +311,8 @@ export function readItems(items: OutputItem[]): { text: string; calls: AgentTool
       }
     } else if (item.type === 'function_call' && item.name) {
       calls.push({ call_id: item.call_id ?? '', name: item.name, arguments: item.arguments ?? '{}' });
+    } else if (item.type === 'custom_tool_call' && item.name) {
+      calls.push({ call_id: item.call_id ?? '', name: item.name, arguments: item.input ?? '', type: 'custom' });
     }
   }
   return { text, calls };
@@ -279,24 +323,25 @@ export function repairResponsesItems(items: unknown[], keepOpen: Set<string>): u
   const answered = new Set<string>();
   for (const it of items) {
     const o = it as { type?: string; call_id?: string };
-    if (o?.type === 'function_call_output' && o.call_id) answered.add(o.call_id);
+    if (o?.type && ['function_call_output', 'custom_tool_call_output'].includes(o.type) && o.call_id) answered.add(`${o.type}:${o.call_id}`);
   }
   const called = new Set<string>();
   const out: unknown[] = [];
   for (const it of items) {
     const o = it as { type?: string; call_id?: string };
     // An output whose call was truncated away is as fatal as the reverse.
-    if (o?.type === 'function_call_output' && o.call_id && !called.has(o.call_id)) continue;
+    if (o?.type && ['function_call_output', 'custom_tool_call_output'].includes(o.type) && o.call_id && !called.has(`${o.type}:${o.call_id}`)) continue;
     out.push(it);
-    if (o?.type === 'function_call' && o.call_id) {
-      called.add(o.call_id);
-      if (!answered.has(o.call_id) && !keepOpen.has(o.call_id)) {
+    if ((o?.type === 'function_call' || o?.type === 'custom_tool_call') && o.call_id) {
+      const type = `${o.type}_output`;
+      called.add(`${type}:${o.call_id}`);
+      if (!answered.has(`${type}:${o.call_id}`) && !keepOpen.has(o.call_id)) {
         out.push({
-          type: 'function_call_output',
+          type,
           call_id: o.call_id,
           output: JSON.stringify({
             interrupted: true,
-            note: 'This call never ran — the user moved on, or the server restarted while it waited to be confirmed. Nothing was done. Offer it again if it is still wanted.',
+            note: 'No completed result was recorded for this call. Inspect current state before repeating any mutation; the conversation may have been interrupted or restarted.',
           }),
         });
       }
@@ -314,16 +359,25 @@ export function repairResponsesItems(items: unknown[], keepOpen: Set<string>): u
 interface Transport {
   name: 'codex' | 'openai';
   url: string;
-  headers(userId: number): Promise<Record<string, string>>;
-  /** 401 recovery — codex re-refreshes once; an API key is just wrong. */
-  on401?(userId: number): void;
+  /** `credential` is the account generation the CALL was admitted against (route.ts credentialId).
+   *  Checked after the tokens are in hand and again on every recursive retry, so a reconnect to
+   *  another account — including one that lands between a 401 and its retry — refuses rather than
+   *  billing the replacement. */
+  headers(userId: number, credential?: string): Promise<Record<string, string>>;
+  /** 401 recovery — codex re-refreshes once, on the SAME account generation; an API key is just wrong.
+   *  False means the stored credential changed under the request: do not retry. */
+  on401?(userId: number, used: string): boolean;
 }
 
 const codexTransport: Transport = {
   name: 'codex',
   url: 'https://chatgpt.com/backend-api/codex/responses',
-  async headers(userId) {
+  async headers(userId, credential) {
     const tokens = await ensureFreshTokens(userId);
+    // After the await, not before: what matters is that the headers about to be sent belong to the
+    // account this call was admitted on. An ordinary token rotation keeps the same generation.
+    if (credential && (tokens.credential !== credential || credentialId(userId, 'codex') !== credential))
+      throw new CodexError('codex: the ChatGPT connection changed while this request was being prepared. Nothing was sent on the replacement account — send it again.');
     return { Authorization: `Bearer ${tokens.access_token}`, 'chatgpt-account-id': tokens.account_id, 'OpenAI-Beta': 'responses=experimental', originator: 'codex_cli_rs' };
   },
   on401: poisonAccessToken,
@@ -333,9 +387,11 @@ const OPENAI_API = 'https://api.openai.com/v1';
 const openaiTransport: Transport = {
   name: 'openai',
   url: `${OPENAI_API}/responses`,
-  async headers(userId) {
+  async headers(userId, credential) {
     const key = agentKey(userId, 'openai');
     if (!key) throw new CodexError('openai: no API key — add one under Account → Agent');
+    if (credential && credentialId(userId, 'openai') !== credential)
+      throw new CodexError('openai: the API key changed while this request was being prepared. Nothing was sent on the replacement — send it again.');
     return { Authorization: `Bearer ${key}` };
   },
 };
@@ -354,9 +410,28 @@ async function callCodex(call: ProviderCall, retriedAuth = false, retriedTransie
   return callResponses(call, codexTransport, retriedAuth, retriedTransient);
 }
 
-async function callResponses(call: ProviderCall, transport: Transport, retriedAuth = false, retriedTransient = false, noReasoning = false): Promise<ProviderResult> {
-  const auth = await transport.headers(call.userId);
+/** Only a typed rejection of a custom tool we actually offered permits a JSON retry. */
+export function unsupportedCustomTool(body: string, tools: { type: string }[]): boolean {
+  try {
+    const e = JSON.parse(body)?.error;
+    const index = typeof e?.param === 'string' ? /^tools\[(\d+)\]\.type$/.exec(e.param)?.[1] : undefined;
+    return index !== undefined && tools[Number(index)]?.type === 'custom' && ['unsupported_value', 'unsupported_parameter'].includes(e.code);
+  } catch { return false; }
+}
+const jsonOnlyModels = new Map<string, number>();
+export function responseTools(tools: ProviderCall['tools'], raw: boolean) {
+  return tools.map(t => raw && t.inputFormat === 'text'
+    ? { type: 'custom', name: t.name, description: `${t.description} Send only the patch text; do not wrap it in JSON or include a reason.`, format: { type: 'text' } }
+    : { type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false });
+}
+async function callResponses(call: ProviderCall, transport: Transport, retriedAuth = false, retriedTransient = false, noReasoning = false, jsonOnly = false): Promise<ProviderResult> {
+  const auth = await transport.headers(call.userId, call.credential);
   const tag = transport.name;
+  const capabilityKey = `${tag}:${call.model}`;
+  const offersText = call.tools.some(t => t.inputFormat === 'text');
+  const raw = offersText && !jsonOnly && (jsonOnlyModels.get(capabilityKey) ?? 0) < Date.now() && (tag === 'openai' ||
+    (await listCodexModels(call.userId).catch(() => [])).find(m => m.id === call.model)?.applyPatch === 'freeform');
+  const tools = responseTools(call.tools, raw);
 
   let res: Response;
   try {
@@ -377,7 +452,7 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
         include: ['reasoning.encrypted_content'],
         instructions: call.instructions,
         input: normalizeInput(call.items),
-        tools: call.tools.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })),
+        tools,
         tool_choice: 'auto',
         parallel_tool_calls: true, // independent calls in one round — core.ts runs the batch concurrently
         // Cache routing, keyed per conversation like the Codex CLI keys per
@@ -392,20 +467,22 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
   } catch (err) {
     if (call.signal?.aborted) throw new CodexError(`${tag}: interrupted`);
     const e = new CodexError(`${tag}: network (${err instanceof Error ? err.message : err})`, { cause: err });
-    if (!call.relayRequestId && !retriedTransient && isTransient(e)) {
-      await new Promise((r) => setTimeout(r, 1200));
-      return callResponses(call, transport, retriedAuth, true, noReasoning);
-    }
+    // A dropped response does not establish that inference never started.
     throw e;
   }
 
   if (res.status === 401 && !retriedAuth && transport.on401) {
-    transport.on401(call.userId);
-    return callResponses(call, transport, true, retriedTransient, noReasoning);
+    if (!transport.on401(call.userId, (auth.Authorization ?? '').replace(/^Bearer /, '')))
+      throw new CodexError(`${tag}: the ChatGPT connection changed while this request was in flight. It was not retried on the replacement account — send it again.`);
+    return callResponses(call, transport, true, retriedTransient, noReasoning, jsonOnly);
   }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     const body = text.slice(0, 300);
+    if (transport.name === 'openai' && res.status === 400 && raw && !jsonOnly && unsupportedCustomTool(text, tools)) {
+      jsonOnlyModels.set(capabilityKey, Date.now() + 60 * 60_000);
+      return callResponses(call, transport, retriedAuth, retriedTransient, noReasoning, true);
+    }
     // The OpenAI API answers a model without reasoning with a structured
     // {error: {code: "unsupported_parameter", param: "reasoning"}} — that one
     // retry drops the parameter and nothing else. Read the code and param, not
@@ -413,41 +490,41 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
     // invalid effort (code "invalid_value", param "reasoning.effort") or anything
     // from the codex backend must stay the error it is.
     if (transport.name === 'openai' && res.status === 400 && !noReasoning && unsupportedReasoning(text)) {
-      return callResponses(call, transport, retriedAuth, retriedTransient, true);
+      return callResponses(call, transport, retriedAuth, retriedTransient, true, jsonOnly);
     }
     const err = Object.assign(new CodexError(`${tag}: ${res.status} ${body}`), { status: res.status });
-    if (!call.relayRequestId && !retriedTransient && isTransient(err)) {
+    if (!call.relayRequestId && !retriedTransient && res.status === 429) {
       await new Promise((r) => setTimeout(r, 1200));
-      return callResponses(call, transport, retriedAuth, true, noReasoning);
+      return callResponses(call, transport, retriedAuth, true, noReasoning, jsonOnly);
     }
     throw err;
   }
 
-  type Completed = { output?: OutputItem[]; usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } } };
+  type Completed = { output?: OutputItem[]; usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } } };
   const streamed: OutputItem[] = [];
+  const thinking = thinkingCounter(call.onThinking);
   let completed: Completed | undefined;
-  let visible = false;
   try {
     if (!res.body) throw Error('missing response stream');
     await readSse(res.body, payload => {
       if (payload === '[DONE]') return;
       let ev: any;
       try { ev = JSON.parse(payload); } catch { return; } // a non-JSON frame is skipped, as before streaming
+      if (ev.type === 'response.reasoning_text.delta' && typeof ev.delta === 'string') thinking.text(ev.delta);
+      else if (ev.type === 'response.reasoning_summary_text.delta' && typeof ev.delta === 'string') call.onThinking?.({ detailDelta: ev.delta });
+      thinking.usage(ev.response?.usage?.output_tokens_details?.reasoning_tokens);
       if (ev.type === 'response.output_text.delta' || ev.type === 'response.refusal.delta') {
-        if (typeof ev.delta === 'string' && ev.delta) { visible = true; call.onTextDelta?.(ev.delta); }
+        if (typeof ev.delta === 'string' && ev.delta) call.onTextDelta?.(ev.delta);
       } else if (ev.type === 'response.output_item.done' && ev.item) streamed.push(ev.item);
       else if (ev.type === 'response.completed') completed = ev.response;
       else if (ev.type === 'response.failed' || ev.type === 'response.incomplete' || ev.type === 'error')
         throw Error(JSON.stringify(ev.response?.error ?? ev.error ?? ev.message ?? ev.response?.incomplete_details ?? 'incomplete response').slice(0, 300));
-    }, call.onProgress);
+    }, call.onProgress, call.signal);
     // An EOF is not completion: an unfinished tool call must never execute.
     if (!completed) throw Error('response stream ended before completion');
   } catch (err) {
     const e = new CodexError(`${tag}: stream (${err instanceof Error ? err.message : err})`, { cause: err });
-    if (!visible && !call.signal?.aborted && !call.relayRequestId && !retriedTransient && isTransient(e)) {
-      await new Promise((r) => setTimeout(r, 1200));
-      return callResponses(call, transport, retriedAuth, true, noReasoning);
-    }
+    // Partial reasoning/tool input is still inference, even without visible prose.
     throw e;
   }
   const items = completed?.output?.length ? completed.output : streamed;
@@ -455,10 +532,10 @@ async function callResponses(call: ProviderCall, transport: Transport, retriedAu
   if (!text && !calls.length) throw new CodexError(`${tag}: empty response`);
   for (const fn of calls) {
     if (!fn.call_id) throw new CodexError(`${tag}: incomplete tool call`);
-    try { JSON.parse(fn.arguments); } catch { throw new CodexError(`${tag}: tool call ${fn.name} carried malformed arguments`); }
+    if (fn.type !== 'custom') try { JSON.parse(fn.arguments); } catch { throw new CodexError(`${tag}: tool call ${fn.name} carried malformed arguments`); }
   }
   const u = completed?.usage;
-  return { text, calls, items, ...(u?.input_tokens ? { usage: { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens ?? 0, output: u.output_tokens } } : {}) };
+  return { text, calls, items, ...(u?.input_tokens !== undefined ? { usage: { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens, cacheWrite: u.input_tokens_details?.cache_write_tokens, output: u.output_tokens } } : {}) };
 }
 
 /** The backend's model list. It is gated on the CLI version it thinks it is
@@ -475,12 +552,20 @@ export interface CodexModel {
   /** Reasoning efforts the model accepts, in the backend's order. */
   efforts: string[];
   context?: ModelContext;
+  applyPatch?: 'freeform' | 'function';
 }
 
-export function listCodexModels(userId: number): Promise<CodexModel[]> {
-  return cached(`codex:models:${userId}`, 60 * 60_000, async () => {
+export async function listCodexModels(userId: number): Promise<CodexModel[]> {
+  return (await listCodexCatalog(userId)).models;
+}
+export function listCodexCatalog(userId: number): Promise<ModelList<CodexModel>> {
+  const generation = credentialGeneration(userId, 'codex');
+  const storedKey = `agent_models:codex:${userId}:${generation}`;
+  return cached(`codex:models:${userId}:${generation}`, 60 * 60_000, async () => {
     try {
       const tokens = await ensureFreshTokens(userId);
+      if (tokens.credential !== generation || credentialGeneration(userId, 'codex') !== generation)
+        throw Error('ChatGPT connection changed during model discovery.');
       const res = await fetch(`https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`, {
         headers: { Authorization: `Bearer ${tokens.access_token}`, 'chatgpt-account-id': tokens.account_id, originator: 'codex_cli_rs' },
         signal: AbortSignal.timeout(10_000),
@@ -498,6 +583,7 @@ export function listCodexModels(userId: number): Promise<CodexModel[]> {
           max_context_window?: number;
           effective_context_window_percent?: number;
           auto_compact_token_limit?: number;
+          apply_patch_tool_type?: string;
         }[];
       };
       const list = (data.models ?? [])
@@ -509,14 +595,17 @@ export function listCodexModels(userId: number): Promise<CodexModel[]> {
           ...(m.description ? { description: m.description } : {}),
           efforts: (m.supported_reasoning_levels ?? []).map((l) => l.effort),
           context: codexContext(m),
+          ...(m.apply_patch_tool_type === 'freeform' || m.apply_patch_tool_type === 'function' ? { applyPatch: m.apply_patch_tool_type as 'freeform' | 'function' } : {}),
         }));
       if (!list.length) throw new Error('codex models: empty list');
-      setSetting(`agent_models:codex:${userId}`, JSON.stringify(list));
-      return list;
+      if (credentialGeneration(userId, 'codex') !== generation) throw Error('ChatGPT connection changed during model discovery.');
+      const view: ModelList<CodexModel> = { models: list, source: 'live', at: Date.now() };
+      setSetting(storedKey, JSON.stringify(view));
+      return view;
     } catch (err) {
-      const stored = JSON.parse(getSetting(`agent_models:codex:${userId}`) ?? '[]') as CodexModel[];
-      if (!stored.length) throw err;
-      return stored.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) }));
+      const stored = JSON.parse(getSetting(storedKey) ?? 'null') as ModelList<CodexModel> | null;
+      if (!stored?.models?.length) throw err;
+      return { ...stored, source: 'cache', models: stored.models.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) })) };
     }
   });
 }
@@ -541,11 +630,13 @@ export interface ModelList<M> {
 }
 
 export function listOpenAIModels(userId: number): Promise<ModelList<ApiModel>> {
-  const stored = `agent_models:openai:${userId}`;
-  return cached(`openai:models:${userId}`, 60 * 60_000, async () => {
+  const generation = credentialGeneration(userId, 'openai');
+  const stored = `agent_models:openai:${userId}:${generation}`;
+  return cached(`openai:models:${userId}:${generation}`, 60 * 60_000, async () => {
     try {
       const key = agentKey(userId, 'openai');
       if (!key) throw new Error('openai: no API key');
+      if (credentialGeneration(userId, 'openai') !== generation) throw Error('OpenAI connection changed during model discovery.');
       const res = await fetch(`${OPENAI_API}/models`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
       if (!res.ok) throw new Error(`openai models ${res.status}`);
       const data = (await res.json()) as { data?: { id?: unknown; created?: unknown }[] };
@@ -554,6 +645,7 @@ export function listOpenAIModels(userId: number): Promise<ModelList<ApiModel>> {
         .map((m) => ({ id: String(m.id), name: String(m.id), ...(typeof m.created === 'number' ? { created: m.created } : {}) }))
         .sort((a, b) => (b.created ?? 0) - (a.created ?? 0) || a.id.localeCompare(b.id));
       if (!list.length) throw new Error('openai models: empty list');
+      if (credentialGeneration(userId, 'openai') !== generation) throw Error('OpenAI connection changed during model discovery.');
       const at = Date.now();
       setSetting(stored, JSON.stringify({ at, models: list }));
       return { models: list, source: 'live' as const, at };
@@ -579,7 +671,7 @@ export const openaiProvider: AgentProvider = {
     }
   },
   userItem: (text) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }),
-  toolOutputItem: (callId, json) => ({ type: 'function_call_output', call_id: callId, output: json }),
+  toolOutputItem: (callId, json, type) => ({ type: type === 'custom' ? 'custom_tool_call_output' : 'function_call_output', call_id: callId, output: json }),
   repairItems: repairResponsesItems,
 };
 
@@ -599,6 +691,6 @@ export const codexProvider: AgentProvider = {
     }
   },
   userItem: (text) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }),
-  toolOutputItem: (callId, json) => ({ type: 'function_call_output', call_id: callId, output: json }),
+  toolOutputItem: (callId, json, type) => ({ type: type === 'custom' ? 'custom_tool_call_output' : 'function_call_output', call_id: callId, output: json }),
   repairItems: repairResponsesItems,
 };

@@ -37,6 +37,17 @@ if (cta) {
   cta.addEventListener('blur', gustDown);
 
   let gating = false;
+  // bfcache restores the page mid-dive: re-arm the CTA and drop the flash.
+  addEventListener('pageshow', (e) => {
+    if (!e.persisted) return;
+    gating = false;
+    document.getElementById('gate-flash')?.classList.remove('flash-in');
+    try {
+      sessionStorage.removeItem('fd-gate');
+    } catch {
+      /* private mode */
+    }
+  });
   cta.addEventListener('click', (e) => {
     e.preventDefault();
     if (gating) return;

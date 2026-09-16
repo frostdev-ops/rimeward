@@ -25,6 +25,8 @@ import { ago, el, newId, postJson, toast } from './dom.ts';
 import { icon, relabel } from './icon.ts';
 import { ensureStream, onRun, type RunEvent } from './logic.ts';
 import * as wires from './wires.ts';
+import { WORKSPACE_CONSUMERS } from '../../lib/dev/workspace-contract.ts';
+import { flushWorkspaceEditors, workspaceApi } from './workspace.ts';
 
 interface RunRecord {
   result: 'ok' | 'skipped' | 'error';
@@ -36,6 +38,8 @@ let grid: HTMLElement;
 let logicBtn: HTMLButtonElement;
 let cancelBtn: HTMLButtonElement;
 const edges = new Map<string, LogicEdge>();
+const workspaceLinks = new Map<string, string | null>();
+let workspaceBase = new Map<string, string | null>();
 let saved: LogicEdge[] = [];
 let runs: Record<string, RunRecord> = {};
 let isAdmin = false;
@@ -52,6 +56,7 @@ const layoutById = () => new Map(readLayout().map((w) => [w.i, w]));
 const triggersFor = (type: string) => Object.entries(TRIGGERS).filter(([, t]) => wardTypes(t).includes(type));
 const actionsFor = (type: string) => Object.entries(ACTIONS).filter(([, a]) => wardTypes(a).includes(type));
 const globalActions = () => Object.entries(ACTIONS).filter(([, a]) => !a.wardType && (!a.adminOnly || isAdmin));
+const workspaceConsumer = (type: string) => (WORKSPACE_CONSUMERS as readonly string[]).includes(type);
 
 // ------------------------------------------------------------------- wires ⇄
 
@@ -74,6 +79,10 @@ function syncWires(seed?: { id: string; a: { x: number; y: number; vx: number; v
   for (const edge of edges.values()) {
     const spec = specFor(edge);
     if (spec) specs.push(spec);
+  }
+  for (const [consumer, workspace] of workspaceLinks) {
+    const src = workspace && wardEl(workspace), dst = wardEl(consumer);
+    if (src && dst) specs.push({ id: `workspace:${consumer}`, label: 'Workspace', error: false, disabled: false, src, dst });
   }
   wires.setWires(specs, seed);
   refreshList();
@@ -118,8 +127,8 @@ function stampWards(): void {
   for (const node of grid.querySelectorAll<HTMLElement>('[data-wd]')) {
     const w = byId.get(node.dataset.wd ?? '');
     const type = w?.type ?? '';
-    node.toggleAttribute('data-logic-src', triggersFor(type).length > 0);
-    node.toggleAttribute('data-logic-dst', actionsFor(type).length > 0);
+    node.toggleAttribute('data-logic-src', type === 'workspace' || triggersFor(type).length > 0);
+    node.toggleAttribute('data-logic-dst', workspaceConsumer(type) || actionsFor(type).length > 0);
   }
 }
 
@@ -136,7 +145,8 @@ function stampCross(): void {
     return w ? pageOf(w, pages, layout) : undefined;
   };
   const seen = new Set<string>();
-  for (const e of saved) {
+  const bindings = layout.filter(w => w.workspace).map(w => ({ source: { ward: w.workspace! }, action: { ward: w.i } }));
+  for (const e of [...saved, ...bindings]) {
     if (!e.action.ward) continue;
     for (const [here, there] of [
       [e.source.ward, e.action.ward],
@@ -623,7 +633,7 @@ function openList(source: string | null = null): void {
   // With a source ward known the popover is the whole form; otherwise a
   // source pick comes first (its triggers are what the popover offers).
   const pick = el('select', 'input min-h-0 px-2 py-1 text-xs hidden') as HTMLSelectElement;
-  fillWardSelect(pick, (w) => triggersFor(w.type).length > 0, 'From which ward…');
+  fillWardSelect(pick, (w) => w.type === 'workspace' || triggersFor(w.type).length > 0, 'From which ward…');
   pick.setAttribute('aria-label', 'Source ward');
   pick.addEventListener('change', () => {
     if (pick.value) newEdge(pick.value, add);
@@ -652,6 +662,7 @@ function openList(source: string | null = null): void {
  *  into the popover, where the target and everything else is picked. */
 function newEdge(source: string, at: HTMLElement): void {
   const w = layoutById().get(source);
+  if (w?.type === 'workspace') { openList(source); return; }
   const trigger = w && triggersFor(w.type)[0]?.[0];
   const action = globalActions()[0]?.[0];
   if (!w || !trigger || !action) return;
@@ -676,6 +687,21 @@ function refreshList(): void {
     return w ? pages.findIndex((p) => p.id === pageOf(w, pages, layout)) : pages.length;
   };
   const title = (id: string | undefined) => (id && byId.get(id) ? wardTitle(byId.get(id)!) : (id ?? ''));
+  const workspaceRows = layout.filter(w => workspaceConsumer(w.type) && (!listSource || w.i === listSource || byId.get(listSource)?.type === 'workspace'));
+  for (const consumer of workspaceRows) {
+    const query = listQuery.trim().toLowerCase();
+    if (query && !`${wardTitle(consumer)} workspace ${title(workspaceLinks.get(consumer.i) ?? undefined)}`.toLowerCase().includes(query)) continue;
+    const row = el('label', 'wire-row');
+    row.append(el('span', 'wire-row-text', `${wardTitle(consumer)} · Workspace`));
+    const select = el('select', 'input'); select.setAttribute('aria-label', `Workspace for ${wardTitle(consumer)}`);
+    select.add(new Option('Default folder', ''));
+    for (const workspace of layout.filter(w => w.type === 'workspace')) select.add(new Option(wardTitle(workspace), workspace.i));
+    const chosen = workspaceLinks.get(consumer.i);
+    if (chosen && !byId.has(chosen)) select.add(new Option('Missing Workspace', chosen));
+    select.value = chosen ?? '';
+    select.onchange = () => { workspaceLinks.set(consumer.i, select.value || null); syncWires(); };
+    row.append(select); rows.append(row);
+  }
   const text = (e: LogicEdge) =>
     `${title(e.source.ward)} ${TRIGGERS[e.source.trigger]?.label ?? ''} ${ACTIONS[e.action.type]?.label ?? ''} ${title(e.action.ward)}`.toLowerCase();
   const all = [...edges.values()].filter((e) => !listSource || e.source.ward === listSource);
@@ -684,7 +710,7 @@ function refreshList(): void {
     (a, b) => pageIdx(a.source.ward) - pageIdx(b.source.ward) || (order.get(a.source.ward) ?? 0) - (order.get(b.source.ward) ?? 0)
   );
   if (!shown.length) {
-    rows.append(el('p', 'text-xs text-ink-faint', all.length ? 'No matches.' : 'No leylines yet.'));
+    if (!rows.children.length) rows.append(el('p', 'text-xs text-ink-faint', all.length ? 'No matches.' : 'No leylines yet.'));
     return;
   }
   let lastSrc = '';
@@ -763,12 +789,16 @@ function bootPortDrag(): void {
 
   const collectTargets = () => {
     targets = [];
+    const source = layoutById().get(src?.closest<HTMLElement>('[data-wd]')?.dataset.wd ?? src?.dataset.wd ?? '');
     for (const node of grid.querySelectorAll<HTMLElement>('[data-wd][data-logic-dst]')) {
+      const target = layoutById().get(node.dataset.wd ?? '');
+      if (!target || (source?.type === 'workspace' ? !workspaceConsumer(target.type) : !actionsFor(target.type).length)) continue;
       const r = node.getBoundingClientRect();
       targets.push({ el: node, left: r.left, top: r.top, right: r.right, bottom: r.bottom });
       node.setAttribute('data-drop-ok', '1');
     }
     for (const chip of dock?.querySelectorAll<HTMLElement>('[data-chip]') ?? []) {
+      if (source?.type === 'workspace') continue;
       const r = chip.getBoundingClientRect();
       targets.push({ el: chip, left: r.left, top: r.top, right: r.right, bottom: r.bottom });
       chip.setAttribute('data-drop-ok', '1');
@@ -818,6 +848,14 @@ function bootPortDrag(): void {
     const seedPts = wires.draftEnd();
     cleanup();
     if (!srcW) return;
+    if (srcW.type === 'workspace') {
+      const target = dropped.dataset.wd;
+      if (target && workspaceConsumer(byId.get(target)?.type ?? '')) {
+        workspaceLinks.set(target, srcW.i);
+        syncWires(seedPts ? { id: `workspace:${target}`, ...seedPts } : undefined);
+      }
+      return;
+    }
     const firstTrigger = triggersFor(srcW.type)[0]?.[0];
     if (!firstTrigger) return;
     let action: LogicEdge['action'];
@@ -893,6 +931,9 @@ function bootPortDrag(): void {
 function enterWiring(): void {
   ensureStream();
   edges.clear();
+  workspaceLinks.clear();
+  for (const w of readLayout()) if (workspaceConsumer(w.type)) workspaceLinks.set(w.i, w.workspace ?? null);
+  workspaceBase = new Map(workspaceLinks);
   // Lenient revalidation against the CURRENT layout, exactly like the server's
   // reads: edges whose wards were removed since page load stay out of the
   // session (an invisible stale edge would 400 the strict PUT on Done).
@@ -935,14 +976,21 @@ function exitWiring(persist: boolean): void {
 async function saveAndExit(): Promise<void> {
   closePopover();
   logicBtn.disabled = true;
-  const res = await postJson('/api/logic', { graph: { edges: [...edges.values()] } }, 'PUT');
-  logicBtn.disabled = false;
-  if (res.ok) {
+  try {
+    const { workspaceDraft, applyWorkspaceLayout } = await import('./edit.ts');
+    const links = [...workspaceLinks].filter(([ward, workspace]) => workspace !== workspaceBase.get(ward)).map(([ward, workspace]) => ({ ward, workspace, expectedWorkspace: workspaceBase.get(ward) ?? null }));
+    if (links.length) {
+      await flushWorkspaceEditors(links.map(link => link.ward));
+      const result = await workspaceApi<{ layout: WardInstance[]; pages: ReturnType<typeof readPages> }>({ action: 'links', links, graph: { edges: [...edges.values()] }, expectedGraph: { edges: saved }, dashboard: workspaceDraft() });
+      applyWorkspaceLayout(result.layout, result.pages);
+    } else {
+      const res = await postJson('/api/logic', { graph: { edges: [...edges.values()] } }, 'PUT');
+      if (!res.ok) throw Error('Saving leylines failed.');
+    }
     exitWiring(true);
     toast('Leylines saved.');
-  } else {
-    toast('Saving leylines failed — still in Leylines mode.', undefined, true);
-  }
+  } catch (e) { toast(`${(e as Error).message} Your Leylines draft is preserved.`, undefined, true); }
+  finally { logicBtn.disabled = false; }
 }
 
 // --------------------------------------------------------------------- boot
@@ -993,6 +1041,7 @@ export function bootLogicEdit(): void {
   }).observe(grid, { attributes: true, attributeFilter: ['class'] });
 
   wires.onWireClick((id, x, y) => {
+    if (id.startsWith('workspace:') && isWiring()) { openList(id.slice('workspace:'.length)); return; }
     const edge = edges.get(id);
     if (edge && isWiring()) openPopover(edge, x, y);
   });

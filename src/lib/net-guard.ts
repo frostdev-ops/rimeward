@@ -1,5 +1,6 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import { isDesktop } from './dev/runtime.ts';
 
 // The private-address check the agent's vettedFetch has always used, lifted out
 // so the mailbox connector (arbitrary user-supplied IMAP/POP/SMTP hosts) shares
@@ -86,6 +87,25 @@ export function isLoopbackAddress(ip: string): boolean {
   if (!p) return false;
   if (p.slice(0, 7).every((n) => n === 0) && p[7] === 1) return true;
   return p.slice(0, 5).every((n) => n === 0) && p[5] === 0xffff && p[6]! >> 8 === 127;
+}
+
+/**
+ * The address a public rate limiter should bucket on. ONLY `x-real-ip`, and only
+ * from a loopback peer: every proxying location in the ops/ nginx configs sets
+ * X-Real-IP to `$remote_addr`, so it is the socket's word, not the client's — a
+ * new location must set it too (nginx replaces the whole proxy_set_header set
+ * per level, so nothing is inherited from `location /`). CF-Connecting-IP
+ * and X-Forwarded-For are whatever the client sent (nginx's real_ip module is what
+ * makes `$remote_addr` the true client behind Cloudflare), so trusting either lets
+ * anyone pick their own bucket and spend nobody's window. On the desktop runtime
+ * every peer is loopback and that peer is the browser, not a proxy — no header
+ * there is trusted at all.
+ */
+export function clientIp(request: Request, clientAddress: string): string {
+  const peer = canonicalAddress(clientAddress);
+  if (!isLoopbackAddress(clientAddress) || isDesktop()) return peer;
+  const v = request.headers.get('x-real-ip')?.trim() ?? '';
+  return net.isIP(v) ? canonicalAddress(v) : peer;
 }
 
 /**

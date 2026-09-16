@@ -1,3 +1,6 @@
+import { ensureSetupToken, needsSetup } from './lib/installation.ts';
+import { ensureAuthCleanup } from './lib/oauth-attempts.ts';
+import { publicOrigin } from './lib/app-config.ts';
 import { ensureLiveStream } from './lib/live-stream.ts';
 import { ensureBrowserLive } from './lib/browser/live.ts';
 import { ensureDevLive } from './lib/dev/live.ts';
@@ -24,6 +27,8 @@ import { ensureKnowledge } from './lib/agent/knowledge.ts';
 // The status + logic engines live in-process; middleware load is the one place
 // that runs exactly once per server boot (guarded against dev-HMR double-starts).
 getDb(); // migrations, and the monitor registry the first status tick needs
+ensureSetupToken();
+ensureAuthCleanup();
 ensureStatusEngine();
 ensureLogicEngine();
 ensureBrowser(); // orphan sweep + graceful close for the browser wards
@@ -44,6 +49,11 @@ ensureKnowledge();
 // land on them; each one re-checks the session itself), and static assets.
 const PUBLIC_PREFIXES = [
   '/login',
+  '/register',
+  '/recover',
+  '/api/auth/identity/',
+  '/api/oauth/broker',
+  '/api/cli/', // a Rime-launched CLI's hooks: loopback + per-session bearer, checked in the route
   '/api/login',
   '/api/devices/preview',
   '/api/devices/claim',
@@ -66,7 +76,7 @@ const PUBLIC_PREFIXES = [
   '/apple-touch-icon',
 ];
 
-const ADMIN_PREFIXES = ['/admin', '/api/users', '/api/admin'];
+const ADMIN_PREFIXES = ['/admin', '/api/users', '/api/admin', '/setup'];
 
 export const onRequest = defineMiddleware(async (context, next) => {
   const native=nativeRequest(context);
@@ -79,7 +89,11 @@ export const onRequest = defineMiddleware(async (context, next) => {
       headers: { 'content-type': 'application/json' },
     });
   }
+  if (needsSetup() && ['/', '/login'].includes(pathname)) return context.redirect('/setup',303);
   if (pathname === '/') return next();
+  // Only the claim step is public, and only while there is nobody to claim it:
+  // every later wizard step is an ADMIN_PREFIXES page with a real session.
+  if (pathname === '/setup' && needsSetup()) return next();
   if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return next();
 
   const cookie = sessionId(context.cookies);
@@ -122,9 +136,10 @@ export const onRequest = defineMiddleware(async (context, next) => {
         headers: { 'content-type': 'application/json' },
       });
     }
+    if(pathname==='/oauth/broker') { const code=context.url.searchParams.get('code')??'';if(/^[A-F0-9]{12}$/.test(code))context.cookies.set('rimeward_broker',code,{path:'/',httpOnly:true,sameSite:'lax',secure:publicOrigin().startsWith('https:'),maxAge:900}); }
     if(pathname==='/desktop/connect') {
       const code=context.url.searchParams.get('code');
-      if(validUserCode(code)) context.cookies.set(CONNECT_COOKIE,code,{path:'/',httpOnly:true,sameSite:'lax',secure:(process.env.PUBLIC_BASE_URL??'').startsWith('https:'),maxAge:600});
+      if(validUserCode(code)) context.cookies.set(CONNECT_COOKIE,code,{path:'/',httpOnly:true,sameSite:'lax',secure:publicOrigin().startsWith('https:'),maxAge:600});
     }
     return context.redirect('/login', 303);
   }

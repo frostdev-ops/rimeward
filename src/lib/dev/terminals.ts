@@ -1,9 +1,12 @@
 import { terminalEnv } from "./environment.ts";
+import { LEGACY_MODES, PERMISSION_MODES, cliPermissions, prepareCliLaunch, cliLaunchReady, cliInputBlocker, type CliLaunch, type CliOrigin } from "./cli-bridge.ts";
 export { terminalEnv } from "./environment.ts";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
 import type { IPty } from "node-pty";
 import type { Socket } from "node:net";
@@ -11,7 +14,7 @@ import type { Terminal as Headless } from "@xterm/headless";
 import type { SerializeAddon } from "@xterm/addon-serialize";
 import {
   workDb,
-  requireDesktop,
+  requireWorkspaceRuntime,
   DevError,
   emitDev,
   claimLease,
@@ -21,7 +24,7 @@ import {
 } from "./runtime.ts";
 import { projectOf, projectPath } from "./projects.ts";
 import { processUsage } from './process-usage.ts';
-import { terminalIsLog } from './types.ts';
+import { narrowerPermission, terminalIsLog } from './types.ts';
 import type { SessionView, SessionResourceView, PermissionMode, TerminalKind } from "./types.ts";
 
 const require = createRequire(import.meta.url);
@@ -49,9 +52,22 @@ type Row = {
   cols: number;
   rows: number;
   sequence: number;
+  phase: string;
+  last_message: string;
+  /** The Rime ward (and thread) that launched a CLI session: restored with it, so a session
+   *  brought back after a runtime restart still reports to its coordinator. */
+  origin_ward: string;
+  origin_conv: number | null;
+  owner_runtime?: string;
+  workspace_json?: string;
+  virtual_cwd?: string;
 };
 interface Live {
-  pty: IPty;
+  pty: TerminalTransport;
+  /** Every input writer invalidates a pending model-added Enter. */
+  inputSequence: number;
+  pendingSend?: boolean;
+  commandObservation?: { id: string; owner: string; at: number; sequence: number; inputSequence: number };
   input?: Socket;
   exited: Promise<void>;
   term: Headless;
@@ -72,7 +88,10 @@ interface Live {
   flush?: ReturnType<typeof setTimeout>;
   user: number;
   id: string;
+  /** The ephemeral hook plugin of a Rime-launched CLI (cli-bridge.ts); removed at exit. */
+  launch?: CliLaunch;
 }
+export type TerminalTransport = Pick<IPty,'pid'|'onData'|'onExit'|'write'|'resize'|'kill'|'pause'|'resume'>;
 const live = new Map<string, Live>();
 function stopPty(s: Live, reason?: Live['terminationReason']) {
   if (s.closing) return s.exited;
@@ -114,7 +133,7 @@ export function executable(name: string): string | null {
   return null;
 }
 export function terminalCapabilities() {
-  requireDesktop();
+  requireWorkspaceRuntime();
   return {
     platform: process.platform,
     agents: { codex: !!executable("codex"), claude: !!executable("claude") },
@@ -137,21 +156,28 @@ export function cliArgs(
   // The task is the CLI's positional prompt: a leading dash would be parsed as an option and could
   // re-add the bypass flags this mode omits.
   if (/^\s*-/.test(task)) throw new DevError("A task cannot start with '-'.");
-  if (kind === "codex")
-    return [
-      ...(resume ? ["resume"] : []),
-      ...(mode === "yolo"
-        ? ["--dangerously-bypass-approvals-and-sandbox"]
-        : ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"]),
-      ...(task ? [task] : []),
-    ];
-  return [
-    ...(resume ? ["--resume"] : []),
-    ...(mode === "yolo"
-      ? ["--dangerously-skip-permissions"]
-      : ["--permission-mode", "default"]),
-    ...(task ? [task] : []),
-  ];
+  mode = LEGACY_MODES[mode as string] ?? mode;
+  // read-only: plan / read-only sandbox. approvals: the CLI asks; with a coordinator attached the
+  // PermissionRequest hook (cli-bridge.ts) carries the prompt to Rime, otherwise the TTY shows it.
+  // normal: the CLI's own auto mode (Claude `auto`; Codex `--approve-for-me`, its automatic
+  // approval review over the workspace-write sandbox). yolo: no prompts, no sandbox.
+  // Unsupported input fails here, loudly — never a launch with no permission flags at all.
+  const flags = kind === "codex"
+    ? { "read-only": ["--sandbox", "read-only", "--ask-for-approval", "never"], approvals: ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"], normal: [codexAutoFlag()], yolo: ["--dangerously-bypass-approvals-and-sandbox"] }[mode]
+    : { "read-only": ["--permission-mode", "plan"], approvals: ["--permission-mode", "default"], normal: ["--permission-mode", "auto"], yolo: ["--dangerously-skip-permissions"] }[mode];
+  if (!flags) throw new DevError(`Unsupported permission mode "${String(mode)}"; choose read-only, approvals, normal or yolo.`);
+  return [...(resume ? [kind === "codex" ? "resume" : "--resume"] : []), ...flags, ...(task ? [task] : [])];
+}
+/** Codex renamed its auto mode: `--approve-for-me` (0.1xx+, alias --not-so-yolo) replaced
+ *  `--full-auto`, which current builds reject as an unknown option. One `--help` probe per
+ *  process picks the flag the installed binary knows; an unreadable help defaults to the current name. */
+let codexAuto: string | undefined;
+function codexAutoFlag(): string {
+  if (codexAuto) return codexAuto;
+  let help = "";
+  try { help = execFileSync(executable("codex") || "codex", ["--help"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }); } catch { /* fall through to the current flag */ }
+  codexAuto = !help.includes("--approve-for-me") && help.includes("--full-auto") ? "--full-auto" : "--approve-for-me";
+  return codexAuto;
 }
 function rowOf(user: number, id: string): Row {
   const row = workDb()
@@ -173,6 +199,9 @@ function view(r: Row, inspect = false): SessionView {
   });
   return {
     id: r.id,
+    ...(r.owner_runtime?{ownerRuntimeId:r.owner_runtime}:{}),
+    ...(r.virtual_cwd?{virtualCwd:r.virtual_cwd}:{}),
+    ...(r.workspace_json?{workspace:JSON.parse(r.workspace_json)}:{}),
     project: r.project,
     kind: r.kind,
     command: !!r.is_command,
@@ -191,6 +220,7 @@ function view(r: Row, inspect = false): SessionView {
     task: r.task,
     assignment: r.assignment,
     taskState: r.task_state,
+    ...(r.phase ? { phase: r.phase as SessionView["phase"], ...(r.last_message ? { lastMessage: r.last_message } : {}) } : {}),
     ...(inspect ? { review: r.review } : {}),
     ...(evidence ? { evidence } : {}),
   };
@@ -213,7 +243,7 @@ export function listSessions(user: number, project?: string): SessionView[] {
     workDb()
       .prepare(
         // Everything but the snapshot (multi-MB per session): the list never shows it.
-        "SELECT id,user_id,project,kind,mode,title,shell,next_mode,human_control,review,state,exit_code,exit_signal,termination_reason,task,assignment,task_state,cols,rows,sequence,agent_input,is_command FROM terminal_sessions WHERE user_id=? AND (? IS NULL OR project=?) ORDER BY rowid DESC",
+        "SELECT id,user_id,project,kind,mode,title,shell,next_mode,human_control,review,state,exit_code,exit_signal,termination_reason,task,assignment,task_state,cols,rows,sequence,agent_input,is_command,phase,last_message,owner_runtime,workspace_json,virtual_cwd FROM terminal_sessions WHERE user_id=? AND (? IS NULL OR project=?) ORDER BY rowid DESC",
       )
       .all(user, project ?? null, project ?? null) as Row[]
   ).map(r => view(r));
@@ -284,6 +314,9 @@ export async function startSession(
   user: number,
   opts: {
     project: string;
+    /** Resolved by the trusted workspace backend, never from native tool arguments. */
+    nativeCwd?: string;
+    transport?: TerminalTransport;
     kind?: TerminalKind;
     mode?: PermissionMode;
     agentInput?: boolean;
@@ -295,16 +328,18 @@ export async function startSession(
     command?: string;
     assignment?: string;
     title?: string;
+    /** The Rime ward (and thread) that started a CLI session: where its hooks report. */
+    origin?: CliOrigin;
   },
   saved?: Row,
 ): Promise<SessionView> {
-  requireDesktop();
+  requireWorkspaceRuntime();
   const p = projectOf(user, opts.project),
     kind = opts.kind ?? "shell",
-    mode = opts.mode ?? "human";
+    mode = LEGACY_MODES[opts.mode as string] ?? opts.mode ?? cliPermissions(user, opts.origin?.ward);
   if (
     !["shell", "codex", "claude"].includes(kind) ||
-    !["human", "rimeward", "yolo"].includes(mode) ||
+    !PERMISSION_MODES.includes(mode) ||
     (opts.agentInput !== undefined && typeof opts.agentInput !== "boolean")
   )
     throw new DevError("Invalid terminal configuration.");
@@ -321,7 +356,7 @@ export async function startSession(
       ? executable("pwsh") || executable("powershell") || "cmd.exe"
       : process.env.SHELL || os.userInfo().shell || "/bin/sh");
   const command = executable(kind === "shell" ? shell : kind);
-  if (!command)
+  if (!command && !opts.transport)
     throw new DevError(
       `${kind === "shell" ? shell : kind} is not installed. Install it and sign in locally, then try again.`,
       409,
@@ -349,22 +384,29 @@ export async function startSession(
   const task = (opts.task ?? "").slice(0, 8000),
     assignment = (opts.assignment ?? "").slice(0, 2000);
   // argv is passed directly to the executable, never concatenated into a shell command.
-  let program = command,
+  let program = command ?? shell,
     args = cliArgs(kind, mode, task, !!saved);
+  // A CLI gets its session-only hook plugin (before the positional task) and the env its hooks use.
+  let launch: CliLaunch | undefined;
+  if (kind !== "shell" && !opts.transport) {
+    try { launch = prepareCliLaunch(user, id, kind, mode, opts.origin, task); } catch (error) { term.dispose(); throw error; }
+    args.splice(args.length - (task ? 1 : 0), 0, ...launch.args);
+    if (task && launch.task) args[args.length - 1] = launch.task; // Codex: the coordination preamble rides the task
+  }
   if (kind === "shell" && process.platform !== "win32") args = ["-l"];
   if (opts.command !== undefined) {
     args = process.platform === "win32"
       ? ["-NoLogo", "-NoProfile", "-Command", opts.command]
       : ["-lc", opts.command];
   }
-  if (kind !== "shell" && process.platform !== "win32") {
+  if (kind !== "shell" && process.platform !== "win32" && command) {
     const script = fs.realpathSync(command);
     if (/\.[cm]?js$/.test(script)) {
       program = process.execPath;
       args = [script, ...args];
     }
   }
-  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(command)) {
+  if (process.platform === "win32" && command && /\.(cmd|bat)$/i.test(command)) {
     const packageFile =
       kind === "codex"
         ? "@openai/codex/bin/codex.js"
@@ -382,21 +424,21 @@ export async function startSession(
     program = process.execPath;
     args = [script, ...args];
   }
-  let pty: IPty;
+  let pty: TerminalTransport;
   try {
-    pty = spawn(program, args, {
+    pty = opts.transport ?? spawn(program, args, {
       name: "xterm-256color",
-      cwd: projectPath(user, p.id),
+      cwd: opts.nativeCwd ?? projectPath(user, p.id),
       cols,
       rows,
-      env: terminalEnv(),
+      env: { ...terminalEnv(), ...(launch?.env ?? {}) },
     });
-  } catch (error) { term.dispose(); throw error; }
+  } catch (error) { launch?.cleanup(); term.dispose(); throw error; }
   try {
-    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',finished_at=NULL,mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active' WHERE id=? AND user_id=?").run(mode, id, user);
+    if (saved) workDb().prepare("UPDATE terminal_sessions SET state='running',finished_at=NULL,mode=?,next_mode=NULL,exit_code=NULL,exit_signal=NULL,termination_reason=NULL,task='',task_state='active',phase='',last_message='',origin_ward=?,origin_conv=? WHERE id=? AND user_id=?").run(mode, opts.origin?.ward ?? '', opts.origin?.conv ?? null, id, user);
     else workDb()
       .prepare(
-        "INSERT INTO terminal_sessions(id,user_id,project,kind,mode,title,state,task,assignment,shell,agent_input,cols,rows,is_command) VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?)",
+        "INSERT INTO terminal_sessions(id,user_id,project,kind,mode,title,state,task,assignment,shell,agent_input,cols,rows,is_command,origin_ward,origin_conv) VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?,?,?)",
       )
       .run(
         id,
@@ -412,9 +454,12 @@ export async function startSession(
         cols,
         rows,
         Number(opts.command !== undefined),
+        opts.origin?.ward ?? '',
+        opts.origin?.conv ?? null,
       );
   } catch (error) {
     pty.kill();
+    launch?.cleanup();
     term.dispose();
     throw error;
   }
@@ -423,6 +468,7 @@ export async function startSession(
   const exited = Promise.withResolvers<void>();
   const s: Live = {
     pty,
+    inputSequence: 0,
     exited: exited.promise,
     term,
     serializer,
@@ -437,6 +483,7 @@ export async function startSession(
     paused: false,
     user,
     id,
+    launch,
   };
   live.set(id, s);
   // Main buffer only: the alternate screen keeps no scrollback (its viewport is the content) and fires per line feed.
@@ -467,14 +514,18 @@ export async function startSession(
     flushOutput(s);
     term.write("", () => {
       // A cancellation can arrive while xterm drains the final output.
-      const reason = s.terminationReason ?? (exitSignal ? 'signal' : null);
+      const reason = s.terminationReason ?? (exitSignal ? 'signal' : !Number.isFinite(exitCode) ? 'connection-lost' : null);
+      const uncertain = !!opts.transport && (!Number.isFinite(exitCode) || !!s.closing);
       persist(s);
+      s.launch?.cleanup(); // denies any parked permission request; removes the hook plugin
       workDb()
         .prepare(
-          "UPDATE terminal_sessions SET state='exited',exit_code=?,exit_signal=?,termination_reason=?,finished_at=?,task_state=CASE WHEN ?='cancelled' THEN 'cancelled' WHEN task_state='active' THEN 'needs-attention' ELSE task_state END WHERE id=?",
+          "UPDATE terminal_sessions SET state=?,exit_code=?,exit_signal=?,termination_reason=?,finished_at=?,task_state=CASE WHEN ?='cancelled' THEN 'cancelled' WHEN task_state='active' THEN 'needs-attention' ELSE task_state END,phase=CASE WHEN phase='' THEN '' ELSE 'ended' END WHERE id=?",
         )
-        .run(reason ? null : exitCode, exitSignal, reason, Date.now(), reason, id);
+        .run(uncertain?'interrupted':'exited', reason ? null : exitCode, exitSignal, uncertain?'remote-process-unconfirmed':reason, Date.now(), reason, id);
       live.delete(id);
+      const lease=(workDb().prepare('SELECT workspace_lease FROM terminal_sessions WHERE id=? AND user_id=?').get(id,user) as {workspace_lease:string}|undefined)?.workspace_lease;
+      if(lease&&!uncertain)void import('./workspaces.ts').then(m=>m.endWorkspaceRun(user,JSON.parse(lease))).then(()=>workDb().prepare("UPDATE terminal_sessions SET workspace_lease='' WHERE id=? AND user_id=?").run(id,user)).catch(()=>{});
       releaseLease(ownerKey(id), leaseOwner(ownerKey(id)) ?? "");
       emitDev(user, "session", id, view(rowOf(user, id)));
       term.dispose();
@@ -488,6 +539,7 @@ export async function startSession(
     process.once("SIGTERM", shutdownTerminals);
     process.once("SIGINT", shutdownTerminals);
   }
+  await cliLaunchReady(id);
   emitDev(user, "session", id, view(rowOf(user, id)));
   return view(rowOf(user, id));
 }
@@ -511,13 +563,20 @@ function kittyStacks(term: Headless): { before: string; after: string } {
 }
 /** Rendered rows of the active buffer as plain text: the viewport plus the rows scrolled
  *  above it since `since` (a previous `scrolled` count). `lost` counts main-buffer rows that
- *  scrolled past the 10000 retained; the alternate screen keeps none and is not counted. */
-export function renderedLines(user: number, id: string, since?: number): { lines: string[]; scrolled: number; lost: number } {
+ *  scrolled past the 10000 retained — only possible once the scrollback is full; a program that
+ *  clears or resets its screen (a CLI on exit) drops rows without losing any, and the alternate
+ *  screen keeps none and is not counted. */
+export function renderedLines(user: number, id: string, since?: number): { lines: string[]; wrapped: boolean[]; scrolled: number; lost: number } {
   rowOf(user, id);
   const s = live.get(id);
-  if (!s) return { lines: [], scrolled: 0, lost: 0 };
+  if (!s) return { lines: [], wrapped: [], scrolled: 0, lost: 0 };
   const b = s.term.buffer.active, wanted = since === undefined ? 0 : Math.max(0, s.scrolled - since), above = Math.min(b.baseY, wanted);
-  return { scrolled: s.scrolled, lost: wanted - above, lines: Array.from({ length: above + s.term.rows }, (_, i) => b.getLine(b.baseY - above + i)?.translateToString(true) ?? "") };
+  const full = b.baseY >= (s.term.options.scrollback ?? 0);
+  const rows = Array.from({ length: above + s.term.rows }, (_, i) => b.getLine(b.baseY - above + i));
+  return { scrolled: s.scrolled, lost: full ? wanted - above : 0,
+    wrapped: rows.map(line => line?.isWrapped ?? false),
+    // A soft-wrapped line may end in a meaningful space. Retain it for exact rejoining.
+    lines: rows.map((line, i) => line?.translateToString(!rows[i+1]?.isWrapped) ?? "") };
 }
 export function readSession(user: number, id: string, after?: number, review = true) {
   const row = rowOf(user, id),
@@ -588,10 +647,148 @@ export function writeSession(
 ) {
   const s = running(user, id),
     row = rowOf(user, id);
+  if (typeof data !== 'string') throw new DevError("Input must be a string.");
   if (Buffer.byteLength(data) > 64 * 1024)
     throw new DevError("Input is too large.");
   claimInput(row, owner);
+  s.inputSequence++;
   s.pty.write(binary ? Buffer.from(data, "latin1") : data);
+}
+/** Recognize only the CLI's own empty/typed input line, never clear an existing
+ * draft or assume a menu, a shell, or a permission prompt is a command editor.
+ * Unknown layouts fail closed; a cursor before any remaining text is not empty. */
+function commandLine(s: Live, expected = ''): boolean {
+  const buffer = s.term.buffer.active;
+  let index = buffer.baseY + buffer.cursorY;
+  let line = buffer.getLine(index);
+  if (!line || line.translateToString(true, buffer.cursorX).trim()) return false;
+  let before = line.translateToString(false, 0, buffer.cursorX);
+  while (line.isWrapped) {
+    // Reconstruct only visible soft-wrapped input, not scrollback from an older
+    // prompt or text whose beginning is no longer observable.
+    if (--index < buffer.baseY) return false;
+    line = buffer.getLine(index);
+    if (!line) return false;
+    before = line.translateToString(false) + before;
+  }
+  return /^[❯›]\s*/u.test(before.trimStart()) &&
+    before.trimStart().replace(/^[❯›]\s*/u, '').trimEnd() === expected;
+}
+
+function commandBlocker(row: Row, s: Live | undefined, settling = false): string | null {
+  if (row.kind !== 'claude' && row.kind !== 'codex') return 'Slash commands require a Claude Code or Codex session, not a shell or command log.';
+  if (!s || s.closing || row.state !== 'running') return 'The CLI is not running.';
+  if (!row.agent_input) return 'Let Rime control is off.';
+  const parked = cliInputBlocker(row.id);
+  if (parked) return parked;
+  if (row.phase && row.phase !== 'done' && row.phase !== 'waiting-input') return `The CLI is ${row.phase}; wait for its input prompt.`;
+  if ((!settling && s.pendingSend) || s.pendingBytes || s.queuedBytes) return 'Terminal input or output is still settling; read it again after it settles.';
+  return null;
+}
+
+/** Bound to this live process, reader, output AND input generations, so an
+ * unseen human keystroke invalidates it too. Only model-facing reads issue it. */
+export function commandObservation(user: number, id: string, owner: string) {
+  const row = rowOf(user, id), s = live.get(id);
+  if (row.kind !== 'claude' && row.kind !== 'codex') return undefined;
+  if (s) s.commandObservation = undefined;
+  const blocked = commandBlocker(row, s);
+  if (blocked || !s || !commandLine(s)) return {
+    ready: false,
+    detail: blocked ?? 'No empty CLI command prompt was recognized. Preserve any draft; do not clear it or guess menu keys.',
+  };
+  const observation = crypto.randomUUID();
+  s.commandObservation = { id: observation, owner, at: Date.now(), sequence: s.sequence, inputSequence: s.inputSequence };
+  return { ready: true, observation, expiresInSeconds: 30, detail: 'One-use command input observation. Use only a command supported by this CLI; submission is not proof it was accepted.' };
+}
+
+/** Explicit slash commands: no bracketed paste, menu navigation, guessed
+ * approvals, or retry after even a possibly delivered write. */
+export async function commandSession(user: number, id: string, owner: string, observation: string, command: string, signal?: AbortSignal) {
+  const s = running(user, id), row = rowOf(user, id);
+  claimInput(row, owner);
+  const seen = s.commandObservation;
+  if (!seen || seen.id !== observation || seen.owner !== owner) throw new DevError('Read this terminal first and use its one-use commandInput.observation.', 409);
+  s.commandObservation = undefined;
+  if (Date.now() - seen.at > 30_000 || seen.sequence !== s.sequence || seen.inputSequence !== s.inputSequence)
+    throw new DevError('The terminal changed or the observation expired. Nothing was written; read it again.', 409);
+  const blocked = commandBlocker(row, s);
+  if (blocked || !commandLine(s)) throw new DevError(blocked ?? 'The empty command prompt changed. Nothing was written.', 409);
+  if (typeof command !== 'string' || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(command) ||
+      !/^\/[a-z][a-z0-9:_-]*(?: +[^\r\n]*)?$/i.test(command.trim()))
+    throw new DevError('Supply one slash command and optional arguments, without newlines, tabs, escape sequences or other control characters.');
+  return inputSession(user, id, owner, command.trim(), true, signal, true);
+}
+
+/** Model-facing insertion/submission. UI/live input and explicit control workflows
+ *  keep using raw writeSession; a PTY write is not acknowledgement from the CLI. */
+export async function inputSession(
+  user: number,
+  id: string,
+  owner: string,
+  data: string,
+  send = true,
+  signal?: AbortSignal,
+  command = false,
+) {
+  if (typeof send !== 'boolean') throw new DevError("send must be a boolean.");
+  if (typeof data !== 'string') throw new DevError("Input must be a string.");
+  if (Buffer.byteLength(data) > 64 * 1024) throw new DevError("Input is too large.");
+  signal?.throwIfAborted();
+  const s = running(user, id);
+  claimInput(rowOf(user, id), owner);
+
+  // A single explicit trailing CR is the caller's Enter, not a second submission.
+  // CRLF text is conventional multiline input; bare interior CR and all other
+  // control/escape sequences remain exact rather than acquiring an approval key.
+  const explicitEnter = /\r\n?$/.test(data);
+  const text = (explicitEnter ? data.replace(/\r\n?$/, '') : data).replace(/\r\n/g, '\n');
+  const plainText = /[^\s]/u.test(text) && !/\p{Cc}/u.test(text.replace(/[\t\n]/g, ''));
+  if (!send || !plainText) {
+    writeSession(user, id, owner, data);
+    return { sent: true, inputMode: 'raw', submission: 'caller-controlled', enterAdded: false };
+  }
+
+  if (s.pendingSend) throw new DevError("Another input is still settling. Nothing was written; read the terminal after its receipt before continuing.", 409);
+  const initialPaste = s.term.modes.bracketedPasteMode;
+  const paste = !command && initialPaste;
+  if (!paste && /[\n\t]/.test(text)) throw new DevError(
+    "Multiline or tabbed text needs bracketed-paste support. Nothing was written. Read the ready prompt and retry, or use send:false only for intentional raw input (newlines can execute commands).",
+  );
+  const input = paste ? `\x1b[200~${text}\x1b[201~` : text;
+  s.pendingSend = true;
+  try {
+    // Keep the same per-write size cap, including any paste framing.
+    writeSession(user, id, owner, input);
+    const sequence = s.inputSequence;
+    const receipt = { sent: true, inputMode: command ? 'slash-command' : paste ? 'bracketed-paste' : 'text', enterAdded: false };
+    try {
+      // Claude/Ink commits a paste through a render/effect before handling Enter;
+      // writing text+CR in one PTY chunk can leave CR inside that paste. A separate
+      // write after a short settling window also avoids CLI burst-paste detection.
+      // This is bounded input pacing, not evidence that the application is ready.
+      await delay(250, undefined, { signal });
+      signal?.throwIfAborted();
+      if (running(user, id) !== s) throw new DevError("The terminal process changed.");
+      claimInput(rowOf(user, id), owner);
+      if (s.inputSequence !== sequence) throw new DevError("Other input arrived while the text was settling.");
+      if (s.term.modes.bracketedPasteMode !== initialPaste) throw new DevError("The terminal input mode changed while the text was settling.");
+      if (command) {
+        const blocked = commandBlocker(rowOf(user, id), s, true);
+        if (blocked || !commandLine(s, text)) throw new DevError(blocked ?? 'The CLI did not show the exact command at its input cursor; Enter was withheld.');
+      }
+    } catch (error) {
+      return { ...receipt, submission: 'withheld', detail: `${error instanceof Error ? error.message : 'Input cancelled.'} Text was already written; no Enter was added. Read the same terminal before continuing; do not replay the text.` };
+    }
+    try {
+      writeSession(user, id, owner, '\r');
+      return { ...receipt, submission: 'enter-written', enterAdded: !explicitEnter };
+    } catch (error) {
+      return { ...receipt, submission: 'unknown', enterAdded: explicitEnter ? false : null, detail: `${error instanceof Error ? error.message : 'Enter write failed.'} Text was already written; Enter delivery is uncertain. Read the same terminal before continuing; do not replay input.` };
+    }
+  } finally {
+    s.pendingSend = false;
+  }
 }
 function dimensions(cols: number, rows: number) {
   if (!Number.isFinite(cols) || !Number.isFinite(rows))
@@ -615,9 +812,11 @@ export function resizeSession(
   emitDev(user, "session", id, view(rowOf(user, id)));
 }
 export function interruptSession(user: number, id: string, owner: string) {
-  const s = running(user, id);
-  claimInput(rowOf(user, id), owner);
-  s.pty.write("\x03");
+  writeSession(user, id, owner, "\x03");
+}
+/** Re-broadcast a session's view: the CLI bridge calls it when a hook moves the phase. */
+export function announceSession(user: number, id: string): void {
+  emitDev(user, "session", id, view(rowOf(user, id)));
 }
 export function closeSession(user: number, id: string, reason: 'cancelled' | 'closed' = 'closed') {
   rowOf(user, id);
@@ -639,7 +838,8 @@ export function configureSession(
   },
 ) {
   rowOf(user, id);
-  if (opts.mode && !["human", "rimeward", "yolo"].includes(opts.mode)) throw new DevError("Invalid permission mode.");
+  if (opts.mode) opts.mode = LEGACY_MODES[opts.mode as string] ?? opts.mode;
+  if (opts.mode && !PERMISSION_MODES.includes(opts.mode)) throw new DevError("Invalid permission mode.");
   if (opts.taskState && !["active", "needs-attention", "done", "cancelled"].includes(opts.taskState)) throw new DevError("Invalid task state.");
   if (opts.title !== undefined && (typeof opts.title !== "string" || !opts.title.trim() || opts.title.length > 100)) throw new DevError("Enter a session name (up to 100 characters).");
   if (opts.assignment !== undefined && typeof opts.assignment !== "string") throw new DevError("Invalid assignment.");
@@ -647,6 +847,9 @@ export function configureSession(
   if (opts.agentInput !== undefined) {
     if (typeof opts.agentInput !== "boolean") throw new DevError("Invalid Rime control setting.");
     workDb().prepare("UPDATE terminal_sessions SET agent_input=? WHERE id=?").run(Number(opts.agentInput), id);
+    // Off cancels a pending Enter even if the user switches back on before it fires.
+    const s = live.get(id);
+    if (!opts.agentInput && s) s.inputSequence++;
   }
   if (opts.title !== undefined) {
     workDb().prepare("UPDATE terminal_sessions SET title=? WHERE id=?").run(opts.title.trim(), id);
@@ -718,25 +921,30 @@ export function releaseControl(user: number, id: string, owner: string) {
   return result;
 }
 
-export function restartSession(user: number, id: string) {
+/** `ceiling`: the most a restart by Rime may grant — its ward's setting, so a saved session a
+ *  person once ran wider does not hand that width to the agent (a running session is returned as is). */
+export function restartSession(user: number, id: string, ceiling?: PermissionMode) {
   const row = rowOf(user, id);
   if (live.has(id)) return Promise.resolve(view(row));
   if (row.is_command) throw new DevError("Completed commands stay in task history. Open a shell to continue.", 409);
+  const saved = row.next_mode ?? row.mode;
   // Keep the tab and saved screen. Native CLIs choose a saved conversation; never replay a task.
   return startSession(user, {
     project: row.project,
     kind: row.kind,
-    mode: row.next_mode ?? row.mode,
+    mode: ceiling ? narrowerPermission(saved, ceiling) : saved,
     agentInput: !!row.agent_input,
     cols: row.cols,
     rows: row.rows,
     shell: row.shell || undefined,
     title: row.title,
     assignment: row.assignment,
+    origin: row.origin_ward ? { ward: row.origin_ward, ...(row.origin_conv !== null ? { conv: row.origin_conv } : {}) } : undefined,
   }, row);
 }
 
 export function deleteSession(user: number, id: string) {
+  if(rowOf(user,id).termination_reason==='remote-process-unconfirmed')throw new DevError('Verify and reconcile the remote process before deleting this session.',409);
   rowOf(user, id);
   if (live.has(id)) throw new DevError("End this session before deleting its saved history.", 409);
   workDb().transaction(() => {
@@ -745,4 +953,11 @@ export function deleteSession(user: number, id: string) {
   })();
   releaseLease(ownerKey(id), leaseOwner(ownerKey(id)) ?? "");
   emitDev(user, "session", id);
+}
+export async function reconcileSession(user:number,id:string,owner:string,confirmedStopped:unknown){
+  const row=rowOf(user,id);if(!owner.startsWith('client:')||confirmedStopped!==true)throw new DevError('A person must verify the remote process stopped before clearing this session.',403);
+  if(row.state!=='interrupted'||row.termination_reason!=='remote-process-unconfirmed')throw new DevError('This session does not need remote reconciliation.',409);
+  const lease=(workDb().prepare('SELECT workspace_lease FROM terminal_sessions WHERE id=? AND user_id=?').get(id,user) as {workspace_lease:string}).workspace_lease;
+  if(lease)await(await import('./workspaces.ts')).endWorkspaceRun(user,JSON.parse(lease));
+  workDb().prepare("UPDATE terminal_sessions SET state='exited',termination_reason='user-confirmed-stopped',workspace_lease='' WHERE id=? AND user_id=?").run(id,user);emitDev(user,'session',id,view(rowOf(user,id)));return view(rowOf(user,id));
 }

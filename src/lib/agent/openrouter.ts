@@ -2,10 +2,10 @@ import { OpenRouter } from '@openrouter/sdk';
 import { cached } from '../cache.ts';
 import { openrouterContext, type ModelContext } from './context.ts';
 import { getSetting, setSetting } from '../settings.ts';
-import { agentKey, endpointOf } from './accounts.ts';
+import { agentKey, credentialGeneration, endpointOf, normalizeEndpoint } from './accounts.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { pinnedRequest } from './shell.ts';
-import { sseParser } from './stream.ts';
+import { sseParser, thinkingCounter } from './stream.ts';
 import {
   isTransient,
   recordAgentStatus,
@@ -111,7 +111,8 @@ export function markLast(items: unknown[]): unknown[] {
 }
 
 /** Both chat transports reconstruct the same replay message, including opaque reasoning. */
-export function chatStream(onText?: (delta: string) => void) {
+export function chatStream(onText?: (delta: string) => void, onThinking?: ProviderCall['onThinking']) {
+  const thinking = thinkingCounter(onThinking);
   const msg: ChatMsg = { role: 'assistant', content: '' };
   const calls = new Map<number, NonNullable<ChatMsg['toolCalls']>[number]>();
   const reasoning = new Map<string, Record<string, any>>();
@@ -119,10 +120,18 @@ export function chatStream(onText?: (delta: string) => void) {
   return {
     push(chunk: any) {
       if (chunk.error) throw Error(chunk.error.message ?? JSON.stringify(chunk.error));
-      if (chunk.usage) usage = chunk.usage;
+      if (chunk.usage) {
+        usage = chunk.usage;
+      }
       const choice = chunk.choices?.[0];
-      if (!choice) return;
+      if (!choice) { thinking.usage(usage?.completionTokensDetails?.reasoningTokens ?? usage?.completion_tokens_details?.reasoning_tokens); return; }
       const delta = choice.delta ?? {};
+      // Providers may send both representations of the same reasoning; count one.
+      const reasoningText = delta.reasoning ?? delta.reasoning_content;
+      thinking.text(typeof reasoningText === 'string' && reasoningText ? reasoningText :
+        (delta.reasoningDetails ?? delta.reasoning_details ?? []).filter((d: any) => d.type === 'reasoning.text').map((d: any) => typeof d.text === 'string' ? d.text : '').join(''), true);
+      for (const detail of delta.reasoningDetails ?? delta.reasoning_details ?? [])
+        if (detail.type === 'reasoning.summary' && typeof detail.summary === 'string') onThinking?.({ detailDelta: detail.summary });
       const text = delta.content ?? delta.refusal;
       if (typeof text === 'string' && text) { msg.content = String(msg.content) + text; onText?.(text); }
       if (typeof delta.reasoning === 'string') msg.reasoning = (msg.reasoning ?? '') + delta.reasoning;
@@ -143,6 +152,7 @@ export function chatStream(onText?: (delta: string) => void) {
           if (typeof old?.[field] === 'string' && typeof detail[field] === 'string') next[field] = old[field] + detail[field];
         reasoning.set(key, next);
       }
+      if (chunk.usage) thinking.usage(usage.completionTokensDetails?.reasoningTokens ?? usage.completion_tokens_details?.reasoning_tokens);
       const finish = choice.finishReason ?? choice.finish_reason;
       if (finish) {
         if (!['stop', 'tool_calls', 'function_call'].includes(finish)) throw Error(`Incomplete response (${finish})`);
@@ -166,10 +176,12 @@ export function chatStream(onText?: (delta: string) => void) {
 
 async function callOpenRouter(call: ProviderCall, retried = false): Promise<ProviderResult> {
   const key = agentKey(call.userId, 'openrouter');
+  if (call.credential && call.credential !== credentialGeneration(call.userId, 'openrouter'))
+    throw new Error('OpenRouter connection changed; this request was not sent on the replacement.');
   if (!key) throw new Error('openrouter: no API key — add one under Account → Agent');
   const or = new OpenRouter({ apiKey: key });
   let result: any;
-  let visible = false;
+  let accepted = false;
   try {
     result = await or.chat.send(
       {
@@ -179,7 +191,7 @@ async function callOpenRouter(call: ProviderCall, retried = false): Promise<Prov
           // fresh thread) and the newest message (the growing thread).
           messages: [
             { role: 'system', content: [{ type: 'text', text: call.instructions, cacheControl: EPHEMERAL }] },
-            ...(markLast(call.items) as any[]),
+            ...(markLast(call.items.map((item: any) => { const { applicationContext: _applicationContext, ...wire } = item; return wire; })) as any[]),
           ],
           ...(call.tools.length
             ? {
@@ -200,14 +212,15 @@ async function callOpenRouter(call: ProviderCall, retried = false): Promise<Prov
       { timeoutMs: TIMEOUT_MS, retries: { strategy: 'none' as const }, ...(call.signal ? { fetchOptions: { signal: AbortSignal.any([call.signal, AbortSignal.timeout(TIMEOUT_MS)]) } } : {}) }
     );
     if (result?.[Symbol.asyncIterator]) {
-      const stream = chatStream(delta => { visible = true; call.onTextDelta?.(delta); });
+      accepted = true; // Reasoning/tool input is inference too, even before visible prose.
+      const stream = chatStream(call.onTextDelta, call.onThinking);
       for await (const chunk of result) { call.onProgress?.(); stream.push(chunk); }
       result = stream.result();
     }
   } catch (err) {
     if (call.signal?.aborted) throw new Error('openrouter: interrupted');
     const e = new Error(`openrouter: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
-    if (!visible && !call.relayRequestId && !retried && isTransient(e)) {
+    if (!accepted && !call.relayRequestId && !retried && isTransient(e)) {
       await new Promise((r) => setTimeout(r, 1200));
       return callOpenRouter(call, true);
     }
@@ -220,8 +233,9 @@ async function callOpenRouter(call: ProviderCall, retried = false): Promise<Prov
   // Store the assistant message verbatim (reasoningDetails included) so the
   // next request replays exactly what the model said.
   const input = Number(result?.usage?.promptTokens) || 0;
-  const cached = Number(result?.usage?.promptTokensDetails?.cachedTokens) || 0;
-  return { text, calls, items: [{ ...msg, role: 'assistant' }], ...(input ? { usage: { input, cached, output: result?.usage?.completionTokens } } : {}) };
+  const cached = result?.usage?.promptTokensDetails?.cachedTokens;
+  const cacheWrite = result?.usage?.promptTokensDetails?.cacheWriteTokens;
+  return { text, calls, items: [{ ...msg, role: 'assistant' }], ...(result?.usage?.promptTokens !== undefined ? { usage: { input, cached, cacheWrite, output: result?.usage?.completionTokens } } : {}) };
 }
 
 export const openrouterProvider: AgentProvider = {
@@ -268,8 +282,11 @@ const MODELS_KEY = 'agent_models:openrouter';
  * than an hour-stale one. The list is public data, so it is shared, not
  * per-user.
  */
-export function listOpenRouterModels(): Promise<ModelChoice[]> {
-  return cached('agent:models', MODELS_TTL_MS, async () => {
+export async function listOpenRouterModels(): Promise<ModelChoice[]> {
+  return (await listOpenRouterCatalog()).models;
+}
+export function listOpenRouterCatalog(): Promise<{ models: ModelChoice[]; source: 'live' | 'cache'; at: number }> {
+  return cached('agent:models:catalog', MODELS_TTL_MS, async () => {
     try {
       // No apiKey: the catalog is public, and this list is shared by every
       // user, so it must not depend on whose key happens to be configured.
@@ -294,13 +311,15 @@ export function listOpenRouterModels(): Promise<ModelChoice[]> {
       }
       if (!models.length) throw new Error('empty model list');
       models.sort((a, b) => a.name.localeCompare(b.name));
-      setSetting(MODELS_KEY, JSON.stringify({ at: Date.now(), models }));
-      return models;
+      const at = Date.now();
+      setSetting(MODELS_KEY, JSON.stringify({ at, models }));
+      return { models, source: 'live', at };
     } catch (err) {
       const stale = readStoredModels();
       if (stale.length) {
         console.error('[agent models] live list failed, serving the stored one:', err);
-        return stale.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) }));
+        const at = Number((JSON.parse(getSetting(MODELS_KEY) ?? '{}') as { at?: number }).at) || 0;
+        return { models: stale.map((m) => ({ ...m, ...(m.context ? { context: { ...m.context, source: 'cache' as const } } : {}) })), source: 'cache', at };
       }
       throw err;
     }
@@ -356,8 +375,16 @@ export function fromWire(msg: { role?: string; content?: unknown; reasoning?: st
 async function callCompat(endpoint: string, call: ProviderCall): Promise<ProviderResult> {
   const target = endpointOf(call.userId, endpoint);
   if (!target) throw new Error(`compat: no endpoint "${endpoint}" — add it under Account → Agent`);
+  // The credential generation this call was admitted against, re-read where the request is built: an
+  // endpoint re-entered with another URL or key between rounds stops the turn rather than serving it.
+  if (call.credential && call.credential !== credentialGeneration(call.userId, `compat:${endpoint}`))
+    throw new Error(`endpoint "${endpoint}" was changed while this turn was running; nothing was sent to its replacement. Send the message again to use it.`);
+  // The last word on where this thread's context goes, taken from the SAME resolution the request is
+  // built from: an alias repointed since the thread was admitted cannot carry it to another server.
+  if (call.backend && normalizeEndpoint(target.url) !== call.backend)
+    throw new Error(`endpoint "${endpoint}" now points at ${normalizeEndpoint(target.url) || 'nothing'}; this conversation was admitted on ${call.backend} and is not sent anywhere else. Point "${endpoint}" back at it, or start a new chat on the endpoint as it stands.`);
   if (!call.model) throw new Error(`compat: pick a model for "${endpoint}" (list_models shows what it serves)`);
-  const stream = chatStream(call.onTextDelta), decoder = new TextDecoder();
+  const stream = chatStream(call.onTextDelta, call.onThinking), decoder = new TextDecoder();
   let streaming = false;
   const parser = sseParser(payload => { if (payload !== '[DONE]') stream.push(JSON.parse(payload)); });
   const res = await pinnedRequest(`${target.url}/chat/completions`, {
@@ -398,8 +425,9 @@ async function callCompat(endpoint: string, call: ProviderCall): Promise<Provide
   const { text, calls } = readChatResponse(msg);
   if (!text && !calls.length) throw new Error(`compat (${endpoint}): empty response`);
   const input = Number(data.usage?.prompt_tokens) || 0;
-  const cachedTokens = Number(data.usage?.prompt_tokens_details?.cached_tokens) || 0;
-  return { text, calls, items: [msg], ...(input ? { usage: { input, cached: cachedTokens, output: Number(data.usage?.completion_tokens) || undefined } } : {}) };
+  const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens;
+  const cacheWrite = data.usage?.prompt_tokens_details?.cache_write_tokens;
+  return { text, calls, items: [msg], ...(data.usage?.prompt_tokens !== undefined ? { usage: { input, cached: cachedTokens, cacheWrite, output: data.usage?.completion_tokens } } : {}) };
 }
 
 /** One provider object per endpoint name; the URL and key are the user's rows, read per call. */
@@ -430,8 +458,9 @@ export function compatProvider(endpoint: string): AgentProvider {
 export function listCompatModels(userId: number, endpoint: string): Promise<{ models: ModelChoice[]; source: 'live' | 'cache'; at: number }> {
   const target = endpointOf(userId, endpoint);
   if (!target) return Promise.reject(new Error(`no endpoint "${endpoint}"`));
-  const stored = `agent_models:compat:${userId}:${endpoint}:${target.revision}`;
-  return cached(`compat:models:${userId}:${endpoint}:${target.revision}`, MODELS_TTL_MS, async () => {
+  const revision = `${credentialGeneration(userId, `compat:${endpoint}`)}:${target.revision}`;
+  const stored = `agent_models:compat:${userId}:${endpoint}:${revision}`;
+  return cached(`compat:models:${userId}:${endpoint}:${revision}`, MODELS_TTL_MS, async () => {
     try {
       const res = await pinnedRequest(`${target.url}/models`, { headers: target.key ? { Authorization: `Bearer ${target.key}` } : {}, timeoutMs: 10_000, allowLoopback: isDesktop() });
       if (res.status < 200 || res.status >= 300) throw new Error(`models ${res.status}`);

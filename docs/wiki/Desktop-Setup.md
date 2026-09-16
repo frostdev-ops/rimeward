@@ -30,6 +30,8 @@ The local backend uses a loopback address on your computer. Keep it local; use t
 
 Open **Account → Agent**, choose a provider, and complete the connection shown there. Rime supports the ChatGPT backend (Codex), OpenRouter, OpenAI API keys, and OpenAI-compatible endpoints.
 
+Once this desktop is connected to a server, use **Provider connections** (`/desktop/providers`) instead: it stays on this desktop whether or not the server is reachable, and shows this desktop and the connected server as separate cards, so the account a button changes is always the one named above it. It is also where you choose which connection serves model calls.
+
 A provider connection is required for new Rime responses. The editor, terminal, layout, and other non-AI tools do not require model credits. A terminal running Codex or Claude Code requires that CLI to be installed and authenticated separately; a Rime provider connection does not sign the CLI in.
 
 For local/offline AI, see [Work with Rime](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Rime#use-a-local-model). Desktop-only describes where Rimeward runs; cloud AI, online websites, weather, and integrations still need their own network connections.

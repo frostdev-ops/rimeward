@@ -1,0 +1,139 @@
+---
+import { verifyMail } from '../../lib/account-access.ts';
+import { identityConnectors, saveIdentityConnector, deleteIdentityConnector, type IdentityConnector } from '../../lib/identity.ts';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import AdminNav from '../../components/AdminNav.astro';
+import { CONFIG, config, configView, configuredOrigin, publicOrigin, saveConfig, type ConfigKey } from '../../lib/app-config.ts';
+import { setupTokenPresent } from '../../lib/installation.ts';
+import { setSetting, sweepSettings, takeSetting } from '../../lib/settings.ts';
+import { setupStatus } from '../../lib/setup.ts';
+import { getDb } from '../../lib/db.ts';
+
+// desktop/settings.astro renders this page AS A COMPONENT, so nothing here may
+// return a Response: every outcome is an `ok` or `error` message instead.
+Astro.response.headers.set('Cache-Control','no-store');
+let error = '', ok = '';
+if (Astro.request.method === 'POST') {
+  try {
+    const form = await Astro.request.formData(), action = String(form.get('action') ?? ''), me = Astro.locals.user!;
+    if (action === 'email-test') {
+      // No PRG here (this page is also a component), so the form carries a one-shot
+      // nonce: a reload replays the POST, and takeSetting has already spent it.
+      const minted = takeSetting(`mail_test:${me.userId}`);
+      if (!minted || minted !== String(form.get('nonce') ?? '')) throw new Error('Refresh the page and try again');
+      await verifyMail(me.email); ok = 'Test email accepted by your mail server.';
+    }
+    else if (action === 'identity') { saveIdentityConnector({id:String(form.get('id')),name:String(form.get('name')),issuer:String(form.get('issuer')),clientId:String(form.get('clientId')),clientSecret:String(form.get('clientSecret')??''),enabled:form.get('enabled')==='on',trustEmail:form.get('trustEmail')==='on'},me.userId,form.get('clearSecret')==='on'); ok = 'Connector saved.'; }
+    else if (action === 'identity-delete') { ok = deleteIdentityConnector(String(form.get('id')),me.userId) ? 'Connector removed.' : 'No such connector.'; }
+    else {
+      const key = String(form.get('key')) as ConfigKey;
+      if (!Object.hasOwn(CONFIG,key)) throw new Error('Unknown setting');
+      saveConfig(key,action === 'reset' ? null : action === 'clear' ? '' : String(form.get('value')??''),me.userId);
+      ok = 'Setting saved.';
+    }
+  } catch(e) { error = (e as Error).message; }
+}
+
+// Everything below is read AFTER the write, so the page shows what was saved.
+sweepSettings('mail_test:', 900000);
+const mailNonce = crypto.randomUUID();
+setSetting(`mail_test:${Astro.locals.user!.userId}`, mailNonce);
+const fields = (Object.keys(CONFIG) as ConfigKey[]).map(configView);
+const origin = publicOrigin();
+const connectors = identityConnectors();
+const callback = (id: string) => `${origin}/api/auth/${id==='google'?'google/callback':`identity/${id}/callback`}`;
+const events = getDb().prepare('SELECT a.event,a.target,a.created_at,a.actor AS actorId,u.email AS actor FROM auth_audit a LEFT JOIN users u ON u.id=a.actor ORDER BY a.id DESC LIMIT 30').all() as {event:string;target:string;created_at:string;actor:string|null;actorId:number|null}[];
+
+// Sections in order. `group` pulls in that CONFIG group's fields; the rest of a
+// section is keyed off its id in the template.
+const SECTIONS: {id:string;title:string;group?:string}[] = [
+  { id:'installation', title:'Installation', group:'Installation' },
+  { id:'users', title:'Users' },
+  { id:'signin', title:'Sign-in & Registration', group:'Sign-in & Registration' },
+  { id:'oauth', title:'OAuth Integrations', group:'OAuth Integrations' },
+  { id:'email', title:'Email', group:'Email' },
+  { id:'runtime', title:'Runtime', group:'Runtime' },
+  { id:'diagnostics', title:'Diagnostics' },
+];
+const RERUN: [string,string][] = [['url','Address'],['email','Email'],['policy','Access'],['sso','Sign-in'],['review','Review']];
+const CONNECTOR_FIELDS: [string,string][] = [['id','Connector id'],['name','Name'],['issuer','Issuer URL'],['clientId','Client ID'],['clientSecret','Client secret']];
+const cval = (c: IdentityConnector | null, k: string) => k === 'clientSecret' ? '' : String((c as unknown as Record<string,string>|null)?.[k] ?? '');
+
+// The wizard's review states, over theme tokens rather than the valley palette.
+const status = setupStatus();
+// A cookie without Secure is a cookie on the wire: loopback is the only place plain
+// http is not that.
+const originUrl = URL.parse(origin);
+const insecure = originUrl?.protocol === 'http:' && !['localhost','127.0.0.1','[::1]'].includes(originUrl.hostname);
+const enabled = connectors.filter(c=>c.enabled).map(c=>c.name);
+const tokenOnDisk = setupTokenPresent();
+const DIAGNOSTICS: [string,string,'ok'|'warn'|'off'][] = [
+  ['Origin', insecure ? `${origin} — plain http: session and OAuth cookies are not marked Secure` : origin, configuredOrigin() && !insecure ? 'ok' : 'warn'],
+  ['Email', status.smtpVerified ? 'Verified' : config('SMTP_HOST') ? 'Configured, not verified' : 'Not configured', status.smtpVerified ? 'ok' : config('SMTP_HOST') ? 'warn' : 'off'],
+  ['Registration policy', status.policy, status.policy === 'open' ? 'warn' : 'ok'],
+  ['Password sign-in', status.passwordLogin ? 'On' : 'Off', status.passwordLogin ? 'ok' : 'off'],
+  ['Sign-in providers', enabled.join(', ') || 'Password only', enabled.length ? 'ok' : 'off'],
+  ['Connected-service clients', status.oauth.join(', ') || 'None', status.oauth.length ? 'ok' : 'off'],
+  ['Setup', status.done ? 'Finished' : 'Not finished', status.done ? 'ok' : 'warn'],
+  ['Installation token', tokenOnDisk ? 'setup-token still on disk — remove it' : 'Consumed and removed', tokenOnDisk ? 'warn' : 'ok'],
+];
+const dot = (state: string) => `inline-block h-2 w-2 shrink-0 rounded-full ${state === 'ok' ? 'bg-ok' : state === 'warn' ? 'bg-warn' : 'bg-ink-faint'}`;
+---
+<BaseLayout title="Administration — Rimeward">
+  <main class="mx-auto max-w-3xl px-4 py-10">
+    <div class="page-head">
+      <h1 class="page-title">Installation & settings</h1>
+      <AdminNav current="settings" />
+    </div>
+    {error && <p role="alert" class="banner banner-err">{error}</p>}
+    {ok && <p role="status" class="banner banner-ok">{ok}</p>}
+
+    {SECTIONS.map(s=><section class="card p-4 mb-4"><h2 class="section-title">{s.title}</h2>
+
+      {fields.filter(f=>f.group===s.group).map(f=><form method="post" class="grid gap-2 border-b border-line py-3">
+        <input type="hidden" name="key" value={f.key}/>
+        <label for={f.key}>{f.label}</label>
+        {f.choices ? <select id={f.key} name="value" class="input">{f.choices.map(v=><option selected={v===f.value}>{v}</option>)}</select> : <input id={f.key} class="input" name="value" type={f.secret?'password':'text'} required={f.secret} value={f.value} autocomplete="off" placeholder={f.secret && f.configured?'Configured — enter replacement':''}/>}
+        <p class="text-xs text-ink-muted">Source: {f.source}{f.secret ? ` · ${f.configured?'configured':'not configured'}`:''}{f.restart?' · Restart required; saving does not restart the app.':''}</p>
+        <div class="flex flex-wrap gap-2"><button class="btn" name="action" value="save">Save</button><button class="btn" name="action" value="reset" formnovalidate>Use environment value</button>{f.secret&&<button class="btn" name="action" value="clear" formnovalidate>Clear credential</button>}</div>
+      </form>)}
+
+      {s.id==='installation' && <>
+        <p class="mt-3 text-sm text-ink-muted">Register these callbacks with your providers:</p>
+        <p class="mt-1 grid gap-1 text-xs"><code class="break-all">{origin}/api/auth/google/callback</code><code class="break-all">{origin}/api/auth/identity/microsoft/callback</code><code class="break-all">{origin}/api/connect/&lt;provider&gt;/callback</code></p>
+        <p class="mt-4 flex flex-wrap items-center gap-3 text-sm"><span class="text-ink-muted">Re-run setup:</span>{RERUN.map(([step,label])=><a class="link" href={`/setup?step=${step}`}>{label}</a>)}</p>
+      </>}
+
+      {s.id==='users' && <p class="mt-2 text-sm">Invite, approve, suspend and manage sign-in identities, site settings and updates. <a class="link" href="/admin/users">Users →</a></p>}
+
+      {s.id==='signin' && <>
+        <h3 class="mt-5 mb-1 text-sm font-semibold">Connectors</h3>
+        {connectors.filter(c=>['google','microsoft'].includes(c.id)).map(c=><p class="border-b border-line py-2 text-sm">{c.name} · {c.enabled?'enabled':'disabled'} · <code class="text-xs break-all">{callback(c.id)}</code><br/><span class="text-xs text-ink-faint">Client id, secret and the enable switch are above and under OAuth Integrations.</span></p>)}
+        {[...connectors.filter(c=>!['google','microsoft'].includes(c.id)), null].map(c=><>
+          {!c && <h4 class="mt-4 text-sm font-semibold">Add a connector</h4>}
+          <form method="post" class="grid gap-2 border-b border-line py-3">
+            <input type="hidden" name="action" value="identity"/>
+            {CONNECTOR_FIELDS.map(([k,label])=><label class="text-sm">{label}<input class="input" name={k} type={k==='clientSecret'?'password':'text'} required={k!=='clientSecret'} readonly={!!c && k==='id'} autocomplete="off" value={cval(c,k)} placeholder={k==='clientSecret' && c?.clientSecret ? 'Configured — enter replacement' : ''}/></label>)}
+            <label class="text-sm"><input name="enabled" type="checkbox" checked={c ? c.enabled : true}/> Enabled</label>
+            <label class="text-sm"><input name="trustEmail" type="checkbox" checked={!!c?.trustEmail}/> Trust the email addresses this issuer sends (it controls every address in its directory)</label>
+            <label class="text-sm"><input name="clearSecret" type="checkbox"/> Remove saved client secret</label>
+            <div class="flex flex-wrap gap-2"><button class="btn">{c ? 'Save connector' : 'Add connector'}</button>{c && <button class="btn-danger" type="submit" form={`del-${c.id}`}>Delete</button>}</div>
+          </form>
+          {c && <form method="post" id={`del-${c.id}`} hidden onsubmit={`return confirm('Remove ${c.id}? Sign-in rows for it stay, inert, and revive if it returns.')`}><input type="hidden" name="action" value="identity-delete"/><input type="hidden" name="id" value={c.id}/></form>}
+        </>)}
+      </>}
+
+      {s.id==='email' && <form method="post" class="mt-3 flex flex-wrap items-center gap-3"><input type="hidden" name="nonce" value={mailNonce}/><button class="btn" name="action" value="email-test">Send test email</button><span class="text-xs text-ink-faint">Sent to your administrator address. Delivering one is what unlocks the public registration policies.</span></form>}
+
+      {s.id==='diagnostics' && <>
+        <dl class="mt-3 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-sm">
+          {DIAGNOSTICS.map(([label,value,state])=><><dt class="text-ink-muted">{label}</dt><dd class="flex items-center gap-2"><span class={dot(state)}/><span class="break-all">{value}</span></dd></>)}
+        </dl>
+        <h3 class="mt-5 mb-1 text-sm font-semibold">Recent administration activity</h3>
+        {events.length === 0 && <p class="text-sm text-ink-faint">Nothing recorded yet.</p>}
+        {events.map(e=><p class="text-xs text-ink-muted">{e.created_at} · {e.actor ?? (e.actorId === null ? 'system' : `#${e.actorId}`)} · {e.event}{e.target && ` · ${e.target}`}</p>)}
+      </>}
+
+    </section>)}
+  </main>
+</BaseLayout>

@@ -288,7 +288,7 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     });
     let mut stdin = child.stdin.take().ok_or("missing runtime stdin")?;
     let stdout = child.stdout.take().ok_or("missing runtime stdout")?;
-    let initial = serde_json::json!({"port":port,"key":key,"data":data.join("data"),"browsers":resources.join("browsers"),"version":app.package_info().version.to_string()});
+    let initial = serde_json::json!({"port":port,"key":key,"data":data.join("data"),"documents":app.path().document_dir()?,"browsers":resources.join("browsers"),"version":app.package_info().version.to_string()});
     stdin.write_all(format!("{}\n", initial).as_bytes()).await?;
     // Keep stdin with the child so explicit exit can request graceful shutdown.
     child.stdin = Some(stdin);
@@ -342,13 +342,25 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                 }
             }
             Some("vault") => {
-                let result = vault(&service).and_then(|v| {
-                    if message["op"] == "set" {
-                        v.set_password(message["value"].as_str().unwrap_or("[]"))
-                            .map(|_| "[]".to_string())
+                let ssh = matches!(message["op"].as_str(), Some("ssh-get" | "ssh-set"));
+                let entry = if ssh {
+                    keyring::Entry::new(&service, "workspace-ssh")
+                } else {
+                    vault(&service)
+                };
+                let result = entry.and_then(|v| {
+                    if message["op"] == "set" || message["op"] == "ssh-set" {
+                        v.set_password(message["value"].as_str().unwrap_or(if ssh {
+                            "{}"
+                        } else {
+                            "[]"
+                        }))
+                        .map(|_| "[]".to_string())
                     } else {
                         match v.get_password() {
-                            Err(keyring::Error::NoEntry) => Ok("[]".into()),
+                            Err(keyring::Error::NoEntry) => {
+                                Ok(if ssh { "{}" } else { "[]" }.into())
+                            }
                             r => r,
                         }
                     }

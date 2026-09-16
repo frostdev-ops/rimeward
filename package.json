@@ -1,7 +1,7 @@
 {
   "name": "rimeward",
   "type": "module",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -67,6 +67,7 @@
     "node-pop3": "^0.15.0",
     "node-pty": "1.1.0",
     "nodemailer": "^9.1.0",
+    "openid-client": "6.8.4",
     "pdfjs-dist": "^6.3.289",
     "playwright-core": "1.62.1",
     "prosemirror-commands": "1.7.2",
@@ -80,6 +81,7 @@
     "prosemirror-view": "1.42.3",
     "sharp": "^0.35.4",
     "sqlite-vec": "0.1.9",
+    "ssh2": "1.17.0",
     "tailwindcss": "^4.3.3",
     "tar-stream": "2.2.0",
     "three": "^0.180.0",
@@ -95,6 +97,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/mailparser": "^3.4.6",
     "@types/nodemailer": "^8.0.1",
+    "@types/ssh2": "1.15.6",
     "@types/tar-stream": "3.1.4",
     "@types/three": "^0.180.0",
     "@types/turndown": "^5.0.6",

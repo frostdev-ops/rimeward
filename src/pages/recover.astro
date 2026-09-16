@@ -1,0 +1,35 @@
+---
+import ValleyLayout from '../layouts/ValleyLayout.astro';
+import { recoverAccount, redeemAction, limitAccountAction } from '../lib/account-access.ts';
+import { identityConnectors } from '../lib/identity.ts';
+import { config } from '../lib/app-config.ts';
+import { clientIp } from '../lib/net-guard.ts';
+Astro.response.headers.set('Cache-Control','no-store');Astro.response.headers.set('Referrer-Policy','strict-origin');// origin only (never the token); no-referrer would send Origin: null on the POST, which csrf.ts refuses
+let error='', message='';const token=Astro.url.searchParams.get('token')??'';
+if(Astro.request.method==='POST')try{
+  limitAccountAction('recover:'+clientIp(Astro.request, Astro.clientAddress));
+  const form=await Astro.request.formData();
+  if(token)message=redeemAction(token,String(form.get('password')??''))==='active'?'Account ready. You can sign in.':'Email verified. Your account is awaiting administrator approval.';
+  else {await recoverAccount(String(form.get('email')??'')).catch(()=>{});message='If this account is eligible, an email will arrive with the next step.';}
+}catch(e){error=(e as Error).message;}
+// An invitation may be the account's only way in: with passwords off, an identity accepts it.
+const connectors=token?identityConnectors().filter(c=>c.enabled):[];
+const passwords=config('PASSWORD_LOGIN')==='true';
+---
+<ValleyLayout title="Account access — Rimeward">
+  <div class="valley-card">
+    <h1 class="valley-title">Account access</h1>
+    {error&&<p id="form-error" role="alert" tabindex="-1" class="banner banner-err mb-0">{error}</p>}
+    {message?<p role="status">{message}</p>:<Fragment>
+      {connectors.map(c=><form method="post" action={`/api/auth/identity/${c.id}/invite`} class="valley-form"><input type="hidden" name="token" value={token}/><button type="submit" class="valley-submit">Continue with {c.name}</button></form>)}
+      {(!token||passwords)&&<form method="post" class="valley-form">
+        {token?<div class="valley-field"><label for="password">New password</label><input id="password" name="password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password"/></div>
+        :<div class="valley-field"><label for="email">Email</label><input id="email" name="email" type="email" required autocomplete="username"/></div>}
+        <button type="submit" class="valley-submit">Continue</button>
+      </form>}
+      {token&&!passwords&&!connectors.length&&<p>Ask your administrator for access.</p>}
+    </Fragment>}
+  </div>
+
+  <div class="valley-foot"><a href="/login" class="link">Sign in</a></div>
+</ValleyLayout>

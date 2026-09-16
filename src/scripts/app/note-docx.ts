@@ -120,7 +120,7 @@ export async function importDocx(file: File): Promise<{ html: string; warnings: 
     return css;
   }
   const commentsXml = xml(part('comments') || 'word/comments.xml');
-  const comments = new Map((commentsXml ? descendants(commentsXml, 'comment') : []).map((c) => [attr(c, 'id'), { text: descendants(c, 't').map((t) => t.textContent || '').join(' ').slice(0, 4000), author: attr(c, 'author') }]));
+  const comments = new Map((commentsXml ? descendants(commentsXml, 'comment') : []).map((c) => [attr(c, 'id'), { text: descendants(c, 't').map((t) => t.textContent || '').join(' '), author: attr(c, 'author') }]));
   const numberingXml = xml(part('numbering') || 'word/numbering.xml');
   const nums = new Map((numberingXml ? descendants(numberingXml, 'num') : []).map((n) => [attr(n, 'numId'), n]));
   const abstracts = new Map((numberingXml ? descendants(numberingXml, 'abstractNum') : []).map((n) => [attr(n, 'abstractNumId'), n]));

@@ -12,6 +12,7 @@ import {
   emitDev,
   leaseOwner,
   claimLease,
+  assertNoDirectoryMutation,
 } from "./runtime.ts";
 import type { Project, BufferView } from "./types.ts";
 
@@ -104,6 +105,7 @@ export function projectPath(
   create = false,
 ): string {
   const p = projectOf(user, id);
+  if ((workDb().prepare('SELECT connection FROM projects WHERE id=? AND user_id=?').get(id,user) as {connection:string}|undefined)?.connection) throw new DevError('Use workspace file tools for an SSH folder.');
   if (
     relative.includes("\0") ||
     relative.includes("\\") ||
@@ -171,6 +173,7 @@ export function createFile(
   file: string,
   directory = false,
 ): void {
+  assertNoDirectoryMutation();
   const target = projectPath(user, project, file, true);
   if (directory) fs.mkdirSync(target);
   else fs.writeFileSync(target, "", { flag: "wx" });
@@ -181,7 +184,9 @@ export function renameFile(
   project: string,
   from: string,
   to: string,
+  reservation?:string,
 ): void {
+  assertNoDirectoryMutation(reservation);
   const source = projectPath(user, project, from);
   const lexical = path.resolve(projectOf(user, project).root, from);
   const link = fs.lstatSync(lexical).isSymbolicLink();
@@ -219,7 +224,7 @@ export function renameFile(
   emitDev(user, "project", project);
 }
 /** ponytail: offset continuation rescans earlier entries; use an index if large-repo latency matters. */
-export async function searchPage(user: number, project: string, query: string, scope = "", cursor = 0, includeIgnored = false) {
+export async function searchPage(user: number, project: string, query: string, scope = "", cursor = 0, includeIgnored = false, virtualPrefix = '') {
   const matches: { path: string; line: number; text: string }[] = [];
   if (!query.trim() || query.length > 200) return { matches, complete: true, scanned: 0 };
   cursor = Math.max(0, Math.floor(Number(cursor)) || 0);
@@ -261,10 +266,10 @@ export async function searchPage(user: number, project: string, query: string, s
     for (let i = 0; i < candidates.length; i++) {
       if (position++ < cursor) continue;
       const text = candidates[i] ?? "";
-      const hit = (i === 0 ? relative : text).toLowerCase().includes(needle);
+      const hit = (i === 0 ? `${virtualPrefix}${relative}` : text).toLowerCase().includes(needle);
       const match = { path: relative, line: Math.max(1, i), text: text.slice(0, 300) };
-      const bytes = hit ? JSON.stringify(match).length + 1 : 0;
-      if (scanned >= 10_000 || size + bytes > 9000)
+      const bytes = hit ? JSON.stringify({ ...match, path: `${virtualPrefix}${relative}` }).length + 1 : 0;
+      if (scanned >= 10_000 || size + bytes > (virtualPrefix ? 6000 : 9000))
         return { matches, complete: false, next: position - 1, scanned, hint, scope: searchScope };
       scanned++; size += bytes;
       if (hit) matches.push(match);
@@ -283,15 +288,15 @@ export async function searchFiles(user: number, project: string, query: string) 
   } while (cursor !== undefined && matches.length < 200);
   return matches.slice(0, 200);
 }
-export function treePage(user: number, project: string, dir = "", cursor = 0) {
+export function treePage(user: number, project: string, dir = "", cursor = 0, virtualPrefix = '') {
   const all = tree(user, project, dir);
   const entries: ReturnType<typeof tree> = [];
   let next = Math.max(0, Math.floor(Number(cursor)) || 0), size = 0;
   while (next < all.length) {
     const entry = all[next];
     if (!entry) break;
-    const bytes = JSON.stringify(entry).length + 1;
-    if (size + bytes > 9000) {
+    const bytes = JSON.stringify({ ...entry, path: `${virtualPrefix}${entry.path}` }).length + 1;
+    if (size + bytes > (virtualPrefix ? 5000 : 9000)) {
       if (!entries.length) throw new DevError("Directory entry exceeds the tool page size.");
       break;
     }
@@ -365,6 +370,12 @@ export interface BufferRow {
   readonly: number;
 }
 export const bufferKey = (u: number, p: string, f: string) => `buffer:${u}:${p}:${f}`;
+/** Short mutation reservations span aliases; editor ownership remains per buffer. */
+export function fileMutationKey(user: number, project: string, file: string): string {
+  assertNoDirectoryMutation();
+  const target = projectPath(user, project, file, true);
+  return `mutation:${hash(Buffer.from(process.platform === 'linux' ? target : target.normalize('NFC').toLowerCase()))}`;
+}
 export function readBuffer(
   user: number,
   project: string,
@@ -486,7 +497,10 @@ export function readPage(
   column?: unknown,
   version: unknown = "buffer",
 ): BufferView & { from: number; to: number; lines: number; next?: number; nextColumn?: number; version: string } {
-  const { diskText, ...view } = readBuffer(user, project, file);
+  return pageBuffer(readBuffer(user,project,file),from,lines,column,version);
+}
+export function pageBuffer(buffer:BufferView,from?:unknown,lines?:unknown,column?:unknown,version:unknown='buffer'):BufferView & {from:number;to:number;lines:number;next?:number;nextColumn?:number;version:string} {
+  const { diskText, ...view } = buffer;
   const all = (version === "disk" ? diskText ?? view.text : view.text).split("\n");
   const start = Math.min(all.length, Math.max(1, Math.floor(Number(from)) || 1));
   const offset = Math.min((all[start - 1]?.length ?? 0), Math.max(0, Math.floor(Number(column)) || 0));
@@ -537,6 +551,7 @@ export function editBuffer(
     throw new DevError("Editing requires the current buffer revision.", 409);
   const view = readBuffer(user, project, file);
   file = view.path;
+  if (leaseOwner(fileMutationKey(user, project, file))) throw new DevError('A prepared workspace mutation holds this file. Wait for its receipt before editing.', 409);
   if (view.readonly) throw new DevError("This file is read-only.");
   // Revision first: a stale takeover must not steal the lease and then fail.
   if (opts.revision !== undefined && opts.revision !== view.revision)
@@ -657,12 +672,15 @@ export async function gitView(user: number, project: string, file?: string, limi
     : [];
   const base = await git(user, project, ["rev-parse", "--verify", "HEAD"]).then(() => "HEAD", () => "--cached");
   // Only an unborn HEAD uses the staged diff. Output limits/errors must not silently drop working changes.
-  const diff = await git(user, project, ["--literal-pathspecs", "diff", "--no-ext-diff", base, "--", ...scope]);
+  const diff = await git(user, project, ["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", base, "--", ...scope]);
   const result = {
     status: await git(user, project, ["status", "--short"]),
     diff,
     worktrees: await git(user, project, ["worktree", "list", "--porcelain"]),
   };
+  return pageGitView(result,limit,cursor);
+}
+export function pageGitView(result:{status:string;diff:string;worktrees:string},limit=Number.POSITIVE_INFINITY,cursor=0){
   const offsets = { diff: 0, status: 0, worktrees: 0 };
   const full = { ...result };
   let skip = Math.max(0, Math.floor(Number(cursor)) || 0);

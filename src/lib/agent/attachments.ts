@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, getDb } from '../db.ts';
 import { extractDocxText, extractPdfText, paginateText, searchPages, PAGE_MARK } from './docs.ts';
-import { writeDocText } from './history.ts';
+import { writeDocText, docsDir, safeName } from './history.ts';
 import { knowledgeChanged } from './observation-events.ts';
 
 // Attachments the user hands the agent. Bytes are content-addressed on disk,
@@ -132,6 +132,22 @@ export async function storeAttachment(opts: {
   if (text) writeDocText(userId, stored.id, stored.name, text);
   knowledgeChanged(userId);
   return stored;
+}
+
+/** Undo one storeAttachment: the row and its searchable /docs copy. The BYTES stay — they are
+ *  content-addressed and shared by sha256 with every other row holding the same file, and a blob with
+ *  no rows left costs nothing and is reused verbatim if the same attachment is prepared again. Used
+ *  when work prepared before a commit is refused at the commit, so nothing is left half-attached. */
+export function discardAttachment(userId: number, id: number): void {
+  const f = getAttachment(userId, id);
+  if (!f) return;
+  getDb().prepare('DELETE FROM agent_files WHERE id = ? AND user_id = ?').run(id, userId);
+  try {
+    fs.rmSync(path.join(docsDir(userId), `${id}-${safeName(f.name)}.txt`), { force: true });
+  } catch (err) {
+    console.error('[attachments] could not remove document text:', err);
+  }
+  knowledgeChanged(userId);
 }
 
 /** Ownership-checked: an id from another user's conversation is simply not found. */

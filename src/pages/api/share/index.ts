@@ -1,4 +1,5 @@
 import type { APIRoute } from 'astro';
+import { configuredOrigin } from '../../../lib/app-config.ts';
 import { createShare, linksEnabled, listShares, sharedWithMe, type CreateShare } from '../../../lib/shares.ts';
 
 export const prerender = false;
@@ -30,7 +31,7 @@ export const POST: APIRoute = async ({ request, locals }) => {
       expiresIn: Number(body.expiresIn) || 0,
     });
     // The link is the SERVER's address: a desktop forwards this call here, and its own origin is a loopback port.
-    const base = process.env.PUBLIC_BASE_URL?.replace(/\/$/, '') ?? `${request.headers.get('x-forwarded-proto') ?? new URL(request.url).protocol.slice(0, -1)}://${request.headers.get('host') ?? new URL(request.url).host}`;
+    const base = configuredOrigin() ?? `${request.headers.get('x-forwarded-proto') ?? new URL(request.url).protocol.slice(0, -1)}://${request.headers.get('host') ?? new URL(request.url).host}`;
     return Response.json({ share: view(share), ...(token ? { token, url: `${base}/s/${token}` } : {}) });
   } catch (err) {
     const status = (err as { status?: number }).status ?? 500;

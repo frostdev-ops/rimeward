@@ -1,5 +1,25 @@
 // Shared desktop contracts. This module is safe to import in the browser.
-export type PermissionMode = "human" | "rimeward" | "yolo";
+/** How a CLI Rime launches may act: read-only (plan / read-only sandbox), approvals (every
+ *  prompt goes to Rime through the PermissionRequest hook), normal (the CLI's auto mode),
+ *  yolo (skip permissions). Read from the agent ward's config, not per terminal. */
+export type PermissionMode = "read-only" | "approvals" | "normal" | "yolo";
+/** Narrowest first: the order IS the authority ranking (`narrowerPermission`). */
+export const PERMISSION_MODES = ["read-only", "approvals", "normal", "yolo"] as const satisfies readonly PermissionMode[];
+export const isPermissionMode = (v: unknown): v is PermissionMode => (PERMISSION_MODES as readonly unknown[]).includes(v);
+/** The narrower of two modes: a run may lose authority, never gain it. */
+export const narrowerPermission = (a: PermissionMode, b: PermissionMode): PermissionMode =>
+  PERMISSION_MODES.indexOf(a) <= PERMISSION_MODES.indexOf(b) ? a : b;
+/** One vocabulary for every surface that names a mode: the ward's Configure dialog, the chat
+ *  footer, the terminal ward and the CLI's own instructions. */
+export const PERMISSION_LABELS: Record<PermissionMode, string> = { "read-only": "Read-only", approvals: "Approvals", normal: "Normal", yolo: "YOLO" };
+export const PERMISSION_HELP: Record<PermissionMode, string> = {
+  "read-only": "Claude Code plan mode / Codex read-only sandbox: the CLI is held to inspecting, each by its own mechanism.",
+  approvals: "The CLI asks before acting (Claude Code’s default mode / Codex on-request in its workspace-write sandbox). Rime answers while its conversation is active; otherwise the person at the terminal does.",
+  normal: "Claude Code auto mode / Codex automatic approval review in its workspace-write sandbox: routine actions proceed; the prompts that remain are answered as under Approvals.",
+  yolo: "Claude Code skips its permission prompts; Codex skips prompts and its sandbox. OS permissions and Codex hook trust still apply.",
+};
+/** A Rime-launched CLI's lifecycle as its hooks report it (lib/dev/cli-bridge.ts). */
+export type CliPhase = "running" | "waiting-permission" | "waiting-input" | "done" | "ended";
 export type TerminalKind = "shell" | "codex" | "claude";
 export interface Project {
   id: string;
@@ -21,6 +41,9 @@ export interface BufferView {
 }
 export interface SessionView {
   id: string;
+  ownerRuntimeId?: string;
+  virtualCwd?: string;
+  workspace?: import('./workspace-contract.ts').WorkspaceBinding;
   project: string;
   kind: TerminalKind;
   /** One-shot tool execution; opens a Terminal tab only at the user's request. */
@@ -42,6 +65,10 @@ export interface SessionView {
   review?: string;
   evidence?: { reviewer: string; at: string; sequence: number; diff: string | null; files: { path: string; hash: string | null }[]; checks: { command: string; exitCode: number | null }[]; stale?: boolean };
   taskState: "active" | "needs-attention" | "done" | "cancelled";
+  /** Hook-reported phase of a Rime-launched CLI; absent for shells and CLIs started by hand. */
+  phase?: CliPhase;
+  /** The CLI's last assistant message once it stopped. */
+  lastMessage?: string;
 }
 export interface SessionResourceView extends SessionView {
   pid: number | null;
@@ -50,11 +77,14 @@ export interface SessionResourceView extends SessionView {
 }
 export const terminalIsLog = (session: Pick<SessionView, 'command' | 'state'>): boolean => !!session.command && session.state !== 'running';
 export function terminalNeedsRestore(session: Pick<SessionView, 'state' | 'command' | 'terminationReason'>): boolean {
+  if(session.terminationReason==='remote-process-unconfirmed'||session.terminationReason==='owner-offline')return false;
   return !session.command && session.state !== 'running' && (session.state === 'interrupted' ||
     session.terminationReason === 'runtime-shutdown' || session.terminationReason === 'runtime-interrupted');
 }
 /** Older session responses have no termination metadata; do not guess their signals. */
 export function terminalExitLabel(session: Pick<SessionView, 'state' | 'command' | 'exitCode' | 'exitSignal' | 'terminationReason'>): string {
+  if(session.terminationReason==='remote-process-unconfirmed')return 'Remote process unconfirmed';
+  if(session.terminationReason==='owner-offline')return 'Owner offline';
   if (terminalNeedsRestore(session)) return 'Saved';
   const label = session.terminationReason === 'cancelled' ? 'Cancelled' :
     session.terminationReason === 'input-error' ? 'Input failed' :

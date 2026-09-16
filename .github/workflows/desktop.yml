@@ -1,6 +1,7 @@
 # Rimeward (desktop/): signed + notarized macOS DMG, Windows and Linux
 # bundles, attached to a draft GitHub Release. Tag `desktop-vX.Y.Z` to run it.
 # Publish manually only after Windows and Linux packaged startup is verified.
+# Push dev/<version> branches to run the same checks and native builds without a release.
 #
 # Secrets (repo settings → Secrets → Actions):
 #   APPLE_CERTIFICATE            base64 of the Developer ID Application .p12
@@ -19,6 +20,7 @@ name: Rimeward desktop
 
 on:
   push:
+    branches: ['dev/**']
     tags: ['desktop-v*']
   workflow_dispatch:
     inputs:
@@ -58,19 +60,21 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
           node-version: 22.22.0
           cache: npm
 
-      - name: Verify release tag matches this build
-        if: github.event_name == 'push' || !inputs.validation_only
+      - name: Verify release tag and promotion to main
+        if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && !inputs.validation_only)
         shell: bash
         run: |
           tag=$(node -p "'desktop-v' + require('./desktop/tauri.conf.json').version")
-          git fetch --depth=1 origin "refs/tags/$tag"
-          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+          test "$GITHUB_REF_TYPE" = tag && test "$GITHUB_REF_NAME" = "$tag"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
       - run: npm ci
 
@@ -164,18 +168,18 @@ jobs:
           node tests/remote-media-smoke.mjs
 
       - name: Validate native application build
-        if: github.event_name == 'workflow_dispatch' && inputs.validation_only
+        if: github.ref_type != 'tag' || inputs.validation_only
         working-directory: desktop
         run: npx tauri build ${{ matrix.platform == 'ubuntu-24.04' && '--bundles deb,appimage' || '--no-bundle' }} ${{ env.TAURI_BUILD_ARGS }}
 
       - name: App Store Connect key
-        if: startsWith(matrix.platform, 'macos-') && (github.event_name == 'push' || !inputs.validation_only)
+        if: startsWith(matrix.platform, 'macos-') && github.ref_type == 'tag' && (github.event_name == 'push' || !inputs.validation_only)
         run: echo "$APPLE_API_KEY_B64" | base64 -d > "$RUNNER_TEMP/AuthKey.p8"
         env:
           APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY_B64 }}
 
       - uses: tauri-apps/tauri-action@v1
-        if: github.event_name == 'push' || !inputs.validation_only
+        if: github.ref_type == 'tag' && (github.event_name == 'push' || !inputs.validation_only)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Finder can hold the mounted installer open on hosted macOS runners.

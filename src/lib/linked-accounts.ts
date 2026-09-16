@@ -1,7 +1,7 @@
 import { getDb } from './db.ts';
 import { sealToken, openToken } from './crypto.ts';
 import { secret, type SecretKey } from './secrets.ts';
-import { msTenant } from './connect.ts';
+import { msTenant, zohoAccountsBase } from './connect.ts';
 
 export type Provider = 'google' | 'microsoft' | 'notion' | 'zoho' | 'mailbox' | 'icloud';
 
@@ -68,6 +68,7 @@ export function storeLink(opts: {
 }
 
 export function deleteLink(userId: number, provider: Provider): void {
+  getDb().prepare("UPDATE oauth_attempts SET status='cancelled',private_enc='' WHERE user_id=? AND provider=? AND status IN ('pending','authorizing','completing')").run(userId,provider);
   getDb().prepare('DELETE FROM linked_accounts WHERE user_id = ? AND provider = ?').run(userId, provider);
 }
 
@@ -92,9 +93,10 @@ const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 // Zoho's token host follows the data centre the user signed in at, so its URL
 // is read off the link's meta rather than being a constant like the others.
 const TOKEN_ENDPOINTS: Record<
-  'google' | 'microsoft' | 'zoho',
+  'google' | 'microsoft' | 'zoho' | 'notion',
   { url: (link: LinkedAccount) => string; id: SecretKey; secret: SecretKey }
 > = {
+  notion: { url: () => 'https://api.notion.com/v1/oauth/token', id: 'NOTION_CLIENT_ID', secret: 'NOTION_CLIENT_SECRET' },
   google: {
     url: () => 'https://oauth2.googleapis.com/token',
     id: 'GOOGLE_CLIENT_ID',
@@ -106,7 +108,7 @@ const TOKEN_ENDPOINTS: Record<
     secret: 'MS_CLIENT_SECRET',
   },
   zoho: {
-    url: (link) => `${String(getMeta(link).accounts_base ?? 'https://accounts.zoho.com')}/oauth/v2/token`,
+    url: (link) => `${zohoAccountsBase(String(getMeta(link).accounts_base ?? 'https://accounts.zoho.com'))}/oauth/v2/token`,
     id: 'ZOHO_CLIENT_ID',
     secret: 'ZOHO_CLIENT_SECRET',
   },
@@ -119,11 +121,19 @@ const TOKEN_ENDPOINTS: Record<
  * dies in ~90 days. A 'mailbox' or 'icloud' link has no token at all
  * (mailbox.ts / icloud.ts open the sealed password themselves).
  */
-export async function liveToken(userId: number, provider: Provider): Promise<string> {
+// ponytail: single-flight is per process; use a database lease before clustering refresh workers.
+const refreshing = new Map<string,Promise<string>>();
+export function liveToken(userId:number,provider:Provider):Promise<string> {
+  const key=`${userId}:${provider}`;
+  const running=refreshing.get(key);if(running)return running;
+  const work=refreshLiveToken(userId,provider).finally(()=>refreshing.delete(key));
+  refreshing.set(key,work);return work;
+}
+async function refreshLiveToken(userId: number, provider: Provider): Promise<string> {
   const link = getLink(userId, provider);
   if (!link) throw new ReconnectError(provider);
 
-  if (provider === 'notion') return openToken(link.refresh_token_enc);
+  if (provider === 'notion' && !getMeta(link).rotating) return openToken(link.refresh_token_enc);
   if (provider === 'mailbox' || provider === 'icloud') throw new Error(`a ${provider} link carries a password, not a token`);
   if (link.access_token && Date.now() < link.access_expires_at - REFRESH_MARGIN_MS) return link.access_token;
 
@@ -135,10 +145,11 @@ export async function liveToken(userId: number, provider: Provider): Promise<str
     throw new ReconnectError(provider);
   }
 
-  const res = await fetch(ep.url(link), {
+  const broker=getMeta(link).broker ? await (await import('./broker-client.ts')).refreshBrokerConnection(userId,provider,refreshToken,getMeta(link)) : null;
+  const res = broker ? new Response(JSON.stringify(broker),{status:200}) : await fetch(ep.url(link), {
     method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
+    headers: provider === 'notion' ? {'content-type':'application/json',authorization:'Basic '+Buffer.from(`${secret(ep.id)}:${secret(ep.secret)}`).toString('base64')} : { 'content-type': 'application/x-www-form-urlencoded' },
+    body: provider === 'notion' ? JSON.stringify({grant_type:'refresh_token',refresh_token:refreshToken}) : new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
       client_id: secret(ep.id),
@@ -147,9 +158,9 @@ export async function liveToken(userId: number, provider: Provider): Promise<str
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) {
-    const text = await res.text();
+    await res.text();
     if (res.status === 400 || res.status === 401) {
-      console.error(`[oauth] ${provider} refresh rejected for user ${userId}: ${text.slice(0, 200)}`);
+      console.error(`[oauth] ${provider} refresh rejected (${res.status})`);
       throw new ReconnectError(provider);
     }
     throw new Error(`${provider} token refresh failed: ${res.status}`);
@@ -164,15 +175,19 @@ export async function liveToken(userId: number, provider: Provider): Promise<str
 
   getDb()
     .prepare(
-      'UPDATE linked_accounts SET access_token = ?, access_expires_at = ?, refresh_token_enc = ? WHERE user_id = ? AND provider = ?'
+      'UPDATE linked_accounts SET access_token = ?, access_expires_at = ?, refresh_token_enc = ? WHERE user_id = ? AND provider = ? AND refresh_token_enc = ?'
     )
     .run(
       data.access_token,
       Date.now() + (data.expires_in ?? 3600) * 1000,
       data.refresh_token ? sealToken(data.refresh_token) : link.refresh_token_enc,
       userId,
-      provider
+      provider,
+      link.refresh_token_enc
     );
+  const current=getLink(userId,provider);
+  if(!current)throw new ReconnectError(provider);
+  if(current.access_token!==data.access_token)return liveTokenAfterChange(current);
   return data.access_token;
 }
 
@@ -181,4 +196,9 @@ export function reconnectResponse(err: unknown): Response | null {
   if (err instanceof ReconnectError)
     return Response.json({ error: 'reconnect', provider: err.provider }, { status: 409 });
   return null;
+}
+
+function liveTokenAfterChange(link:LinkedAccount):string {
+  if(link.access_token)return link.access_token;
+  throw new ReconnectError(link.provider);
 }

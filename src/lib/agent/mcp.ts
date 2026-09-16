@@ -308,9 +308,12 @@ const definitionRevision = (signature:string,t:McpTool) => createHash('sha256').
 /** Every configured MCP server's tools as registry entries, keyed
  *  mcp__<server>__<tool>. Servers that fail to connect contribute nothing
  *  this turn (the ward shows why). */
-export async function mcpToolDefs(userId: number, fetchImpl: Fetch = vettedFetch, signal?: AbortSignal): Promise<Record<string, ToolDef>> {
+export async function mcpToolDefs(userId: number, fetchImpl: Fetch = vettedFetch, signal?: AbortSignal, unavailable?: (message:string) => void): Promise<Record<string, ToolDef>> {
   await Promise.all(getDashboard(userId).filter(w => w.type === 'mcp' && mcpConfig(w).url)
-    .map(w => connect(userId,w.i,fetchImpl,signal)));
+    .map(async w => {
+      const session = await connect(userId,w.i,fetchImpl,signal);
+      if (session.error) unavailable?.(`MCP server ${mcpConfig(w).name} is unavailable: ${session.error}`);
+    }));
   signal?.throwIfAborted();
   return mcpToolDefsSync(userId, fetchImpl);
 }

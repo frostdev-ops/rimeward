@@ -122,6 +122,10 @@ Rime supports the **ChatGPT backend (Codex)**, **OpenRouter**, the **OpenAI API*
 
 Approvals are configurable per agent ward. Native terminal commands use your desktop account's permissions. Review those settings before enabling unattended work. Local files and shells do not depend on a Rimeward server, but connected integrations and cloud models need their respective services.
 
+Codex hook trust is separate from its command permission mode, including Yolo. Rimeward leaves Codex's hook review enabled: review the generated Rimeward hooks in `/hooks` before relying on unattended lifecycle notifications. Other configured hooks keep their own trust requirements. Restored terminal sessions keep their original coordinator conversation; after that conversation is cleared, their status stays in terminal history and does not wake a replacement conversation.
+
+Layout saves check the snapshot the editor opened. If another client changed it, the save keeps the current dashboard and leaves the draft unsaved. Rejected desktop checkpoints are available from **Recovered layout drafts** in the toolbar. Concurrent dashboard sync changes keep the local version and preserve the incoming version under **Rime History → Recovered version · instance/dashboard**, where it can be reviewed and restored. Older editing clients must reload; legacy API layout seeding remains supported, but changing an existing agent's permission policy requires a current `base: { layout, pages }` snapshot.
+
 Rimeward is actively developed. Its editor includes file editing, recovery, and Biome diagnostics; language servers, a full debugger, and VS Code extension compatibility are outside the current editor. Intel Mac installers are not provided. Check release notes before relying on a feature described by the latest source.
 
 ## Documentation

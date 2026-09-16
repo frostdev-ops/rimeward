@@ -1,0 +1,217 @@
+---
+import ValleyLayout from '../layouts/ValleyLayout.astro';
+import { needsSetup, claimInstallation, setupDone } from '../lib/installation.ts';
+import { createSession, SESSION_COOKIES, sessionCookieOptions } from '../lib/auth.ts';
+import { config, configView, configuredOrigin, saveConfig, type ConfigKey } from '../lib/app-config.ts';
+import { verifyMail } from '../lib/account-access.ts';
+import { getSetting } from '../lib/settings.ts';
+import { SETUP_STEPS, setupStatus, finishSetup, saveConfigForm, type SetupStep } from '../lib/setup.ts';
+
+// One path, six steps, and NO stored progress: `needsSetup()` and `setupDone()`
+// are the only two facts, everything else is the admin choosing a step. That is
+// also why the wizard stays on /setup — csrf.ts exempts exactly this path while
+// there is nobody to authenticate the claim with.
+Astro.response.headers.set('Cache-Control','no-store');
+const fresh = needsSetup(), asked = Astro.url.searchParams.get('step');
+if (fresh) { if (asked && asked !== 'claim') return Astro.redirect('/setup?step=claim',303); }
+else if (!asked) return Astro.redirect(setupDone() ? '/admin/settings' : '/setup?step=url',303);
+else if (!SETUP_STEPS.includes(asked as SetupStep) || asked === 'claim') return Astro.redirect('/setup?step=url',303);
+const step = (fresh ? 'claim' : asked) as SetupStep;
+const me = Astro.locals.user;
+
+const SMTP_KEYS: ConfigKey[] = ['SMTP_HOST','SMTP_PORT','SMTP_SECURE','SMTP_USER','SMTP_PASSWORD','SMTP_FROM'];
+const SSO_KEYS: ConfigKey[] = ['GOOGLE_SSO_ENABLED','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','MS_SSO_ENABLED','MS_CLIENT_ID','MS_CLIENT_SECRET','MS_TENANT_ID','NOTION_CLIENT_ID','NOTION_CLIENT_SECRET','ZOHO_CLIENT_ID','ZOHO_CLIENT_SECRET'];
+
+let error = '', posted: FormData | null = null;
+if (Astro.request.method === 'POST') {
+  try {
+    const form = await Astro.request.formData(), skip = form.has('skip');
+    posted = form;
+    if (step === 'claim') {
+      const id = claimInstallation(String(form.get('token')??''),String(form.get('email')??''),String(form.get('password')??''),configuredOrigin() ?? Astro.request.headers.get('origin') ?? Astro.url.origin);
+      const session = createSession(id);
+      for (const name of SESSION_COOKIES) Astro.cookies.set(name,session.id,sessionCookieOptions(session.expiresAt));
+      return Astro.redirect('/setup?step=url',303);
+    }
+    // Past the claim there is always a signed-in admin — the middleware sends a
+    // signed-out visitor to /login. One assertion instead of `&& me` here and `me!` there.
+    if (!me) throw new Error('Sign in again');
+    if (form.get('action') === 'finish') { finishSetup(me.userId); return Astro.redirect('/dash',303); }
+    const actor = me.userId;
+    if (step === 'url') {
+      // app-config only validates a non-empty URL, and a blank one breaks CSRF
+      // for every later post — a client that skipped `required` stops here.
+      const url = String(form.get('PUBLIC_BASE_URL')??'').trim();
+      if (!url) throw new Error('The public URL is required');
+      saveConfig('PUBLIC_BASE_URL',url,actor); return Astro.redirect('?step=email',303);
+    }
+    if (step === 'email') {
+      if (!skip) saveConfigForm(form,SMTP_KEYS,actor);
+      // Saving the fields and proving they deliver is one action: verifyMail is
+      // what sets smtp_verified, and only that unlocks a non-invite policy.
+      if (form.get('action') === 'test') { await verifyMail(me.email); return Astro.redirect('?step=email&mail=ok',303); }
+      return Astro.redirect('?step=policy',303);
+    }
+    if (step === 'policy') { saveConfigForm(form,['REGISTRATION_POLICY','SSO_WORKSPACE_DOMAIN'],actor); return Astro.redirect('?step=sso',303); }
+    if (step === 'sso') { if (!skip) saveConfigForm(form,SSO_KEYS,actor); return Astro.redirect('?step=review',303); }
+  } catch(e) { error = (e as Error).message; }
+}
+
+const status = setupStatus(), current = SETUP_STEPS.indexOf(step);
+const TITLES: Record<SetupStep,string> = { claim:'Claim this installation', url:'Where Rimeward lives', email:'Email delivery', policy:'Who may sign up', sso:'Sign-in and connected services', review:'Ready' };
+const POLICIES: [string,string,string][] = [
+  ['invite','Invitation only','Recommended. Nobody gets an account unless you send them one.'],
+  ['approval','Approval','Anyone may apply; you approve each account before it works.'],
+  ['open','Open','Anyone with a verified email address gets an account.'],
+];
+const secretBox = (key: ConfigKey) => configView(key).configured ? 'Configured — enter replacement' : '';
+// A failed step re-renders instead of redirecting: show back what was typed, not
+// what is stored. Secrets are never echoed, so they stay out of this.
+const val = (key: ConfigKey) => String(posted?.get(key) ?? config(key));
+const mailed = Astro.url.searchParams.get('mail') === 'ok';
+const rows: [string,string,'ok'|'warn'|'off',SetupStep][] = [
+  ['Email', status.smtpVerified ? 'Verified' : config('SMTP_HOST') ? 'Configured, not verified' : 'Not configured', status.smtpVerified ? 'ok' : config('SMTP_HOST') ? 'warn' : 'off', 'email'],
+  ['Registration policy', POLICIES.find(p=>p[0]===status.policy)?.[1] ?? status.policy, status.policy === 'open' ? 'warn' : 'ok', 'policy'],
+  ['Password sign-in', status.passwordLogin ? 'On' : 'Off', status.passwordLogin ? 'ok' : 'off', 'sso'],
+  ['Sign-in providers', status.connectors.join(', ') || 'Password only', status.connectors.length ? 'ok' : 'off', 'sso'],
+  ['Connected-service clients', status.oauth.join(', ') || 'None', status.oauth.length ? 'ok' : 'off', 'sso'],
+];
+---
+
+<ValleyLayout title={`${TITLES[step]} — Rimeward`} rail={{ steps: ['Claim','Address','Email','Access','Sign-in','Ready'], slugs: ['', ...SETUP_STEPS.slice(1)], current, label: 'Setup progress' }}>
+  <div class="valley-card" data-step={step}>
+    <h1 class="valley-title">{TITLES[step]}</h1>
+
+    {step === 'claim' && <p class="valley-lede">Rimeward wrote a one-time token to the <code>setup-token</code> file in this installation’s data directory. Read it there, then create the administrator account it belongs to.</p>}
+    {step === 'url' && <p class="valley-lede">The address people will open, and the one every OAuth callback is registered under. Change it later and each provider’s registration has to change with it.</p>}
+    {step === 'email' && <p class="valley-lede">Invitations, password resets and approval mail all leave through this server. Until a test message actually lands, Rimeward stays invitation-only.</p>}
+    {step === 'policy' && <p class="valley-lede">Who is allowed to end up with an account here.</p>}
+    {step === 'sso' && <p class="valley-lede">Optional. Google and Microsoft sign-in, and the client credentials the Inbox, Calendar and Notion wards connect with. Custom OIDC connectors live in Admin › Settings.</p>}
+    {step === 'review' && <p class="valley-lede">What this installation looks like now. Change anything that is not right — you can come back to any of these from Admin › Settings.</p>}
+
+    {error && <p id="form-error" role="alert" tabindex="-1" class="banner banner-err mb-0">{error}</p>}
+    {step === 'email' && mailed && <p role="status" class="banner banner-ok mb-0">Test email accepted by your mail server. Public registration policies are unlocked.</p>}
+
+    {step === 'claim' && (
+      <form method="post" class="valley-form">
+        <div class="valley-field"><label for="token">Installation token</label><input id="token" name="token" type="password" required autocomplete="off" /></div>
+        <div class="valley-field"><label for="email">Administrator email</label><input id="email" name="email" type="email" required autocomplete="username" /></div>
+        <div class="valley-field"><label for="password">Password</label><input id="password" name="password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password" /></div>
+        <button type="submit" class="valley-submit">Continue</button>
+      </form>
+    )}
+
+    {step === 'url' && (
+      <form method="post" class="valley-form">
+        <div class="valley-field"><label for="PUBLIC_BASE_URL">Public URL</label><input id="PUBLIC_BASE_URL" name="PUBLIC_BASE_URL" type="url" required autocomplete="off" value={String(posted?.get('PUBLIC_BASE_URL') ?? status.origin)} /></div>
+        <p class="valley-lede setup-urls">Register these callbacks with your providers:<br /><code>{status.origin}/api/auth/google/callback</code><br /><code>{status.origin}/api/auth/identity/microsoft/callback</code><br /><code>{status.origin}/api/connect/&lt;provider&gt;/callback</code></p>
+        <button type="submit" class="valley-submit">Continue</button>
+      </form>
+    )}
+
+    {step === 'email' && (
+      <form method="post" class="valley-form">
+        <div class="valley-field"><label for="SMTP_HOST">SMTP host</label><input id="SMTP_HOST" name="SMTP_HOST" type="text" autocomplete="off" value={val('SMTP_HOST')} /></div>
+        <div class="valley-field"><label for="SMTP_PORT">Port</label><input id="SMTP_PORT" name="SMTP_PORT" type="text" inputmode="numeric" autocomplete="off" value={val('SMTP_PORT')} /></div>
+        {[['false','STARTTLS on the submission port (587)'],['true','Implicit TLS (465)']].map(([value,label])=>(
+          <label class="valley-choice"><input type="radio" name="SMTP_SECURE" value={value} checked={val('SMTP_SECURE')===value} />{label}</label>
+        ))}
+        <div class="valley-field"><label for="SMTP_USER">Username</label><input id="SMTP_USER" name="SMTP_USER" type="text" autocomplete="off" value={val('SMTP_USER')} /></div>
+        <div class="valley-field"><label for="SMTP_PASSWORD">Password</label><input id="SMTP_PASSWORD" name="SMTP_PASSWORD" type="password" autocomplete="off" placeholder={secretBox('SMTP_PASSWORD')} /></div>
+        <div class="valley-field"><label for="SMTP_FROM">Sender address</label><input id="SMTP_FROM" name="SMTP_FROM" type="email" autocomplete="off" value={val('SMTP_FROM')} /></div>
+        <button type="submit" class="valley-submit">Continue</button>
+        <button type="submit" class="btn" name="action" value="test">Save and send a test email</button>
+        <button type="submit" class="valley-skip" name="skip" value="1" formnovalidate>Skip for now</button>
+      </form>
+    )}
+
+    {step === 'policy' && (
+      <form method="post" class="valley-form">
+        {POLICIES.map(([value,label,blurb])=>(
+          <label class="valley-choice"><input type="radio" name="REGISTRATION_POLICY" value={value} checked={val('REGISTRATION_POLICY')===value} /><span>{label}<br /><span class="valley-lede">{blurb}</span></span></label>
+        ))}
+        {!getSetting('smtp_verified') && <p class="valley-lede">Approval and Open need a verified sender first — <a class="link" href="?step=email">send a test email</a>.</p>}
+        <div class="valley-field"><label for="SSO_WORKSPACE_DOMAIN">Allowed sign-in domains (comma separated, blank for any)</label><input id="SSO_WORKSPACE_DOMAIN" name="SSO_WORKSPACE_DOMAIN" type="text" autocomplete="off" value={val('SSO_WORKSPACE_DOMAIN')} /></div>
+        <button type="submit" class="valley-submit">Continue</button>
+      </form>
+    )}
+
+    {step === 'sso' && (
+      <form method="post" class="valley-form">
+        <h2 class="valley-subtitle">Google</h2>
+        <label class="valley-choice"><input type="checkbox" name="GOOGLE_SSO_ENABLED" value="true" checked={val('GOOGLE_SSO_ENABLED')==='true'} /><input type="hidden" name="GOOGLE_SSO_ENABLED" value="false" />Offer Google sign-in</label>
+        <div class="valley-field"><label for="GOOGLE_CLIENT_ID">Client ID</label><input id="GOOGLE_CLIENT_ID" name="GOOGLE_CLIENT_ID" type="text" autocomplete="off" value={val('GOOGLE_CLIENT_ID')} /></div>
+        <div class="valley-field"><label for="GOOGLE_CLIENT_SECRET">Client secret</label><input id="GOOGLE_CLIENT_SECRET" name="GOOGLE_CLIENT_SECRET" type="password" autocomplete="off" placeholder={secretBox('GOOGLE_CLIENT_SECRET')} /></div>
+        <h2 class="valley-subtitle">Microsoft</h2>
+        <label class="valley-choice"><input type="checkbox" name="MS_SSO_ENABLED" value="true" checked={val('MS_SSO_ENABLED')==='true'} /><input type="hidden" name="MS_SSO_ENABLED" value="false" />Offer Microsoft sign-in</label>
+        <div class="valley-field"><label for="MS_CLIENT_ID">Client ID</label><input id="MS_CLIENT_ID" name="MS_CLIENT_ID" type="text" autocomplete="off" value={val('MS_CLIENT_ID')} /></div>
+        <div class="valley-field"><label for="MS_CLIENT_SECRET">Client secret</label><input id="MS_CLIENT_SECRET" name="MS_CLIENT_SECRET" type="password" autocomplete="off" placeholder={secretBox('MS_CLIENT_SECRET')} /></div>
+        <div class="valley-field"><label for="MS_TENANT_ID">Tenant</label><input id="MS_TENANT_ID" name="MS_TENANT_ID" type="text" autocomplete="off" value={val('MS_TENANT_ID')} /></div>
+        <h2 class="valley-subtitle">Notion</h2>
+        <div class="valley-field"><label for="NOTION_CLIENT_ID">Client ID</label><input id="NOTION_CLIENT_ID" name="NOTION_CLIENT_ID" type="text" autocomplete="off" value={val('NOTION_CLIENT_ID')} /></div>
+        <div class="valley-field"><label for="NOTION_CLIENT_SECRET">Client secret</label><input id="NOTION_CLIENT_SECRET" name="NOTION_CLIENT_SECRET" type="password" autocomplete="off" placeholder={secretBox('NOTION_CLIENT_SECRET')} /></div>
+        <h2 class="valley-subtitle">Zoho</h2>
+        <div class="valley-field"><label for="ZOHO_CLIENT_ID">Client ID</label><input id="ZOHO_CLIENT_ID" name="ZOHO_CLIENT_ID" type="text" autocomplete="off" value={val('ZOHO_CLIENT_ID')} /></div>
+        <div class="valley-field"><label for="ZOHO_CLIENT_SECRET">Client secret</label><input id="ZOHO_CLIENT_SECRET" name="ZOHO_CLIENT_SECRET" type="password" autocomplete="off" placeholder={secretBox('ZOHO_CLIENT_SECRET')} /></div>
+        <button type="submit" class="valley-submit">Continue</button>
+        <button type="submit" class="valley-skip" name="skip" value="1" formnovalidate>Skip for now</button>
+      </form>
+    )}
+
+    {step === 'review' && (
+      <>
+        <dl class="valley-summary">
+          <dt>Address</dt>
+          <dd data-state={configuredOrigin() ? 'ok' : 'warn'}><span>{status.origin}</span><span data-probe>checking…</span><a class="link" href="?step=url">Change</a></dd>
+          {rows.map(([label,value,state,to])=>(<><dt>{label}</dt><dd data-state={state}><span>{value}</span><a class="link" href={`?step=${to}`}>Change</a></dd></>))}
+        </dl>
+        <form method="post" class="valley-form" data-gate>
+          <input type="hidden" name="action" value="finish" />
+          <button type="submit" class="valley-submit">Enter Rimeward</button>
+        </form>
+      </>
+    )}
+  </div>
+
+  {step !== 'claim' && step !== 'review' && (
+    <form method="post" class="valley-foot"><input type="hidden" name="action" value="finish" /><button type="submit" class="valley-skip">Finish setup later</button></form>
+  )}
+
+  {step === 'review' && (
+    <script is:inline define:vars={{ probeOrigin: status.origin }}>
+      fetch(probeOrigin + '/brand/favicon', { mode: 'no-cors', cache: 'no-store' })
+        .then(() => 'reachable from this browser', () => 'not reachable from this browser')
+        .then((text) => { const el = document.querySelector('[data-probe]'); if (el) el.textContent = text; });
+    </script>
+  )}
+</ValleyLayout>
+
+<style>
+  /* Three page-scoped corrections to the shared valley chrome; everything else
+     is frost.css as-is. A URL is one unbreakable word and both of these columns
+     are narrower than one. */
+  .setup-urls code {
+    overflow-wrap: anywhere;
+  }
+  /* The review summary is the only two-column card in the valley: 24rem
+     squeezes every label onto three lines. */
+  .valley-card[data-step='review'] {
+    width: min(94vw, 30rem);
+  }
+  .valley-summary {
+    grid-template-columns: max-content 1fr;
+  }
+  .valley-summary dd {
+    flex-wrap: wrap;
+    overflow-wrap: anywhere;
+  }
+  /* A group heading INSIDE a form, not another card title: the sso step has five
+     of them and .valley-title renders every one at the weight of the page's h1. */
+  .valley-subtitle {
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #8fa8c0;
+  }
+</style>

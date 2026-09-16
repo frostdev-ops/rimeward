@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { publicOrigin } from './app-config.ts';
 import { getSession, sessionId } from './auth.ts';
 import { setSetting, sweepSettings, takeSetting } from './settings.ts';
 
@@ -9,10 +10,11 @@ import { setSetting, sweepSettings, takeSetting } from './settings.ts';
 const TTL_MS = 15 * 60 * 1000;
 
 export interface PendingState {
-  provider: 'google-sso' | 'google' | 'microsoft' | 'notion' | 'zoho';
+  provider: 'google' | 'microsoft' | 'notion' | 'zoho';
   userId?: number;
   /** Microsoft only: the Mail.Send-less retry after a tenant denies consent. */
   readonly?: boolean;
+  brokerId?: string;
   at: number;
 }
 
@@ -55,5 +57,5 @@ export function takeConnectState(
 }
 
 export function baseUrl(): string {
-  return (process.env.PUBLIC_BASE_URL ?? 'http://localhost:4321').replace(/\/$/, '');
+  return publicOrigin();
 }

@@ -213,6 +213,12 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
     if (reduced) renderStill();
   });
 
+  // Same as the valley: bfcache restores the page mid-dive, so let go of the
+  // camera and the idle lerp eases it back up.
+  addEventListener('pageshow', (e) => {
+    if (e.persisted) gateStart = 0;
+  });
+
   if (reduced) {
     renderStill();
   } else {

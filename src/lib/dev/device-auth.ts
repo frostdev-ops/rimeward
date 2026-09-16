@@ -89,6 +89,7 @@ export function deviceAuthorization(code: unknown): Grant {
   return g;
 }
 export function approveDeviceAuth(code: unknown, user: number, allow: boolean) {
+  if (!getDb().prepare("SELECT 1 FROM users WHERE id=? AND status='active'").get(user)) throw new DevError('Account is not active',403);
   const g = deviceAuthorization(code);
   if (g.status !== "pending")
     throw new DevError("This request has already been answered.", 409);
@@ -135,7 +136,7 @@ export function authenticatedDevice(token: unknown) {
     throw new DevError("Reconnect this desktop.", 401);
   const db = getDb();
   const device = db
-    .prepare("SELECT id,user_id FROM devices WHERE token_hash=?")
+    .prepare("SELECT d.id,d.user_id FROM devices d JOIN users u ON u.id=d.user_id WHERE token_hash=? AND u.status='active'")
     .get(digest(token)) as { id: string; user_id: number } | undefined;
   if (!device)
     throw new DevError("This desktop was revoked. Connect again.", 401);

@@ -1,12 +1,21 @@
 ---
-import AppLayout from '../../layouts/AppLayout.astro';
+import ValleyLayout from '../../layouts/ValleyLayout.astro';
 import Icon from '../../components/Icon.astro';
 import {isDesktop} from '../../lib/dev/runtime.ts';
 if(!isDesktop())return new Response('Desktop setup is available in the app.',{status:404});
 Astro.response.headers.set('cache-control','no-store');
+// First run carries no app header, so the two things AppLayout does for the
+// desktop happen here: consume the one-shot restore cookie a native relaunch
+// set, and stamp the marker desktop-state.ts / macos-permissions.ts read.
+const me = Astro.locals.user!;
+const restoring = process.platform === 'darwin' && Astro.cookies.get('rimeward_ui_restore')?.value === '1';
+if (restoring) Astro.cookies.delete('rimeward_ui_restore', { path: '/' });
 ---
-<AppLayout title="Welcome to Rimeward" search={false}>
-  <main class="desktop-setup" data-setup={Astro.url.searchParams.has('setup')?'1':'0'} data-step="connect">
+<ValleyLayout title="Welcome to Rimeward" wide>
+  <Fragment slot="head">
+    {process.platform === 'darwin' && <meta name="fd-mac-user" content={String(me.userId)} data-restore={restoring ? '1' : undefined} />}
+  </Fragment>
+  <div class="desktop-setup w-full" data-setup={Astro.url.searchParams.has('setup')?'1':'0'} data-step="connect">
     <header class="setup-intro">
       <p class="setup-eyebrow"><span></span> YOUR WORKSPACE, CONNECTED</p>
       <h1>Make yourself at home.</h1>
@@ -41,11 +50,11 @@ Astro.response.headers.set('cache-control','no-store');
         <div><p class="setup-eyebrow">READY TO BUILD?</p><h2>Start right here.</h2></div>
         <p>Your files, terminals, and agents. One workspace on your computer, ready whenever you are.</p>
         <ul class="setup-features">
-          <li><Icon id="folder" /><span><strong>A home for your projects</strong><small>Open a folder or create something new.</small></span></li>
+          <li><Icon id="folder" /><span><strong>A Workspace for your files</strong><small>Choose folders and connect your tools with Leylines.</small></span></li>
           <li><Icon id="code" /><span><strong>Your tools, together</strong><small>Editor, terminal, browser, and agents.</small></span></li>
           <li><Icon id="sparkle" /><span><strong>Works on its own</strong><small>Keep working when your server is offline.</small></span></li>
         </ul>
-        <div class="setup-local-actions"><button class="btn" id="setup-project" aria-label="Open or create a project" type="button"><Icon id="plus" /> Open or create a project</button><button class="setup-text-button" id="setup-local" type="button">Continue without connecting <span aria-hidden="true">→</span></button></div>
+        <div class="setup-local-actions"><button class="btn" id="setup-workspace" aria-label="Add a Workspace" type="button"><Icon id="plus" /> Add a Workspace</button><button class="setup-text-button" id="setup-local" type="button">Continue without connecting <span aria-hidden="true">→</span></button></div>
       </section>
     </div>
     <section class="setup-card" aria-labelledby="computer-control-title">
@@ -62,7 +71,10 @@ Astro.response.headers.set('cache-control','no-store');
       <div id="computer-control-approvals" class="flex flex-col gap-2"></div>
       <div id="computer-access-policies" class="flex flex-col gap-3"></div>
     </section>
-    <p class="setup-footnote">Rime’s chats, memories, and agent files stay in sync. Project folders stay on this computer.<br />Your pages, settings, and Rime are one shared workspace.</p>
-  </main>
-  <script>import '../../scripts/app/desktop-setup.ts';</script>
-</AppLayout>
+    <p class="setup-footnote">Rime’s chats, memories, and workspace connections stay in sync. Folder contents stay on their original machines.<br />Unlinked tools start in Documents/Rimeward/workspace on this computer.</p>
+  </div>
+  <script>
+    import '../../scripts/app/desktop-setup.ts';
+    import '../../scripts/app/macos-permissions.ts';
+  </script>
+</ValleyLayout>

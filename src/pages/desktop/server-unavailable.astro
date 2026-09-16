@@ -1,0 +1,20 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+import { isDesktop } from '../../lib/dev/runtime.ts';
+if (!isDesktop()) return Astro.redirect('/account');
+Astro.response.headers.set('cache-control', 'no-store');
+---
+<AppLayout title="Server account unavailable — Rimeward" search={false}>
+  <section class="card mx-auto my-8 w-full max-w-2xl space-y-4 p-6">
+    <h1 class="section-title">Connected server account unavailable</h1>
+    <p>This Account page belongs to your connected server. Its editable settings are unavailable
+      until that connection is verified; this page has not switched to a different local account.</p>
+    <p>Your local provider connections and project tools remain separate and available.
+      Model access follows your selected policy, not this page's connectivity.</p>
+    <div class="flex flex-wrap gap-3">
+      <a class="btn-primary" href="/desktop/providers">Provider connections on this desktop</a>
+      <a class="btn" href="/account">Retry server account</a>
+      <a class="btn" href="/dash">Dashboard</a>
+    </div>
+  </section>
+</AppLayout>

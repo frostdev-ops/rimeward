@@ -87,6 +87,8 @@ function fresh(r: Row | undefined): Share | null {
     getDb().prepare('DELETE FROM shares WHERE id = ?').run(r.id);
     return null;
   }
+  // Every request inside a share runs as the owner, so suspending them must end the share too.
+  if (!getDb().prepare("SELECT 1 FROM users WHERE id = ? AND status = 'active'").get(r.owner_id)) return null;
   return fromRow(r);
 }
 

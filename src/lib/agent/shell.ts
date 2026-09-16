@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path, { posix } from 'node:path';
 import { Bash, InMemoryFs, MountableFs, OverlayFs, ReadWriteFs, defineCommand } from 'just-bash';
-import type { ResolvedCommandContext, SecureFetch } from 'just-bash';
+import type { IFileSystem, ResolvedCommandContext, SecureFetch } from 'just-bash';
 import { extractPdfText } from './docs.ts';
 import { docsDir, historyDir, workDir } from './history.ts';
 import { getSetting } from '../settings.ts';
@@ -114,7 +114,7 @@ async function vetHost(target: URL, allowLoopback = false): Promise<VettedAddres
  *  from the URL). */
 function request(
   target: URL,
-  options: { method: string; headers?: Record<string, string>; body?: string; timeoutMs: number; pinned: VettedAddress; signal?: AbortSignal; deadlineMs?: number; onChunk?: (chunk: Uint8Array, headers: Record<string, string>) => void }
+  options: { method: string; headers?: Record<string, string>; body?: string | Uint8Array; timeoutMs: number; pinned: VettedAddress; signal?: AbortSignal; deadlineMs?: number; onChunk?: (chunk: Uint8Array, headers: Record<string, string>) => void }
 ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: Uint8Array; location?: string }> {
   const mod = target.protocol === 'https:' ? https : http;
   const { address, family } = options.pinned;
@@ -183,7 +183,7 @@ function request(
     // A cancel tears the socket down; the promise rejects through 'error'.
     if (options.signal?.aborted) req.destroy(new Error('aborted'));
     else options.signal?.addEventListener('abort', onAbort, { once: true });
-    if (options.body) req.write(options.body);
+    if (options.body?.length) req.write(options.body);
     req.end();
   });
 }
@@ -199,7 +199,7 @@ function request(
  */
 export async function pinnedRequest(
   url: string,
-  options: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; signal?: AbortSignal; allowLoopback?: boolean; onChunk?: (chunk: Uint8Array, headers: Record<string, string>) => void }
+  options: { method?: string; headers?: Record<string, string>; body?: string | Uint8Array; timeoutMs?: number; signal?: AbortSignal; allowLoopback?: boolean; onChunk?: (chunk: Uint8Array, headers: Record<string, string>) => void }
 ): Promise<{ status: number; headers: Record<string, string>; text: string }> {
   const target = new URL(url);
   const pinned = await vetHost(target, options.allowLoopback === true);
@@ -255,9 +255,9 @@ const onViolation = (v: unknown) => console.warn('[shell] sandbox violation:', v
 /** js-exec's host-tool bridge: path "get_weather" for `tools.get_weather(…)`. */
 export type InvokeTool = (path: string, argsJson: string) => Promise<string>;
 
-function makeShell(userId: number, invoke?: InvokeTool): Bash {
+function makeShell(userId: number, invoke?: InvokeTool, workspace?: { fs: IFileSystem; cwd: string }): Bash {
   const network = shellNetworkEnabled(userId);
-  const fsys = new MountableFs({
+  const fsys = workspace?.fs ?? new MountableFs({
     base: new InMemoryFs(),
     mounts: [
       // mountPoint:'/' on the OverlayFs itself — it otherwise defaults to
@@ -270,8 +270,8 @@ function makeShell(userId: number, invoke?: InvokeTool): Bash {
 
   return new Bash({
     fs: fsys,
-    cwd: '/work',
-    env: { HOME: '/work', HISTORY: '/history', DOCS: '/docs' },
+    cwd: workspace?.cwd ?? '/work',
+    env: workspace ? { HOME: '/' } : { HOME: '/work', HISTORY: '/history', DOCS: '/docs' },
     // Full internet when enabled, through our own resolver check (see above).
     fetch: network ? vettedFetch : undefined,
     // just-bash's defense-in-depth blocks globals the TLS stack itself needs
@@ -319,8 +319,8 @@ export function fitOutput(stdout: string, stderr: string): { stdout: string; std
 
 /** Run one command line. Each call is a fresh shell over the same mounts —
  *  /work persists between calls because it is a real directory. */
-export async function runShell(userId: number, command: string, invoke?: InvokeTool, signal?: AbortSignal): Promise<ShellResult> {
-  const bash = makeShell(userId, invoke);
+export async function runShell(userId: number, command: string, invoke?: InvokeTool, signal?: AbortSignal, workspace?: { fs: IFileSystem; cwd: string }): Promise<ShellResult> {
+  const bash = makeShell(userId, invoke, workspace);
   const timeout = new AbortController();
   let result: { stdout?: unknown; stderr?: unknown; exitCode?: number };
   // The timer MUST be cleared: an un-cleared race timer keeps a handle alive for

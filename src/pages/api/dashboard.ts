@@ -1,5 +1,6 @@
 import type { APIRoute } from 'astro';
-import { getPages, saveDashboard } from '../../lib/dashboard.ts';
+import { getDashboard, getPages, saveDashboard } from '../../lib/dashboard.ts';
+import { isDeepStrictEqual } from 'node:util';
 import { broadcast, pruneUserLogic } from '../../lib/logic-engine.ts';
 import { validateLayout, validatePages, wardTitle } from '../../lib/wards.ts';
 import { isCommsType } from '../../lib/comms/types.ts';
@@ -7,6 +8,10 @@ import { getDb } from '../../lib/db.ts';
 import { getNoteMeta } from '../../lib/note.ts';
 import { ensureNotebook, linkNote, notebookIdOf } from '../../lib/notebook.ts';
 import { resolveShare } from '../../lib/shares.ts';
+import { preflightWorkspaceDashboard,completeWorkspaceDashboard } from '../../lib/dev/workspaces.ts';
+import { currentRuntimeId } from '../../lib/dev/workspaces.ts';
+import { WORKSPACE_CONSUMERS } from '../../lib/dev/workspace-contract.ts';
+import { recordLegacyAgentPlacement, publishAgentBirth } from '../../lib/dev/agent-placement.ts';
 
 export const prerender = false;
 
@@ -19,6 +24,23 @@ export const PUT: APIRoute = async ({ request, locals }) => {
   const layout = validateLayout(body?.layout, pages ?? getPages(locals.user!.userId));
   if (!layout) return Response.json({ error: 'invalid_layout' }, { status: 400 });
   const userId = locals.user!.userId;
+  const current = getDashboard(userId);
+  // Older editing tabs identify themselves with `from` but have no baseline. Refuse
+  // their replacement rather than silently downgrading concurrency protection.
+  // Legacy API callers may still seed layouts; they cannot change an existing agent's
+  // permission policy without supplying the snapshot they read.
+  if (body.base === undefined && (typeof body.from === 'string' || layout.some(w => w.type === 'agent' && current.some(old => old.i === w.i && old.type === 'agent' && (old.config?.permissions ?? 'normal') !== (w.config?.permissions ?? 'normal'))))) {
+    return Response.json({ error: 'Reload this client before changing the dashboard; a current layout snapshot is required.' }, { status: 409 });
+  }
+  // A full-layout edit is only authoritative over the snapshot the editor read.
+  // Keep both the stored dashboard and the unsaved client draft on a conflict.
+  if (body.base !== undefined) {
+    const basePages = validatePages(body.base?.pages);
+    const baseLayout = basePages && validateLayout(body.base?.layout, basePages);
+    if (!baseLayout || !isDeepStrictEqual(baseLayout, current) || !isDeepStrictEqual(basePages, getPages(userId))) {
+      return Response.json({ error: 'The dashboard changed elsewhere. Your draft has not been saved. Reload to review the current layout.' }, { status: 409 });
+    }
+  }
   // A shared ward or page names a share granted to THIS user. One that vanished
   // (revoked) stays, so its card can say so; one that is somebody else's is refused.
   const foreign = (id: unknown) => { const s = resolveShare(id); return !!s && s.grantee !== userId; };
@@ -30,7 +52,11 @@ export const PUT: APIRoute = async ({ request, locals }) => {
     return Response.json({ error: 'invalid_note_moves' }, { status: 400 });
   }
   const notebooks = new Set<string>();
+  const newAgents=layout.filter(w=>w.type==='agent'&&!current.some(old=>old.i===w.i)),birthRuntime=await currentRuntimeId(userId);
+  for(const ward of layout)if(!current.some(old=>old.i===ward.i)&&(WORKSPACE_CONSUMERS as readonly string[]).includes(ward.type))ward.workspaceVersion=1;
+  for(const ward of newAgents){if(birthRuntime==='server')delete ward.device;else ward.device=birthRuntime;}
   try {
+    await preflightWorkspaceDashboard(userId,layout);
     getDb().transaction(() => {
       for (const move of moves) {
         const w = layout.find(w => w.i === move.notebook && w.type === 'notebook')!;
@@ -42,7 +68,10 @@ export const PUT: APIRoute = async ({ request, locals }) => {
         notebooks.add(id);
       }
       saveDashboard(userId, layout, pages);
+      for(const ward of newAgents)recordLegacyAgentPlacement(userId,ward.i,birthRuntime);
     })();
+    await completeWorkspaceDashboard(userId);
+    for(const ward of newAgents)await publishAgentBirth(userId,ward.i,birthRuntime);
   } catch (err) {
     return Response.json({ error: err instanceof Error ? err.message : 'could not move the notepad' }, { status: 400 });
   }

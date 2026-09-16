@@ -33,6 +33,13 @@ export const GET:APIRoute = async ({ locals }) => {
 export const POST:APIRoute = async ({ locals,request }) => {
   try {
     const user = locals.user!.userId, body = await request.json();
+    if (body.target === 'server') {
+      if (!isDesktop() || !['download','cancel','unload'].includes(body.action)) throw Error('Choose a model setup action on the paired server.');
+      const endpoint = '/api/account/embeddings';
+      return await instanceRequest(user,endpoint,new Request(`https://rimeward.invalid${endpoint}`,{ method:'POST',headers:{ 'content-type':'application/json' },
+        body:JSON.stringify({ action:body.action,quantization:body.quantization }),signal:request.signal }));
+    }
+    if (body.target !== undefined && body.target !== 'local') throw Error('Unknown embedding setup target.');
     if (body.action === 'save') { const config = saveEmbeddingConfig(user,body.config); indexKnowledge(user); return Response.json({ config }); }
     if (body.action === 'rebuild') return Response.json(await rebuildKnowledge(user));
     if (body.action === 'unload') { await unloadEmbeddingModel(); return Response.json({ unloaded:true }); }

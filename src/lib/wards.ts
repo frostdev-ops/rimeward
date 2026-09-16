@@ -5,6 +5,7 @@
 import { FONTS, SCENE_IDS, normalizeWardTheme, type SceneId, type WardTheme } from './theme.ts';
 import { TARGETS, GROUP_TITLES as TARGET_GROUP_TITLES } from './targets.ts';
 import { ICON_NAME_RE, ICONS, type IconId } from './icon-names.ts';
+import { validateWorkspaceDefinition, WORKSPACE_CONSUMERS } from './dev/workspace-contract.ts';
 
 /** Reasoning effort an agent ward asks its model for (`config.effort`, default
  *  medium). `max` and `ultra` are what the newest codex models list; a model
@@ -66,6 +67,10 @@ export function fitWardSize(type: string, size: WardSize): WardSize {
 export const rowsOf = (w: WardInstance): number => sizeParts(w.size)[1];
 
 export interface WardInstance {
+  /** Filesystem placement schema, set by creation/migration rather than a user option. */
+  workspaceVersion?: 1;
+  /** A persistent Workspace Leyline. Missing targets stay blocked, never fall back to another folder. */
+  workspace?: string;
   /** Execution placement, managed by the app; never a user-facing mode. */
   device?: string;
   /** Instance id, [a-z0-9-]{1,32}, unique within a layout. */
@@ -142,10 +147,11 @@ export type Category = keyof typeof CATEGORIES;
 
 export const CATALOG: Record<string, CatalogEntry> = {
   'remote-desktop': { title: 'Remote Desktop', defaultSize: '6x4', icon: 'host', blurb: 'View and control one of your paired computers.', multi: true, configurable: true, category: 'rime', concepts: ['computer', 'screen', 'remote', 'desktop', 'monitor', 'control', 'sharing'], does: ['view computer screen', 'control mouse and keyboard', 'select display', 'hand control to Rime'] },
-  'project-files': { title: 'Project files', defaultSize: '2x3', icon: 'folder', blurb: 'Browse and search a desktop project.', multi: true, category: 'rime', concepts: ['project','folder','files','tree','workspace','search'], does: ['browse folders','create files','rename files'] },
-  editor: { title: 'Editor', defaultSize: '6x4', icon: 'code', blurb: 'Project files, code editing, linting, and recovery in one workspace.', multi: true, category: 'rime', concepts: ['code','text','file','editor','source','buffer','lint','vscode','explorer'], does: ['edit files','save changes','recover drafts','find problems','format code'] },
+  workspace: { title: 'Workspace', defaultSize: '3x3', icon: 'folder', blurb: 'Connect folders and agent instructions to your tools with Leylines.', multi: true, configurable: true, category: 'rime', concepts: ['workspace','folder','directory','mount','files','project','AGENTS.md','CLAUDE.md'], does: ['connect folders','select agent instructions','link terminals and editors','configure workspace locations'] },
+  'project-files': { title: 'Files', defaultSize: '2x3', icon: 'folder', blurb: 'Browse and search the folders in a workspace.', multi: true, category: 'rime', concepts: ['project','folder','files','tree','workspace','search'], does: ['browse folders','create files','rename files'] },
+  editor: { title: 'Editor', defaultSize: '6x4', icon: 'code', blurb: 'Edit workspace files with linting and recovery.', multi: true, category: 'rime', concepts: ['code','text','file','editor','source','buffer','lint','vscode','explorer'], does: ['edit files','save changes','recover drafts','find problems','format code'] },
   terminal: { share: 'view', title: 'Terminal', defaultSize: '3x3', icon: 'bot', blurb: 'A live shell, Codex, or Claude Code session on your desktop.', multi: true, category: 'rime', concepts: ['shell','console','terminal','codex','claude','command'], does: ['run commands','control sessions','inspect output'] },
-  changes: { title: 'Changes', defaultSize: '2x3', icon: 'folders', blurb: 'Git status, diffs, and worktrees for a desktop project.', multi: true, category: 'rime', concepts: ['git','diff','changes','worktree','branch','repository'], does: ['review changes','inspect status','manage worktrees'] },
+  changes: { title: 'Changes', defaultSize: '2x3', icon: 'folders', blurb: 'Git status, diffs, and worktrees in a workspace.', multi: true, category: 'rime', concepts: ['git','diff','changes','worktree','branch','repository'], does: ['review changes','inspect status','manage worktrees'] },
   weather: {
     share: 'view',
     title: 'Weather', defaultSize: '2x1', icon: 'weather', blurb: 'Now and 3 days for a place you pick; at 2x2 the next 24 hours and the week.', multi: true, configurable: true, category: 'glance',
@@ -978,6 +984,10 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
       if (raw.rule === true) out.rule = true;
       return out;
     }
+    case 'workspace': {
+      try { return { ...validateWorkspaceDefinition(raw) }; }
+      catch { return null; }
+    }
     case 'agent': {
       // Never null — bad values fall back to defaults (the ward always works).
       const out: Record<string, unknown> = {
@@ -985,6 +995,12 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
         tools: raw.tools === 'read-only' ? 'read-only' : 'all',
         approvals: raw.approvals === 'all' || raw.approvals === 'off' ? raw.approvals : 'outbound',
       };
+      // Coding CLIs this ward launches: read-only (plan / read-only sandbox), approvals (the CLI
+      // asks), normal (auto), yolo (skip all permissions). `tools` and `approvals` above govern
+      // Rime's OWN tool calls; this knob never changes those. Stored whenever the user picked a
+      // mode — normal included, so a pick can never be overridden by an inherited value; absent
+      // (blank in the dialog) inherits the paired server Rime's setting, else normal (ward-config.ts).
+      if (['read-only', 'approvals', 'normal', 'yolo'].includes(raw.permissions as string)) out.permissions = raw.permissions;
       if (out.provider === 'compat' && typeof raw.endpoint === 'string' && ENDPOINT_NAME_RE.test(raw.endpoint)) out.endpoint = raw.endpoint;
       if (typeof raw.model === 'string') {
         const model = raw.model.trim();
@@ -1025,7 +1041,7 @@ export function validateLayout(raw: unknown, pages?: PageDef[]): WardInstance[] 
   const out: WardInstance[] = [];
   for (const item of raw) {
     if (typeof item !== 'object' || item === null) return null;
-    const { i, type, size, title, hidden, theme, font, config, in: parent, page, device } = item as Record<string, unknown>;
+    const { i, type, size, title, hidden, theme, font, config, in: parent, page, device, workspace, workspaceVersion } = item as Record<string, unknown>;
     if (typeof i !== 'string' || !ID_RE.test(i) || seen.has(i)) return null;
     if (typeof type !== 'string' || !CATALOG[type]) return null;
     const placement = typeof device === 'string' && /^[a-f0-9-]{36}$/.test(device) ? device : '';
@@ -1035,6 +1051,11 @@ export function validateLayout(raw: unknown, pages?: PageDef[]): WardInstance[] 
     seen.add(i);
     seenTypes.add(uniqueType);
     const w: WardInstance = { i, type, size: fitWardSize(type, size as WardSize) };
+    if (workspaceVersion === 1 && (WORKSPACE_CONSUMERS as readonly string[]).includes(type)) w.workspaceVersion = 1;
+    if (workspace !== undefined) {
+      if (typeof workspace !== 'string' || !ID_RE.test(workspace) || !(WORKSPACE_CONSUMERS as readonly string[]).includes(type)) return null;
+      w.workspace = workspace;
+    }
     if (typeof device === 'string' && /^[a-f0-9-]{36}$/.test(device)) w.device = device;
     if (typeof title === 'string' && title.trim() && title.length <= 60) w.title = title.trim();
     if (hidden === true) w.hidden = true;
@@ -1056,6 +1077,8 @@ export function validateLayout(raw: unknown, pages?: PageDef[]): WardInstance[] 
   // Nesting is one level: a pointer at anything but a container (a removed
   // one, a plain ward, a container itself) lifts the ward to the top level.
   const groups = new Set(out.filter((w) => w.type === 'container').map((w) => w.i));
+  // Reject a wrong-type target; a missing target is retained for recovery and shown as unavailable.
+  for (const w of out) if (w.workspace && out.some(target => target.i === w.workspace && target.type !== 'workspace')) return null;
   for (const w of out) if (w.in !== undefined && (w.type === 'container' || !groups.has(w.in))) delete w.in;
   // Pages: a nested ward follows its group; a ward on a page that no longer
   // exists self-heals to the first page, which is what an absent `page` means.

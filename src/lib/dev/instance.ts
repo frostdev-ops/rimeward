@@ -6,6 +6,7 @@ import { TARGETS, GROUP_TITLES } from '../targets.ts';
 import { parseTheme } from '../theme.ts';
 import { DEFAULT_LAYOUT, DEFAULT_PAGES, pageOf, validateLayout, validatePages, type PageDef, type WardInstance } from '../wards.ts';
 import { isDesktop, workDb } from './runtime.ts';
+import { validateWorkspaceDefinition } from './workspace-contract.ts';
 
 export const INSTANCE_KEY = 'instance/dashboard';
 export interface InstanceDashboard {
@@ -67,7 +68,7 @@ export function installInstance(user: number, raw: unknown) {
 }
 
 /** Join once: the server supplies Home; preserve custom desktop wards and every project. */
-export function mergeInstance(server: InstanceDashboard, local: InstanceDashboard, device: string, keep = new Set<string>()) {
+export function mergeInstance(server: InstanceDashboard, local: InstanceDashboard, device: string, keep = new Set<string>(), localRuntimeId?: string) {
   server = validateInstance(server);
   local = validateInstance(local);
   const pages = [...server.pages], layout = [...server.layout];
@@ -91,26 +92,42 @@ export function mergeInstance(server: InstanceDashboard, local: InstanceDashboar
     if (!w.config) return {};
     const cfg = { ...w.config };
     for (const k of w.type === 'note' ? ['note'] : w.type === 'notebook' ? ['notebook'] : []) if (typeof cfg[k] === 'string' && wardIds.has(cfg[k] as string)) cfg[k] = wardIds.get(cfg[k] as string);
+    if (w.type === 'workspace' && localRuntimeId && localRuntimeId !== device) {
+      const definition = validateWorkspaceDefinition(cfg);
+      if (definition.mounts.some(m => m.runtimeId === localRuntimeId)) return { config: { ...definition, revision: definition.revision + 1, mounts: definition.mounts.map(m => m.runtimeId === localRuntimeId ? { ...m, runtimeId: device } : m) } };
+    }
     return { config: cfg };
   };
   for (const w of imported) layout.push({ ...w, i: wardIds.get(w.i) ?? w.i, device: w.type === 'remote-desktop' ? w.device : device,
-    page: pageIds.get(pageOf(w, local.pages, local.layout)), ...(w.in ? { in: wardIds.get(w.in) } : {}), ...refs(w) });
+    page: pageIds.get(pageOf(w, local.pages, local.layout)), ...(w.in ? { in: wardIds.get(w.in) } : {}), ...(w.workspace ? { workspace: wardIds.get(w.workspace) ?? w.workspace } : {}), ...refs(w) });
   return { dashboard: validateInstance({ ...server, pages, layout }), wardIds };
 }
 
 /** Re-key existing local content only when a pre-pairing ward id collides. */
 export async function moveLocalWardState(user: number, ids: Map<string, string>) {
   const db = getDb();
+  const { wardBusy } = await import('../agent/core.ts');
+  for (const [before, after] of ids) if (before !== after) {
+    const running = db.prepare("SELECT 1 FROM agent_jobs WHERE user_id=? AND ward=? AND state IN ('running','stopping') LIMIT 1").get(user, before);
+    const approval = db.prepare('SELECT 1 FROM agent_conversations WHERE user_id=? AND ward=? AND active=1 AND pending_confirm_id IS NOT NULL LIMIT 1').get(user, before);
+    if (wardBusy(user, before) || running || approval) throw Error('Finish active agent work and pending approvals before pairing colliding ward identities. Your current sessions are preserved.');
+  }
   for (const [before, after] of ids) {
     if (before === after) continue;
     const { rekeySession } = await import('../browser/session.ts');
     await rekeySession(user, before, after);
     db.transaction(() => {
-      for (const table of ['notes', 'timers', 'packets', 'agent_conversations', 'agent_wakes', 'agent_inbox', 'comms_messages', 'agent_tasks', 'agent_jobs']) {
+      for (const table of ['notes', 'timers', 'packets', 'agent_conversations', 'agent_wakes', 'agent_inbox', 'comms_messages', 'agent_tasks', 'agent_jobs', 'agent_placements', 'agent_placement_receipts', 'agent_placement_directory', 'terminal_placements', 'terminal_placement_views']) {
         const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
         if (!columns.some(c => c.name === 'user_id')) continue;
         for (const field of ['ward', 'tile', 'sender']) if (columns.some(c => c.name === field))
           db.prepare(`UPDATE ${table} SET ${field}=? WHERE user_id=? AND ${field}=?`).run(after, user, before);
+      }
+      for (const conv of db.prepare('SELECT id FROM agent_conversations WHERE user_id=? AND ward=?').all(user, after) as { id: number }[]) {
+        const key = `agent_workspace:${conv.id}`, raw = getSetting(key);
+        if (raw && raw !== 'null') {
+          const binding = JSON.parse(raw); if (binding.consumerWardId === before) setSetting(key, JSON.stringify({ ...binding, consumerWardId: after }));
+        }
       }
       // A notebook keyed by that ward id, the notes filed in it, and the search index rows of a re-keyed document follow.
       db.prepare('UPDATE notebooks SET id=? WHERE user_id=? AND id=?').run(after, user, before);

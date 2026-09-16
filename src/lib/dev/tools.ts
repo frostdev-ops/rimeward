@@ -26,15 +26,19 @@ import {
   restartSession,
   listSessions,
   readSession,
-  writeSession,
+  inputSession,
+  commandObservation,
+  commandSession,
   waitSession,
   interruptSession,
   closeSession,
   configureSession,
   executable,
 } from "./terminals.ts";
+import { answerCli, cliPermissions, decideCli } from './cli-bridge.ts';
 import { fitOutput } from "../agent/shell.ts";
 import { applyProjectPatch } from './apply-patch.ts';
+import { PATCH_EDIT_GUIDANCE } from './patch.ts';
 import { deviceTool, agentDevices } from './tool-routing.ts';
 import { computerStatus, computerScreenshot, computerInput, computerApp } from './computer.ts';
 const str = (description: string) => ({ type: "string", description });
@@ -214,7 +218,7 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ),
   terminal_start: wrap(
     "write",
-    "Reuse an interactive shell, Codex, or Claude Code session in a project, restoring its saved tab if needed. Set newSession:true only when a separate session is wanted. Initial task instructions apply only to new sessions. Read the screen before sending input: a reused session may already be busy, or a restored CLI may show its native conversation picker. Let Rime control is on by default, so you and the user can type in the same session; off blocks only Rime input. Use terminal_exec for routine commands. Never install CLIs or guess credentials. Review output and changes before declaring completion.",
+    "Reuse an interactive shell, Codex, or Claude Code session in a project, restoring its saved tab if needed. Set newSession:true only when a separate session is wanted. Initial task instructions apply only to new sessions. Read the screen before sending input: a reused session may already be busy, or a restored CLI may show its native conversation picker. Let Rime control is on by default, so you and the user can type in the same session; off blocks only Rime input. A Claude Code or Codex session you launch runs with this ward's Coding CLI permissions (read-only, approvals, normal, yolo — the user sets them; you cannot widen them, a saved session you restart is capped at them, and a session already running keeps the mode it started with — check session.mode); its permission requests, questions and completion arrive as notices (session.phase reports waiting-permission / waiting-input / done), and you answer a permission request with terminal_decide. A session a person started from the terminal ward has no coordinator: its prompts show at the terminal, not to you. Such a CLI also has rime_status, rime_ask and rime_report tools of its own; a rime_ask question arrives as a notice and is answered with terminal_answer. Use terminal_exec for routine commands. Never install CLIs or guess credentials. Review output and changes before declaring completion.",
     schema(
       {
         ...context,
@@ -233,15 +237,46 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
         const sessions = listSessions(c.userId, a.project).filter(s => !s.command && s.kind === a.kind);
         const existing = a.session ? sessions.find(s => s.id === a.session) : sessions.find(s => s.state === "running") ?? sessions[0];
         if (a.session && !existing) throw new Error("Session not found in this project for this program.");
-        if (existing) return restartSession(c.userId, existing.id);
+        if (existing) return restartSession(c.userId, existing.id, cliPermissions(c.userId, c.ward, c.cli));
       }
       return startSession(c.userId, {
         project: a.project,
         kind: a.kind,
         task: a.task,
         assignment: a.assignment,
-        mode: "human",
+        // The ward's Coding CLI permissions as they stand, never wider than this run started with.
+        mode: cliPermissions(c.userId, c.ward, c.cli),
+        origin: { ward: c.ward, conv: c.conv },
       });
+    },
+  ),
+  terminal_answer: wrap(
+    "write",
+    "Answer a coding CLI's open rime_ask question (from a waiting-input notice). The CLI blocks on it for up to 30 minutes, then proceeds on its own judgment.",
+    schema(
+      { ...session, question: str("Question id from the notice"), answer: str("Your answer; be concrete") },
+      ["runtime", "session", "question", "answer"],
+    ),
+    (a, c) => {
+      if (!answerCli(c.userId, a.session, a.question, a.answer)) throw new Error("No such open question (it may have timed out or been answered).");
+      return { answered: true, question: a.question };
+    },
+  ),
+  terminal_decide: wrap(
+    "write",
+    "Decide a coding CLI's parked permission request (from a waiting-permission notice). Deny when unsure; the CLI waits up to 30 minutes for the decision.",
+    schema(
+      {
+        ...session,
+        request: str("Permission request id from the notice"),
+        decision: { type: "string", enum: ["allow", "deny"] },
+        reason: str("Short reason shown to the CLI (optional)"),
+      },
+      ["runtime", "session", "request", "decision"],
+    ),
+    (a, c) => {
+      if (!decideCli(c.userId, a.session, a.request, a.decision, a.reason)) throw new Error("No such pending permission request (it may have timed out or been decided).");
+      return { decided: a.decision, request: a.request };
     },
   ),
   terminal_exec: {
@@ -253,7 +288,7 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
         c.signal?.throwIfAborted();
         const shell = process.platform === 'win32' ? executable('pwsh') || executable('powershell') : '/bin/sh';
         if (!shell) throw Error('PowerShell is not installed.');
-        const session = await startSession(c.userId, { project: a.project, kind: 'shell', mode: 'human', shell,
+        const session = await startSession(c.userId, { project: a.project, kind: 'shell', mode: cliPermissions(c.userId, c.ward, c.cli), shell,
           command: a.command, task: a.command, title: a.title || 'Rime command' });
         const stop = () => { if (listSessions(c.userId).some(s => s.id === session.id && s.state === 'running')) void closeSession(c.userId, session.id, 'cancelled'); };
         c.signal?.addEventListener('abort', stop, { once: true });
@@ -283,11 +318,11 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   },
   terminal_read: wrap(
     "read",
-    "Inspect the current rendered terminal screen (plain text) and session state; session.sequence advances with output. Empty output or an idle screen does not prove a task completed. Unknown permission screens require attention. raw:true adds the ordered raw terminal bytes (escape sequences included) — large; use only to inspect exact output.",
+    "Inspect the current rendered terminal screen (plain text) and session state; session.sequence advances with output. For a CLI Rime launched, session.phase reports waiting-permission / waiting-input / done and session.lastMessage its last reply. A recognized empty Claude Code/Codex prompt also returns commandInput.observation for one terminal_command within 30 seconds; otherwise commandInput explains why it is not ready. Empty output or an idle screen does not prove a task completed. Unknown permission screens require attention. raw:true adds the ordered raw terminal bytes (escape sequences included) — large; use only to inspect exact output.",
     schema({ ...session, after: { type: "number" }, raw: { type: "boolean", description: "Include raw ordered output bytes since after (default false: rendered screen only)" }, review: { type: "boolean", description: "Read the durable task review and evidence as paginated JSON text instead of terminal output" }, cursor: { type: "number", description: "Review continuation from next" } }, ["runtime", "session"]),
     (a, c) => {
       const result = rendered(readSession(c.userId, a.session, a.after, a.review === true), a.raw);
-      if (!a.review) return result;
+      if (!a.review) return { ...result, commandInput: commandObservation(c.userId, a.session, owner(c)) };
       const all = JSON.stringify({ review: result.session.review, evidence: result.session.evidence });
       const cursor = Math.max(0, Math.floor(Number(a.cursor)) || 0);
       let text = all.slice(cursor, cursor + 9000);
@@ -312,18 +347,26 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ), backgroundable: true, cancellable: true },
   terminal_input: wrap(
     "write",
-    "Send exact input to a session with Let Rime control on (agentInput:true, the default). If off, the user can turn on the terminal's toggle; no restart or separate handoff is needed. Read the latest screen first. Never blindly replay uncertain input or guess approval keys; turning the toggle off stops Rime input.",
+    "Insert text and send it with one Enter by default (send:true). Prefer terminal_command for Claude Code/Codex slash commands: it requires a fresh one-use observation and avoids pasting commands as prose. Read the latest screen first; Let Rime control must be on (agentInput:true). send:false writes exact raw input without adding Enter; supplied control keys still act. Pure control/mixed control sequences stay raw, without an extra Enter. A trailing CR on ordinary text is submitted once, not twice. Multiline text needs bracketed-paste support. Receipts report PTY writes and whether Enter was written or withheld, not CLI acceptance or task completion. Never replay uncertain input or guess approval keys. Sending does not authorize prompt approval; turning the toggle off stops Rime input.",
     schema(
       {
         ...session,
-        data: str("Exact text / control characters; Enter is carriage return"),
+        data: str("Text to insert; send defaults true. For exact text/control bytes use send:false; Enter is carriage return (\\r)."),
+        send: { type: "boolean", default: true, description: "Insert ordinary text then press Enter once (default true). false writes exact raw data with no added key; embedded CR/LF/control keys can still submit or act." },
       },
       ["runtime", "session", "data"],
     ),
-    (a, c) => {
-      writeSession(c.userId, a.session, owner(c), a.data);
-      return { sent: true };
-    },
+    (a, c) => inputSession(c.userId, a.session, owner(c), a.data, a.send, c.signal),
+  ),
+  terminal_command: wrap(
+    "confirm",
+    "Submit one supported Claude Code/Codex slash command using commandInput.observation from a fresh terminal_read. Requires an empty recognized CLI prompt and Let Rime control. Observations expire after 30 seconds and are consumed once; any other input/output invalidates them. Sends command text without bracketed paste, then one Enter only if the exact command is still at the prompt. Never clears drafts, answers approvals/questions, navigates menus, or assumes acceptance. Inspect terminal_read afterward; do not replay uncertain or withheld input. Use only a command shown by this CLI or explicitly supplied by the user, with authorization for its effects. Interactive shells are refused.",
+    schema({
+      ...session,
+      observation: str("One-use commandInput.observation from terminal_read on this session."),
+      command: str("One native slash command, optionally followed by arguments, e.g. /help. No raw keys, tabs or newlines."),
+    }, ["runtime", "session", "observation", "command"]),
+    (a, c) => commandSession(c.userId, a.session, owner(c), a.observation, a.command, c.signal),
   ),
   terminal_interrupt: wrap(
     "write",
@@ -397,12 +440,55 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
   ),
 };
 
+function workspaceParameters(def: ToolDef, extra: Record<string, unknown> = {}) {
+  const p = def.parameters as { properties: Record<string, unknown>; required?: string[] };
+  return schema({ ...Object.fromEntries(Object.entries(p.properties).filter(([k]) => !['runtime', 'project', 'device'].includes(k))), ...extra },
+    (p.required ?? []).filter(k => !['runtime', 'project', 'device'].includes(k)));
+}
+function workspaceCall(operation: string): ToolDef['run'] {
+  return async (args, ctx) => {
+    if (!ctx.workspace) throw Error('This call has no workspace binding. Start a new turn in the workspace.');
+    if (!['tree', 'read', 'search', 'git', 'terminal-list', 'terminal-read', 'terminal-wait', 'patch-status'].includes(operation) && ctx.mayMutate && !ctx.mayMutate()) throw Error('This run is now read-only. No mutation was dispatched.');
+    if (['runtime', 'project', 'device', 'rootId', 'workspace', 'binding'].some(k => k in args)) throw Error('Workspace tools use the current binding. Omit project, runtime, device and root overrides.');
+    const { workspaceOperation } = await import('./workspaces.ts');
+    return workspaceOperation(ctx.userId, ctx.workspace, operation, { ...args, cli: ctx.cli,
+      ...(operation.startsWith('terminal-') ? { mode: cliPermissions(ctx.userId, ctx.ward, ctx.cli) } : {}),
+      origin: { ward: ctx.ward, conv: ctx.conv } }, owner(ctx), ctx.signal);
+  };
+}
+const cwd = str('Virtual workspace directory, default /. Native commands run on that folder’s host with its real OS cwd.');
+const WORKSPACE_TOOLS: Record<string, ToolDef> = {
+  workspace_read: { kind: 'read', description: 'Read files, list folders, search text, or inspect Git changes in the bound workspace. Paths are virtual; / is the primary folder and /name selects another mount. File pages use from/lines and next/nextColumn; directory/search/Git pages use cursor. Read current context before applying a focused patch.',
+    parameters: workspaceParameters(LOCAL_DEV_TOOLS.project_read as ToolDef),
+    run: (a, c) => workspaceCall(({ files: 'tree', file: 'read', search: 'search', git: 'git' } as Record<string, string>)[a.operation] ?? 'invalid')(a, c) },
+  workspace_edit: { kind: 'write', description: `Replace an entire recovery buffer; save:true writes it. Read every page first and supply the current revision. For targeted disk edits use apply_patch. ${PATCH_EDIT_GUIDANCE}`,
+    parameters: workspaceParameters(LOCAL_DEV_TOOLS.project_edit as ToolDef), run: async (a, c) => {
+      const result = await workspaceCall('edit')({ ...a, create: a.revision === 0 }, c) as Record<string, unknown>;
+      return { path: result.path, revision: result.revision, dirty: result.dirty, saved: a.save === true && !result.dirty && !result.conflict, conflict: result.conflict, readonly: result.readonly, ownerRuntimeId: result.ownerRuntimeId };
+    } },
+  apply_patch: { kind: 'confirm', inputFormat: 'text', description: `${PATCH_EDIT_GUIDANCE} Send *** Begin Patch / *** End Patch with Add/Update/Delete File, @@ hunks, optional Move to and End of File. Matching tries exact, trailing-whitespace, trimmed, then limited Unicode normalization; first match in the strongest pass wins. Replacement text is literal. Paths are virtual. All files preflight before writes; dirty/other-owned buffers abort. Recovery copies and bounded saved/revision/hash receipts are retained. Cross-mount moves use workspace_transfer. I/O failures may be partial. Up to 20 operations, 1 MiB patch text.`,
+    parameters: workspaceParameters(LOCAL_DEV_TOOLS.apply_patch as ToolDef), run: workspaceCall('patch') },
+  workspace_transfer: { kind: 'confirm', backgroundable: true, cancellable: true, description: 'Copy or move regular files or directories between workspace folders. Same-root directory moves rename the tree. Other directory transfers inventory at most 1000 entries and 100 MiB total, with 5 MiB per file; the entire destination is verified before deleting any source file. Existing destinations, links and Git metadata are refused. Paths are virtual. Inspect partial/uncertain receipts with workspace_receipt. Use background:true for long transfers.',
+    parameters: schema({ source: str('Source virtual path'), destination: str('Destination virtual path'), mode: { type: 'string', enum: ['copy', 'move'] } }, ['source', 'destination', 'mode']), run: workspaceCall('transfer') },
+  workspace_receipt: { kind: 'read', description: 'Inspect a patch or transfer by operation_id after a partial result, disconnection or restart. Omit the ID to find the ten most recent receipts when a response was lost. Reads the same mounted hosts and never replays an operation. Inspect current files before repeating an uncertain mutation.',
+    parameters: schema({ operation_id: str('operationId returned by apply_patch or workspace_transfer; omit to find recent receipts'), path: str('Optional virtual path selecting a mounted folder for paged receipts'), cursor: { type: 'integer', minimum: 0, description: 'Follow next to read more phase receipts in that mounted folder' } }), run: workspaceCall('patch-status') },
+  workspace_worktree: { kind: 'write', description: 'Create or remove a Rimeward Git worktree for a workspace folder. Dirty worktrees are never force removed.',
+    parameters: workspaceParameters(LOCAL_DEV_TOOLS.project_worktree as ToolDef, { cwd }), run: workspaceCall('worktree') },
+  ...Object.fromEntries(Object.entries(LOCAL_DEV_TOOLS).filter(([name]) => name.startsWith('terminal_')).map(([name, def]) => [name, {
+    ...def,
+    description: `${def.description.replaceAll('desktop project', 'workspace folder').replaceAll('project', 'workspace')}${name === 'terminal_exec' || name === 'terminal_start' ? ` ${PATCH_EDIT_GUIDANCE}` : ''}`,
+    parameters: workspaceParameters(def, { ...(name === 'terminal_start' || name === 'terminal_exec' ? { cwd } : {}), sessionRuntimeId: str('Owning runtime from this session’s receipt, when supplied. Must belong to the bound workspace.') }),
+    run: workspaceCall(name === 'terminal_close' ? 'terminal-stop' : name.replace('terminal_', 'terminal-')),
+  }])),
+};
+
 export const DEV_TOOLS: Record<string, ToolDef> = {
   list_devices: { kind: 'read', description: 'List computers paired to this Rimeward account with their IDs, names, platforms and live connection state. Use an explicit device ID on native tools to choose a computer. local means the desktop hosting this chat; it is unavailable on a server. Keep project/session IDs paired with their device. Never substitute another computer when the intended one is offline.', parameters: schema({}), run: (_, c) => agentDevices(c.userId) },
-  ...Object.fromEntries(Object.entries(LOCAL_DEV_TOOLS).map(([name, def]) => {
+  ...Object.fromEntries(Object.entries(LOCAL_DEV_TOOLS).filter(([name]) => !name.startsWith('project_') && !name.startsWith('desktop_') && name !== 'apply_patch' && !name.startsWith('terminal_')).map(([name, def]) => {
     const parameters = def.parameters as { properties: Record<string, unknown> };
     return [name, { ...def, parameters: { ...parameters, properties: { ...parameters.properties,
       device: str('Computer ID from list_devices. Omit or local for the desktop hosting this chat; required on the server.') } },
       run: (args: Record<string, unknown>, ctx: ToolCtx) => deviceTool(name, args, ctx, def.run) }];
   })),
+  ...Object.fromEntries(Object.entries(WORKSPACE_TOOLS).map(([name, tool]) => [name, { ...tool, requiresWorkspace: true }])),
 };

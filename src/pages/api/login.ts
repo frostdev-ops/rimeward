@@ -1,13 +1,16 @@
+import { config } from '../../lib/app-config.ts';
 import type { APIRoute } from 'astro';
 import { SESSION_COOKIES, createSession, sessionCookieOptions, afterLogin } from '../../lib/auth.ts';
 import { getUserByEmail, verifyUserPassword } from '../../lib/users.ts';
+import { clientIp } from '../../lib/net-guard.ts';
 
 export const prerender = false;
 
 // 5 failures / 15 min per IP+email. In-memory: a pm2 restart resets it, which
-// is fine — this blunts scripts, not nation-states. Behind a reverse proxy the
-// address is the proxy's, so the key is effectively the email alone: stricter
-// than trusting X-Forwarded-For without a trusted-proxy list, and enough.
+// is fine — this blunts scripts, not nation-states. The IP half is clientIp(),
+// which reads the proxy's forwarded header only when the peer is loopback:
+// behind nginx clientAddress is 127.0.0.1 for every visitor, so the key would
+// otherwise be the email alone.
 const failures = new Map<string, { n: number; at: number }>();
 const WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILS = 5;
@@ -40,15 +43,16 @@ function recordFailure(key: string): void {
 }
 
 export const POST: APIRoute = async ({ request, cookies, redirect, clientAddress }) => {
+  if (config('PASSWORD_LOGIN') !== 'true') return redirect('/login?err=disabled',303);
   const form = await request.formData();
   const email = String(form.get('email') ?? '').trim().toLowerCase();
   const password = String(form.get('password') ?? '');
-  const key = `${clientAddress}:${email}`;
+  const key = `${clientIp(request, clientAddress)}:${email}`;
 
   if (throttled(key)) return redirect('/login?err=throttled', 303);
 
   const user = email ? getUserByEmail(email) : null;
-  if (!user || !verifyUserPassword(user.id, password)) {
+  if (!user || user.status !== 'active' || password.length > 1024 || !verifyUserPassword(user.id, password)) {
     recordFailure(key);
     return redirect('/login?err=1', 303);
   }

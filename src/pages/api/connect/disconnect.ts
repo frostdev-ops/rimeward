@@ -1,3 +1,5 @@
+import { zohoAccountsBase } from '../../../lib/connect.ts';
+import { disconnectBrokerConnection } from '../../../lib/broker-client.ts';
 import type { APIRoute } from 'astro';
 import { getLink, deleteLink, getMeta, type Provider } from '../../../lib/linked-accounts.ts';
 import { openToken } from '../../../lib/crypto.ts';
@@ -26,7 +28,7 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
   }
   if (link && provider === 'zoho') {
     try {
-      const base = String(getMeta(link).accounts_base ?? 'https://accounts.zoho.com');
+      const base = zohoAccountsBase(String(getMeta(link).accounts_base ?? 'https://accounts.zoho.com'));
       await fetch(`${base}/oauth/v2/token/revoke?token=${encodeURIComponent(openToken(link.refresh_token_enc))}`, {
         method: 'POST',
         signal: AbortSignal.timeout(10_000),
@@ -34,6 +36,7 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     } catch {}
   }
 
+  if(link && getMeta(link).broker) await disconnectBrokerConnection(userId,provider).catch(()=>{});
   deleteLink(userId, provider);
   return redirect('/account?ok=disconnected', 303);
 };

@@ -1,0 +1,20 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+import { isDesktop } from '../../lib/dev/runtime.ts';
+if (!isDesktop()) return Astro.redirect('/account#agent');
+Astro.response.headers.set('cache-control', 'no-store');
+---
+<AppLayout title="Provider connections — Rimeward" search={false}>
+  <div class="mx-auto w-full max-w-3xl px-4 py-6" data-providers>
+    <h1 class="section-title mb-1">Provider connections</h1>
+    <p class="mb-4 text-xs text-ink-muted">
+      This page always belongs to this desktop, online or not. Each card below names the installation
+      whose connection it changes. Connecting, disconnecting or replacing a credential on one card
+      never touches the other, never unpairs this desktop and never signs a coding CLI in or out.
+    </p>
+    <p id="providers-status" role="status" aria-live="polite" class="text-xs"></p>
+    <section id="providers-access" class="card mb-4 p-4"></section>
+    <div id="providers-cards" class="grid gap-4"></div>
+  </div>
+  <script>import '../../scripts/app/desktop-providers.ts';</script>
+</AppLayout>

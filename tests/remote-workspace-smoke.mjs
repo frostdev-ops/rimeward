@@ -1,5 +1,6 @@
 // Built-app handoff test: isolated desktop, independent server, HTTPS relay,
 // desktop and phone browser clients. No real accounts or model requests.
+import { addWorkspaceUi, workspaceToolsPage } from './workspace-ui-fixture.mjs';
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -415,7 +416,7 @@ try {
   const copy=await localRequest('/api/agent/history?conflict='+savedConflict.id);
   assert.match(Buffer.from(JSON.parse(copy.payload),'base64').toString(),/desktop offline edit/);
   assert.equal((await (await pc.request.get(origin+'/api/store/memory/offline-new')).json()).body,'created offline');
-  // A terminal without a project exposes the same project creation dialog.
+  // Unlinked terminals work in the default folder; an explicit Workspace changes the folder.
   const isolated = await desktopPage.evaluate(async () => {
     const d = await fetch("/api/runtime").then((r) => r.json());
     const r = await fetch("/api/dashboard", {
@@ -434,41 +435,16 @@ try {
   assert.equal(isolated, 200);
   await desktopPage.reload();
   const terminalCard = desktopPage.locator('[data-wd="terminal-empty"]');
-  await terminalCard
-    .getByRole("button", { name: "Open / new project" })
-    .click();
-  await desktopPage
-    .getByRole("button", { name: "New project", exact: true })
-    .click();
-  await desktopPage
-    .getByRole("textbox", { name: "Project name", exact: true })
-    .fill("terminal-created");
-  assert.ok(await desktopPage.locator(".dev-project-dialog").evaluate(el=>parseFloat(getComputedStyle(el).paddingLeft)>=16), "project dialog keeps its padding");
-  await desktopPage.screenshot({path:"/tmp/rimeward-project-picker.png",animations:"disabled"});
-  await desktopPage
-    .getByRole("textbox", { name: "Parent folder", exact: true })
-    .fill(temporary);
-  await desktopPage
-    .getByRole("button", { name: "Create project", exact: true })
-    .click();
+  await terminalCard.getByRole('button', { name: 'Default workspace', exact: true }).waitFor();
+  await addWorkspaceUi(desktopPage, path.join(temporary, 'terminal-created'), { name: 'Terminal-created workspace', create: true, wards: ['terminal-empty'] });
   await terminalCard.getByRole("button", { name: "Open terminal", exact: true }).waitFor();
   assert.ok(fs.existsSync(path.join(temporary, "terminal-created")));
-  // Exercise the button itself instead of bypassing it through the API.
-  await desktopPage
-    .getByRole("button", { name: "Open project", exact: true })
-    .click();
-  await desktopPage
-    .getByRole("textbox", { name: "Project folder", exact: true })
-    .fill(project);
-  await desktopPage.getByRole("dialog", { name: "Open a project" })
-    .getByRole("button", { name: "Open project", exact: true })
-    .click();
-  await desktopPage.waitForURL(u=>u.pathname.endsWith("/dash")&&u.hash.startsWith("#p="));
-  const preset = { page: new URL(desktopPage.url()).hash.slice(3) };
+  const preset = await workspaceToolsPage(desktopPage);
+  await addWorkspaceUi(desktopPage, project, { name: 'Remote workspace', wards: preset.wardIds });
   const rime=desktopPage.locator('[data-wd-type=agent]:not([data-wd-off])');
   const rimeId=await rime.getAttribute('data-wd');
   const rimeState=await localRequest('/api/agent/'+rimeId);
-  assert.equal(rimeState.provider,'codex','new project Rime inherits the server provider');
+  assert.equal(rimeState.provider,'codex','the linked Rime ward inherits the server provider');
   assert.equal(rimeState.configured,true,'server auth needs no second local login');
   await rime.getByRole('button',{name:'Expand chat',exact:true}).click();
   const expandedRime=desktopPage.locator('#agent-dialog');

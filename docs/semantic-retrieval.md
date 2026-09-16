@@ -1,27 +1,31 @@
 # Retrieval and background monitors
 
-Rime keeps seven bootstrap tools: `search_tools`, `search_knowledge`,
-`read_knowledge`, `ask_user_question`, `task_list`, `task_output`, and
-`task_cancel`. Before responding to each new user message, it preloads up to
-five additional tools from the raw message (up to 2,000 characters). User input
-arriving mid-turn is processed before the next model request. Monitor wakes and
-agent notifications reuse the retained set without automatic selection.
+Rime sends all permitted built-in and available MCP tools on the first request,
+sorted by name. Long built-in descriptions have authored provider summaries;
+parameter schemas and the registry's full reference remain intact. `search_tools`
+returns up to ten matching references with parameter details and never changes
+the callable catalog. Old retained-tool rows remain compatible but no longer
+gate availability.
 
-Preloading shares a two-second deadline across concurrent MCP catalog connections
-and hybrid retrieval. Timeout or retrieval failure falls back to keyword matches
-against available definitions. Stop cancels preparation; late results cannot
-change a request already in flight. A preparation status appears as
-“Loading relevant tools…”; no tool is executed by preloading.
+MCP initialization completes before inference, using the existing connection
+timeouts and turn cancellation. Unavailable servers produce a visible notice.
+Every round rechecks current definitions and permissions. Reasons, approvals,
+routing, workspace restrictions and MCP revision checks still apply. The complete
+catalog counts toward the context budget; an oversized instruction/catalog prefix
+is rejected before compaction. Provider-specific catalog limits may also reject a
+request; tools are never silently dropped to fit.
 
-Automatic matches and explicit `search_tools` results are retained as names in
-`agent_conversation_tools`, independently of compactable replay. New messages do
-not unload tools, and restart/compaction preserve the set. Every request resolves
-current schemas and permissions; unavailable tools are omitted without forgetting
-their names. A new or imported conversation starts fresh. Forks copying history
-also copy the retained names; independently spawned children start fresh. There
-is no total tool-count limit or silent eviction: schemas count toward the normal
-context budget. Reasons, approvals, routing, sandbox restrictions and MCP
-revision checks still apply. Explicit search loads at most ten schemas per call.
+Standing notes, application rules, persona and selected workspace instructions
+remain in the instruction block. Retrieved memories/skills and current child
+status are appended as a labeled application-context item at each turn boundary
+and persisted before inference. Historical context replays unchanged. These items
+are reference data, not authorization; they neither create transcript messages nor
+advance image retention. Both wire dialects strip the internal context marker.
+
+Cache read and write counts are optional: missing is distinct from zero. Bounded
+model-call diagnostics record usage and instruction/tool SHA-256 fingerprints,
+never prompt text. Permission/schema/instruction changes, compaction, image expiry,
+model/routing changes and provider cache policies can still reduce reuse.
 
 Search for `agent_help`, then select a topic: `general` (default), `computer`,
 `browser`, `sandbox`, `wards`, `leylines`, `memory`, or `delegation`. Use `all`
@@ -37,8 +41,8 @@ notepads, notebook text, transcripts, extracted attachment text and tool metadat
 are indexed per owner. Project files, raw images and untranscribed ink are not.
 Search reconciles changes and rechecks source revisions before returning
 excerpts. Rebuilding deletes derived data only. Standing notes remain in every
-prompt, with up to five memory/skill excerpts within an estimated 2,000 tokens;
-named skills are looked up independently of embeddings.
+prompt. Turn context includes up to five memory/skill excerpts within an estimated
+2,000 tokens; named skills are looked up independently of embeddings.
 
 Account → Agent → Semantic retrieval selects either the self-hosted
 Qwen3-Embedding-8B model or a cloud provider (OpenAI API, OpenRouter). The
@@ -48,7 +52,12 @@ and each query uses the first one that answers, so a laptop going offline hands
 over to the next computer without any change of settings. Every runtime in the
 list serves the same model variant; a runtime that fails is skipped for thirty
 seconds, an offline desktop costs nothing. The selection is stored per runtime:
-a server has its own list, and a server can host the model itself (Account →
+a server has its own list. Until a list is saved, it tries its own model then
+its owner's paired desktops (up to seven); each desktop still enforces inference
+sharing and the requested model variant. Saving a list makes that selection
+explicit, including local-only or disabled desktops. Relayed inference allows
+the same two-minute model startup and batch deadline as local inference.
+A server can host the model itself (Account →
 Semantic retrieval installs the pinned llama.cpp build into its data directory
 and downloads the weights). Cloud providers are never switched to automatically;
 they are a different vector profile. Cloud providers use the existing sealed
@@ -61,6 +70,13 @@ Settings separate provider selection from the current search status. Save and
 discard appear only for unsaved changes; downloads, cancellation and unloading
 appear only when applicable. Active downloads show their own progress, including
 when selecting another provider. Index rebuilding is under **Index maintenance**.
+Computer switches enable each host; arrow buttons set the order in which enabled
+hosts are tried. Each host shows its availability beneath its name. The separate
+sharing switch lets paired computers use this computer's model.
+In the desktop app, the paired server's row can install its runtime and the
+selected model variant in one click, with download progress, cancellation and
+setup errors shown there. The server must also be enabled in the priority list
+to serve this desktop's searches. Installation does not change saved priorities.
 The status identifies setup, download, indexing, ready, unloaded and offline
 states. Model files live in application data and survive application updates.
 
@@ -99,10 +115,28 @@ separate from `source.intervalSeconds`, which paces polling.
 Terminal sources observe rendered screen rows, never raw bytes: after each output
 flush the headless terminal's viewport, plus exactly the rows that flush scrolled
 above it, is read back, and only rows not in the previous frame or on screen in the
-last 5 s are emitted. Rows compare by exact text; only Claude Code / Codex status
-chrome (a spinner-led row, or one carrying "esc to interrupt") has its frame glyph
-and counters normalized, so spinner ticks, timers and status-bar repaints drop while
-new progress, questions, results, failures and exit state pass. Long bursts arrive
+last 5 s are emitted. Rows compare by exact text. For Claude Code / Codex sessions
+(never a shell) recognized chrome is dropped by shape, not by word: the activity
+spinner (a frame glyph, one gerund, an ellipsis, optionally a parenthetical of short
+metadata such as elapsed, token counts, "esc to interrupt" or "running stop hook"),
+counter-only rows, box-border and logo rows, the empty prompt and its placeholder, the
+mode and effort lines, slash-command completion rows, the exit hint and the status bar;
+a right-aligned session-status trailer ("+17 files edited before this session", "No
+changes this session") is cut off the row it decorates. A running tool call's
+per-second counter ("⏺ Reading the file · 21s") and its command preview's ("⎿ $ cmd
+(8s)") are left out of the row's identity only, so the first appearance is emitted and
+the ticks are not; every other digit stays significant. A viewport row that is still
+being written (the same screen row, its text edited at the tail: a prompt being typed,
+a line streaming in) is held until it has stood for 1.5 s (8 s for the prompt row, which
+is also held a beat on its first appearance) or scrolled off, and dropped if it vanished
+first; a row that is a piece of a row seen in the last minute is a repaint fragment and is
+dropped too. The ❯ that marks a menu's selected row is not part of a row's identity, so
+arrowing through a menu repaints nothing. A "rows scrolled out of view" line is added only
+when the scrollback was actually full; a CLI clearing its screen on exit loses nothing. A burst is read after 300 ms
+of quiet (at most 2 s after its first new row), and a row caught mid-paint is dropped
+when the row it became is queued behind it or on screen. Menus, approval choices and a
+draft left sitting in the prompt stay visible. `ops/monitor-harness.mjs` replays a real
+recording through this pipeline. Long bursts arrive
 as several 16 kB pages; rows that scrolled out of an unretained buffer before they
 were read add an explicit "rows scrolled out of view" line. `terminal_read` and
 `terminal_wait` return the rendered screen by default (an exited session's retained
@@ -142,6 +176,6 @@ The [prompt/tool comparison](validation/tool-token-comparison.json) uses the sam
 empty account fixture against commit `96fd0dc`: 122 tool schemas and about 33,077
 estimated tokens become seven schemas and 2,429 tokens (92.7% less), before any
 retrieved passages or explicitly named skills. This historical comparison predates
-automatic preloading and conversation retention; current requests also include
-retained and newly selected tool schemas. These are estimates, not provider
-billing/tokenizer measurements.
+the complete stable catalog. The current 134 built-ins estimate 29,070 tokens with
+provider summaries, versus 33,763 with full descriptions. These are estimates, not
+provider billing/tokenizer measurements or measured cache-hit rates.

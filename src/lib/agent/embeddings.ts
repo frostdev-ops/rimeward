@@ -11,7 +11,11 @@ const timings = new Map<number,{ profile:string; provider:string; runtime:string
 export function embeddingTiming(user:number) { return timings.get(user) ?? null; }
 
 export function embeddingConfig(user: number): EmbeddingConfig {
-  try { return parseEmbeddingConfig(JSON.parse(getSetting(`embedding:${user}`) ?? 'null')); } catch { return { ...DEFAULT_EMBEDDING, runtimes:[...DEFAULT_EMBEDDING.runtimes] }; }
+  const saved = getSetting(`embedding:${user}`);
+  // Before priorities are saved, a server may borrow its owner's shared desktops.
+  // Explicit selections (including local-only) keep their meaning; sharing is checked by the host.
+  if (!saved && !isDesktop()) return { ...DEFAULT_EMBEDDING,runtimes:['local',...listDevices(user).slice(0,7).map(d => d.id)] };
+  try { return parseEmbeddingConfig(JSON.parse(saved ?? 'null')); } catch { return { ...DEFAULT_EMBEDDING, runtimes:[...DEFAULT_EMBEDDING.runtimes] }; }
 }
 export function saveEmbeddingConfig(user: number, raw: unknown): EmbeddingConfig {
   const config = parseEmbeddingConfig(raw); setSetting(`embedding:${user}`,JSON.stringify(config)); return config;

@@ -3,10 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAttachment, attachmentDataUrl } from './attachments.ts';
 import { appendTurn, historyDir } from './history.ts';
-import { dialectOf, providerDialect, type AgentProvider, type AgentProviderId, type Dialect } from './provider.ts';
+import { dialectOf, providerDialect, runModel, type AgentProvider, type AgentProviderId, type Dialect } from './provider.ts';
 import { estimateTokens, type ContextUsage } from './context.ts';
 import { retireMonitors } from './monitors.ts';
 import { knowledgeChanged } from './observation-events.ts';
+import { getSetting } from '../settings.ts';
 
 // The agent's memory, per (user, ward). Two views of one conversation:
 //   agent_messages — what the ward renders
@@ -33,6 +34,13 @@ export interface ConvRow {
   pending_confirm_id: string | null;
   /** Set on a child run's thread (the agent_jobs id); null on a ward's own threads. */
   task_id: string | null;
+  /** The model this thread last ran on (validated, as sent to the provider); null = not recorded. */
+  model: string | null;
+  /** compat: the normalized base URL of the backend this thread ran against, captured at its first
+   *  run; null = not recorded. The endpoint NAME is only an alias for it. */
+  endpoint_url: string | null;
+  /** Physical coordinator that owns this conversation. Copies receive their own local owner. */
+  owner_runtime_id: string | null;
 }
 
 export interface AgentStep {
@@ -50,8 +58,10 @@ export interface AgentStep {
   ms?: number;
 }
 
-/** What produced a turn. 'chat' = the user typed it; the others ran unattended. */
-export type TurnSource = 'chat' | 'automation' | 'wake' | 'agent';
+/** What produced a turn. 'chat' = the user typed it; the others ran unattended.
+ *  'monitor' also marks a monitor's own user-role rows (its observations, its stop
+ *  notice), which the client folds into activity rather than drawing as the user. */
+export type TurnSource = 'chat' | 'automation' | 'wake' | 'agent' | 'monitor';
 
 export interface TranscriptMsg {
   role: 'user' | 'assistant';
@@ -63,6 +73,16 @@ export interface TranscriptMsg {
 
 export function getConversation(id: number): ConvRow | null {
   return (getDb().prepare('SELECT * FROM agent_conversations WHERE id = ?').get(id) as ConvRow | undefined) ?? null;
+}
+
+export function stampConversationOwner(conversation: number, runtimeId: string): void {
+  const current = getConversation(conversation);
+  if (!current) throw Error('Conversation unavailable.');
+  let owner = current.owner_runtime_id;
+  const seen = new Set<string>();
+  while (owner && owner !== runtimeId && !seen.has(owner)) { seen.add(owner); const alias = getSetting(`agent-runtime-alias:${current.user_id}:${owner}`); if (!alias) break; owner = alias; }
+  if (owner && owner !== runtimeId) throw Error('A conversation cannot change its owning runtime.');
+  getDb().prepare('UPDATE agent_conversations SET owner_runtime_id=? WHERE id=? AND owner_runtime_id IS NULL').run(runtimeId, conversation);
 }
 
 export function conversationTools(conv: Pick<ConvRow, 'id' | 'user_id' | 'ward'>): string[] {
@@ -138,6 +158,24 @@ export function copyItems(from: number, to: number): number {
   })();
 }
 
+/** Record what a thread is being run on — at a run's start and at every set_model switch. The
+ *  endpoint URL is the compat backend's own identity, not the alias name (accounts.ts); it is written
+ *  once, on the first stamp that knows it, so a later repoint of the alias cannot rewrite history. */
+export function stampConversationModel(conversationId: number, model: string, endpointUrl?: string | null): void {
+  const db = getDb();
+  if (model) db.prepare('UPDATE agent_conversations SET model=? WHERE id=? AND model IS NOT ?').run(model, conversationId, model);
+  if (endpointUrl) db.prepare('UPDATE agent_conversations SET endpoint_url=? WHERE id=? AND endpoint_url IS NULL').run(endpointUrl, conversationId);
+}
+
+/** The transcript half of a copy (agent_messages, timestamps kept) — the same ownership boundary
+ *  as copyItems; the disk mirror already holds these lines under the source thread. */
+export function copyTranscript(from: number, to: number): number {
+  const db = getDb();
+  const ok = db.prepare('SELECT a.id FROM agent_conversations a JOIN agent_conversations b ON b.id = ? WHERE a.id = ? AND a.user_id = b.user_id AND a.ward = b.ward').get(to, from);
+  if (!ok) throw new Error('copy refused: the source thread is not this ward’s own');
+  return db.prepare('INSERT INTO agent_messages (conversation_id, role, text, steps_json, source, at) SELECT ?, role, text, steps_json, source, at FROM agent_messages WHERE conversation_id = ? ORDER BY id').run(to, from).changes;
+}
+
 /** A user message in the shape a thread's dialect stores — for filing a note
  *  into a thread without loading its provider. */
 export const userItemFor = (dialect: Dialect, text: string): unknown =>
@@ -199,14 +237,14 @@ export function transcript(conversationId: number, limit = 60): TranscriptMsg[] 
 
 /** Both dialects mark a user turn this way (codex adds type:'message'). */
 const isUserMsg = (it: any): boolean =>
-  it?.role === 'user' && (it.type === 'message' || it.type === undefined);
+  it?.role === 'user' && !it.applicationContext && (it.type === 'message' || it.type === undefined);
 
 /** A tool RESULT in either dialect. The compaction boundary must never land on
  *  one: its call would go into the summary, the output would stay in the tail
  *  as an orphan, and repairItems would then delete the orphan — leaving the
  *  result in neither half. */
 const isToolOutput = (it: any): boolean =>
-  it?.type === 'function_call_output' || (it?.role === 'tool' && !!it.toolCallId);
+  it?.type === 'function_call_output' || it?.type === 'custom_tool_call_output' || (it?.role === 'tool' && !!it.toolCallId);
 
 /** Image bytes live in the attachment store, not in five copies of the thread.
  *  Image parts carry a file_id (codex dialect) / fileId (openrouter) that the
@@ -358,9 +396,11 @@ export async function compactIfNeeded(
   }
   if (!plain.trim()) return false;
 
-  const result = await provider.run({
+  const result = await runModel(provider, {
     userId: conv.user_id,
     model,
+    // Compaction reads this thread's own text: the same backend pin the turn itself runs under.
+    ...(conv.endpoint_url ? { backend: conv.endpoint_url } : {}),
     instructions:
       'You are compacting the earlier part of a dashboard-assistant conversation so it can be carried forward in less space. ' +
       'Write a dense factual brief, no preamble. Cover: what the user asked for, what was actually changed (wards, ' +
@@ -389,7 +429,7 @@ export async function compactIfNeeded(
   const summary = provider.userItem(
     `[Earlier in this conversation, compacted. The transcript is at /history/${conv.id}.md; ` +
       `the full original items removed by compaction are at /history/${conv.id}.compacted.jsonl — ` +
-      `search it with the bash tool if you need a detail that is not here.]\n\n${result.text}`
+      `search it with bash scope:"knowledge" if you need a detail that is not here.]\n\n${result.text}`
   );
   const json = JSON.stringify(summary);
   // Folding has to actually pay for itself. Without this, a conversation whose
@@ -450,7 +490,8 @@ function summarisable(item: unknown): string {
 
   // Tool traffic first, in both dialects.
   if (it.type === 'function_call') return `tool ${it.name}(${cap(it.arguments)})`;
-  if (it.type === 'function_call_output') return `result: ${cap(it.output)}`;
+  if (it.type === 'custom_tool_call') return `tool ${it.name}(${cap(it.input)})`;
+  if (it.type === 'function_call_output' || it.type === 'custom_tool_call_output') return `result: ${cap(it.output)}`;
   if (it.role === 'tool') return `result: ${cap(it.content)}`;
 
   const lines: string[] = [];

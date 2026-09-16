@@ -34,15 +34,29 @@ const theme = parseTheme(Astro.locals.user?.theme ?? null);
     <slot name="head" />
   </head>
   <body class="min-h-screen bg-surface-2 text-ink">
+    {/* The other half of the splash/valley gate: arrive through the dive and
+        the page starts covered in light, then fades out. Every page has it —
+        the dive lands on /login, on a wizard step, or on /dash. */}
+    <div id="gate-flash"></div>
+    <script is:inline>
+      try {
+        if (sessionStorage.getItem('fd-gate') === '1') {
+          sessionStorage.removeItem('fd-gate');
+          if (!matchMedia('(prefers-reduced-motion: reduce)').matches)
+            document.getElementById('gate-flash')?.classList.add('flash-out');
+        }
+      } catch {}
+    </script>
     <slot />
     {/* Upgrades every <select> on the page, whenever it arrives. */}
     <SearchSelect />
     <script>
       // The three.js background, when the saved theme asks for one. Reads what
       // themeHtmlAttrs stamped on <html>; three arrives lazily inside, so
-      // flat/aurora/image users download none of it. (Splash and login never
-      // get here: both are public routes, so locals.user — and the theme — is
-      // undefined and nothing is stamped.)
+      // flat/aurora/image users download none of it. (Public pages stamp
+      // nothing — locals.user, and so the theme, is undefined. A valley page
+      // that IS signed in, like /desktop/start, is declined inside: the
+      // terrain is that page's backdrop.)
       import { bootBackground } from '../scripts/app/background.ts';
       bootBackground();
     </script>

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 import { ensureFreshTokens } from './codex.ts';
-import { accountMeta, getAgentAccount } from './accounts.ts';
+import { accountMeta, getAgentAccount, credentialGeneration } from './accounts.ts';
 import { getDashboard } from '../dashboard.ts';
 import { getDb } from '../db.ts';
 import { limitDeviceAuth } from '../dev/device-auth.ts';
@@ -36,6 +36,7 @@ interface Lease {
   providerExpiresAt: number;
   heartbeat: number;
   account: string;
+  generation: string;
   socket?: WebSocket;
   closing?: Promise<boolean>;
   closed: boolean;
@@ -82,6 +83,7 @@ function validateSdp(sdp: unknown): asserts sdp is string {
 function stillAuthorized(user: number, lease: Lease) {
   const account = getAgentAccount(user, 'codex');
   return !!account && accountMeta(account).account_id === lease.account &&
+    credentialGeneration(user, 'codex') === lease.generation &&
     getDashboard(user).some(w => w.i === lease.ward && w.type === 'agent') &&
     (!lease.principal.startsWith('device:') || !!getDb().prepare('SELECT 1 FROM devices WHERE id=? AND user_id=?').get(lease.principal.slice(7), user));
 }
@@ -152,7 +154,7 @@ export async function shutdownVoice() {
 }
 
 /** Only signaling and lease control. Audio and transcript events never run agent tools. */
-export async function voiceAction(user: number, ward: string, principal: string, body: VoiceAction): Promise<VoiceReply> {
+export async function voiceAction(user: number, ward: string, principal: string, body: VoiceAction, credential?: string): Promise<VoiceReply> {
   if (body.action !== 'start') {
     const lease = leases.get(user);
     if (!lease) {
@@ -178,7 +180,9 @@ export async function voiceAction(user: number, ward: string, principal: string,
   if ((previous && !previous.closed && previous.providerExpiresAt > Date.now()) || Number(getSetting(leaseKey(user))) > Date.now()) throw fail('Voice is active in another view, or its previous call may still be active. Wait for it to close before starting again.', 409);
   previous?.socket?.terminate();
   if (!getAgentAccount(user, 'codex')) throw fail('Connect ChatGPT under Account → Agent to use voice.', 503);
-  const lease: Lease = { id: randomUUID(), owner: body.owner, principal, ward, expiresAt: Date.now() + LEASE_MS, providerExpiresAt: Date.now() + PROVIDER_EXPIRY_MS, heartbeat: Date.now(), account: '', closed: false, ready: false };
+  const generation = credentialGeneration(user, 'codex');
+  if (credential && credential !== generation) throw fail('ChatGPT connection changed before voice admission.', 409);
+  const lease: Lease = { id: randomUUID(), owner: body.owner, principal, ward, expiresAt: Date.now() + LEASE_MS, providerExpiresAt: Date.now() + PROVIDER_EXPIRY_MS, heartbeat: Date.now(), account: '', generation, closed: false, ready: false };
   leases.set(user, lease);
   setSetting(leaseKey(user), String(lease.providerExpiresAt));
   ensureSweep();
@@ -186,6 +190,8 @@ export async function voiceAction(user: number, ward: string, principal: string,
   try {
     const tokens = await ensureFreshTokens(user).catch(() => { throw fail('ChatGPT login expired or unavailable. Reconnect under Account → Agent.', 401); });
     if (!tokens.account_id || !tokens.access_token) throw fail('Reconnect ChatGPT under Account → Agent to use voice.', 401);
+    if (tokens.credential !== generation || credentialGeneration(user, 'codex') !== generation)
+      throw fail('ChatGPT connection changed while voice was starting. Nothing was sent to its replacement.', 409);
     lease.account = tokens.account_id;
     const headers = {
       Authorization: `Bearer ${tokens.access_token}`, 'chatgpt-account-id': tokens.account_id,

@@ -44,7 +44,11 @@ On first connection the server supplies the shared dashboard and Rime profile; e
 
 **Chat history → Continue here** creates a continuation on the current runtime while preserving the original conversation. Attachments and history can follow; pending actions and native processes do not. Check the originating task if something was already running before launching it again.
 
-The first connected server supplies Rime's default profile/provider access. Ward-specific choices still apply. For new model calls during a server outage, configure a local provider in the desktop independently.
+One connected server is **designated** for Rime's shared profile and provider access; the first one you connect becomes it. Removing that server does not promote another into account or model authority — nothing is designated until you choose a replacement on **Provider connections**, so a second workspace connection can never silently start serving and billing your conversations. Other pairings remain workspace connections.
+
+Ward-specific choices still apply. Which connection serves a model call is set on that page (*Automatic — connected server preferred*, *This runtime only*, or *Connected server only*) and is stored on the runtime that owns the run, never synchronized. For new model calls during a server outage under Automatic, configure a local provider in the desktop independently; under *Connected server only* the turn fails and says so rather than using a local credential.
+
+Dashboard synchronization and model access are reported separately: a note or conversation format your server cannot carry yet pauses that sync without moving model calls to a different account.
 
 ## Understand outages
 

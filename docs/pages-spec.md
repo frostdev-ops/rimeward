@@ -1,12 +1,12 @@
 # Pages — spec (draft 1, 2026-09-03)
 
-> Workspace extension, 2026-09-06: each runtime owns its own pages and layout. A page may
-> reference a default `project` ID. **Open project** reuses that project's editor page or
-> creates an ordinary page containing Editor, Terminal, and Changes; it is not a new page
-> type. Development wards inherit the page project unless configured explicitly. Editor
-> includes a left file explorer; a separate Project files ward remains optional. Native
-> processes and recovery data stay on the desktop when a page/view detaches. Remote clients
-> operate that runtime through `/runtime/<device>/…`, with no server-side layout replica.
+> Workspace extension, 2026-09-13: Workspace wards supply filesystem context through
+> explicit `WardInstance.workspace` Leylines. Pages organize the shared dashboard and do
+> not select a consumer's folder or execution runtime. The legacy `project` metadata is
+> retained only while its original runtime completes migration. Workspace definitions
+> sync as opaque root references; physical paths, credentials, buffers and native sessions
+> remain on their owning machines. Existing sessions retain their owner when viewed on a
+> different device. Editor includes a left file explorer; Files is available separately.
 > See [development workspaces](development-workspaces.md) for the current implementation.
 
 > Status 2026-09-03: shipped, all phases. Deviations: the list editor lives in
@@ -88,9 +88,13 @@ interface PageDef { id: string; title: string; icon?: IconId; project?: string }
 
 ### 3.1 Tabs
 - A tab strip under the app header (`.app-pages`), one chip per page, the
-  active one underlined with the accent. Right-click a tab: Rename, Move left /
-  right, Delete. A `+` chip at the end adds a page (name prompt inline, no
-  dialog). Hidden when there is one page.
+  active one underlined with the accent. Right-click a tab — or focus it and
+  press Shift+F10 / the ContextMenu key — for Rename, Move left / right,
+  Delete. Tabs drag-to-reorder with mouse or pen; touch pans the strip
+  natively and reorders through the long-press menu. A release never switches
+  the page (a shared page cannot become the first), and an armed drag's click
+  is always swallowed — by gesture identity, never a timer, so a drag cancelled mid-gesture stays suppressed until its own release; keyboard activation (Enter / Space) is never swallowed. A `+` chip at the end adds a page (name prompt inline,
+  no dialog). Hidden when there is one page.
 - URL: `/dash#p=<id>` (hash, so SSR is unaffected and back/forward work).
   Last page per device in `localStorage` `fd-page`, applied on boot if the URL
   has none.

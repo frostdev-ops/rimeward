@@ -2,10 +2,12 @@
 # image per `vX.Y.Z` tag — what `rimeward update` and `docker compose pull`
 # install. Published straight away: the same job type-checked, tested and
 # built the exact bytes it uploads.
+# dev/<version> pushes build and validate without publishing images or releases.
 name: Rimeward server
 
 on:
   push:
+    branches: ['dev/**']
     tags: ['v[0-9]*']
   workflow_dispatch:
 
@@ -25,6 +27,8 @@ jobs:
       IMAGE: ghcr.io/${{ github.repository }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
@@ -38,6 +42,9 @@ jobs:
           version=$(node -p "require('./package.json').version")
           if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
             echo "tag $GITHUB_REF_NAME does not match package.json v$version" >&2; exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "stamp=v$version ${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"

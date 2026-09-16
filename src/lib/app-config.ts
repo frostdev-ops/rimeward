@@ -1,0 +1,311 @@
+import { isDesktop } from "./dev/runtime.ts";
+import { getDb } from "./db.ts";
+import { getSetting, setSetting, deleteSetting } from "./settings.ts";
+import { sealToken, openToken } from "./crypto.ts";
+import { adminCount } from "./users.ts";
+
+type Field = {
+	label: string;
+	group: string;
+	default: string;
+	secret?: boolean;
+	choices?: readonly string[];
+	restart?: boolean;
+};
+export const CONFIG = {
+	PUBLIC_BASE_URL: {
+		label: "Public URL",
+		group: "Installation",
+		default: "http://localhost:4321",
+	},
+	REGISTRATION_POLICY: {
+		label: "Registration",
+		group: "Sign-in & Registration",
+		default: "invite",
+		choices: ["invite", "approval", "open"],
+	},
+	PASSWORD_LOGIN: {
+		label: "Password login",
+		group: "Sign-in & Registration",
+		default: "true",
+		choices: ["true", "false"],
+	},
+	SSO_WORKSPACE_DOMAIN: {
+		label: "Allowed SSO domains (comma separated)",
+		group: "Sign-in & Registration",
+		default: "",
+	},
+	GOOGLE_SSO_ENABLED: {
+		label: "Google sign-in enabled",
+		group: "Sign-in & Registration",
+		default: "true",
+		choices: ["true", "false"],
+	},
+	MS_SSO_ENABLED: {
+		label: "Microsoft sign-in enabled",
+		group: "Sign-in & Registration",
+		default: "false",
+		choices: ["true", "false"],
+	},
+	GOOGLE_CLIENT_ID: { label: "Google client ID", group: "OAuth Integrations", default: "" },
+	GOOGLE_CLIENT_SECRET: {
+		label: "Google client secret",
+		group: "OAuth Integrations",
+		default: "",
+		secret: true,
+	},
+	MS_CLIENT_ID: { label: "Microsoft client ID", group: "OAuth Integrations", default: "" },
+	MS_CLIENT_SECRET: {
+		label: "Microsoft client secret",
+		group: "OAuth Integrations",
+		default: "",
+		secret: true,
+	},
+	MS_TENANT_ID: {
+		label: "Microsoft tenant",
+		group: "OAuth Integrations",
+		default: "common",
+	},
+	NOTION_CLIENT_ID: { label: "Notion client ID", group: "OAuth Integrations", default: "" },
+	NOTION_CLIENT_SECRET: {
+		label: "Notion client secret",
+		group: "OAuth Integrations",
+		default: "",
+		secret: true,
+	},
+	ZOHO_CLIENT_ID: { label: "Zoho client ID", group: "OAuth Integrations", default: "" },
+	ZOHO_CLIENT_SECRET: {
+		label: "Zoho client secret",
+		group: "OAuth Integrations",
+		default: "",
+		secret: true,
+	},
+	SMTP_HOST: { label: "SMTP host", group: "Email", default: "" },
+	SMTP_PORT: { label: "SMTP port", group: "Email", default: "587" },
+	SMTP_SECURE: {
+		label: "Implicit TLS (port 465)",
+		group: "Email",
+		default: "false",
+		choices: ["true", "false"],
+	},
+	SMTP_USER: { label: "SMTP username", group: "Email", default: "" },
+	SMTP_PASSWORD: {
+		label: "SMTP password",
+		group: "Email",
+		default: "",
+		secret: true,
+	},
+	SMTP_FROM: { label: "Sender email", group: "Email", default: "" },
+	BROWSER_PROFILES: {
+		label: "Browser profile directory (blank uses app data)",
+		group: "Runtime",
+		default: "",
+		restart: true,
+	},
+	BROWSER_MAX_SESSIONS: {
+		label: "Maximum browser sessions",
+		group: "Runtime",
+		default: "3",
+		restart: true,
+	},
+	RIMEWARD_RTC_VIEWERS: {
+		label: "Maximum browser viewers",
+		group: "Runtime",
+		default: "4",
+	},
+	OAUTH_USE_BROKER: {
+		label: "Use an external broker on this server",
+		group: "OAuth Integrations",
+		default: "false",
+		choices: ["true", "false"],
+	},
+	OAUTH_BROKER_URL: {
+		label: "Optional OAuth broker URL",
+		group: "OAuth Integrations",
+		default: "https://frostdev.io",
+	},
+} satisfies Record<string, Field>;
+export type ConfigKey = keyof typeof CONFIG;
+export function config(key: ConfigKey): string {
+	if (key === "PUBLIC_BASE_URL" && isDesktop())
+		return process.env.PUBLIC_BASE_URL ?? CONFIG.PUBLIC_BASE_URL.default;
+	const field: Field = CONFIG[key];
+	const stored = getSetting(`config:${key}`);
+	if (stored !== null) return field.secret ? openToken(stored) : stored;
+	// Upgrade the old plaintext secret slot transactionally on first use.
+	const legacy = getSetting(`secret:${key}`);
+	if (legacy !== null) {
+		getDb().transaction(() => {
+			setSetting(`config:${key}`, field.secret ? sealToken(legacy) : legacy);
+			deleteSetting(`secret:${key}`);
+		})();
+		return legacy;
+	}
+	return process.env[key]?.trim() || field.default;
+}
+export function configuredOrigin(): string | undefined {
+	if (
+		process.env.PUBLIC_BASE_URL ||
+		getSetting("config:PUBLIC_BASE_URL") !== null
+	)
+		return publicOrigin();
+	return undefined;
+}
+export function publicOrigin(): string {
+	return config("PUBLIC_BASE_URL").replace(/\/$/, "");
+}
+export function audit(actor: number | null, event: string, target = "") {
+	getDb()
+		.prepare("INSERT INTO auth_audit(actor,event,target) VALUES(?,?,?)")
+		.run(actor, event, target.slice(0, 200));
+}
+export function configView(key: ConfigKey) {
+	const field: Field = CONFIG[key],
+		value = config(key);
+	return {
+		key,
+		...field,
+		value: field.secret ? "" : value,
+		configured: !!value,
+		source:
+			getSetting(`config:${key}`) !== null
+				? "saved"
+				: process.env[key]
+					? "environment"
+					: "default",
+	};
+}
+export function saveConfig(
+	key: ConfigKey,
+	value: string | null,
+	actor: number | null,
+) {
+	const field: Field = CONFIG[key];
+	if (!field) throw new Error("Unknown setting");
+	if (key === "PUBLIC_BASE_URL" && isDesktop())
+		throw new Error("The desktop owns its local URL");
+	// Differential like the guard below: with nobody able to sign in there is no
+	// administrator left to lock out, and this is the repair path.
+	if (
+		key !== "PASSWORD_LOGIN" &&
+		config("PASSWORD_LOGIN") === "false" &&
+		adminCount() > 0 &&
+		(key.startsWith("GOOGLE_") ||
+			key.startsWith("MS_") ||
+			key === "SSO_WORKSPACE_DOMAIN")
+	)
+		throw new Error(
+			"Re-enable password login before changing the configured sign-in methods",
+		);
+	if (value !== null) {
+		value = value.trim();
+		if (
+			key === "PASSWORD_LOGIN" &&
+			value === "false" &&
+			!getSetting("identity_admin_verified")?.startsWith(`${actor}:`)
+		)
+			throw new Error(
+				"Sign in successfully as an administrator with an alternate method before disabling passwords",
+			);
+		if (value.length > 8192) throw new Error("Setting is too long");
+		if (field.choices && !field.choices.includes(value))
+			throw new Error("Invalid setting value");
+		// Blank stores "": publicOrigin() is then "" and allowedOrigin() refuses every
+		// non-loopback form post, including the one that would repair it. A null reset is
+		// fine, it falls back to env or the default, neither of which is blank.
+		if (key === "PUBLIC_BASE_URL" && !value)
+			throw new Error("The public URL is required");
+		if (["PUBLIC_BASE_URL", "OAUTH_BROKER_URL"].includes(key) && value) {
+			const url = new URL(value);
+			if (
+				!["http:", "https:"].includes(url.protocol) ||
+				url.username ||
+				url.password ||
+				url.search ||
+				url.hash ||
+				url.pathname !== "/"
+			)
+				throw new Error("Use an origin without a path or credentials");
+			if (key === "OAUTH_BROKER_URL" && url.protocol !== "https:")
+				throw new Error("Broker requires HTTPS");
+			value = url.origin;
+		}
+		if (
+			["SMTP_PORT", "BROWSER_MAX_SESSIONS", "RIMEWARD_RTC_VIEWERS"].includes(
+				key,
+			) &&
+			(!/^\d+$/.test(value) ||
+				+value < 1 ||
+				+value > (key === "SMTP_PORT" ? 65535 : 100))
+		)
+			throw new Error("Invalid limit");
+		if (
+			key === "REGISTRATION_POLICY" &&
+			value !== "invite" &&
+			config("PASSWORD_LOGIN") === "true" &&
+			!getSetting("smtp_verified")
+		)
+			throw new Error(
+				"Verify email delivery before enabling public password registration",
+			);
+		if (
+			key === "PASSWORD_LOGIN" &&
+			value === "true" &&
+			config("REGISTRATION_POLICY") !== "invite" &&
+			!getSetting("smtp_verified")
+		)
+			throw new Error("Verify email delivery first");
+	}
+	const signIn =
+		key === "PASSWORD_LOGIN" ||
+		key.startsWith("GOOGLE_") ||
+		key.startsWith("MS_");
+	// The EFFECTIVE client id, not the posted string: a reset (value === null) falls back to
+	// process.env, so comparing the posted "" against the stored row calls an identical
+	// environment value a repoint and refuses a write that changes nothing.
+	const was = key === "MS_CLIENT_ID" ? config("MS_CLIENT_ID") : "";
+	getDb().transaction(() => {
+		const before = signIn ? adminCount() : 0;
+		if (value === null) {
+			deleteSetting(`config:${key}`);
+			deleteSetting(`secret:${key}`);
+		} else setSetting(`config:${key}`, field.secret ? sealToken(value) : value);
+		if (
+			key !== "PASSWORD_LOGIN" &&
+			(key.startsWith("GOOGLE_") ||
+				key.startsWith("MS_") ||
+				key === "SSO_WORKSPACE_DOMAIN")
+		)
+			deleteSetting("identity_admin_verified");
+		if (key.startsWith("SMTP_")) deleteSetting("smtp_verified");
+		// Rolls the write back: no sign-in change may TAKE AWAY the last administrator
+		// able to reach the installation. Differential on purpose — an installation
+		// already at zero must still be able to configure its way back in.
+		// Entra mints `sub` per application, so repointing Microsoft at another client orphans
+		// every row it left behind while the issuer stays the same. Google's `sub` is the
+		// account id and survives a client change, which is why only Microsoft is listed.
+		const dead =
+			key === "MS_CLIENT_ID" && config("MS_CLIENT_ID") !== was
+				? "microsoft"
+				: undefined;
+		if (signIn && before > 0 && adminCount(undefined, dead) === 0)
+			throw new Error("This would lock out every administrator");
+		audit(actor, "config.changed", key);
+	})();
+}
+
+/** `issuer`, when given, is the one stored on a sign-in row: resolveIdentity matches
+ *  connector AND issuer, so a connector repointed at another issuer no longer opens the
+ *  rows it left behind and they must not count as a way in. */
+export function identityEnabled(id:string,issuer?:string):boolean {
+  const matches=(current:string)=>!issuer||issuer===current;
+  // Both builtins are confidential clients — Google's web client and Entra both refuse a
+  // tokenless exchange — so a cleared secret ends every sign-in through them.
+  if(id==='google')return config('GOOGLE_SSO_ENABLED')==='true' && !!config('GOOGLE_CLIENT_ID') && !!config('GOOGLE_CLIENT_SECRET') && matches('https://accounts.google.com');
+  // A multi-tenant registration (common/organizations/consumers) mints id_tokens whose `iss`
+  // carries the SIGNING-IN user's own tenant GUID, so only the tenant family can be matched;
+  // a single tenant keeps the exact match.
+  if(id==='microsoft'){const tenant=config('MS_TENANT_ID');return config('MS_SSO_ENABLED')==='true' && !!config('MS_CLIENT_ID') && !!config('MS_CLIENT_SECRET') && (['common','organizations','consumers'].includes(tenant)?!issuer||/^https:\/\/login\.microsoftonline\.com\/[\w.-]+\/v2\.0$/.test(issuer):matches(`https://login.microsoftonline.com/${tenant}/v2.0`));}
+  const connectors=JSON.parse(getSetting('identity_connectors')??'[]') as {id:string;enabled:boolean;issuer:string}[];
+  return connectors.some(c=>c.id===id&&c.enabled&&matches(c.issuer));
+}

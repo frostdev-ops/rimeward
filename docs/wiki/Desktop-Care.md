@@ -35,7 +35,7 @@ The repository CLI's `backup` command is a **web/application database backup**, 
 | Mail, calendar, Notion, online browser pages | Require their external services for fresh data/actions. |
 | Remote clients | Cannot reach this desktop while it is offline. |
 
-If you later pair a server, an outage does not move native work to the server. New Rime turns need a separately configured local provider when the shared server provider is unavailable.
+If you later connect a server, an outage does not move native work to the server. Under *Automatic* model access, new Rime turns need a separately configured local provider when the server's provider is unavailable; **Provider connections** (`/desktop/providers`) is where you add one and see which connection is actually serving. That page works while the server is unreachable.
 
 ## Troubleshoot by symptom
 

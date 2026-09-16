@@ -1,11 +1,13 @@
 import { browserWard } from '../dashboard.ts';
-import { open, goto, withSession, type Session as BrowserSession } from './session.ts';
+import { open, goto, peek, withSession, type Session as BrowserSession } from './session.ts';
 import { listDownloads, waitDownloads, startUrlDownload } from './downloads.ts';
+import { consoleLines, networkLines, readAsset } from './devtools.ts';
 
 const pageState = async (s: BrowserSession) => ({ url: s.page.url(), title: await s.page.title().catch(() => ''), downloads: listDownloads(s.userId, s.ward).slice(0, 10).map(({ url: _url, ...file }) => file) });
 const SNAPSHOT_CAP = 11_000; // under core.ts OUTPUT_CAP with room for url/title
 const capText = (t: string) => (t.length > SNAPSHOT_CAP ? `${t.slice(0, SNAPSHOT_CAP)}\n…[cut at ${SNAPSHOT_CAP} chars — trim with depth, or act on what is here]` : t);
 const REF_RE = /^(f\d+)?e\d+$/;
+const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
 
 async function browserAct(s: BrowserSession, a: Record<string, unknown>): Promise<void> {
   const ref = String(a.ref ?? '').trim();
@@ -53,6 +55,16 @@ export async function runBrowserAction(user: number, ward: string, action: strin
     const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
     return { downloads: files.slice(offset, offset + 10).map(({ url: _url, ...file }) => file), total: files.length,
       next: offset + 10 < files.length ? offset + 10 : null };
+  }
+  // Developer tools read what the ward already recorded. They never start Chromium: a ward that is
+  // not running has no log to show, and launching one to say so would lose the human's session state
+  // and tell the agent nothing.
+  if (action === 'console' || action === 'network' || action === 'asset') {
+    const live = peek(user, ward);
+    if (!live) return { running: false, note: 'This browser ward is not running, so it has recorded nothing. Open a page in it first (browser_open) — the log starts when the session does.' };
+    if (action === 'console') return { running: true, ...consoleLines(live, { level: str(args.level), pattern: str(args.pattern), limit: Number(args.limit) || undefined }) };
+    if (action === 'network') return { running: true, ...networkLines(live, { pattern: str(args.pattern), status: str(args.status), type: str(args.type), limit: Number(args.limit) || undefined }) };
+    return withSession(live, () => readAsset(live, { id: Number(args.id) || undefined, url: str(args.url) }));
   }
   if (!['snapshot', 'open', 'act', 'download'].includes(action)) throw Error('Unknown browser action.');
   const s = await open(user, ward, cfg);

@@ -1,14 +1,20 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
+import AdminNav from '../../components/AdminNav.astro';
+import { getDb } from '../../lib/db.ts';
 import { listUsers } from '../../lib/users.ts';
 import { sessionId } from '../../lib/auth.ts';
 import { takeSetting } from '../../lib/settings.ts';
-import { WORKSPACE_DOMAIN } from '../../lib/google-sso.ts';
 import { cardsToLines, siteInfo } from '../../lib/site.ts';
 import { updateState } from '../../lib/updates.ts';
 
 const me = Astro.locals.user!;
 const users = listUsers();
+const identities=getDb().prepare('SELECT user_id,connector,issuer,subject FROM login_identities').all() as {user_id:number;connector:string;issuer:string;subject:string}[];
+// How a row can actually sign in. Neither a password nor an identity means
+// nobody can — the bug an invitation exists to avoid.
+const signIn = (u: { id: number; has_password: unknown }) =>
+  [u.has_password ? 'password' : null, ...identities.filter((i) => i.user_id === u.id).map((i) => i.connector)].filter(Boolean).join(' + ');
 const site = siteInfo();
 const updates = await updateState();
 
@@ -18,7 +24,7 @@ const err = Astro.url.searchParams.get('err');
 const flashPw = ok === 'created' || ok === 'reset' ? takeSetting(`flash_pw:${sessionId(Astro.cookies)}`) : null;
 
 const OK_MESSAGES: Record<string, string> = {
-  invited: 'Invite created — they can now sign in with Google.',
+  invited: 'Invitation created.',
   created: 'User created.',
   reset: 'Password reset.',
   role: 'Role updated.',
@@ -32,7 +38,7 @@ const OK_MESSAGES: Record<string, string> = {
   <main class="mx-auto max-w-3xl px-4 py-10">
     <div class="page-head">
       <h1 class="page-title">Users</h1>
-      <span class="flex gap-3"><a href="/admin/monitors" class="link">Monitors →</a><a href="/dash" class="back-link link">← Dashboard</a></span>
+      <AdminNav current="users" />
     </div>
 
     {ok && <p class="banner banner-ok">{OK_MESSAGES[ok] ?? ok}</p>}
@@ -62,14 +68,14 @@ const OK_MESSAGES: Record<string, string> = {
         <div>
           <label for="new-mode" class="label">Sign-in</label>
           <select id="new-mode" name="mode" class="input">
-            <option value="sso">Google SSO invite</option>
+            <option value="email">Email invitation</option>
             <option value="password">Generated password</option>
           </select>
         </div>
         <button type="submit" class="btn-primary">Add</button>
       </form>
       <p class="mt-2 text-xs text-ink-faint">
-        SSO invites let any Google account with that email in{WORKSPACE_DOMAIN ? ` — including addresses outside ${WORKSPACE_DOMAIN}` : ''}.
+        Email invitations expire after one hour. Configure email delivery under Settings first.
       </p>
     </div>
 
@@ -88,17 +94,21 @@ const OK_MESSAGES: Record<string, string> = {
             users.map((u) => (
               <tr>
                 <td>
-                  {u.email}
+                  {u.email} · {u.status}
                   {u.id === me.userId && <span class="ml-1 text-xs text-ink-faint">(you)</span>}
                 </td>
                 <td>
                   <span class="pill" data-status={u.role}>{u.role}</span>
                 </td>
-                <td class="hidden text-ink-muted sm:table-cell">{u.has_password ? 'password + SSO' : 'SSO only'}</td>
+                <td class="hidden text-ink-muted sm:table-cell">{signIn(u) || (u.status === 'pending' ? 'invitation pending' : <span class="text-err">no sign-in method</span>)}</td>
                 <td class="text-right">
                   <details class="relative inline-block text-left">
                     <summary class="btn cursor-pointer list-none px-2 py-1 text-xs">Manage</summary>
                     <div class="card absolute right-0 z-10 mt-1 flex w-44 flex-col gap-1 p-2 shadow-lg">
+                      <form method="post" action={`/api/users/${u.id}`}><input type="hidden" name="action" value="status"/><input type="hidden" name="status" value={u.status==='active'?'suspended':'active'}/><button class="btn">{u.status==='active'?'Suspend':'Activate / approve'}</button></form>
+                      <form method="post" action={`/api/users/${u.id}`}><button class="btn" name="action" value="revoke">Revoke sessions & devices</button></form>
+                      <form method="post" action={`/api/users/${u.id}`}><input type="hidden" name="action" value="name"/><label>Display name<input class="input" name="name" value={u.display_name}/></label><button class="btn">Save name</button></form>
+                      {identities.filter(i=>i.user_id===u.id).map(i=><form method="post" action={`/api/users/${u.id}`}><input type="hidden" name="action" value="unlink-identity"/><input type="hidden" name="connector" value={i.connector}/><input type="hidden" name="issuer" value={i.issuer}/><input type="hidden" name="subject" value={i.subject}/><button class="btn">Unlink {i.connector}</button></form>)}
                       <form method="post" action={`/api/users/${u.id}`}>
                         <input type="hidden" name="action" value="role" />
                         <input type="hidden" name="role" value={u.role === 'admin' ? 'member' : 'admin'} />
