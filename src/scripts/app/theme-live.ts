@@ -44,7 +44,7 @@ export function applyThemeLive(cfg: ThemeConfig): void {
   if (text) text.textContent = cfg.brandText;
   const logo = document.getElementById('brand-logo') as HTMLImageElement | null;
   if (logo) logo.src = cfg.brandLogo ? `/api/bg/${cfg.brandLogo}` : logo.dataset.default!;
-  const kind = bgKind(cfg);
+  const kind = html.hasAttribute('data-ward-window') ? 'flat' : bgKind(cfg);
   if (kind === 'flat') html.removeAttribute('data-bg');
   else html.setAttribute('data-bg', kind);
   applyBackground(kind === 'scene' ? sceneConfig(cfg) : null);

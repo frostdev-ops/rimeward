@@ -1,0 +1,73 @@
+.bw {
+  display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0;
+  gap: 0; overflow: hidden; isolation: isolate; container-type: inline-size;
+  background: var(--color-surface-2); border-radius: 12px;
+}
+.bw-tabbar { display: flex; align-items: center; gap: 4px; padding: 6px 8px 0; background: color-mix(in srgb, var(--color-ink) 4%, var(--color-surface-2)); }
+.bw-tabs { flex: 1; min-width: 0; gap: 4px; padding: 2px 1px 5px; scrollbar-width: thin; }
+.bw-tab { display: flex; flex: 1 0 112px; max-width: 220px; min-width: 0; padding: 0; gap: 0; height: 34px; border: 1px solid transparent; border-radius: 8px; background: transparent; transition: background 160ms, box-shadow 160ms, opacity 160ms; }
+.bw-tab:hover { background: color-mix(in srgb, var(--color-ink) 6%, transparent); }
+.bw-tab[data-active='true'] { background: var(--color-surface); color: var(--color-ink); box-shadow: 0 1px 4px #0002; border-color: var(--color-line); }
+.bw-tab[data-split='true'] { box-shadow: inset 0 -2px var(--color-accent); }
+.bw-tab-select { display: flex; align-items: center; flex: 1; min-width: 0; gap: 8px; padding: 0 10px; font-size: 12px; text-align: left; cursor: pointer; }
+.bw-tab-select [data-icon] { flex-shrink: 0; width: 14px; height: 14px; opacity: .65; }
+.bw-tab-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.bw-button { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; color: var(--color-ink-muted); cursor: pointer; transition: background 140ms, color 140ms, transform 140ms; }
+.bw-button [data-icon] { width: 16px; height: 16px; font-size: 15px; }
+.bw-button:hover { background: color-mix(in srgb, var(--color-ink) 8%, transparent); color: var(--color-ink); }
+.bw-button:active { transform: scale(.94); }
+.bw-button:disabled { opacity: .35; cursor: default; }
+.bw-button[aria-pressed='true'] { color: var(--color-accent); background: var(--color-accent-soft); }
+.bw-button.bw-tab-x { width: 26px; height: 26px; align-self: center; margin-right: 3px; opacity: .65; }
+.bw-tab-x:hover { opacity: 1; }
+.bw :is(button, input):focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.bw-tab.bw-dragging { opacity: .4; }
+.bw-tab.bw-drop { border-inline-start: 3px solid var(--color-accent); }
+.bw-toolbar { display: flex; align-items: center; gap: 3px; padding: 6px 8px 8px; border-bottom: 1px solid var(--color-line); }
+.bw-address-wrap { display: flex; align-items: center; flex: 1; min-width: 70px; height: 34px; gap: 8px; margin: 0 4px; padding: 0 11px; border: 1px solid var(--color-line); border-radius: 9px; background: var(--color-surface); transition: border-color 160ms, box-shadow 160ms; }
+.bw-address-wrap > [data-icon] { width: 14px; height: 14px; opacity: .5; flex-shrink: 0; }
+.bw-address-wrap:focus-within { border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-soft); }
+.bw-address { width: 100%; min-width: 0; height: 100%; border: 0; outline: none !important; background: transparent; color: var(--color-ink); font-size: 12px; }
+.bw-address::placeholder { color: var(--color-ink-faint); }
+.bw-panes { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; gap: 1px; background: var(--color-line); }
+.bw-pane { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; min-height: 0; }
+.bw-pane > .bw-view { min-width: 0; border-radius: 0; }
+.bw-panes.bw-split > .bw-pane { width: 50%; }
+.bw-panes.bw-active-right > .bw-secondary { order: -1; }
+.bw-secondary { position: relative; }
+.bw-secondary canvas { cursor: pointer; }
+.bw-pane-title { display: none; flex-shrink: 0; height: 30px; padding: 6px 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--color-surface-2); color: var(--color-ink-muted); text-align: left; font-size: 11px; border-bottom: 1px solid var(--color-line); }
+.bw-split .bw-pane-title { display: block; }
+.bw-secondary .bw-pane-title { cursor: pointer; }
+.bw-secondary .bw-pane-title::after { content: ' · Click to focus'; opacity: .65; }
+.bw-pane-focused { color: var(--color-ink); box-shadow: inset 0 -2px var(--color-accent); }
+.bw-welcome { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; flex-direction: column; gap: 12px; background: var(--color-surface-2); color: var(--color-ink); text-align: center; padding: 24px; }
+.bw[data-blank='true'] .bw-welcome { display: flex; }
+.bw-welcome > [data-icon] { width: 36px; height: 36px; color: var(--color-accent); opacity: .6; margin-bottom: 4px; }
+.bw-welcome h3 { font-size: clamp(16px, 2cqw, 24px); font-weight: 500; letter-spacing: -.03em; }
+.bw-welcome p { font-size: 12px; color: var(--color-ink-muted); }
+.bw-welcome button { width: auto; padding: 0 16px; gap: 8px; margin-top: 8px; border: 1px solid var(--color-line); }
+.bw-tab-menu { width: 320px; }
+.bw-tab-menu > input { margin: 4px 0 8px; }
+.bw-tab-result { display: flex; align-items: center; }
+.bw-tab-result > [role='menuitem'] { flex: 1; min-width: 0; }
+.bw-tab-result > [role='menuitem'] span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-shortcuts { white-space: pre-line; padding: 10px; font-size: 11px; line-height: 1.8; color: var(--color-ink-muted); }
+#browser-dialog { padding: 0; overflow: hidden; }
+#browser-dialog > form { padding: 0; gap: 0; }
+#browser-dialog .bw { border-radius: 0; }
+.bw-dialog-heading { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid var(--color-line); }
+.bw-dialog-heading h2 { font-size: 11px; }
+:is(html:fullscreen #browser-dialog, #browser-dialog.bw-fullscreen) { width: 100vw; max-width: none; height: 100dvh; max-height: none; border: 0; border-radius: 0; }
+.bw:fullscreen { border-radius: 0; width: 100vw; height: 100dvh; }
+@container (max-width: 520px) {
+  .bw-toolbar { flex-wrap: wrap; padding: 4px; }
+  .bw-address-wrap { order: -1; flex-basis: 100%; margin: 2px 2px 4px; }
+  .bw-tabbar { padding: 4px 4px 0; }
+  .bw-tab { flex-basis: 96px; }
+  .bw-welcome { padding: 12px; gap: 6px; }
+  .bw-welcome p { max-width: 24ch; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bw *, .bw *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

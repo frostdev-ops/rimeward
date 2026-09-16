@@ -26,6 +26,9 @@ export async function routeInstance(context: APIContext): Promise<Response | und
   if (!user) return;
   const { request, url } = context;
   const path = url.pathname + url.search;
+  // A pop-out selects local UI, not the ward's execution host. Its APIs route
+  // independently; resolving ?ward here can send the entire window to an offline host.
+  if (url.pathname === '/dash' || url.pathname === '/dash/') return;
   // Sign-in and provider management name their own destination (lib/dev/remote.ts DESTINATION_BOUND):
   // they stay here and forward explicitly, so page placement can never pick the account they write.
   if (DESTINATION_BOUND.test(url.pathname)) return;

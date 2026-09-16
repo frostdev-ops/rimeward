@@ -326,6 +326,7 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                             .permission("allow-workspace-navigation")
                             .permission("allow-open-workspace")
                             .permission("allow-open-ward-window")
+                            .permission("core:window:allow-set-fullscreen")
                             .permission("allow-save-document-export")
                             .permission("allow-print-document-export")
                             .permission("allow-close-ward-window")

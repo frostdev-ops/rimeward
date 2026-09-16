@@ -25,7 +25,7 @@ interface Target {
 
 const MIN_VIEW = { width: 320, height: 240 };
 const MAX_VIEW = { width: 1920, height: 1200 };
-const MAX_TABS = 8;
+const MAX_TABS = 32;
 const BUTTONS = ['left', 'middle', 'right'] as const;
 const BUTTON_BITS = [1, 4, 2] as const;
 const MOD: Record<string, number> = { Alt: 1, Control: 2, Meta: 4, Shift: 8 };
@@ -73,6 +73,7 @@ export class LocalDriver {
   private targets = new Map<string, Target>();
   private sessions = new Map<string, string>();
   private active = '';
+  private split = '';
   private ready = false;
   viewport = { width: 1280, height: 800 };
   /** This display's scale, emulated for the page (dpr, srcset). The FRAME's
@@ -134,6 +135,7 @@ export class LocalDriver {
       case 'Target.targetDestroyed': {
         const id = params.targetId as string;
         if (!this.targets.delete(id)) return;
+        if (id === this.split) this.split = '';
         this.sessions.delete(id);
         if (id === this.active) {
           const last = [...this.targets.keys()].at(-1);
@@ -146,11 +148,12 @@ export class LocalDriver {
         for (const [tid, sid] of this.sessions) if (sid === params.sessionId) this.sessions.delete(tid);
         return;
       case 'Page.screencastFrame': {
-        if (msg.sessionId !== this.sessions.get(this.active)) return;
         // Ack first, always — chromium stops sending without it.
         void this.call('Page.screencastFrameAck', { sessionId: params.sessionId }, msg.sessionId).catch(() => {});
+        const split = !!this.split && msg.sessionId === this.sessions.get(this.split);
+        if (!split && msg.sessionId !== this.sessions.get(this.active)) return;
         const md = params.metadata as { deviceWidth?: number; deviceHeight?: number } | undefined;
-        this.emit({ type: 'frame', data: params.data as string, width: md?.deviceWidth ?? this.viewport.width, height: md?.deviceHeight ?? this.viewport.height });
+        this.emit({ type: split ? 'splitframe' : 'frame', data: params.data as string, width: md?.deviceWidth ?? this.viewport.width, height: md?.deviceHeight ?? this.viewport.height });
         return;
       }
       case 'Page.javascriptDialogOpening': {
@@ -184,7 +187,8 @@ export class LocalDriver {
 
   private async activate(id: string): Promise<void> {
     if (!this.targets.has(id)) return;
-    if (this.active && this.active !== id && this.sessions.has(this.active)) await this.page('Page.stopScreencast').catch(() => {});
+    if (id === this.split) this.split = this.active;
+    if (this.active && this.active !== id && this.active !== this.split && this.sessions.has(this.active)) await this.page('Page.stopScreencast').catch(() => {});
     this.active = id;
     if (!this.sessions.has(id)) {
       const { sessionId } = await this.call<{ sessionId: string }>('Target.attachToTarget', { targetId: id, flatten: true });
@@ -201,8 +205,8 @@ export class LocalDriver {
   }
 
   private pushTabs(): void {
-    const tabs = [...this.targets.values()].map((t) => ({ url: t.url, title: t.title }));
-    this.emit({ type: 'tabs', tabs, active: [...this.targets.keys()].indexOf(this.active) });
+    const tabs = [...this.targets.values()].map((t) => ({ ...(this.split ? { id: t.targetId } : {}), url: t.url, title: t.title }));
+    this.emit({ type: 'tabs', tabs, active: [...this.targets.keys()].indexOf(this.active), ...(this.split ? { split: [...this.targets.keys()].indexOf(this.split) } : {}) });
   }
 
   private applyViewport(): Promise<unknown> {
@@ -224,6 +228,23 @@ export class LocalDriver {
     // The screencast's max size is fixed at start — restart it at the new one.
     await this.page('Page.stopScreencast').catch(() => {});
     await this.startCast();
+    if (this.split) await this.setSplit(this.split);
+  }
+
+  private async setSplit(id: string): Promise<void> {
+    if (this.split && this.sessions.has(this.split)) await this.call('Page.stopScreencast', {}, this.sessions.get(this.split)).catch(() => {});
+    this.split = id !== this.active && this.targets.has(id) ? id : '';
+    if (this.split) {
+      if (!this.sessions.has(id)) {
+        const { sessionId } = await this.call<{ sessionId: string }>('Target.attachToTarget', { targetId: id, flatten: true });
+        this.sessions.set(id, sessionId);
+        await this.call('Page.enable', {}, sessionId);
+      }
+      const session = this.sessions.get(id);
+      await this.call('Emulation.setDeviceMetricsOverride', { ...this.viewport, deviceScaleFactor: this.dsf, mobile: false }, session);
+      await this.call('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: Math.round(this.viewport.width * this.dsf), maxHeight: Math.round(this.viewport.height * this.dsf), everyNthFrame: 1 }, session);
+    }
+    this.pushTabs();
   }
 
   private mouse(type: 'mouseMoved' | 'mousePressed' | 'mouseReleased', x: number, y: number, button?: number, clicks?: number): Promise<unknown> {
@@ -304,8 +325,26 @@ export class LocalDriver {
             break;
           }
           case 'newtab':
-            if (this.targets.size < MAX_TABS) await this.call('Target.createTarget', { url: 'about:blank' }); // targetCreated activates it
+            if (this.targets.size >= MAX_TABS) throw Error('Close a tab before opening another (32-tab limit).');
+            await this.call('Target.createTarget', { url: 'about:blank' }); // targetCreated activates it
             break;
+          case 'movetab': {
+            const entries = [...this.targets];
+            if (!Number.isInteger(c.i) || !Number.isInteger(c.to) || !entries[c.i] || !entries[c.to]) throw Error('Invalid tab position.');
+            const entry = entries[c.i];
+            if (!entry) break;
+            entries.splice(c.i, 1);
+            entries.splice(c.to, 0, entry);
+            this.targets = new Map(entries);
+            this.pushTabs();
+            break;
+          }
+          case 'split': {
+            const id = [...this.targets.keys()][c.i];
+            if (!Number.isInteger(c.i) || (c.i !== -1 && !id)) throw Error('Tab no longer exists.');
+            await this.setSplit(id ?? '');
+            break;
+          }
           case 'closetab': {
             const id = [...this.targets.keys()][num(c.i, 99)];
             if (id) await this.call('Target.closeTarget', { targetId: id });
@@ -313,7 +352,7 @@ export class LocalDriver {
           }
         }
       } catch (err) {
-        if (c.t === 'goto' || c.t === 'back' || c.t === 'forward' || c.t === 'reload') throw err;
+        if (['goto', 'back', 'forward', 'reload', 'newtab', 'closetab', 'movetab', 'split'].includes(c.t)) throw err;
       }
     }
   }

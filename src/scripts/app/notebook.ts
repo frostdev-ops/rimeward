@@ -15,6 +15,7 @@
 // model settings), POST {op} for every change. Sync replicates the documents.
 
 import { expandedDesktopWard, restoreExpandedWard } from './desktop-state.ts';
+import { popoutWard } from './ward-view.ts';
 import { notebookConfig, rowsOf, wardTitle, type WardInstance } from '../../lib/wards.ts';
 import type { NoteMeta } from '../../lib/note.ts';
 import type { Layout, Notebook, PropDef, PropType, SavedView, Section, Sort, Status } from '../../lib/notebook.ts';
@@ -113,6 +114,11 @@ async function renderCompact(w: WardInstance): Promise<void> {
   }
   const m = data as Meta;
   cards.set(w.i, { w, nbId: m.notebook.id });
+  if (popoutWard === w.i) {
+    b.replaceChildren();
+    restoreExpandedWard(w.i, () => void openNotebook(w));
+    return;
+  }
   b.textContent = '';
   b.classList.remove('overflow-y-auto');
   const root = el('div', 'nb-c');

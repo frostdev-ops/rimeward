@@ -1,9 +1,9 @@
 import { browserWard } from '../dashboard.ts';
-import { open, goto, peek, withSession, type Session as BrowserSession } from './session.ts';
+import { open, goto, peek, withSession, tabState, runCmds, type Cmd, type Session as BrowserSession } from './session.ts';
 import { listDownloads, waitDownloads, startUrlDownload } from './downloads.ts';
 import { consoleLines, networkLines, readAsset } from './devtools.ts';
 
-const pageState = async (s: BrowserSession) => ({ url: s.page.url(), title: await s.page.title().catch(() => ''), downloads: listDownloads(s.userId, s.ward).slice(0, 10).map(({ url: _url, ...file }) => file) });
+const pageState = async (s: BrowserSession) => ({ url: s.page.url(), title: await s.page.title().catch(() => ''), ...await tabState(s), downloads: listDownloads(s.userId, s.ward).slice(0, 10).map(({ url: _url, ...file }) => file) });
 const SNAPSHOT_CAP = 11_000; // under core.ts OUTPUT_CAP with room for url/title
 const capText = (t: string) => (t.length > SNAPSHOT_CAP ? `${t.slice(0, SNAPSHOT_CAP)}\n…[cut at ${SNAPSHOT_CAP} chars — trim with depth, or act on what is here]` : t);
 const REF_RE = /^(f\d+)?e\d+$/;
@@ -66,9 +66,30 @@ export async function runBrowserAction(user: number, ward: string, action: strin
     if (action === 'network') return { running: true, ...networkLines(live, { pattern: str(args.pattern), status: str(args.status), type: str(args.type), limit: Number(args.limit) || undefined }) };
     return withSession(live, () => readAsset(live, { id: Number(args.id) || undefined, url: str(args.url) }));
   }
-  if (!['snapshot', 'open', 'act', 'download'].includes(action)) throw Error('Unknown browser action.');
+  if (!['snapshot', 'open', 'act', 'download', 'tabs'].includes(action)) throw Error('Unknown browser action.');
   const s = await open(user, ward, cfg);
   return withSession(s, async () => {
+    if (action === 'tabs') {
+      const operation = String(args.action ?? 'list');
+      const state = await tabState(s);
+      if (operation !== 'list') {
+        const i = state.tabs.findIndex(tab => tab.id === String(args.id));
+        if (!['new', 'unsplit'].includes(operation) && i < 0) throw Error('Tab no longer exists. List tabs again.');
+        let cmd: Cmd;
+        switch (operation) {
+          case 'select': cmd = { t: 'tab', i }; break;
+          case 'close': cmd = { t: 'closetab', i }; break;
+          case 'new': cmd = { t: 'newtab' }; break;
+          case 'split': cmd = { t: 'split', i }; break;
+          case 'unsplit': cmd = { t: 'split', i: -1 }; break;
+          case 'move': cmd = { t: 'movetab', i, to: Number(args.position) }; break;
+          default: throw Error('Unknown tab action.');
+        }
+        await runCmds(s, [cmd]);
+        if (operation === 'new' && args.url) await goto(s, String(args.url));
+      }
+      return pageState(s);
+    }
     if (action === 'download') {
       const download = startUrlDownload(user, ward, s.context, s.page, String(args.url), file => {
         for (const sub of s.subs.keys()) sub({ type: 'download', file });
@@ -84,7 +105,7 @@ export async function runBrowserAction(user: number, ward: string, action: strin
           page.ariaSnapshot({ mode: 'ai', timeout: 10_000 }),
           page.innerText('body', { timeout: 10_000 }),
           page.screenshot({ type: 'jpeg', quality: 70, scale: 'css', timeout: 10_000 }),
-          Promise.all(s.pages.map(async p => ({ url: p.url(), title: await p.title().catch(() => ''), active: p === page }))),
+          tabState(s).then(state => state.tabs.map((tab, i) => ({ ...tab, active: i === state.active }))),
         ]);
         return {
           capturedAt, url: page.url(), title: await page.title().catch(() => ''),

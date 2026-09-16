@@ -43,7 +43,7 @@ export function openMenu(x: number, y: number, build: (m: HTMLElement) => void):
   m.style.overflowY = 'auto';
   m.setAttribute('role', 'menu');
   build(m);
-  const host = (document.activeElement?.closest('dialog[open]:modal') ?? document.querySelector('dialog[open]:modal') ?? document.body) as HTMLElement;
+  const host = (document.activeElement?.closest('dialog[open]:modal') ?? document.querySelector('dialog[open]:modal') ?? document.fullscreenElement ?? document.body) as HTMLElement;
   layer = popupLayer(host); layer.append(m);
   const frame = popupFrame(layer);
   const width = m.offsetWidth * frame.scale, height = m.offsetHeight * frame.scale;

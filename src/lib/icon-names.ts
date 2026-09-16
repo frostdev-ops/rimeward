@@ -123,6 +123,7 @@ export const ICONS = {
   up: ['▲', 'chevron-up', 'caret-up', 'chevron-up', 'alt-arrow-up', 'keyboard-arrow-up'],
   down: ['▼', 'chevron-down', 'caret-down', 'chevron-down', 'alt-arrow-down', 'keyboard-arrow-down'],
   resize: ['⤢', 'maximize-2', 'arrows-out', 'arrows-diagonal', 'maximize', 'open-in-full'],
+  columns: ['◫', 'columns-2', 'columns', 'columns-2', 'sidebar', 'view-column'],
   popout: ['↗', 'external-link', 'arrow-square-out', 'external-link', 'square-top-up', 'open-in-new'],
   eye: ['👁', 'eye', 'eye', 'eye', 'eye', 'visibility'],
   palette: ['🎨', 'palette', 'palette', 'palette', 'palette', 'palette'],

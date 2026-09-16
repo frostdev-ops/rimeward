@@ -55,43 +55,45 @@ const logicJson = JSON.stringify({
 }).replaceAll('<', '\\u003c');
 ---
 
-<AppLayout title={selectedWard ? `${wardTitle(selectedWard)} — Rimeward` : 'Rimeward'} fonts={layout.map((w) => w.theme?.font)}>
+<AppLayout title={selectedWard ? `${wardTitle(selectedWard)} — Rimeward` : 'Rimeward'} wardWindow={!!popoutWard} fonts={layout.filter(w => !popoutWard || w.i === popoutWard || w.in === popoutWard).map((w) => w.theme?.font)}>
   <main class="mx-auto max-w-7xl px-4 py-6" data-popout-ward={popoutWard} data-ward-window-scope={String(userId)}>
-    {popoutWard && <div class="flex items-center gap-2"><button type="button" id="ward-window-return" class="btn text-xs"><Icon id="left" /> Back to dashboard</button><p id="ward-window-missing" class="text-sm text-ink-muted" hidden={!!selectedWard}>This ward is no longer on the dashboard.</p></div>}
-    <div id="alerts" data-mode={alertMode}></div>
+    {popoutWard && <div id="ward-window-missing" class="wd-window-empty" hidden={!!selectedWard}><p>This ward is no longer on the dashboard.</p><button type="button" id="ward-window-return" class="btn text-xs">Back to dashboard</button></div>}
+    {!popoutWard && <div id="alerts" data-mode={alertMode}></div>}
     <div id="sse-banner" class="banner banner-warn hidden">Live feed lost — retrying…</div>
 
-    <div class="mb-3 flex flex-wrap items-center justify-end gap-2" id="wd-toolbar">
+    {!popoutWard && <div class="mb-3 flex flex-wrap items-center justify-end gap-2" id="wd-toolbar">
       <span class="mr-auto truncate text-xs text-ink-faint" data-tb-hint>Right-click a ward for options</span>
       <button type="button" class="btn px-2 py-1 text-xs hidden" data-tb="undo" aria-label="Undo" title="Undo"><Icon id="undo" /><span class="tb-label">Undo</span></button>
       <button type="button" class="btn px-2 py-1 text-xs hidden" data-tb="add" aria-label="Add ward" title="Add ward"><Icon id="plus" /><span class="tb-label">Add ward</span></button>
       <button type="button" class="btn px-2 py-1 text-xs hidden" data-tb="cancel" aria-label="Cancel" title="Cancel"><Icon id="close" /><span class="tb-label">Cancel</span></button>
       <button type="button" class="btn px-2 py-1 text-xs" data-tb="logic" aria-label="Leylines" title="Leylines"><Icon id="route" /><span class="tb-label">Leylines</span></button>
       <button type="button" class="btn px-2 py-1 text-xs" data-tb="edit" aria-label="Edit" title="Edit"><Icon id="pen" /><span class="tb-label">Edit</span></button>
-    </div>
+    </div>}
 
-    <nav class="app-pages" id="wd-pages" aria-label="Pages" hidden={pages.length < 2}>
+    {!popoutWard && <nav class="app-pages" id="wd-pages" aria-label="Pages" hidden={pages.length < 2}>
       {pages.map((p) => (
         <button type="button" class="app-page" data-page-tab={p.id}>{p.title}</button>
       ))}
       <button type="button" class="app-page app-page-add" data-page-add title="Add page" aria-label="Add page">+</button>
-    </nav>
+    </nav>}
 
     <div class="wd-grid mb-8" id="wd-grid">
-      {tops.map(({ w, page, delay }) => <Ward w={w} layout={layout} page={page} enterDelay={delay} />)}
+      {popoutWard
+        ? selectedWard && <Ward w={selectedWard} layout={layout} />
+        : tops.map(({ w, page, delay }) => <Ward w={w} layout={layout} page={page} enterDelay={delay} />)}
     </div>
   </main>
 
   <MailDialog />
   <ComposeDialog />
-  <AddWardDialog />
+  {popoutWard ? <template id="wd-template"><Ward w={{ i: 'tpl', type: 'applink', size: '1x1' }} /></template> : <AddWardDialog />}
   <AgentDialog />
   <BrowserDialog />
   <RemoteDesktopDialog />
   <NoteDialog />
   <NotebookDialog />
-  <WardThemeDialog />
-  <ShareDialog />
+  {!popoutWard && <WardThemeDialog />}
+  {!popoutWard && <ShareDialog />}
 
   <script type="application/json" id="layout-data" set:html={layoutJson} />
   <script type="application/json" id="pages-data" data-active-page={runtimeNavigation(userId).activePage} set:html={pagesJson} />

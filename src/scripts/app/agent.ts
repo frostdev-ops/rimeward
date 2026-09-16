@@ -20,6 +20,7 @@ import type { UserQuestion, PendingQuestion, UserAnswer } from '../../lib/agent/
 import type { TranscriptMsg } from '../../lib/agent/conversations.ts';
 import { AGENT_EFFORTS, CATALOG, pageOf, wardTitle, type AgentEffort, type AgentProviderId, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body, note, readLayout } from './wards.ts';
+import { popoutWard } from './ward-view.ts';
 import { el, getJson, hm, postJson, tapToast, toast } from './dom.ts';
 import { icon } from './icon.ts';
 import { popupFrame, popupLayer, popupViewport } from './popup-layer.ts';
@@ -2885,7 +2886,7 @@ async function renderAgent(w: WardInstance): Promise<void> {
   if (st.refresh !== refresh) return;
   const b = body(w.i);
   if (!b) return;
-  const mounted = [...st.uis].some(ui => b.contains(ui.root));
+  const mounted = [...st.uis].some(ui => b.contains(ui.root)) || (popoutWard === w.i && dialogWard === w.i);
   if (mounted && (status !== 200 || !data)) {
     if (data?.transition) { st.newChatRequest = data.transition; st.placementBlocked = data.error ?? 'Reconcile the new conversation before continuing.'; paint(st); }
     return; // Keep the transcript while a connection or placement is unresolved.
@@ -2946,6 +2947,11 @@ async function renderAgent(w: WardInstance): Promise<void> {
   }
   void loadCatalog(st); // the footer pickers follow the ward's config; a no-op when it is unchanged
   if (mounted) { paint(st); return; }
+  if (popoutWard === w.i) {
+    b.replaceChildren();
+    restoreExpandedWard(w.i, () => openDialog(stateFor(w)));
+    return;
+  }
 
   // The ward chrome: log + pending bar + composer, body flex-managed.
   b.textContent = '';

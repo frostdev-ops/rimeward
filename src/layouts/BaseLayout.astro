@@ -10,9 +10,10 @@ interface Props {
   description?: string;
   /** Splash sets this: index is the only page meant for crawlers. */
   index?: boolean;
+  wardWindow?: boolean;
 }
 
-const { title, description = siteInfo().name, index = false } = Astro.props;
+const { title, description = siteInfo().name, index = false, wardWindow = false } = Astro.props;
 
 // Per-user theme rides locals.user (populated by middleware from the session
 // join). Knob values land as attributes on <html> — SSR'd, so no flash.
@@ -20,7 +21,7 @@ const theme = parseTheme(Astro.locals.user?.theme ?? null);
 ---
 
 <!doctype html>
-<html lang="en" {...themeHtmlAttrs(theme)}>
+<html lang="en" {...themeHtmlAttrs(theme)} data-ward-window={wardWindow ? '' : undefined}>
   <head>
     <ThemeScript />
     <meta charset="utf-8" />
@@ -37,7 +38,7 @@ const theme = parseTheme(Astro.locals.user?.theme ?? null);
     {/* The other half of the splash/valley gate: arrive through the dive and
         the page starts covered in light, then fades out. Every page has it —
         the dive lands on /login, on a wizard step, or on /dash. */}
-    <div id="gate-flash"></div>
+    {!wardWindow && <div id="gate-flash"></div>}
     <script is:inline>
       try {
         if (sessionStorage.getItem('fd-gate') === '1') {

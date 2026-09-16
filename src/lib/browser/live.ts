@@ -158,6 +158,9 @@ function attach(ws: WebSocket, userId: number, ward: string, cfg: NonNullable<Re
       if (ev.type === 'frame') {
         const buf = Buffer.from(ev.data, 'base64');
         if (busy) pending = buf; else sendFrame(buf);
+      } else if (ev.type === 'splitframe') {
+        // A second view is disposable under backpressure, just like the primary JPEG.
+        if (ws.bufferedAmount < 256 * 1024) text(ev);
       } else if (ev.type === 'closed') { owner.dispose(); if (ws.readyState === WebSocket.OPEN) ws.close(1000); }
       else text(ev);
     });

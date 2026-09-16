@@ -1,4 +1,4 @@
-// Keep the complete layout in the DOM: routing and layout saves still need it.
+// Keep the complete layout JSON for routing and saves; pop-outs render only their own ward DOM.
 export const popoutWard = document.querySelector<HTMLElement>('main[data-popout-ward]')?.dataset.popoutWard;
 
 export function inWardView(id: string): boolean {

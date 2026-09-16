@@ -31,6 +31,14 @@ export function restoreExpandedWard(ward: string, open: () => void) {
   if (pendingPopoutExpansion !== ward && readDesktopCheckpoint('expanded') !== ward) return;
   if (pendingPopoutExpansion === ward) pendingPopoutExpansion = undefined;
   requestAnimationFrame(() => {
+    if (wardWindow === ward) {
+      const type = document.querySelector<HTMLElement>(`[data-wd="${CSS.escape(ward)}"]`)?.dataset.wdType;
+      const editor = type ? document.getElementById(`${type}-dialog`) : null;
+      if (editor) {
+        editor.dataset.wardWindowEditor = '';
+        editor.addEventListener('cancel', event => { event.preventDefault(); event.stopImmediatePropagation(); }, true);
+      }
+    }
     open();
     window.dispatchEvent(new Event('fd:desktop-expanded-restored'));
   });

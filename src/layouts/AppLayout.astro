@@ -15,13 +15,14 @@ interface Props {
   /** Faces this page paints beyond the theme's own two — the dashboard passes
    *  its wards' overrides. Anything else is fetched on demand (fonts.ts). */
   fonts?: (FontId | undefined)[];
+  wardWindow?: boolean;
   /** A share view (/s/<id>): the owner's name in a minimal header (none at all when
    *  embedded in a recipient's card), the bridge that scopes every /api call to the share,
    *  and the monitor rows the shared wards may know about — never the whole registry. */
   share?: { id: string; owner: string; viewer: boolean; embed: boolean; monitors: { targets: unknown[]; titles: Record<string, string> } };
 }
 
-const { search = true, share } = Astro.props;
+const { search = true, share, wardWindow = false } = Astro.props;
 const me = Astro.locals.user!;
 const sharedCatalog = isDesktop() ? getSetting(`instance:catalog:${me.userId}`) : null;
 const monitorCatalog = share ? share.monitors : sharedCatalog ? JSON.parse(sharedCatalog) : { targets: TARGETS, titles: GROUP_TITLES };
@@ -46,7 +47,7 @@ const faces = [...new Set([...themeFaces, ...extra])].filter((v): v is string =>
 const declared = [...new Set([brand.uiFont, brand.brandFont, ...(Astro.props.fonts ?? [])])].filter(Boolean).join(',');
 ---
 
-<BaseLayout title={Astro.props.title}>
+<BaseLayout title={Astro.props.title} wardWindow={wardWindow}>
   <Fragment slot="head">
     {/* cast: cssVariable is typed as the union of the names registered in
         astro.config.mjs, and this list is derived rather than literal. */}
@@ -59,7 +60,7 @@ const declared = [...new Set([brand.uiFont, brand.brandFont, ...(Astro.props.fon
     {share && <script is:inline src="/runtime-bridge.js"></script>}
   </Fragment>
 
-  {share ? (!share.embed && (
+  {wardWindow ? <span id="instance-status" hidden data-desktop={isDesktop() ? '1' : '0'} data-joined={isDesktop() && getSetting(`instance:joined:${me.userId}`) ? '1' : undefined} /> : share ? (!share.embed && (
     <header class="app-header">
       <div class="mx-auto flex max-w-7xl items-center gap-3 px-4">
         <a href={share.viewer ? '/dash' : '/'} class="app-brand" data-server-link>
@@ -181,6 +182,6 @@ const declared = [...new Set([brand.uiFont, brand.brandFont, ...(Astro.props.fon
         clock.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     };
     tickClock();
-    setInterval(tickClock, 30_000);
+    if (clock) setInterval(tickClock, 30_000);
   </script>
 </BaseLayout>

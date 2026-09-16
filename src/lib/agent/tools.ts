@@ -1147,6 +1147,18 @@ export const TOOLS: Record<string, ToolDef> = {
   },
 
   // ---------------------------------------------------------------- browser
+  browser_tabs: {
+    kind: 'write',
+    description: 'List, select, open, close, reorder or split browser tabs. Use stable id from the returned tabs; position is zero-based. Snapshot again after selecting a tab.',
+    parameters: obj({
+      ward: str('browser ward id; optional when there is exactly one'),
+      action: { type: 'string', enum: ['list', 'select', 'new', 'close', 'move', 'split', 'unsplit'] },
+      id: str('tab id returned by browser_tabs or browser_snapshot'),
+      position: num('move: zero-based destination position'),
+      url: str('new: optional http(s) URL'),
+    }, ['action']),
+    run: async (a, ctx) => browserCall(ctx.userId, browserId(ctx.userId, a.ward), 'tabs', a, ctx.signal),
+  },
   browser_open: {
     kind: 'write',
     description: 'Navigate a browser ward to a URL and wait for it to load. Then browser_snapshot to see it. The user sees the same page move on their ward.',

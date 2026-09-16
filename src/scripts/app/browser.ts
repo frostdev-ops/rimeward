@@ -26,6 +26,9 @@ import type { RtcMessage } from '../../lib/browser/rtc.ts';
 import { browserScale, type BrowserConfig, type WardInstance } from '../../lib/wards.ts';
 import type { BrowserEvent, Cmd } from '../../lib/browser/session.ts';
 import type { BrowserExtension } from '../../lib/browser/extensions.ts';
+import { popoutWard } from './ward-view.ts';
+import { popOutWard } from './ward-window.ts';
+import '../../styles/browser.css';
 
 type Tabs = Extract<BrowserEvent, { type: 'tabs' }>;
 
@@ -46,6 +49,15 @@ interface Mount {
   url: HTMLInputElement;
   expand: HTMLButtonElement;
   tabs: HTMLElement;
+  tabState?: Tabs;
+  panes: HTMLElement;
+  secondary: HTMLElement;
+  secondaryCanvas: HTMLCanvasElement;
+  secondaryTitle: HTMLButtonElement;
+  primaryTitle: HTMLElement;
+  splitDecoding?: boolean;
+  splitPending?: Extract<BrowserEvent, { type: 'splitframe' }>;
+  activeRight: boolean;
   toast: HTMLElement;
   /** `ws` until a socket closes before its `hello` (a relayed ward, an old
    *  runtime, nginx without the block): then `sse` for the mount's life. */
@@ -107,7 +119,7 @@ function connect(m: Mount): void {
   // at mount may have landed before the ward was saved, or on a browser since
   // closed and relaunched at the default.
   es.onopen = () => { if (m.es === es) scheduleResize(m); };
-  for (const type of ['frame', 'nav', 'tabs', 'dialog', 'route', 'download', 'view', 'rtc'] as const) {
+  for (const type of ['frame', 'splitframe', 'nav', 'tabs', 'dialog', 'route', 'download', 'view', 'rtc'] as const) {
     es.addEventListener(type, (e) => { if (m.es === es) onEvent(m, JSON.parse((e as MessageEvent).data) as BrowserEvent | RtcMessage); });
   }
   es.onerror = () => {
@@ -232,11 +244,16 @@ function onEvent(m: Mount, ev: BrowserEvent | RtcMessage): void {
     case 'frame':
       void onFrame(m, ev);
       break;
+    case 'splitframe':
+      void onSplitFrame(m, ev);
+      break;
     case 'rtc':
       rtcOf(m).handle(ev);
       break;
     case 'nav':
       if (document.activeElement !== m.url) m.url.value = ev.url === 'about:blank' ? '' : ev.url;
+      m.root.dataset.blank = String(ev.url === 'about:blank');
+      if (popoutWard === m.w.i) document.title = `${ev.title || 'New tab'} — Rimeward`;
       break;
     case 'tabs':
       paintTabs(m, ev);
@@ -262,6 +279,7 @@ function onEvent(m: Mount, ev: BrowserEvent | RtcMessage): void {
 
 interface Tauri {
   core: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
+  window?: { getCurrentWindow(): { isFullscreen(): Promise<boolean>; setFullscreen(value: boolean): Promise<void> } };
 }
 const tauri = (): Tauri | undefined => (window as { __TAURI__?: Tauri }).__TAURI__;
 const isLocal = (m: Mount): boolean => document.getElementById('instance-status')?.dataset.desktop !== '1' && !m.localFailed && !!tauri() && (m.w.config as BrowserConfig | undefined)?.backend === 'app';
@@ -489,11 +507,11 @@ async function send(m: Mount, cmds: Cmd[], driver?: LocalDriver): Promise<void> 
  *  drawn object-fit:contain, so it may be letterboxed inside the canvas. While
  *  the video shows, the viewport `view` announced is the picture's size — the
  *  encoder may be sending fewer pixels than that at any moment. */
-function toPage(m: Mount, e: { clientX: number; clientY: number }): { x: number; y: number } {
-  const r = m.canvas.getBoundingClientRect();
+function toPage(m: Mount, e: { clientX: number; clientY: number }, surface = m.canvas): { x: number; y: number } {
+  const r = surface.getBoundingClientRect();
   const live = !m.video.hidden ? m.viewport : undefined;
-  const cw = live ? live.width : (m.canvas.width || 1) / m.dsf;
-  const ch = live ? live.height : (m.canvas.height || 1) / m.dsf;
+  const cw = live ? live.width : (surface.width || 1) / m.dsf;
+  const ch = live ? live.height : (surface.height || 1) / m.dsf;
   const scale = Math.min(r.width / cw, r.height / ch) || 1;
   const ox = (r.width - cw * scale) / 2;
   const oy = (r.height - ch * scale) / 2;
@@ -597,35 +615,182 @@ function flash(m: Mount, text: string, ms: number): void {
   m.toastT = setTimeout(() => (m.toast.hidden = true), ms);
 }
 
-function paintTabs(m: Mount, t: Tabs): void {
-  m.tabs.textContent = '';
-  m.tabs.hidden = t.tabs.length < 2;
-  t.tabs.forEach((tab, i) => {
-    const b = el('button', 'bw-tab', tab.title || tab.url.replace(/^https?:\/\//, '') || 'New tab');
-    b.type = 'button';
-    b.title = tab.url;
-    b.setAttribute('aria-pressed', String(i === t.active));
-    b.addEventListener('click', () => push(m, { t: 'tab', i }, true));
-    if (i === t.active && t.tabs.length > 1) {
-      const x = el('span', 'bw-tab-x'); x.append(icon('close'));
-      x.title = 'Close tab';
-      x.addEventListener('click', (e) => {
-        e.stopPropagation();
-        push(m, { t: 'closetab', i }, true);
-      });
-      b.append(x);
-    }
-    m.tabs.append(b);
+const tabLabel = (tab: Tabs['tabs'][number]) => tab.title || (tab.url === 'about:blank' ? 'New tab' : tab.url.replace(/^https?:\/\//, '')) || 'New tab';
+function tabMenu(m: Mount, i: number, x: number, y: number): void {
+  const state = m.tabState;
+  if (!state) return;
+  openMenu(x, y, menu => {
+    menu.append(menuItem('globe', 'Switch to tab', () => push(m, { t: 'tab', i }, true)));
+    if (i !== state.active) menu.append(menuItem('columns', 'Open side by side', () => push(m, { t: 'split', i }, true)));
+    if (i > 0) menu.append(menuItem('left', 'Move tab left', () => push(m, { t: 'movetab', i, to: i - 1 }, true)));
+    if (i < state.tabs.length - 1) menu.append(menuItem('right', 'Move tab right', () => push(m, { t: 'movetab', i, to: i + 1 }, true)));
+    menu.append(menuItem('close', 'Close tab', () => push(m, { t: 'closetab', i }, true)));
+    if (state.tabs.length > 1) menu.append(menuItem('close', 'Close other tabs', () => {
+      for (let n = state.tabs.length - 1; n >= 0; n--) if (n !== i) push(m, { t: 'closetab', i: n });
+      void flush(m);
+    }));
   });
 }
 
+function paintTabs(m: Mount, t: Tabs): void {
+  const old = m.tabState;
+  const split = t.split ?? -1;
+  if (old && split >= 0 && old.split !== undefined && old.split >= 0 &&
+      (t.tabs[t.active]?.id ? t.tabs[t.active]?.id === old.tabs[old.split]?.id : t.active === old.split)) m.activeRight = !m.activeRight;
+  if (split < 0) m.activeRight = false;
+  m.tabState = t;
+  m.secondary.hidden = split < 0;
+  if (split >= 0 && !m.secondary.isConnected) m.panes.append(m.secondary);
+  else if (split < 0) m.secondary.remove();
+  m.panes.classList.toggle('bw-split', split >= 0);
+  m.panes.classList.toggle('bw-active-right', m.activeRight);
+  m.root.querySelector('[data-bw-split]')?.setAttribute('aria-pressed', String(split >= 0));
+  m.secondaryTitle.textContent = split >= 0 ? tabLabel(t.tabs[split]!) : '';
+  m.primaryTitle.textContent = t.tabs[t.active] ? tabLabel(t.tabs[t.active]!) : 'New tab';
+  m.secondaryTitle.title = 'Activate this pane';
+  // Reconcile only when the tab data changes so navigation does not steal keyboard focus.
+  if (old && JSON.stringify(old) === JSON.stringify(t)) return;
+  const positions = new Map([...m.tabs.querySelectorAll<HTMLElement>('.bw-tab')].map(node => [node.dataset.key, node.getBoundingClientRect().left]));
+  const focused = m.tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.tabIndex : undefined;
+  m.tabs.replaceChildren();
+  m.tabs.hidden = false;
+  t.tabs.forEach((tab, i) => {
+    const row = el('div', 'bw-tab');
+    row.dataset.key = tab.id ?? `${tab.url}:${tab.title}`;
+    row.dataset.active = String(i === t.active);
+    row.dataset.split = String(i === split);
+    row.draggable = !shareReadOnly;
+    const b = el('button', 'bw-tab-select');
+    b.type = 'button'; b.title = `${tabLabel(tab)}\n${tab.url}`;
+    b.dataset.tabIndex = String(i);
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', String(i === t.active));
+    b.tabIndex = i === t.active ? 0 : -1;
+    b.append(icon('globe'), el('span', 'bw-tab-label', tabLabel(tab)));
+    b.addEventListener('click', () => { push(m, { t: 'tab', i }, true); });
+    b.addEventListener('keydown', e => {
+      const next = e.key === 'ArrowRight' ? (i + 1) % t.tabs.length : e.key === 'ArrowLeft' ? (i - 1 + t.tabs.length) % t.tabs.length : e.key === 'Home' ? 0 : e.key === 'End' ? t.tabs.length - 1 : -1;
+      if (next >= 0) {
+        e.preventDefault(); e.stopPropagation();
+        if (e.altKey) push(m, { t: 'movetab', i, to: next }, true);
+        else { push(m, { t: 'tab', i: next }, true); m.tabs.querySelector<HTMLButtonElement>(`[data-tab-index="${next}"]`)?.focus(); }
+      }
+      if (e.key === 'Delete') { e.preventDefault(); push(m, { t: 'closetab', i }, true); }
+      if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+        e.preventDefault(); const r = b.getBoundingClientRect(); tabMenu(m, i, r.left, r.bottom);
+      }
+    });
+    const close = chromeButton('close', `Close ${tabLabel(tab)}`, () => push(m, { t: 'closetab', i }, true));
+    close.classList.add('bw-tab-x'); close.hidden = shareReadOnly;
+    row.append(b, close);
+    row.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); if (!shareReadOnly) tabMenu(m, i, e.clientX, e.clientY); });
+    row.addEventListener('auxclick', e => { if (e.button === 1) { e.preventDefault(); push(m, { t: 'closetab', i }, true); } });
+    row.addEventListener('dragstart', e => { e.stopPropagation(); e.dataTransfer?.setData('text/x-rimeward-tab', `${m.w.i}:${i}`); row.classList.add('bw-dragging'); });
+    row.addEventListener('dragend', () => row.classList.remove('bw-dragging'));
+    row.addEventListener('dragover', e => { if (e.dataTransfer?.types.includes('text/x-rimeward-tab')) { e.preventDefault(); row.classList.add('bw-drop'); } });
+    row.addEventListener('dragleave', () => row.classList.remove('bw-drop'));
+    row.addEventListener('drop', e => {
+      e.preventDefault(); e.stopPropagation(); row.classList.remove('bw-drop');
+      const [ward, from] = (e.dataTransfer?.getData('text/x-rimeward-tab') ?? '').split(':');
+      if (ward === m.w.i && Number.isInteger(Number(from))) push(m, { t: 'movetab', i: Number(from), to: i }, true);
+    });
+    m.tabs.append(row);
+  });
+  if (old && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    for (const node of m.tabs.querySelectorAll<HTMLElement>('.bw-tab')) {
+      const before = positions.get(node.dataset.key);
+      const dx = before === undefined ? 0 : before - node.getBoundingClientRect().left;
+      if (Math.abs(dx) > 1) node.animate([{ transform: `translateX(${dx}px)` }, { transform: 'none' }], { duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' });
+      else if (before === undefined) node.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 160 });
+    }
+  }
+  if (focused !== undefined) m.tabs.querySelector<HTMLButtonElement>(`[data-tab-index="${t.active}"]`)?.focus({ preventScroll: true });
+  if (old?.active !== t.active) m.tabs.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+}
+
+function chromeButton(id: string, title: string, action: () => void): HTMLButtonElement {
+  const b = el('button', 'bw-button');
+  b.type = 'button'; b.title = title; b.setAttribute('aria-label', title);
+  b.append(icon(id)); b.addEventListener('click', action);
+  return b;
+}
+
+async function onSplitFrame(m: Mount, frame: Extract<BrowserEvent, { type: 'splitframe' }>): Promise<void> {
+  if (m.stopped) return;
+  if (m.splitDecoding) { m.splitPending = frame; return; }
+  m.splitDecoding = true;
+  try {
+    const blob = new Blob([Uint8Array.from(atob(frame.data), c => c.charCodeAt(0))], { type: 'image/jpeg' });
+    const bmp = await createImageBitmap(blob);
+    if (!m.stopped) {
+      const c = m.secondaryCanvas;
+      if (c.width !== bmp.width || c.height !== bmp.height) { c.width = bmp.width; c.height = bmp.height; }
+      c.getContext('2d')?.drawImage(bmp, 0, 0);
+    }
+    bmp.close();
+  } catch { /* The next live frame replaces a torn JPEG. */ }
+  finally {
+    m.splitDecoding = false;
+    const next = m.splitPending; m.splitPending = undefined;
+    if (next) void onSplitFrame(m, next);
+  }
+}
+
 function navButton(m: Mount, label: string, title: string, cmd: Cmd): HTMLButtonElement {
-  const b = el('button', 'btn min-h-0 shrink-0 px-1.5 py-0.5 text-xs', label);
+  const b = el('button', 'bw-button');
+  b.append(icon(label));
   b.type = 'button';
   b.title = title;
   b.setAttribute('aria-label', title);
   b.addEventListener('click', () => push(m, cmd, true));
   return b;
+}
+
+function showTabList(m: Mount, anchor: HTMLElement, split = false): void {
+  const r = anchor.getBoundingClientRect();
+  openMenu(r.left, r.bottom + 4, menu => {
+    menu.classList.add('bw-tab-menu');
+    const search = el('input', 'input'); search.placeholder = split ? 'Choose a tab to place alongside' : 'Search tabs';
+    search.setAttribute('aria-label', 'Search open tabs');
+    const list = el('div');
+    const render = () => {
+      list.replaceChildren();
+      for (const [i, tab] of (m.tabState?.tabs ?? []).entries()) {
+        if (split && i === m.tabState?.active) continue;
+        if (!`${tab.title} ${tab.url}`.toLowerCase().includes(search.value.toLowerCase())) continue;
+        const row = el('div', 'bw-tab-result');
+        row.append(menuItem('globe', tabLabel(tab), () => push(m, { t: split ? 'split' : 'tab', i }, true)));
+        if (!shareReadOnly) row.append(chromeButton('more', `Manage ${tabLabel(tab)}`, () => {
+          const pos = anchor.getBoundingClientRect(); tabMenu(m, i, pos.left, pos.bottom + 4);
+        }));
+        list.append(row);
+      }
+      if (!list.childElementCount) list.append(el('p', 'bw-shortcuts', split ? 'Open another tab to use side-by-side view.' : 'No matching tabs.'));
+    };
+    search.addEventListener('input', render);
+    menu.append(search, list); render();
+    requestAnimationFrame(() => search.focus());
+  });
+}
+
+async function toggleFullscreen(m: Mount): Promise<void> {
+  try {
+    const native = tauri()?.window?.getCurrentWindow();
+    if (native) {
+      const on = await native.isFullscreen();
+      if (!on && popoutWard !== m.w.i) openDialog(m);
+      await native.setFullscreen(!on);
+      if (popoutWard !== m.w.i) dialog()?.classList.toggle('bw-fullscreen', !on);
+    } else if (document.fullscreenElement) await document.exitFullscreen();
+    else {
+      if (popoutWard !== m.w.i) openDialog(m);
+      // Dialog elements cannot enter the Fullscreen API. Keep the live modal in
+      // the top layer and fullscreen its document instead.
+      const target = popoutWard === m.w.i ? m.root : document.documentElement;
+      if (!target?.requestFullscreen) throw Error('Use your browser’s View menu to enter full screen.');
+      await target.requestFullscreen();
+    }
+  } catch (error) { flash(m, error instanceof Error ? error.message : String(error), 6000); }
 }
 
 async function showDownloads(m: Mount, button: HTMLButtonElement): Promise<void> {
@@ -743,24 +908,47 @@ async function showExtensions(m: Mount): Promise<void> {
 }
 
 function build(w: WardInstance): Mount {
-  const root = el('div', 'bw flex h-full w-full min-h-0 flex-col gap-1');
-  const bar = el('form', 'flex items-center gap-1');
+  const root = el('div', 'bw');
+  const bar = el('form', 'bw-toolbar');
   bar.addEventListener('submit', (e) => e.preventDefault());
-  const url = el('input', 'input min-h-0 min-w-0 flex-1 px-2 py-0.5 text-xs');
+  const url = el('input', 'bw-address');
   url.type = 'text';
-  url.placeholder = shareReadOnly ? 'Viewing' : 'https://…';
+  url.placeholder = shareReadOnly ? 'Viewing' : 'Search or enter address';
   url.readOnly = shareReadOnly;
   url.autocomplete = 'off';
   url.spellcheck = false;
   url.setAttribute('aria-label', 'Address');
   const tabs = el('div', 'bw-tabs');
+  tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Browser tabs');
   tabs.hidden = true;
-  const expand = el('button', 'btn min-h-0 shrink-0 px-1.5 py-0.5 text-xs');
+  const expand = el('button', 'bw-button');
   expand.append(icon('resize'));
   expand.type = 'button';
   expand.title = 'Expand';
   expand.setAttribute('aria-label', 'Expand');
   const view = el('div', 'bw-view');
+  const panes = el('div', 'bw-panes');
+  const primary = el('div', 'bw-pane bw-primary');
+  const primaryTitle = el('div', 'bw-pane-title bw-pane-focused');
+  const secondary = el('div', 'bw-pane bw-secondary'); secondary.hidden = true;
+  const secondaryView = el('div', 'bw-view');
+  const secondaryCanvas = el('canvas'); secondaryCanvas.setAttribute('aria-hidden', 'true');
+  const secondaryTitle = chromeButton('globe', 'Activate this pane', () => {
+    if ((m.tabState?.split ?? -1) >= 0) { push(m, { t: 'tab', i: m.tabState!.split! }, true); m.canvas.focus(); }
+  });
+  secondaryTitle.className = 'bw-pane-title';
+  secondaryCanvas.addEventListener('click', e => {
+    const i = m.tabState?.split ?? -1;
+    if (i < 0 || shareReadOnly) return;
+    const at = toPage(m, e, secondaryCanvas);
+    m.canvas.blur(); // Release the previous page's held input before changing targets.
+    push(m, { t: 'tab', i });
+    push(m, { t: 'down', ...at, button: 0, clicks: e.detail || 1 });
+    push(m, { t: 'up', ...at, button: 0, clicks: e.detail || 1 }, true);
+    m.canvas.focus();
+  });
+  secondaryView.append(secondaryCanvas);
+  secondary.append(secondaryTitle, secondaryView);
   // The stream, under the canvas: the canvas keeps focus and input while the picture is the video.
   const video = el('video', 'bw-video');
   video.autoplay = true; video.playsInline = true; video.muted = true; video.hidden = true;
@@ -770,12 +958,19 @@ function build(w: WardInstance): Mount {
   canvas.setAttribute('aria-label', 'Remote browser — click to focus, then type');
   const toast = el('div', 'bw-toast');
   toast.hidden = true;
+  toast.setAttribute('role', 'status');
   // Autoplay with sound needs a gesture: the stream starts muted; this, or a click on the view, unmutes.
   const unmute = el('button', 'bw-unmute');
   unmute.type = 'button'; unmute.hidden = true;
   unmute.addEventListener('click', (e) => { e.stopPropagation(); setMuted(m, !m.video.muted); });
   canvas.addEventListener('pointerdown', () => { if (!m.video.hidden && m.video.muted) setMuted(m, false); }, true);
   view.append(video, canvas, toast, unmute);
+  const welcome = el('div', 'bw-welcome');
+  welcome.append(icon('globe'), el('h3', '', 'A little room to explore.'), el('p', '', 'Search the web or enter an address above.'));
+  const search = chromeButton('search', 'Search the web', () => url.focus());
+  search.append(document.createTextNode('Search the web')); welcome.append(search); view.append(welcome);
+  primary.append(primaryTitle, view);
+  panes.append(primary);
 
   const m: Mount = {
     w,
@@ -790,6 +985,7 @@ function build(w: WardInstance): Mount {
     url,
     expand,
     tabs,
+    panes, secondary, secondaryCanvas, secondaryTitle, primaryTitle, activeRight: false,
     toast,
     visible: false,
     epoch: 0,
@@ -817,33 +1013,70 @@ function build(w: WardInstance): Mount {
   url.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const href = normalizeUrl(url.value);
+      const value = url.value.trim();
+      const href = !value ? '' : /\s/.test(value) || (!value.includes('.') && !value.includes(':'))
+        ? `https://www.google.com/search?q=${encodeURIComponent(value)}` : normalizeUrl(value);
       if (href) push(m, { t: 'goto', url: href }, true);
       canvas.focus();
     } else if (e.key === 'Escape') canvas.focus();
   });
   url.addEventListener('focus', () => url.select());
-  expand.addEventListener('click', () => openDialog(m));
-  const downloads = el('button', 'btn min-h-0 shrink-0 px-1.5 py-0.5 text-xs');
+  expand.addEventListener('click', () => popoutWard === w.i ? void toggleFullscreen(m) : openDialog(m));
+  const downloads = el('button', 'bw-button');
   downloads.type = 'button'; downloads.title = 'Downloads'; downloads.setAttribute('aria-label', 'Downloads');
   downloads.append(icon('download'));
   downloads.addEventListener('click', event => { event.stopPropagation(); void showDownloads(m, downloads); });
-  const extensions = el('button', 'btn min-h-0 shrink-0 px-1.5 py-0.5 text-xs');
+  const extensions = el('button', 'bw-button');
   extensions.type = 'button'; extensions.title = 'Extensions'; extensions.setAttribute('aria-label', 'Extensions');
   extensions.append(icon('puzzle'));
   extensions.addEventListener('click', () => void showExtensions(m));
-  restoreExpandedWard(w.i, () => openDialog(m));
+  if (popoutWard !== w.i) restoreExpandedWard(w.i, () => openDialog(m));
+  const address = el('div', 'bw-address-wrap'); address.append(icon('search'), url);
+  const split = chromeButton('columns', 'Side-by-side tabs', () => {
+    const t = m.tabState;
+    if ((t?.split ?? -1) >= 0) push(m, { t: 'split', i: -1 }, true);
+    else showTabList(m, split, true);
+  });
+  split.dataset.bwSplit = ''; split.setAttribute('aria-pressed', 'false');
+  const overview = chromeButton('down', 'Search tabs', () => showTabList(m, overview));
+  const more = chromeButton('more', 'Browser menu', () => {
+    const r = more.getBoundingClientRect();
+    openMenu(r.left, r.bottom + 4, menu => {
+      menu.append(menuItem('resize', 'Toggle full screen', () => void toggleFullscreen(m)));
+      if (popoutWard !== w.i && !shareView) menu.append(menuItem('popout', 'Open in window', () => void popOutWard(w.i)));
+      if ((m.tabState?.split ?? -1) >= 0) menu.append(menuItem('columns', 'Exit side-by-side view', () => push(m, { t: 'split', i: -1 }, true)));
+      menu.append(el('p', 'bw-shortcuts', '⌘ / Ctrl + L  Address\n⌘ / Ctrl + T  New tab\n⌘ / Ctrl + W  Close tab\nCtrl + Tab  Next tab\nF11  Full screen'));
+    });
+  });
+  const tabbar = el('div', 'bw-tabbar');
+  tabbar.append(tabs, navButton(m, 'plus', 'New tab', { t: 'newtab' }), overview);
   bar.append(
-    navButton(m, '◀', 'Back', { t: 'back' }),
-    navButton(m, '▶', 'Forward', { t: 'forward' }),
-    navButton(m, '⟳', 'Reload', { t: 'reload' }),
-    url,
-    navButton(m, '＋', 'New tab', { t: 'newtab' }),
+    navButton(m, 'left', 'Back', { t: 'back' }),
+    navButton(m, 'right', 'Forward', { t: 'forward' }),
+    navButton(m, 'reset', 'Reload', { t: 'reload' }),
+    address, split,
     // A share drives the page only (lib/shares.ts): the owner's downloads and extensions are not on offer.
     ...(shareView ? [] : [downloads, extensions]),
-    expand
+    expand, more
   );
-  root.append(bar, tabs, view);
+  if (popoutWard === w.i) { expand.title = 'Toggle full screen'; expand.setAttribute('aria-label', 'Toggle full screen'); }
+  if (shareReadOnly) for (const button of [...bar.querySelectorAll('button'), ...tabbar.querySelectorAll('button')]) {
+    if (![expand, more, overview].includes(button)) button.disabled = true;
+  }
+  root.append(tabbar, bar, panes);
+  root.addEventListener('keydown', e => {
+    const key = e.key.toLowerCase(), command = e.metaKey || e.ctrlKey;
+    let handled = true;
+    if (command && key === 'l') url.focus();
+    else if (command && key === 't' && !e.shiftKey) push(m, { t: 'newtab' }, true);
+    else if (command && key === 'w') { if (m.tabState) push(m, { t: 'closetab', i: m.tabState.active }, true); }
+    else if (command && key === 'r') push(m, { t: 'reload' }, true);
+    else if (e.ctrlKey && key === 'tab' && m.tabState) push(m, { t: 'tab', i: (m.tabState.active + (e.shiftKey ? -1 : 1) + m.tabState.tabs.length) % m.tabState.tabs.length }, true);
+    else if (command && /^[1-9]$/.test(key) && m.tabState) push(m, { t: 'tab', i: Math.min(Number(key) === 9 ? Infinity : Number(key) - 1, m.tabState.tabs.length - 1) }, true);
+    else if (e.key === 'F11' || (e.ctrlKey && e.metaKey && key === 'f')) void toggleFullscreen(m);
+    else handled = false;
+    if (handled) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
   wireInput(m);
   m.ro.observe(view);
   m.io.observe(view);
@@ -886,6 +1119,11 @@ function dialog(): HTMLDialogElement | null {
   // Escape belongs to the page (menus, modals inside it); the ✕ closes this.
   dlg.addEventListener('cancel', (e) => e.preventDefault());
   dlg.addEventListener('close', () => {
+    if (document.fullscreenElement === document.documentElement) void document.exitFullscreen().catch(() => {});
+    if (dlg.classList.contains('bw-fullscreen')) {
+      dlg.classList.remove('bw-fullscreen');
+      void tauri()?.window?.getCurrentWindow().setFullscreen(false).catch(() => {});
+    }
     const m = dialogMount;
     dialogMount = null;
     expandedDesktopWard();
@@ -956,6 +1194,10 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('blur', () => {
   for (const m of mounts.values()) if (document.activeElement === m.canvas) m.canvas.blur();
+});
+window.addEventListener('resize', () => {
+  const native = tauri()?.window?.getCurrentWindow();
+  if (native && dialogMount) void native.isFullscreen().then(on => dialog()?.classList.toggle('bw-fullscreen', on)).catch(() => {});
 });
 
 RENDERERS.browser = { preserveBody: true, render: renderBrowser, stop: id => { const m = mounts.get(id); if (m) destroy(m); } }; // event-driven — no poll

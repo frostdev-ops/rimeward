@@ -785,13 +785,14 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
 
   // Diff first, with NO writes to the grid: a bail must leave it untouched.
   const nodes = new Map(allCards().map((n) => [n.dataset.wd ?? '', n]));
-  const keep = new Set(next.map((w) => w.i));
+  const visible = popoutWard ? next.filter(w => w.i === popoutWard || w.in === popoutWard) : next;
+  const keep = new Set(visible.map((w) => w.i));
   const gone = [...nodes].filter(([id]) => !keep.has(id));
   const shells = new Map<string, HTMLElement>();
   const added: WardInstance[] = [];
   const repaint: WardInstance[] = [];
 
-  for (const w of next) {
+  for (const w of visible) {
     const cur = state.get(w.i);
     const node = nodes.get(w.i);
     if (cur && node && cur.type !== w.type) return false; // no tool does this; a reload is always right
@@ -810,9 +811,10 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
     .filter(([id]) => keep.has(id))
     .map(([id, n]) => `${groupOf(n)?.dataset.wd ?? ''}/${n.dataset.page ?? ''}/${id}`)
     .join(' ');
-  const after = next.filter((w) => nodes.has(w.i)).map((w) => `${w.in ?? ''}/${w.page ?? ''}/${w.i}`).join(' ');
+  const after = visible.filter((w) => nodes.has(w.i)).map((w) => `${w.i === popoutWard ? '' : w.in ?? ''}/${w.page ?? ''}/${w.i}`).join(' ');
   if (!gone.length && !added.length && !repaint.length && before === after) {
     if (!local) savedBase = structuredClone({ layout: next, pages: pages ?? savedBase.pages });
+    if (popoutWard) publishLayout(next);
     if (pages) publishPages(pages);
     return true;
   }
@@ -849,7 +851,7 @@ export function applyLayout(next: WardInstance[], held: Set<string> = new Set(),
         return (g && nestOf(g)) || grid;
       };
       const cursors = new Map<HTMLElement, Element | null>();
-      for (const w of [...next.filter((x) => !x.in), ...next.filter((x) => x.in)]) {
+      for (const w of [...visible.filter((x) => !x.in || x.i === popoutWard), ...visible.filter((x) => x.in && x.i !== popoutWard)]) {
         const node = nodes.get(w.i) ?? shells.get(w.i)!;
         const cur = state.get(w.i);
         if (cur && cur.size !== w.size) stampSize(node, w.size);
@@ -2635,14 +2637,14 @@ async function loadShared(dialog: HTMLDialogElement): Promise<void> {
 export function bootEdit(): void {
   const g = q('#wd-grid');
   const toolbar = q('#wd-toolbar');
-  if (!g || !toolbar) return;
+  if (!g || (!toolbar && !popoutWard)) return;
   grid = g;
   for (const w of readLayout()) state.set(w.i, w);
   savedBase = structuredClone({ layout: readLayout(), pages: readPages() });
   baseline = structuredClone(layoutOf());
   baseKey = layoutKey(baseline);
 
-  if (popoutWard) return;
+  if (popoutWard || !toolbar) return;
 
   const btn = (name: string) => q<HTMLButtonElement>(`[data-tb="${name}"]`, toolbar)!;
   const hint = q('[data-tb-hint]', toolbar);

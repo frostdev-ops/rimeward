@@ -67,6 +67,7 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
       let pending: BrowserEvent | null = null;
       let last = 0;
       let busy = false; // one remote re-encode at a time; the latest frame waits, older ones are dropped
+      let splitBusy = false, splitLast = 0;
       const write = (ev: BrowserEvent | RtcMessage) => {
         try {
           controller.enqueue(encoder.encode(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`));
@@ -103,6 +104,14 @@ export const GET: APIRoute = async ({ params, locals, request, url }) => {
       const send = (ev: BrowserEvent) => {
         // A viewer's share revoked, expired or downgraded: the frames stop at the next one, not when they leave.
         if (ev.type === 'closed' || !alive()) { end(); return; }
+        if (ev.type === 'splitframe') {
+          if (splitBusy || Date.now() - splitLast < frameMs || (controller.desiredSize ?? 0) <= 0) return;
+          splitLast = Date.now();
+          if (!remote) { write(ev); return; }
+          splitBusy = true;
+          void remoteFrame(ev).then(write, () => write(ev)).finally(() => { splitBusy = false; });
+          return;
+        }
         if (ev.type !== 'frame') {
           write(ev);
           return;

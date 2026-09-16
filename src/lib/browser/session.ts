@@ -56,8 +56,9 @@ const restoreDesktop = () => isDesktop() && process.platform === 'darwin';
 export type BrowserEvent =
   /** jpeg, base64 — exactly as CDP hands it over, never re-encoded. */
   | { type: 'frame'; data: string; width: number; height: number }
+  | { type: 'splitframe'; data: string; width: number; height: number }
   | { type: 'nav'; url: string; title: string }
-  | { type: 'tabs'; tabs: { url: string; title: string }[]; active: number }
+  | { type: 'tabs'; tabs: { url: string; title: string; id?: string }[]; active: number; split?: number }
   /** A JS alert/confirm/prompt: auto-dismissed (it would freeze the page for
    *  both drivers), the text shown to the human. */
   | { type: 'dialog'; kind: string; message: string }
@@ -98,6 +99,9 @@ export interface Session {
   pageReady: WeakMap<Page, Promise<void>>;
   /** The active tab — what the screencast shows and the agent acts on. */
   page: Page;
+  split?: Page;
+  splitCast?: Promise<CDPSession>;
+  splitCastStop?: Promise<void>;
   viewport: { width: number; height: number };
   /** Device scale factor, fixed at launch (a Playwright context option). */
   dsf: number;
@@ -396,6 +400,7 @@ function watchPage(s: Session, p: Page): void {
     void (d.type() === 'beforeunload' ? d.accept() : d.dismiss()).catch(() => {});
   });
   p.on('close', () => {
+    if (s.split === p) { s.split = undefined; void stopCast(s, true); }
     s.pages = s.pages.filter((x) => x !== p);
     if (s.page === p) {
       if (s.pages.length) void activate(s, s.pages[s.pages.length - 1]!);
@@ -410,9 +415,18 @@ async function pushNav(s: Session): Promise<void> {
   if (s.page === page) emit(s, { type: 'nav', url: page.url(), title });
 }
 
+const pageIds = new WeakMap<Page, string>();
+let nextPageId = 0;
+export async function tabState(s: Session) {
+  const pages = [...s.pages];
+  const tabs = await Promise.all(pages.map(async p => {
+    if (!pageIds.has(p)) pageIds.set(p, String(++nextPageId));
+    return { id: pageIds.get(p)!, url: p.url(), title: await p.title().catch(() => '') };
+  }));
+  return { tabs, active: pages.indexOf(s.page), split: s.split ? pages.indexOf(s.split) : -1 };
+}
 async function pushTabs(s: Session): Promise<void> {
-  const tabs = await Promise.all(s.pages.map(async (p) => ({ url: p.url(), title: await p.title().catch(() => '') })));
-  emit(s, { type: 'tabs', tabs, active: s.pages.indexOf(s.page) });
+  emit(s, { type: 'tabs', ...await tabState(s) });
 }
 
 /** What a viewer needs on connect: the current page and tab strip. */
@@ -427,6 +441,10 @@ export async function pushState(s: Session): Promise<void> {
 /** Switch the active tab; the screencast (if running) follows. */
 export async function activate(s: Session, page: Page): Promise<void> {
   if (s.page !== page) {
+    if (s.split === page) {
+      await stopCast(s, true);
+      s.split = s.page.isClosed() ? undefined : s.page;
+    }
     s.page = page;
     s.pointer = undefined; // a new page has its own mouse state
     await stopCast(s);
@@ -437,6 +455,7 @@ export async function activate(s: Session, page: Page): Promise<void> {
     await page.bringToFront().catch(() => {});
     if (s.page !== page) return;
     startCast(s);
+    startCast(s, true);
     capture(s);
   }
   await pushState(s);
@@ -484,6 +503,11 @@ export async function resize(s: Session, width: number, height: number): Promise
   if (w === s.viewport.width && h === s.viewport.height) return;
   s.viewport = { width: w, height: h };
   await s.page.setViewportSize(s.viewport).catch(() => {});
+  if (s.split) {
+    await s.split.setViewportSize(s.viewport).catch(() => {});
+    await stopCast(s, true);
+    startCast(s, true);
+  }
   tell(s, { size: captureSize(s) });
   emit(s, { type: 'view', dsf: s.dsf, width: w, height: h });
   // The screencast's max size is fixed at start, and frames only shrink to
@@ -511,11 +535,13 @@ export type Cmd =
   | { t: 'resize'; w: number; h: number; dsf?: number }
   | { t: 'tab'; i: number }
   | { t: 'newtab' }
+  | { t: 'movetab'; i: number; to: number }
+  | { t: 'split'; i: number }
   | { t: 'closetab'; i: number };
 
 const BUTTONS = ['left', 'middle', 'right'] as const;
 const num = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(max, v)) : 0);
-const CMD_TYPES = new Set(['move', 'down', 'up', 'wheel', 'key', 'text', 'goto', 'back', 'forward', 'reload', 'resize', 'tab', 'newtab', 'closetab']);
+const CMD_TYPES = new Set(['move', 'down', 'up', 'wheel', 'key', 'text', 'goto', 'back', 'forward', 'reload', 'resize', 'tab', 'newtab', 'closetab', 'movetab', 'split']);
 
 /** A batch's shape: an array of at most 200, else `bad batch`; entries that
  *  are not an object with a known `t` are dropped, never refused (what the
@@ -599,8 +625,28 @@ export async function runCmds(s: Session, cmds: unknown): Promise<void> {
           break;
         }
         case 'newtab':
-          if (s.pages.length < 8) await newPage(s);
+          if (s.pages.length >= 32) throw Error('Close a tab before opening another (32-tab limit).');
+          await newPage(s);
           break;
+        case 'movetab': {
+          if (!Number.isInteger(c.i) || !Number.isInteger(c.to)) throw Error('Invalid tab position.');
+          const page = s.pages[c.i as number];
+          if (!page || (c.to as number) < 0 || (c.to as number) >= s.pages.length) throw Error('Tab no longer exists.');
+          s.pages.splice(c.i as number, 1);
+          s.pages.splice(c.to as number, 0, page);
+          await pushTabs(s);
+          break;
+        }
+        case 'split': {
+          if (!Number.isInteger(c.i) || (c.i !== -1 && !s.pages[c.i as number])) throw Error('Tab no longer exists.');
+          await stopCast(s, true);
+          const page = s.pages[c.i as number];
+          s.split = page !== s.page ? page : undefined;
+          if (s.split) await s.split.setViewportSize(s.viewport);
+          startCast(s, true);
+          await pushTabs(s);
+          break;
+        }
         case 'closetab': {
           const p = s.pages[num(c.i, 99)];
           if (p) {
@@ -614,7 +660,7 @@ export async function runCmds(s: Session, cmds: unknown): Promise<void> {
         }
       }
     } catch (err) {
-      if (c.t === 'goto' || c.t === 'back' || c.t === 'forward' || c.t === 'reload' || c.t === 'newtab' || c.t === 'closetab') throw err;
+      if (['goto', 'back', 'forward', 'reload', 'newtab', 'closetab', 'movetab', 'split'].includes(String(c.t))) throw err;
     }
   }
 }
@@ -655,21 +701,24 @@ const wantsJpeg = (s: Session): boolean => [...s.subs.values()].some(o => o.jpeg
 function recast(s: Session): void {
   if (wantsJpeg(s)) startCast(s);
   else if (s.cast) void stopCast(s);
+  if (s.subs.size) startCast(s, true);
+  else void stopCast(s, true);
 }
 
-function startCast(s: Session): void {
-  if (s.cast || !wantsJpeg(s) || s.closing) return;
-  const page = s.page;
-  const stopped = s.castStop;
+function startCast(s: Session, split = false): void {
+  const slot = split ? 'splitCast' : 'cast';
+  if (s[slot] || !(split ? s.subs.size && s.split : wantsJpeg(s)) || s.closing) return;
+  const page = split ? s.split! : s.page;
+  const stopped = split ? s.splitCastStop : s.castStop;
   const max = { width: Math.round(s.viewport.width * s.dsf), height: Math.round(s.viewport.height * s.dsf) };
-  s.castMax = max;
+  if (!split) s.castMax = max;
   const cast = (async () => {
     await stopped;
     const cdp = await s.context.newCDPSession(page);
     cdp.on('Page.screencastFrame', (e: { data: string; sessionId: number }) => {
       // Ack first, always — chromium stops sending without it.
       void cdp.send('Page.screencastFrameAck', { sessionId: e.sessionId }).catch(() => {});
-      if (s.cast === cast && s.page === page) emit(s, { type: 'frame', data: e.data, width: s.viewport.width, height: s.viewport.height });
+      if (s[slot] === cast && (split ? s.split : s.page) === page) emit(s, { type: split ? 'splitframe' : 'frame', data: e.data, width: s.viewport.width, height: s.viewport.height });
     });
     try { await cdp.send('Page.startScreencast', {
       format: 'jpeg',
@@ -680,18 +729,19 @@ function startCast(s: Session): void {
     }); } catch (error) { await cdp.detach().catch(() => {}); throw error; }
     return cdp;
   })();
-  s.cast = cast;
+  s[slot] = cast;
   cast.catch(() => {
-    if (s.cast === cast) s.cast = undefined;
+    if (s[slot] === cast) s[slot] = undefined;
   });
 }
 
-function stopCast(s: Session): Promise<void> {
-  const cast = s.cast;
-  if (!cast) return s.castStop ?? Promise.resolve();
-  s.cast = undefined;
+function stopCast(s: Session, split = false): Promise<void> {
+  const slot = split ? 'splitCast' : 'cast', stop = split ? 'splitCastStop' : 'castStop';
+  const cast = s[slot];
+  if (!cast) return s[stop] ?? Promise.resolve();
+  s[slot] = undefined;
   // A new cast waits for this stop; an old stop must never stop its replacement.
-  return s.castStop = (async () => {
+  return s[stop] = (async () => {
     const cdp = await cast.catch(() => null);
     if (!cdp) return;
     await cdp.send('Page.stopScreencast').catch(() => {});
@@ -825,7 +875,7 @@ async function closeBrowser(s: Session): Promise<void> {
   // Graceful first (Browser.close flushes the profile); if the browser won't
   // go, the process scan below will. A stalled CDP screencast must not prevent
   // that deadline from starting.
-  const closed = await Promise.race([(async () => { await stopCast(s); await s.close(); return true; })().catch(() => true), sleep(CLOSE_MS).then(() => false)]);
+  const closed = await Promise.race([(async () => { await Promise.all([stopCast(s), stopCast(s, true)]); await s.close(); return true; })().catch(() => true), sleep(CLOSE_MS).then(() => false)]);
   if (!closed && s.backend === 'local') killByProfile(path.join(PROFILES, String(s.userId), s.ward));
   if (sessions.get(s.key) === s) sessions.delete(s.key);
   emit(s, { type: 'closed' });

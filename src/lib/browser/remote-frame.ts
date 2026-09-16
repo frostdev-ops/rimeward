@@ -11,7 +11,7 @@ import sharp from 'sharp';
 export const REMOTE_FRAME_MS = 125;
 export const REMOTE_QUALITY = 50;
 
-export interface FrameEvent { type: 'frame'; data: string; width: number; height: number }
+export interface FrameEvent { type: 'frame' | 'splitframe'; data: string; width: number; height: number }
 
 /** The frame at CSS size and remote quality; the original when it cannot be read. */
 export async function remoteFrame(ev: FrameEvent): Promise<FrameEvent> {

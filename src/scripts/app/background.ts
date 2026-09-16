@@ -47,6 +47,9 @@ function teardown(s: Slot) {
 }
 
 function apply(s: Slot, cfg: SceneConfig | null): void {
+  // Pop-outs own only their ward. Decline before allocating a canvas or importing WebGL,
+  // including later live theme changes received from the dashboard.
+  if (document.documentElement.hasAttribute('data-ward-window')) cfg = null;
   s.wanted = cfg;
   if (!cfg) {
     teardown(s);
@@ -90,7 +93,7 @@ export const applyHeaderScene = (cfg: SceneConfig | null): void => apply(HEADER,
 export function bootBackground(): void {
   // A valley page (ValleyLayout) already owns the backdrop with its terrain at
   // the same z-index; a signed-in user's saved scene would paint over it.
-  if (document.getElementById('valley-canvas')) return;
+  if (document.getElementById('valley-canvas') || document.documentElement.hasAttribute('data-ward-window')) return;
   const d = document.documentElement.dataset;
   for (const [raw, fn] of [
     [d.bgCfg, applyBackground],
