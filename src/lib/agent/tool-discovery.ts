@@ -1,9 +1,10 @@
 import type { ToolDef } from './tools.ts';
 import { indexToolCatalog, searchKnowledge } from './knowledge.ts';
+import { rerankByRelevance } from './decisions.ts';
 export interface ToolSearch { query:string; filters?:{ kind?:string; server?:string }; limit?:number }
 /** Reference lookup only; never changes the callable catalog or permissions. */
 export async function discoverTools(user:number, all:Record<string,ToolDef>, allow:'all'|'read-only', args:ToolSearch,
-  options:{ signal?:AbortSignal; keywordOnly?:boolean } = {}) {
+  options:{ signal?:AbortSignal; keywordOnly?:boolean; rerank?:boolean } = {}) {
   options.signal?.throwIfAborted();
   const { query,filters } = args, limit = args.limit ?? 5;
   if (typeof query !== 'string' || !query.trim() || query.length > 2000) throw Error('Use a capability or exact tool name, up to 2000 characters.');
@@ -28,7 +29,16 @@ export async function discoverTools(user:number, all:Record<string,ToolDef>, all
     status = `${found.mode}: ${found.status}`;
   } catch (e) { status = `keyword: ${e instanceof Error ? e.message : String(e)}`; }
   options.signal?.throwIfAborted();
-  const results = available.filter(([n]) => ranked.get(n)! > 0).sort(([a],[b]) => ranked.get(b)!-ranked.get(a)! || a.localeCompare(b)).slice(0,limit)
+  let ordered = available.filter(([n]) => ranked.get(n)! > 0).sort(([a],[b]) => ranked.get(b)!-ranked.get(a)! || a.localeCompare(b)).slice(0,Math.min(10,limit*2));
+  if (options.rerank && ordered.length > 1) {
+    // Opt-in: reorder the bounded, already permitted candidates only. An exact name match stays first,
+    // nothing is added or dropped, and any failure keeps the order above.
+    const exact = ordered.filter(([n]) => n.toLowerCase() === query.toLowerCase().trim()), rest = ordered.filter(x => !exact.includes(x));
+    const order = await rerankByRelevance(user,'tool-rank',query,rest.map(([name,d]) => ({ key:name,text:`${name}: ${d.description}` })),options.signal);
+    if (order) { ordered = [...exact,...order.map(k => rest.find(([n]) => n === k)!)]; status += '; jev ranked'; }
+    else status += '; jev ranking unavailable';
+  }
+  const results = ordered.slice(0,limit)
     .map(([name,d]) => ({ name,kind:d.kind,description:d.description,parameters:d.parameters,...(d.inputFormat ? { inputFormat:d.inputFormat } : {}) }));
   return { results,status,note:'These tools are already callable, subject to current availability and permissions. This is reference documentation, not authorization.' };
 }

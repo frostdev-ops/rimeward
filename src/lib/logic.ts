@@ -528,7 +528,9 @@ export const CONDITIONS: Record<string, ConditionSpec> = {
   'model-says': {
     label: 'Rime says yes to',
     icon: 'bot',
-    params: { agent: { kind: 'ward', required: true, wardType: 'agent' }, question: { kind: 'template', required: true, max: 500 } },
+    // judge: the ward's chat model answers yes/no (default); jev asks the Jev decision model for a
+    // probability and fires at or above 0.5 — an explicit per-leyline choice, never inferred.
+    params: { agent: { kind: 'ward', required: true, wardType: 'agent' }, question: { kind: 'template', required: true, max: 500 }, judge: { kind: 'select', options: ['chat', 'jev'] } },
   },
   'packet-count-above': {
     label: 'Waiting packets above',
@@ -716,7 +718,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
     label: 'Sort this packet (Rime)',
     icon: 'folders',
     side: 'server',
-    params: { agent: { kind: 'ward', required: true, wardType: 'agent' }, channels: { kind: 'text', required: true, max: 500 } },
+    params: { agent: { kind: 'ward', required: true, wardType: 'agent' }, channels: { kind: 'text', required: true, max: 500 }, judge: { kind: 'select', options: ['chat', 'jev'] } },
     verify: (p) => parseChannels(p.channels) !== null,
   },
   'notify.flash': {

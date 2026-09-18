@@ -262,6 +262,16 @@ async function withChildSlot<T>(fn: () => Promise<T>, signal?: AbortSignal): Pro
   } finally { signal?.removeEventListener('abort', release); release(); }
 }
 
+/** The bounded per-account call record (40 rows): chat calls and decisions alike — ids, models,
+ *  timing, usage, outcome and route; never prompts, state or credentials. */
+export function recordModelCall(userId: number, record: Record<string, unknown>): void {
+  try {
+    const key = `agent_model_calls:${userId}`;
+    const rows = JSON.parse(getSetting(key) ?? '[]');
+    setSetting(key, JSON.stringify([...(Array.isArray(rows) ? rows.filter(r => r.id !== record.id).slice(-39) : []), record]));
+  } catch { /* Diagnostic metadata must never block a model call. */ }
+}
+
 /** Enforce the lifetime independently of SDK/fetch cancellation. Late output cannot re-enter a turn. */
 export async function runModel(provider: AgentProvider, call: ProviderCall): Promise<ProviderResult> {
   call.signal?.throwIfAborted();
@@ -283,13 +293,9 @@ export async function runModel(provider: AgentProvider, call: ProviderCall): Pro
   record.toolsHash = createHash('sha256').update(JSON.stringify(call.tools)).digest('hex');
   const startedAt = Date.now();
   const save = () => {
-    try {
-      const route = call.route ?? (provider.route ? routeReceipt(provider.route) : undefined);
-      if (route) record.route = route;
-      const key = `agent_model_calls:${call.userId}`;
-      const rows = JSON.parse(getSetting(key) ?? '[]');
-      setSetting(key, JSON.stringify([...(Array.isArray(rows) ? rows.filter(r => r.id !== record.id).slice(-39) : []), record]));
-    } catch { /* Diagnostic metadata must never block a model call. */ }
+    const route = call.route ?? (provider.route ? routeReceipt(provider.route) : undefined);
+    if (route) record.route = route;
+    recordModelCall(call.userId, record);
   };
   save();
   try {

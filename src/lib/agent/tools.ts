@@ -4,6 +4,7 @@ import { postUserQuestion } from './questions.ts';
 import { searchKnowledge, readKnowledge } from './knowledge.ts';
 import type { ToolSearch } from './tool-discovery.ts';
 import { manageMonitor, readMonitor } from './monitors.ts';
+import { TERMINAL_PROPOSITIONS } from './monitor-filter.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { sharedTool, serverTool } from './sync.ts';
 import { agentWardConfig, inheritedCliPermissions, type AgentWardConfig, type CliPermissions } from './ward-config.ts';
@@ -105,6 +106,8 @@ export interface ToolCtx {
   mayMutate?: () => boolean;
   /** Conversation-retained discovery, absent in the sandbox and outside the model loop. */
   searchTools?: (args:ToolSearch) => Promise<unknown>;
+  /** The ward's experimental decision switches, snapshotted by the turn; absent = all off. */
+  decisions?: AgentWardConfig['decisions'];
   userId: number;
   ward: string;
   /** The conversation this call belongs to. Rides on the ctx, never a module
@@ -408,11 +411,13 @@ const docName = str('a slug, [a-z0-9-] ≤48 chars, e.g. "user-timezone" or "dep
 
 export const TOOLS: Record<string, ToolDef> = {
   monitor: {
-    kind:'write',description:'Create, update, pause, resume, delete, or inspect a persistent background monitor in this conversation. Observation only: never authorizes replies or external actions. Sources: terminal, file, browser, agent, note, notebook, http, comms, event (Leylines). Initial observations are baselines; matching events wake this conversation or arrive between rounds. Clearing/archiving deletes monitors. HTTP defaults to 30 seconds. Watching does not occupy running-task slots. Exact filters run before an optional semantic gate; unavailable semantic inference visibly blocks delivery. Terminal sources observe rendered screen rows (new stable lines, spinner ticks and repaints dropped), never raw bytes. Deliveries are rate limited per monitor by minIntervalSeconds (default 5): bursts coalesce into one notice and a trailing notice follows when the source goes quiet.',
+    kind:'write',description:'Create, update, pause, resume, delete, or inspect a persistent background monitor in this conversation. Observation only: never authorizes replies or external actions. Sources: terminal, file, browser, agent, note, notebook, http, comms, event (Leylines). Initial observations are baselines; matching events wake this conversation or arrive between rounds. Clearing/archiving deletes monitors. HTTP defaults to 30 seconds. Watching does not occupy running-task slots. Exact filters run before an optional semantic gate and an optional decision gate; unavailable semantic or decision inference visibly blocks delivery. Terminal sources observe rendered screen rows (new stable lines, spinner ticks and repaints dropped), never raw bytes. Deliveries are rate limited per monitor by minIntervalSeconds (default 5): bursts coalesce into one notice and a trailing notice follows when the source goes quiet.',
     parameters:obj({ action:{ type:'string',enum:['create','update','pause','resume','delete','status'] },id:str('Monitor id for an existing monitor'),name:str('Short description'),minIntervalSeconds:num('Minimum seconds between alert deliveries for this monitor, 1–3600; default 5. Distinct from source.intervalSeconds (polling).'),
       source:{ type:'object',properties:{ type:{ type:'string',enum:['terminal','file','browser','agent','note','notebook','http','comms','event'] },target:str('Terminal, ward, note, notebook or child task id'),path:str('Virtual workspace file or folder. File monitors currently support local folders on this run’s runtime; remote and SSH file watchers are unavailable.'),url:str('Read-only HTTP(S) probe'),selector:str('Optional browser CSS selector'),event:str('Leyline trigger type'),intervalSeconds:num('5–86400 seconds, default 30; connector minimums still apply'),headers:{ type:'array',items:{ type:'string' } },fields:{ type:'array',items:{ type:'string' },description:'Selected JSON field paths' } },required:['type'],additionalProperties:false },
       filter:{ type:'object',description:'Exact filter: {all:[filters]}, {any:[filters]}, {not:filter}, or {field,op,value}; op eq, contains, glob (* and ?), gt, gte, lt, lte, changed. Maximum depth 8 and 64 nodes. Source fields include path, sender, channel, eventType, status, exitCode, text, and json fields.',additionalProperties:true },
-      semantic:{ type:['object','null'],properties:{ field:str('Text field to compare'),query:str('Meaning to match'),threshold:num('Minimum cosine similarity, -1 to 1') },required:['field','query','threshold'],additionalProperties:false } },['action']),
+      semantic:{ type:['object','null'],properties:{ field:str('Text field to compare'),query:str('Meaning to match'),threshold:num('Minimum cosine similarity, -1 to 1') },required:['field','query','threshold'],additionalProperties:false },
+      decision:{ type:['object','null'],description:`Experimental Jev decision gate, only when the user enabled Decision assistance on this ward (⚙ Configure); otherwise refused. Runs after the exact filter and any semantic gate. mode observe records the verdict on the monitor status while delivery stays as it was; mode filter delivers only on a match and blocks visibly when the decision is unavailable. propositions: 1–4 independent factual yes/no statements about the text field, answered separately and combined in code; for terminal status prefer ${JSON.stringify(TERMINAL_PROPOSITIONS)}. threshold: the probability floor a proposition must reach, 0.5–0.99 — not validated for any source, choose it deliberately. A match grants no authority.`,
+        properties:{ mode:{ type:'string',enum:['observe','filter'] },field:str('Text field to judge'),propositions:{ type:'object',additionalProperties:{ type:'string' } },combine:{ type:'string',enum:['any','all'] },threshold:num('Probability floor, 0.5–0.99') },required:['mode','field','propositions','threshold'],additionalProperties:false } },['action']),
     run:async(a,ctx) => {
       if (!['create', 'update', 'resume'].includes(a.action)) return manageMonitor(ctx, a);
       const source = a.source ?? (a.id ? readMonitor(ctx, String(a.id)).monitor.source : undefined);
@@ -445,7 +450,7 @@ export const TOOLS: Record<string, ToolDef> = {
   search_knowledge: {
     kind:'read',description:'Search existing memories, skills, notes, notebooks, conversation transcripts and extracted attachments. Returns bounded excerpts, page/line locators and authoritative source identities. Explicit keyword fallback when embeddings are unavailable. Project files are excluded.',
     parameters:obj({ query:str('Question, keyword or exact source name'),scope:{ type:'array',items:{ type:'string',enum:['memory','skill','standing','note','notebook','conversation','attachment'] } },limit:num('Default 5; maximum 10') },['query']),
-    run:(a,ctx) => searchKnowledge(ctx.userId,a.query,a.scope,a.limit ?? 5),
+    run:(a,ctx) => searchKnowledge(ctx.userId,a.query,a.scope,a.limit ?? 5,undefined,ctx.signal,ctx.decisions?.knowledge === true),
   },
   read_knowledge: {
     kind:'read',description:'Read a current authoritative knowledge source using its source identity and character offset. Deleted, trashed and inaccessible sources are excluded.',

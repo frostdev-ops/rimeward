@@ -88,6 +88,8 @@ The [server guide](https://github.com/frostdev-ops/rimeward/wiki/Remote-Web-Setu
 
 Rime supports persistent background monitors, tools loaded through search, and
 semantic retrieval over existing knowledge. See [retrieval setup and operation](docs/semantic-retrieval.md).
+Optional, off-by-default [decision assistance](docs/decision-assistance.md) (experimental) can judge monitor
+observations, Leyline yes/no and sort nodes, completion of a turn, result ranking and model routing.
 
 Replies stream as they arrive, with an expandable timeline for each action.
 Scrolling up pauses automatic following; **Latest** returns to the live response.

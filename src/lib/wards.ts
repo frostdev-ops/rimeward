@@ -1029,6 +1029,14 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
       if (cap !== undefined && cap !== 6) out.headlessCap = cap;
       const rounds = whole(raw.rounds, 500);
       if (rounds !== undefined) out.rounds = rounds;
+      // Experimental decision assistance (agent/decisions.ts): each switch independent, stored
+      // only when set, so an untouched ward has none and nothing is ever on by default.
+      if (raw.jevMonitors === 'observe' || raw.jevMonitors === 'filter') out.jevMonitors = raw.jevMonitors;
+      for (const k of ['jevAdvice', 'jevTools', 'jevKnowledge'] as const) if (raw[k] === true) out[k] = true;
+      if (typeof raw.jevRoute === 'string') {
+        const route = raw.jevRoute.split(',').map((m) => m.trim()).filter((m) => m && m.length <= 100).slice(0, 8);
+        if (route.length) out.jevRoute = route.join(',');
+      }
       return out;
     }
     default:

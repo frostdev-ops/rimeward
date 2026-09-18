@@ -28,6 +28,31 @@ export interface AgentWardConfig {
   headlessCap: number;
   /** Tool rounds per turn on this ward; absent = the account setting, 0 = no cap. */
   rounds?: number;
+  /** Experimental Jev decision assistance (agent/decisions.ts). Every switch is independent and
+   *  off unless the user set it here; a configured OpenRouter key alone turns nothing on. Always set
+   *  by agentWardConfig; optional so hand-built configs read as all off. */
+  decisions?: AgentDecisions;
+}
+export interface AgentDecisions {
+  /** Monitor gate ceiling: what a monitor's `decision` argument may ask for. */
+  monitors: 'off' | 'observe' | 'filter';
+  /** A completion check before a final no-tool answer; may add one bounded corrective round. */
+  advice: boolean;
+  /** Rerank search_tools results (never loads, unloads or hides a tool). */
+  tools: boolean;
+  /** Rerank retrieved knowledge passages (never adds, drops or rewrites one). */
+  knowledge: boolean;
+  /** Automatic model routing: the user-approved candidate list, ascending capability, on the
+   *  ward's own provider; empty = off. */
+  route: string[];
+}
+export const DECISIONS_OFF: AgentDecisions = { monitors: 'off', advice: false, tools: false, knowledge: false, route: [] };
+export function parseDecisions(c: Record<string, unknown>): AgentDecisions {
+  const route = typeof c.jevRoute === 'string' ? c.jevRoute.split(',').map((m) => m.trim()).filter(Boolean).slice(0, 8) : [];
+  return {
+    monitors: c.jevMonitors === 'observe' || c.jevMonitors === 'filter' ? c.jevMonitors : 'off',
+    advice: c.jevAdvice === true, tools: c.jevTools === true, knowledge: c.jevKnowledge === true, route,
+  };
 }
 
 /** The stored agent ward's config — from the STORED layout, never the client. */
@@ -50,6 +75,8 @@ export function agentWardConfig(userId: number, ward: string): AgentWardConfig |
     effort: (AGENT_EFFORTS as readonly string[]).includes(c.effort as string) ? (c.effort as AgentEffort) : 'medium',
     headlessCap: Number.isInteger(c.headlessCap) && (c.headlessCap as number) >= 0 ? (c.headlessCap as number) : HEADLESS_PER_HOUR,
     ...(Number.isInteger(c.rounds) && (c.rounds as number) >= 0 ? { rounds: c.rounds as number } : {}),
+    // Never inherited from the shared server Rime: the switches are this ward's own choice.
+    decisions: parseDecisions((w.config ?? {}) as Record<string, unknown>),
   };
 }
 

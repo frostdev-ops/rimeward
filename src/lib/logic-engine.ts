@@ -63,6 +63,7 @@ import {
 import { invalidate } from './cache.ts';
 import { CHECKLIST_PAGE_SIZE, parseChannels } from './logic.ts';
 import { askJson, askModel } from './agent/oneshot.ts';
+import { decide, UNTRUSTED } from './agent/decisions.ts';
 import { onNoteEvent, type NoteEvent } from './note-events.ts';
 import { createNote, ensureNotebook, findNote, getNotebook, listNotes, notebookIdOf, notebookWardsOf, updateNoteMeta, type Notebook } from './notebook.ts';
 import { getNoteMeta, readNote, textToHtml, writeNote, plainText, type NoteMeta } from './note.ts';
@@ -540,7 +541,15 @@ export const CONDITION_EXECS: Record<string, (ctx: FireCtx, params: Record<strin
     return (await mailUnreadCount(ctx.userId, asAccount(p.account))) > Number(p.count);
   },
   'model-says': async (ctx, p) => {
-    const a = await askModel({ ...(await wardModel(ctx, p.agent)), instructions: YESNO, text: `QUESTION: ${renderTemplate(String(p.question), ctx.vars)}` });
+    const question = renderTemplate(String(p.question), ctx.vars);
+    if (p.judge === 'jev') {
+      // The explicit Jev path: one Noul, fired at or above 0.5 (the boolean reading of a
+      // probability). Unavailable or malformed = an error run, never a silent no.
+      const { userId } = await wardModel(ctx, p.agent);
+      const { answers } = await decide(userId, 'leyline:model-says', { question }, { yes: { type: 'noul', instructions: `The answer to the question in the state is yes. ${UNTRUSTED}` } });
+      return answers.yes.noul >= 0.5;
+    }
+    const a = await askModel({ ...(await wardModel(ctx, p.agent)), instructions: YESNO, text: `QUESTION: ${question}` });
     return /^\s*yes/i.test(a);
   },
 };
@@ -655,15 +664,27 @@ export const ACTION_EXECS: Record<string, (ctx: FireCtx, edge: LogicEdge) => Pro
     // Loop brake, durable in the row: a sorted packet is never re-sorted.
     if (ctx.packet.history.some((h) => h.note?.startsWith('sorted #'))) return 'already sorted';
     const list = parseChannels(e.action.params.channels)!;
-    const out = await askJson({
-      ...(await wardModel(ctx, e.action.params.agent)),
-      instructions: SORT,
-      text: `CHANNELS:\n${list.map((c) => `${c.id}: ${c.desc || c.id}`).join('\n')}\n\nMESSAGE:\n${ctx.packet.text}`,
-    });
-    const channel = String(out.channel);
+    let channel: string, why: string;
+    if (e.action.params.judge === 'jev') {
+      // The explicit Jev path: a Choice over exactly the listed ids (the helper refuses any other).
+      // Jev writes no prose, so the receipt is the channel's own description and the probability.
+      const { userId } = await wardModel(ctx, e.action.params.agent);
+      const { answers } = await decide(userId, 'leyline:flow.sort', { message: ctx.packet.text.slice(0, 8000) },
+        { channel: { type: 'choice', instructions: `Select the channel that fits the message's substantive content. ${UNTRUSTED}`, criteria: Object.fromEntries(list.map((c) => [c.id, c.desc || c.id])) } });
+      channel = answers.channel.choice;
+      const p = answers.channel.probabilities?.[channel];
+      why = `jev ${p === undefined ? '' : `${Math.round(p * 100)}% `}${(list.find((c) => c.id === channel)?.desc || channel).slice(0, 80)}`;
+    } else {
+      const out = await askJson({
+        ...(await wardModel(ctx, e.action.params.agent)),
+        instructions: SORT,
+        text: `CHANNELS:\n${list.map((c) => `${c.id}: ${c.desc || c.id}`).join('\n')}\n\nMESSAGE:\n${ctx.packet.text}`,
+      });
+      channel = String(out.channel);
+      why = String(out.why ?? '').slice(0, 120);
+    }
     // An off-list answer is an error run, never coerced: the packet stays put.
     if (!list.some((c) => c.id === channel)) throw new Error(`model picked "${channel.slice(0, 32)}", not in the list`);
-    const why = String(out.why ?? '').slice(0, 120);
     const p = setChannel(ctx.userId, ctx.packet.id, channel, `sorted #${channel}: ${why}`);
     if (!p) throw new Error('packet gone');
     broadcast(ctx.userId, 'packets', { wards: [p.ward] });

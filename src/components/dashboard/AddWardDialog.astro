@@ -626,6 +626,30 @@ const groups = (Object.keys(CATEGORIES) as Category[])
         </select>
         <p class="mt-1 text-[10px] text-ink-faint">The launch mode for the Claude Code and Codex sessions Rime starts; each CLI enforces it its own way, and OS permissions still apply. Default follows the paired server Rime’s setting on a desktop, else Normal. Their prompts reach Rime only while the conversation that started them is active; otherwise the CLI asks at the terminal. Sessions you start from a Terminal ward pick their own mode there. Codex keeps its hook-trust review (/hooks) separately; no mode grants it.</p>
       </div>
+      <fieldset class="flex flex-col gap-2 rounded border border-line p-2">
+        <legend class="label px-1">Decision assistance <span class="text-ink-faint">(experimental)</span></legend>
+        <p class="text-[10px] text-ink-faint">Each switch sends its selected context — monitor observations, a request and this turn’s tool record, tool names, retrieved passages — to OpenRouter’s Jev decision model on your OpenRouter key (or the paired server’s). Off unless you turn it on; a key alone enables nothing. Typed answers only, no proof of correctness, and never a permission: nothing here can approve a send, a write, or a delete.</p>
+        <div class="flex gap-3">
+          <div class="flex-1">
+            <label class="label" for="aw-ag-jev-monitors">Monitor decisions</label>
+            <select id="aw-ag-jev-monitors" name="ag-jev-monitors" class="input">
+              <option value="off" selected>Off</option>
+              <option value="observe">Observe only · record the verdict, deliver as before</option>
+              <option value="filter">Allow filtering · a monitor may deliver only on a match</option>
+            </select>
+          </div>
+          <div class="flex-1">
+            <label class="label" for="aw-ag-jev-route">Automatic model routing</label>
+            <input id="aw-ag-jev-route" name="ag-jev-route" type="text" class="input" placeholder="blank = off" aria-describedby="aw-ag-jev-route-hint" />
+            <p id="aw-ag-jev-route-hint" class="mt-1 text-[10px] text-ink-faint">Model ids on this ward’s provider, comma-separated, smallest first. One pick per run; your explicit model choices always win.</p>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-3 text-sm">
+          <label class="flex items-center gap-2"><input type="checkbox" id="aw-ag-jev-advice" name="ag-jev-advice" /> Completion advice <span class="text-ink-faint">— one bounded extra round when a final answer looks unfinished</span></label>
+          <label class="flex items-center gap-2"><input type="checkbox" id="aw-ag-jev-tools" name="ag-jev-tools" /> Rank tool search results</label>
+          <label class="flex items-center gap-2"><input type="checkbox" id="aw-ag-jev-knowledge" name="ag-jev-knowledge" /> Rank retrieved knowledge</label>
+        </div>
+      </fieldset>
       <p class="mt-1 text-[10px] text-ink-faint">Credentials live in Account → Agent. Changing the provider starts a fresh conversation.</p>
     </div>
 

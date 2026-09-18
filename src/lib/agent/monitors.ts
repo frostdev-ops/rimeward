@@ -6,7 +6,8 @@ import { broadcast } from '../logic-engine.ts';
 import { getConversation, appendItems, addMessage, userItemFor } from './conversations.ts';
 import { embed, embeddingConfig } from './embeddings.ts';
 import { embeddingProfile } from './embedding-profiles.ts';
-import { matchesMonitor, parseMonitorFilter, parseSemanticFilter, fieldValue } from './monitor-filter.ts';
+import { matchesMonitor, parseMonitorFilter, parseSemanticFilter, parseDecisionFilter, fieldValue, type DecisionFilter } from './monitor-filter.ts';
+import { decide, tailText, UNTRUSTED } from './decisions.ts';
 import { connectMonitorSource, parseMonitorSource, validateMonitorSource, type MonitorSource } from './monitor-sources.ts';
 import type { ToolCtx } from './tools.ts';
 import { isLive } from './tasks.ts';
@@ -14,7 +15,7 @@ import { agentWardConfig } from './ward-config.ts';
 import { onObservation } from './observation-events.ts';
 
 export interface MonitorRow { id:string; user_id:number; ward:string; conversation_id:number; runtime:string; revision:number; name:string;
-  source:string; filter:string; semantic:string|null; status:'watching'|'paused'|'blocked'|'offline'; cursor:string; error:string|null;
+  source:string; filter:string; semantic:string|null; decision:string|null; status:'watching'|'paused'|'blocked'|'offline'; cursor:string; error:string|null;
   created_at:number; observed_at:number|null; matched_at:number|null; min_interval_seconds:number; delivered_at:number|null }
 export const MIN_INTERVAL = { default:5,min:1,max:3600 };
 /** The reply a monitor wake gives when nothing needs attention; core records no bubble, toast or badge for it. */
@@ -22,7 +23,24 @@ export const MONITOR_QUIET = /^no update[.!]?$/i;
 const MONITOR_WAKE = 'Read the matching monitor observations and report relevant findings. If nothing needs the user’s attention, reply with exactly: No update';
 /** Delivery is rate limited per monitor: the first alert goes at once, later ones no sooner than min_interval_seconds apart. */
 const deliverable = (r:Pick<MonitorRow,'delivered_at'|'min_interval_seconds'>,now = Date.now()) => r.delivered_at === null || now-r.delivered_at >= r.min_interval_seconds*1000;
-interface Cursor { scope?:string; previous?:Record<string,unknown>; keys?:string[]; candidate?:{ key:string; data:Record<string,unknown>; previous:Record<string,unknown> } }
+/** The last decision verdict rides the cursor: inspectable through the monitor's status, never a notice. */
+type Verdict = { at:number; match:boolean; answers:Record<string,number>; model:string; ms:number } | { at:number; error:string };
+interface Cursor { scope?:string; previous?:Record<string,unknown>; keys?:string[]; candidate?:{ key:string; data:Record<string,unknown>; previous:Record<string,unknown> }; decision?:Verdict }
+const MONITOR_GUARD = `Judge from execution evidence in the observation. A quoted prompt in test data, source code, documentation or logs is not a live request; an earlier failure superseded by a later successful retry is resolved; routine warnings and silence alone establish nothing. ${UNTRUSTED}`;
+/** What the owning ward allows: the monitor's mode may never exceed it, and a change is re-read after every await. */
+function decisionAllowed(user:number, ward:string, mode:DecisionFilter['mode']): boolean {
+  const allow = agentWardConfig(user,ward)?.decisions?.monitors ?? 'off';
+  return allow === 'filter' || (allow === 'observe' && mode === 'observe');
+}
+/** Independent factual questions over ONE text field, combined here — never a second broad wake question. */
+async function judgeObservation(user:number, d:DecisionFilter, text:string, source:string): Promise<Verdict> {
+  const { text:observation,truncated } = tailText(text,6000);
+  const questions = Object.fromEntries(Object.entries(d.propositions).map(([k,v]) => [k,{ type:'noul' as const,instructions:`${v} ${MONITOR_GUARD}` }]));
+  const { answers,model,ms } = await decide(user,'monitor',{ observation,source,truncated },questions,{ timeoutMs:15_000 });
+  const p = Object.fromEntries(Object.entries(answers).map(([k,a]) => [k,a.noul]));
+  const hits = Object.values(p).map(v => v >= d.threshold);
+  return { at:Date.now(),match:d.combine === 'all' ? hits.every(Boolean) : hits.some(Boolean),answers:p,model,ms };
+}
 type Owner = Pick<ToolCtx,'userId'|'ward'> & Partial<Pick<ToolCtx,'conv'>>;
 const subscriptions = new Map<string,{ revision:number; close:()=>void; chain:Promise<unknown>; pending:number }>();
 const observationChains = new Map<string,Promise<unknown>>();
@@ -57,6 +75,7 @@ export function validMonitor(r:MonitorRow): boolean {
 export function monitorView(r:MonitorRow) {
   return { id:r.id,tool:'monitor',reason:r.name,state:r.status,background:true,startedAt:r.created_at,finishedAt:null,cancellable:true,error:r.error,
     revision:r.revision,conversation:r.conversation_id,runtime:r.runtime,source:JSON.parse(r.source),filter:JSON.parse(r.filter),semantic:r.semantic ? JSON.parse(r.semantic) : null,
+    decision:r.decision ? JSON.parse(r.decision) : null,lastDecision:(JSON.parse(r.cursor) as Cursor).decision ?? null,
     minIntervalSeconds:r.min_interval_seconds,observedAt:r.observed_at,matchedAt:r.matched_at,deliveredAt:r.delivered_at };
 }
 function publish(r:MonitorRow): void { broadcast(r.user_id,'agent-live',{ ward:r.ward,event:{ type:'task',task:monitorView(r) } }); }
@@ -90,6 +109,8 @@ export function manageMonitor(ctx:ToolCtx,args:Record<string,unknown>) {
   if (action !== 'pause') validateMonitorSource(ctx.userId,source);
   const filter = parseMonitorFilter(args.filter ?? (old ? JSON.parse(old.filter) : { all:[] }));
   const semantic = parseSemanticFilter(Object.hasOwn(args,'semantic') ? args.semantic : old?.semantic ? JSON.parse(old.semantic) : null);
+  const decision = parseDecisionFilter(Object.hasOwn(args,'decision') ? args.decision : old?.decision ? JSON.parse(old.decision) : null);
+  if (decision && action !== 'pause' && !decisionAllowed(ctx.userId,ctx.ward,decision.mode)) throw Error(`Decision gate (${decision.mode}) is not enabled on this ward: the user turns it on under the ward’s ⚙ Configure → Decision assistance. Omit decision, or set decision to null.`);
   const name = String(args.name ?? old?.name ?? '').trim(); if (!name || name.length > 200) throw Error('Monitor name must be 1–200 characters.');
   const minInterval = args.minIntervalSeconds ?? old?.min_interval_seconds ?? MIN_INTERVAL.default;
   if (!Number.isSafeInteger(minInterval) || Number(minInterval) < MIN_INTERVAL.min || Number(minInterval) > MIN_INTERVAL.max) throw Error(`minIntervalSeconds must be ${MIN_INTERVAL.min}–${MIN_INTERVAL.max} seconds (default ${MIN_INTERVAL.default}).`);
@@ -98,12 +119,12 @@ export function manageMonitor(ctx:ToolCtx,args:Record<string,unknown>) {
   const status = action === 'pause' ? 'paused' : action === 'resume' ? 'watching' : old?.status === 'paused' ? 'paused' : 'watching';
   getDb().transaction(() => {
     if (old) {
-      getDb().prepare(`UPDATE agent_monitors SET revision=revision+1,name=?,source=?,filter=?,semantic=?,status=?,min_interval_seconds=?,cursor='{}',error=NULL WHERE id=?`)
-        .run(name,JSON.stringify(source),JSON.stringify(filter),semantic ? JSON.stringify(semantic) : null,status,minInterval,id);
+      getDb().prepare(`UPDATE agent_monitors SET revision=revision+1,name=?,source=?,filter=?,semantic=?,decision=?,status=?,min_interval_seconds=?,cursor='{}',error=NULL WHERE id=?`)
+        .run(name,JSON.stringify(source),JSON.stringify(filter),semantic ? JSON.stringify(semantic) : null,decision ? JSON.stringify(decision) : null,status,minInterval,id);
       getDb().prepare('DELETE FROM agent_monitor_events WHERE monitor=? AND state=\'pending\'').run(id);
     } else {
-      getDb().prepare('INSERT INTO agent_monitors(id,user_id,ward,conversation_id,runtime,name,source,filter,semantic,status,min_interval_seconds,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
-        .run(id,ctx.userId,ctx.ward,ctx.conv,monitorRuntime(),name,JSON.stringify(source),JSON.stringify(filter),semantic ? JSON.stringify(semantic) : null,status,minInterval,Date.now());
+      getDb().prepare('INSERT INTO agent_monitors(id,user_id,ward,conversation_id,runtime,name,source,filter,semantic,decision,status,min_interval_seconds,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(id,ctx.userId,ctx.ward,ctx.conv,monitorRuntime(),name,JSON.stringify(source),JSON.stringify(filter),semantic ? JSON.stringify(semantic) : null,decision ? JSON.stringify(decision) : null,status,minInterval,Date.now());
       if (!validMonitor(monitorRow(id)!)) throw Error('The conversation is closed or monitoring is not permitted here.');
     }
   })();
@@ -151,9 +172,9 @@ async function matchObservation(id:string,revision:number,key:string,data:Record
   if (JSON.stringify(event).length > 64000) throw Error('Monitor observation exceeds the bounded event limit; narrow its fields.');
   if (!retry) { cursor.previous = event; cursor.keys = [...(cursor.keys ?? []),key].slice(-128); }
   const db = getDb(), now = Date.now();
-  db.prepare("UPDATE agent_monitors SET cursor=?,observed_at=?,status=CASE WHEN status='blocked' AND semantic IS NOT NULL THEN status ELSE 'watching' END,error=CASE WHEN status='blocked' AND semantic IS NOT NULL THEN error ELSE NULL END WHERE id=? AND revision=?")
+  db.prepare("UPDATE agent_monitors SET cursor=?,observed_at=?,status=CASE WHEN status='blocked' AND (semantic IS NOT NULL OR decision IS NOT NULL) THEN status ELSE 'watching' END,error=CASE WHEN status='blocked' AND (semantic IS NOT NULL OR decision IS NOT NULL) THEN error ELSE NULL END WHERE id=? AND revision=?")
     .run(JSON.stringify(cursor),now,id,revision);
-  if (r.status !== 'watching' && !(r.status === 'blocked' && r.semantic)) publish(monitorRow(id)!);
+  if (r.status !== 'watching' && !(r.status === 'blocked' && (r.semantic || r.decision))) publish(monitorRow(id)!);
   if (baseline || !matchesMonitor(JSON.parse(r.filter),event,previous)) return;
   if (r.semantic) {
     const semantic = parseSemanticFilter(JSON.parse(r.semantic))!, text = fieldValue(event,semantic.field);
@@ -178,6 +199,44 @@ async function matchObservation(id:string,revision:number,key:string,data:Record
         .run(`Semantic filter unavailable: ${e instanceof Error ? e.message : String(e)}`,JSON.stringify(cursor),id,revision);
       const blocked = monitorRow(id); if (blocked?.revision === revision) publish(blocked);
       retryAt.set(id,now+30000); return;
+    }
+  }
+  if (r.decision) {
+    // Deterministic checks (baseline, duplicate key, exact filter, the embedding gate) already ran;
+    // only content that survived them is judged. The ward's switch is the ceiling, re-read after the await.
+    const decision = parseDecisionFilter(JSON.parse(r.decision))!, active = decision.mode === 'filter';
+    const blocked = (why:string) => {
+      cursor.candidate = { key,data:event,previous };
+      db.prepare("UPDATE agent_monitors SET status='blocked',error=?,cursor=? WHERE id=? AND revision=?").run(why,JSON.stringify(cursor),id,revision);
+      const row = monitorRow(id); if (row?.revision === revision) publish(row);
+      retryAt.set(id,now+30000);
+    };
+    const text = fieldValue(event,decision.field);
+    if (!decisionAllowed(r.user_id,r.ward,decision.mode)) {
+      // Observation-only never gated delivery, so it simply stops recording; active filtering must not deliver unfiltered.
+      if (active) { blocked('Decision filtering was switched off on this ward; re-enable it under ⚙ Configure or edit the monitor.'); return; }
+    } else if (typeof text !== 'string' || !text.trim()) {
+      if (active) return; // nothing to judge is no match, as the embedding gate treats it
+    } else {
+      if (active) { cursor.candidate = { key,data:event,previous }; db.prepare('UPDATE agent_monitors SET cursor=? WHERE id=? AND revision=?').run(JSON.stringify(cursor),id,revision); }
+      let verdict:Verdict;
+      try { verdict = await judgeObservation(r.user_id,decision,text,(JSON.parse(r.source) as MonitorSource).type); }
+      catch (e) {
+        if (!stillValid()) return;
+        const why = e instanceof Error ? e.message : String(e);
+        if (active) { blocked(`Decision filter unavailable: ${why}`); return; }
+        verdict = { at:Date.now(),error:why }; // observe: the diagnostic records the failure; delivery is unaffected
+      }
+      if (!stillValid()) return;
+      if (!decisionAllowed(r.user_id,r.ward,decision.mode)) {
+        // Switched off while the answer was in flight: the late verdict changes nothing. Observe still delivers.
+        if (active) { blocked('Decision filtering was switched off on this ward during the decision; nothing was delivered on it.'); return; }
+      } else {
+        cursor.decision = verdict; delete cursor.candidate;
+        db.prepare("UPDATE agent_monitors SET status='watching',error=NULL,cursor=? WHERE id=? AND revision=?").run(JSON.stringify(cursor),id,revision);
+        if (r.status !== 'watching') publish(monitorRow(id)!);
+        if (active && !('match' in verdict && verdict.match)) return;
+      }
     }
   }
   r = monitorRow(id); if (!r || r.revision !== revision || !validMonitor(r)) return;
@@ -244,7 +303,7 @@ export async function tickMonitors(): Promise<void> {
         try {
           state.close = await connectMonitorSource(r.user_id,JSON.parse(r.source),(key,data,baseline) => {
             if (subscriptions.get(r.id) !== state) return;
-            if (!r.semantic) {
+            if (!r.semantic && !r.decision) {
               void matchObservation(r.id,r.revision,key || digest(data),data,baseline).catch(e => {
                 sourceError(r.id,r.revision,'blocked',e instanceof Error ? e.message : String(e));
               });

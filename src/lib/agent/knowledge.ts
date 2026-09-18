@@ -9,6 +9,7 @@ import { parseDoc, docPath } from './store.ts';
 import { estimateTokens } from './context.ts';
 import type { ToolDef } from './tools.ts';
 import { onObservation } from './observation-events.ts';
+import { rerankByRelevance } from './decisions.ts';
 
 export interface KnowledgeHit { id:number; source:string; kind:string; title:string; reference:string; revision:string; text:string; page:number; line:number; offset:number; score?:number }
 export interface KnowledgeStatus { chunks:number; embedded:number; vectorError:string; error?:string; indexing?:boolean }
@@ -75,7 +76,7 @@ export async function knowledgeStatus(user:number): Promise<KnowledgeStatus> {
 export async function rebuildKnowledge(user:number): Promise<KnowledgeStatus> {
   await request(user,'rebuild'); indexKnowledge(user); return knowledgeStatus(user);
 }
-export async function searchKnowledge(user:number, query:string, kinds?:string[], limit = 5, sources?:string[], signal?:AbortSignal) {
+export async function searchKnowledge(user:number, query:string, kinds?:string[], limit = 5, sources?:string[], signal?:AbortSignal, rerank = false) {
   signal?.throwIfAborted();
   if (typeof query !== 'string' || !query.trim() || query.length > 2000) throw Error('Search requires a query of 1–2000 characters.');
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) throw Error('Search limit must be 1–10.');
@@ -86,13 +87,20 @@ export async function searchKnowledge(user:number, query:string, kinds?:string[]
   try { [vector] = await embed(user,[query],true,signal,config); }
   catch (e) { fallback = e instanceof Error ? e.message : String(e); }
   signal?.throwIfAborted();
-  const hits = await request<KnowledgeHit[]>(user,'search',{ query,kinds,sources,limit,profile:profile.id,vector });
+  let hits = await request<KnowledgeHit[]>(user,'search',{ query,kinds,sources,limit,profile:profile.id,vector });
   signal?.throwIfAborted();
+  let ranking = '';
+  if (rerank && hits.length > 1) {
+    // Opt-in reorder of the hits already retrieved and already permitted: same hits, same
+    // identities, same text; unavailable = the retrieval order stands.
+    const order = await rerankByRelevance(user,'knowledge-rank',query,hits.map(h => ({ key:`${h.id}`,text:`${h.source} — ${h.title}: ${h.text.slice(0,500)}` })),signal);
+    if (order) { hits = order.map(k => hits.find(h => `${h.id}` === k)!); ranking = ' Jev ranked.'; } else ranking = ' Jev ranking unavailable.';
+  }
   indexKnowledge(user);
   const progress = await knowledgeStatus(user);
   signal?.throwIfAborted();
   const partial = !!fallback || !!progress.vectorError || progress.embedded < progress.chunks;
-  return { mode:partial ? 'keyword-fallback' : 'hybrid',status: partial ? fallback || progress.vectorError || 'Embedding index is rebuilding; keyword retrieval remains available.' : 'ready',
+  return { mode:partial ? 'keyword-fallback' : 'hybrid',status:(partial ? fallback || progress.vectorError || 'Embedding index is rebuilding; keyword retrieval remains available.' : 'ready')+ranking,
     exhaustive:false,profile:profile.id,progress,results:hits.map(h => ({ ...h,text:h.text.slice(0,1800) })) };
 }
 export async function readKnowledge(user:number, source:string, offset = 0) {
@@ -101,7 +109,7 @@ export async function readKnowledge(user:number, source:string, offset = 0) {
   const results = await request<KnowledgeHit[]>(user,'read',{ source,offset,limit:2 });
   return { source,results,next:results.length ? results.at(-1)!.offset+results.at(-1)!.text.length : null,status:results.length ? 'current' : 'Source missing, deleted, outside scope, or no more text.' };
 }
-export async function memoryPassages(user:number, query:string): Promise<string> {
+export async function memoryPassages(user:number, query:string, rerank = false): Promise<string> {
   const passages:string[] = [], named:string[] = [];
   const names = await request<{ name:string; text:string; truncated:boolean }[]>(user,'named',{ query }).catch(() => {
     named.push('Named skill lookup unavailable; read requested procedures from /work/skills.');
@@ -116,7 +124,7 @@ export async function memoryPassages(user:number, query:string): Promise<string>
   if (names.length > 5) named.push('More named skills are available under /work/skills; read them explicitly with read_knowledge.');
   let status = '';
   try {
-    const found = await searchKnowledge(user,query.slice(-2000) || 'standing preferences',['memory','skill'],5);
+    const found = await searchKnowledge(user,query.slice(-2000) || 'standing preferences',['memory','skill'],5,undefined,undefined,rerank);
     status = `Retrieval: ${found.mode}. ${found.status}`;
     for (const h of found.results) if (!names.some(n => h.source === `skill:${n.name}`)) passages.push(`[${h.source}; ${h.reference}; line ${h.line}]\n${h.text}`);
   } catch (e) { status = `Knowledge retrieval unavailable: ${e instanceof Error ? e.message : String(e)}. Named skills can still be read from /work/skills.`; }

@@ -2062,6 +2062,12 @@ const FIELDS: Record<string, Field[]> = {
     { sel: '#aw-ag-effort', key: 'effort', def: 'medium' },
     { sel: '#aw-ag-cap', key: 'headlessCap', def: 6 }, // text on purpose: a cleared box is absent, never 0 (= no cap)
     { sel: '#aw-ag-rounds', key: 'rounds' },
+    // Decision assistance (experimental): independent switches, each absent unless set.
+    { sel: '#aw-ag-jev-monitors', key: 'jevMonitors', def: 'off' },
+    { sel: '#aw-ag-jev-advice', key: 'jevAdvice', kind: 'bool' },
+    { sel: '#aw-ag-jev-tools', key: 'jevTools', kind: 'bool' },
+    { sel: '#aw-ag-jev-knowledge', key: 'jevKnowledge', kind: 'bool' },
+    { sel: '#aw-ag-jev-route', key: 'jevRoute' },
   ],
   mail: [
     { sel: '#aw-ml-account', key: 'account', def: 'all' },

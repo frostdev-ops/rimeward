@@ -1,6 +1,19 @@
 export type MonitorFilter = { all:MonitorFilter[] } | { any:MonitorFilter[] } | { not:MonitorFilter } |
   { field:string; op:'eq'|'contains'|'glob'|'gt'|'gte'|'lt'|'lte'|'changed'; value?:string|number|boolean|null };
 export interface SemanticFilter { field:string; query:string; threshold:number }
+/** The optional Jev gate (decisions.ts). `propositions` are independent factual yes/no questions the
+ *  decision model answers against one text field; code combines them (`any`/`all`) at `threshold`
+ *  — a PROBABILITY floor, unrelated to the embedding gate's cosine `threshold`. `observe` records
+ *  the verdict on the monitor for inspection while ordinary delivery stays authoritative;
+ *  `filter` delivers only on a match and blocks visibly when the decision is unavailable. */
+export interface DecisionFilter { mode:'observe'|'filter'; field:string; propositions:Record<string,string>; combine:'any'|'all'; threshold:number }
+export const DECISION_THRESHOLD = { min:0.5,max:0.99 };
+/** The three factual propositions the terminal-status experiments settled on; the tool description offers them. */
+export const TERMINAL_PROPOSITIONS = {
+  input_request:'The actual process is currently paused, awaiting an answer on stdin or in an approval UI.',
+  unresolved_failure:'The current task has a recorded unsuccessful exit or fatal failure, and no later successful retry or continuing operation supersedes it.',
+  success:'The current task has explicitly completed successfully according to execution evidence; running progress and an earlier failure are not success.',
+};
 const fields = /^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*$/;
 export function fieldValue(event:Record<string,unknown>, field:string): unknown {
   if (Object.hasOwn(event,field)) return event[field];
@@ -69,4 +82,20 @@ export function parseSemanticFilter(raw:unknown): SemanticFilter | null {
   if (!f || typeof f.field !== 'string' || !fields.test(f.field) || f.field.length > 120 || typeof f.query !== 'string' || !f.query.trim() || f.query.length > 2000
     || typeof f.threshold !== 'number' || !Number.isFinite(f.threshold) || f.threshold < -1 || f.threshold > 1) throw Error('Semantic filter needs field, query (1–2000 characters), and cosine threshold (-1 to 1).');
   return { field:f.field,query:f.query,threshold:f.threshold };
+}
+export function parseDecisionFilter(raw:unknown): DecisionFilter | null {
+  if (raw == null) return null;
+  const f = raw as Record<string,unknown>;
+  if (!f || typeof f !== 'object' || Array.isArray(f) || (f.mode !== 'observe' && f.mode !== 'filter')) throw Error('Decision gate needs mode observe or filter.');
+  if (typeof f.field !== 'string' || !fields.test(f.field) || f.field.length > 120) throw Error('Decision gate needs a bounded text field name.');
+  const props = f.propositions;
+  if (!props || typeof props !== 'object' || Array.isArray(props)) throw Error('Decision gate needs 1–4 propositions.');
+  const entries = Object.entries(props as Record<string,unknown>);
+  if (!entries.length || entries.length > 4 || entries.some(([k,v]) => !/^[a-z][a-z0-9_]{0,31}$/.test(k) || typeof v !== 'string' || !v.trim() || v.length > 300))
+    throw Error('Propositions: 1–4 entries, snake_case names, each a factual yes/no statement of 1–300 characters.');
+  const combine = f.combine === undefined ? 'any' : f.combine;
+  if (combine !== 'any' && combine !== 'all') throw Error('Decision combine must be any or all.');
+  if (typeof f.threshold !== 'number' || !Number.isFinite(f.threshold) || f.threshold < DECISION_THRESHOLD.min || f.threshold > DECISION_THRESHOLD.max)
+    throw Error(`Decision threshold is a probability floor from ${DECISION_THRESHOLD.min} to ${DECISION_THRESHOLD.max}; it is not validated for any source and must be chosen explicitly.`);
+  return { mode:f.mode,field:f.field,propositions:Object.fromEntries(entries.map(([k,v]) => [k,(v as string).trim()])),combine,threshold:f.threshold };
 }
