@@ -127,8 +127,9 @@ const groups = (Object.keys(CATEGORIES) as Category[])
       <div class="flex gap-2">
         <label class="flex-1 text-[10px] text-ink-faint">Token header<input id="aw-mc-header" name="mc-header" type="text" class="input" value="Authorization" autocomplete="off" spellcheck="false" /></label>
         <label class="flex-1 text-[10px] text-ink-faint">Treat its tools as<select id="aw-mc-trust" name="mc-trust" class="input"><option value="write" selected>writes — pause under approvals: all</option><option value="read">read-only — never pause</option><option value="confirm">confirm every call</option></select></label>
+        <label class="flex-1 text-[10px] text-ink-faint">Longest call (s)<input id="aw-mc-longwait" name="mc-longwait" type="number" min="1" max="330" step="1" class="input" placeholder="25" autocomplete="off" /></label>
       </div>
-      <p class="mt-1 text-[10px] text-ink-faint">Remote servers over HTTP only. The token goes in on the ward itself, sealed — never in this form. A server can claim its tools are read-only; only you decide that here.</p>
+      <p class="mt-1 text-[10px] text-ink-faint">Remote servers over HTTP only. The token goes in on the ward itself, sealed — never in this form. A server can claim its tools are read-only; only you decide that here. Past 25 s only for a server on this computer, in the Rimeward app — a tool that blocks until something happens.</p>
     </div>
     <div data-cfg="discord" class="hidden flex-col gap-3">
       <div>

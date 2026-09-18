@@ -1979,6 +1979,7 @@ const FIELDS: Record<string, Field[]> = {
     { sel: '#aw-mc-url', key: 'url' },
     { sel: '#aw-mc-header', key: 'header', def: 'Authorization' },
     { sel: '#aw-mc-trust', key: 'trust', def: 'write' },
+    { sel: '#aw-mc-longwait', key: 'longWaitMs', kind: 'num' }, // seconds here, ms in the config
   ],
   discord: [
     { sel: '#aw-dc-guild', key: 'guild' },
@@ -2110,6 +2111,8 @@ function readConfig(dialog: HTMLDialogElement, type: string): Record<string, unk
       }
     }
     if (type === 'embed' && !httpUrl(cfg.url)) return null;
+    // The field asks for seconds; the config, like every other timeout, is ms.
+    if (type === 'mcp' && typeof cfg.longWaitMs === 'number') cfg.longWaitMs = Math.round(cfg.longWaitMs * 1000);
     return cfg;
   }
   switch (type) {
@@ -2212,6 +2215,7 @@ function fillConfig(dialog: HTMLDialogElement, w: WardInstance): void {
       set('#aw-bw-where', where === 'local' && SURFACE.desktop && !SURFACE.joined ? 'app' : where ?? 'local');
       syncBrowserSound();
     }
+    if (w.type === 'mcp') set('#aw-mc-longwait', typeof cfg.longWaitMs === 'number' ? Math.round(cfg.longWaitMs / 1000) : '');
     if (w.type === 'spacer') syncFx(dialog);
     if (w.type === 'note' || w.type === 'notebook' || w.type === 'agent') void loadAgentModels(dialog); // selectCard's load ran before this provider was set
     return;
