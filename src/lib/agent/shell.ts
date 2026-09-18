@@ -223,29 +223,41 @@ export async function pinnedRequest(
  * through node:https directly. The private-range check is the part that matters:
  * without it the sandbox could reach 127.0.0.1:3005 and drive this very app.
  */
-export const vettedFetch: SecureFetch = async (url, options) => {
-  let target: URL;
-  try {
-    target = new URL(url);
-  } catch {
-    throw new Error(`bad URL: ${url}`);
-  }
-  const timeoutMs = Math.min(options?.timeoutMs ?? 20_000, 30_000);
-  const headers = options?.headers instanceof Headers
-    ? Object.fromEntries(options.headers.entries())
-    : ((options?.headers as Record<string, string>) ?? {});
-
-  for (let hop = 0; hop < MAX_HOPS; hop++) {
-    const pinned = await vetHost(target); // every hop is re-checked, not just the first
-    const res = await request(target, { method: options?.method ?? 'GET', headers, body: options?.body, timeoutMs, pinned });
-    const redirecting = res.status >= 300 && res.status < 400 && res.location;
-    if (!redirecting || options?.followRedirects === false) {
-      return { status: res.status, statusText: res.statusText, headers: res.headers, body: res.body, url: target.toString() };
+export function makeVettedFetch(allowLoopback: boolean): SecureFetch {
+  return async (url, options) => {
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      throw new Error(`bad URL: ${url}`);
     }
-    target = new URL(res.location!, target);
-  }
-  throw new Error(`refused: more than ${MAX_HOPS} redirects`);
-};
+    // 30 s is a sandbox bound: no script gets to hold a socket longer. A server
+    // on this machine that the caller opted into (an MCP ward with a blocking
+    // wait tool) is the caller's own wait, so it keeps the timeout it asked for.
+    const asked = options?.timeoutMs ?? 20_000;
+    const timeoutMs = allowLoopback ? asked : Math.min(asked, 30_000);
+    const headers = options?.headers instanceof Headers
+      ? Object.fromEntries(options.headers.entries())
+      : ((options?.headers as Record<string, string>) ?? {});
+
+    for (let hop = 0; hop < MAX_HOPS; hop++) {
+      const pinned = await vetHost(target, allowLoopback); // every hop is re-checked, not just the first
+      const res = await request(target, { method: options?.method ?? 'GET', headers, body: options?.body, timeoutMs, deadlineMs: timeoutMs, pinned, signal: options?.signal });
+      const redirecting = res.status >= 300 && res.status < 400 && res.location;
+      if (!redirecting || options?.followRedirects === false) {
+        return { status: res.status, statusText: res.statusText, headers: res.headers, body: res.body, url: target.toString() };
+      }
+      target = new URL(res.location!, target);
+    }
+    throw new Error(`refused: more than ${MAX_HOPS} redirects`);
+  };
+}
+
+export const vettedFetch: SecureFetch = makeVettedFetch(false);
+
+/** The same guard plus this machine's own loopback — nothing else private. For
+ *  the desktop, where a local server (BlackIce's lens) is the point. */
+export const loopbackVettedFetch: SecureFetch = makeVettedFetch(true);
 
 // DefenseInDepthBox is a process-wide singleton that compares every option,
 // the callback included, BY REFERENCE across Bash instances: an inline arrow

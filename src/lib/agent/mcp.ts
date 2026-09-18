@@ -2,8 +2,11 @@ import { getDashboard } from '../dashboard.ts';
 import { createHash } from 'node:crypto';
 import { deleteSetting, getSetting, setSetting } from '../settings.ts';
 import { openToken, sealToken } from '../crypto.ts';
-import { MCP_TRUST, type McpTrust, type WardInstance } from '../wards.ts';
-import { vettedFetch } from './shell.ts';
+import { MAX_LONG_WAIT_MS, MCP_TRUST, type McpTrust, type WardInstance } from '../wards.ts';
+import { isLoopbackAddress } from '../net-guard.ts';
+import { isDesktop } from '../dev/runtime.ts';
+import { loopbackVettedFetch, vettedFetch } from './shell.ts';
+import { storeAttachment } from './attachments.ts';
 import type { ToolCtx, ToolDef } from './tools.ts';
 
 // MCP over streamable HTTP — the CLIENT side, remote servers only. A server
@@ -12,7 +15,9 @@ import type { ToolCtx, ToolDef } from './tools.ts';
 // row, never in the layout and never under /work (the agent's shell reads
 // /work, and with the network on that is an exfil path). Every request goes
 // through vettedFetch, the same SSRF guard the sandbox's curl has — a server
-// url that resolves to this box, or to anything private, is refused.
+// url that resolves to this box, or to anything private, is refused. On the
+// DESKTOP runtime only, this machine's own loopback is allowed (a local lens or
+// model server is the point there); every other private address still is not.
 //
 // No stdio servers: pm2 runs the app as root and the sandbox is an
 // interpreter, not a process runner. A published server package runs
@@ -32,6 +37,8 @@ export interface McpConfig {
   /** The header the token rides — Authorization gets "Bearer " in front. */
   header: string;
   trust: McpTrust;
+  /** How long one tools/call may block, already clamped (see clampLongWait). */
+  longWaitMs: number;
 }
 
 export interface McpTool {
@@ -74,13 +81,39 @@ const key = (userId: number, ward: string) => `${userId}:${ward}`;
 
 export function mcpConfig(w: WardInstance): McpConfig {
   const c = (w.config ?? {}) as Record<string, unknown>;
+  const url = typeof c.url === 'string' ? c.url : '';
   return {
     name: typeof c.name === 'string' ? c.name : 'mcp',
-    url: typeof c.url === 'string' ? c.url : '',
+    url,
     header: typeof c.header === 'string' && c.header.trim() ? c.header.trim() : 'Authorization',
     trust: (MCP_TRUST as readonly string[]).includes(c.trust as string) ? (c.trust as McpTrust) : 'write',
+    longWaitMs: clampLongWait(url, c.longWaitMs),
   };
 }
+
+const isLoopbackUrl = (url: string): boolean => {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || isLoopbackAddress(host);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * How long a tools/call may block this turn. A server on THIS machine, reached
+ * from the desktop runtime, may hold a turn open for minutes — that is what a
+ * blocking wait tool is (BlackIce's lens_wait). Everything else keeps the
+ * ordinary 25 s: a remote server must not be able to park a turn, and off the
+ * desktop a loopback url is not ours to trust either.
+ */
+export function clampLongWait(url: string, value: unknown, desktop = isDesktop()): number {
+  const ceiling = desktop && isLoopbackUrl(url) ? MAX_LONG_WAIT_MS : TIMEOUT_MS;
+  return Number.isInteger(value) && (value as number) > 0 ? Math.min(value as number, ceiling) : TIMEOUT_MS;
+}
+
+/** The desktop reaches its own loopback servers; a server install does not. */
+const defaultFetch = (): Fetch => (isDesktop() ? loopbackVettedFetch : vettedFetch);
 
 /** The stored ward, never the client's copy. */
 export function mcpWard(userId: number, ward: unknown): WardInstance | null {
@@ -147,6 +180,26 @@ export function parseRpcBody(contentType: string, text: string, id: number): Rpc
 
 let nextId = 1;
 
+const wireHeaders = (session: { id?: string }, headers: Record<string, string>): Record<string, string> => ({
+  'content-type': 'application/json',
+  accept: 'application/json, text/event-stream',
+  'mcp-protocol-version': MCP_PROTOCOL,
+  ...(session.id ? { 'mcp-session-id': session.id } : {}),
+  ...headers,
+});
+
+/** An interrupted turn tells the server to stop working on the call it will
+ *  never read the answer to. The request is already off the socket, so this is
+ *  its own POST on the same session — fire and forget: nothing waits on it. */
+function cancelRpc(fetchImpl: Fetch, cfg: McpConfig, headers: Record<string, string>, session: { id?: string }, requestId: number): void {
+  void fetchImpl(cfg.url, {
+    method: 'POST',
+    headers: wireHeaders(session, headers),
+    body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId, reason: 'interrupted' } }),
+    timeoutMs: 5_000,
+  }).catch(() => {});
+}
+
 async function rpc(
   fetchImpl: Fetch,
   cfg: McpConfig,
@@ -154,22 +207,24 @@ async function rpc(
   session: { id?: string },
   method: string,
   params: Record<string, unknown>,
-  notification = false
+  notification = false,
+  opts: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<unknown> {
   const id = nextId++;
   const body = notification ? { jsonrpc: '2.0', method, params } : { jsonrpc: '2.0', id, method, params };
-  const res = await fetchImpl(cfg.url, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-      'mcp-protocol-version': MCP_PROTOCOL,
-      ...(session.id ? { 'mcp-session-id': session.id } : {}),
-      ...headers,
-    },
-    body: JSON.stringify(body),
-    timeoutMs: TIMEOUT_MS,
-  });
+  let res;
+  try {
+    res = await fetchImpl(cfg.url, {
+      method: 'POST',
+      headers: wireHeaders(session, headers),
+      body: JSON.stringify(body),
+      timeoutMs: opts.timeoutMs ?? TIMEOUT_MS,
+      signal: opts.signal,
+    });
+  } catch (err) {
+    if (!notification && opts.signal?.aborted) cancelRpc(fetchImpl, cfg, headers, session, id);
+    throw err;
+  }
   const sid = res.headers['mcp-session-id'];
   if (sid) session.id = sid;
   if (res.status === 401 || res.status === 403) throw new Error(`the server refused the credentials (${res.status})`);
@@ -202,7 +257,7 @@ function readTools(result: unknown): McpTool[] {
 
 /** initialize → initialized → tools/list, once per SESSION_TTL; a failure is
  *  remembered for FAILURE_TTL so a dead server costs one request a minute. */
-export async function connect(userId: number, ward: string, fetchImpl: Fetch = vettedFetch, signal?: AbortSignal): Promise<Session> {
+export async function connect(userId: number, ward: string, fetchImpl: Fetch = defaultFetch(), signal?: AbortSignal): Promise<Session> {
   signal?.throwIfAborted();
   const fetchWithSignal: Fetch = signal ? (url, options) => {
     signal.throwIfAborted();
@@ -242,7 +297,7 @@ export function dropSession(userId: number, ward: string): void {
 }
 
 /** tools/call. An expired session reconnects once. */
-export async function callTool(userId: number, ward: string, tool: string, args: Record<string, unknown>, fetchImpl: Fetch = vettedFetch, expected?:string): Promise<unknown> {
+export async function callTool(userId: number, ward: string, tool: string, args: Record<string, unknown>, fetchImpl: Fetch = defaultFetch(), expected?:string, signal?: AbortSignal): Promise<unknown> {
   let revision = expected;
   for (let attempt = 0; attempt < 2; attempt++) {
     const session = await connect(userId, ward, fetchImpl);
@@ -259,7 +314,9 @@ export async function callTool(userId: number, ward: string, tool: string, args:
       if (!current || session.signature !== sessionSignature(userId,current) || !fresh || revision !== definitionRevision(session.signature,fresh)) {
         throw Error('MCP schema, credentials or trust changed since discovery; search and propose the call again.');
       }
-      return await rpc(fetchImpl, cfg, authHeaders(userId, ward, cfg), session, 'tools/call', { name: tool, arguments: args });
+      // Only the call itself gets the long deadline and the turn's cancel signal;
+      // discovery stays on TIMEOUT_MS.
+      return await rpc(fetchImpl, cfg, authHeaders(userId, ward, cfg), session, 'tools/call', { name: tool, arguments: args }, false, { timeoutMs: cfg.longWaitMs, signal });
     } catch (err) {
       if ((err as { expired?: boolean }).expired && attempt === 0) {
         dropSession(userId, ward);
@@ -287,7 +344,32 @@ export function toolText(result: unknown): string {
   return `${r?.isError ? 'ERROR: ' : ''}${text}${structured}`.trim();
 }
 
-export async function mcpStatus(userId: number, ward: string, fresh = false, fetchImpl: Fetch = vettedFetch): Promise<McpStatus> {
+/**
+ * The first image a tools/call answered with, stored on the conversation's own
+ * runtime so the round can hand the model real pixels (core.ts picks `file_id`
+ * up after the round's tool replies, the same path a screenshot takes). The
+ * bounds are the computer tools': png or jpeg, base64, 7 MiB. Anything else
+ * stays what toolText already said about it — "[image omitted]".
+ */
+export async function storeImageParts(result: unknown, ctx: ToolCtx, name: string): Promise<{ file_id?: number; image_sha256?: string }> {
+  const parts = Array.isArray((result as { content?: unknown } | null)?.content) ? (result as { content: unknown[] }).content : [];
+  const part = parts.find((p) => (p as { type?: unknown } | null)?.type === 'image') as { data?: unknown; mimeType?: unknown } | undefined;
+  if (!part) return {};
+  const mime = part.mimeType;
+  if (mime !== 'image/png' && mime !== 'image/jpeg') return {};
+  const data = part.data;
+  if (typeof data !== 'string' || data.length > 7 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return {};
+  const file = await storeAttachment({
+    userId: ctx.userId,
+    conversationId: ctx.conv || null,
+    name: `${name}.${mime === 'image/png' ? 'png' : 'jpg'}`,
+    mime,
+    bytes: Buffer.from(data, 'base64'),
+  });
+  return { file_id: file.id, image_sha256: file.sha256 };
+}
+
+export async function mcpStatus(userId: number, ward: string, fresh = false, fetchImpl: Fetch = defaultFetch()): Promise<McpStatus> {
   if (fresh) dropSession(userId, ward);
   const hasToken = hasMcpToken(userId, ward);
   try {
@@ -308,7 +390,7 @@ const definitionRevision = (signature:string,t:McpTool) => createHash('sha256').
 /** Every configured MCP server's tools as registry entries, keyed
  *  mcp__<server>__<tool>. Servers that fail to connect contribute nothing
  *  this turn (the ward shows why). */
-export async function mcpToolDefs(userId: number, fetchImpl: Fetch = vettedFetch, signal?: AbortSignal, unavailable?: (message:string) => void): Promise<Record<string, ToolDef>> {
+export async function mcpToolDefs(userId: number, fetchImpl: Fetch = defaultFetch(), signal?: AbortSignal, unavailable?: (message:string) => void): Promise<Record<string, ToolDef>> {
   await Promise.all(getDashboard(userId).filter(w => w.type === 'mcp' && mcpConfig(w).url)
     .map(async w => {
       const session = await connect(userId,w.i,fetchImpl,signal);
@@ -320,7 +402,7 @@ export async function mcpToolDefs(userId: number, fetchImpl: Fetch = vettedFetch
 
 /** The same, from sessions already open — no network. For resuming a parked
  *  confirm: the connect that produced the call is at most SESSION_TTL old. */
-export function mcpToolDefsSync(userId: number, fetchImpl: Fetch = vettedFetch): Record<string, ToolDef> {
+export function mcpToolDefsSync(userId: number, fetchImpl: Fetch = defaultFetch()): Record<string, ToolDef> {
   const out: Record<string, ToolDef> = {};
   for (const w of getDashboard(userId)) {
     if (w.type !== 'mcp') continue;
@@ -341,8 +423,8 @@ export function mcpToolDefsSync(userId: number, fetchImpl: Fetch = vettedFetch):
           const current = mcpToolDefsSync(ctx.userId,fetchImpl)[name];
           if (!current || current.revision !== revision) throw Error('MCP definition or permissions changed since discovery; search and propose the call again.');
           const { reason: _reason, ...rest } = args;
-          const result = await callTool(ctx.userId, w.i, t.name, rest, fetchImpl,current.revision);
-          return { text: toolText(result) };
+          const result = await callTool(ctx.userId, w.i, t.name, rest, fetchImpl,current.revision, ctx.signal);
+          return { text: toolText(result), ...await storeImageParts(result, ctx, name) };
         },
       };
     }

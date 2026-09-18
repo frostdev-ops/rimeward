@@ -34,6 +34,11 @@ export type MailAccount = (typeof MAIL_ACCOUNTS)[number];
 export const MCP_TRUST = ['read', 'write', 'confirm'] as const;
 export type McpTrust = (typeof MCP_TRUST)[number];
 
+/** The longest a blocking tools/call may hold a turn, and only a server on this
+ *  machine reached from the desktop gets it (lib/agent/mcp.ts clampLongWait):
+ *  codex gives up at 300 s, nginx at 360 s, so 330 s sits between them. */
+export const MAX_LONG_WAIT_MS = 330_000;
+
 /** Known remote MCP servers — the add dialog's preset list prefills url and
  *  header from these; the token is set on the ward. Unverified beyond the
  *  vendors' own docs: a moved endpoint is a config edit, not a code change. */
@@ -774,7 +779,10 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
       const name = String(raw.name ?? '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'mcp';
       const header = String(raw.header ?? '').trim().replace(/[^A-Za-z0-9-]/g, '').slice(0, 64) || 'Authorization';
       const trust = (MCP_TRUST as readonly string[]).includes(raw.trust as string) ? raw.trust : 'write';
-      return { name, url: httpUrl(raw.url) ?? '', header, trust };
+      // Absent unless the user set one — mcp.ts owns the default AND the clamp,
+      // which depends on the runtime this ends up loaded on, not on this save.
+      const longWaitMs = Number.isInteger(raw.longWaitMs) && (raw.longWaitMs as number) > 0 ? Math.min(raw.longWaitMs as number, MAX_LONG_WAIT_MS) : null;
+      return { name, url: httpUrl(raw.url) ?? '', header, trust, ...(longWaitMs ? { longWaitMs } : {}) };
     }
     // A Discord bot on one server. Never null: ids are snowflakes or empty
     // (a fresh ward shows its card and asks); watch is 'all' or a csv of ids.
