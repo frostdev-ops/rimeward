@@ -1,13 +1,28 @@
 import './_setup.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { getDb } from '../src/lib/db.ts';
 import { getDashboard, saveDashboard } from '../src/lib/dashboard.ts';
-import { validateLayout, type WardInstance } from '../src/lib/wards.ts';
+import { MAX_LONG_WAIT_MS, validateLayout, type WardInstance } from '../src/lib/wards.ts';
 import { validateGraph } from '../src/lib/logic.ts';
-import { runShell } from '../src/lib/agent/shell.ts';
+import { loopbackVettedFetch, runShell, vettedFetch } from '../src/lib/agent/shell.ts';
+import { getAttachment } from '../src/lib/agent/attachments.ts';
 import { aiTools, invokeReadTool } from '../src/lib/agent/tools.ts';
-import { callTool, dropSession, mcpStatus, mcpToolDefs, mcpToolDefsSync, parseRpcBody, safeToolName, setMcpToken, toolText } from '../src/lib/agent/mcp.ts';
+import { MCP_PROTOCOL, callTool, clampLongWait, dropSession, mcpStatus, mcpToolDefs, mcpToolDefsSync, parseRpcBody, safeToolName, setMcpToken, storeImageParts, toolText } from '../src/lib/agent/mcp.ts';
+
+/** A real 1x1 png — base64 with a '/' and padding, so the guard's charset is exercised. */
+const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
+
+const listen = async (server: http.Server): Promise<string> => {
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+};
+const shut = async (server: http.Server): Promise<void> => {
+  server.closeAllConnections();
+  await new Promise<void>((r) => server.close(() => r()));
+};
 
 const user = (email: string): number => {
   getDb().prepare(`INSERT INTO users (email, password_hash, role) VALUES (?, 'x', 'admin')`).run(email);
@@ -136,4 +151,131 @@ test('js-exec: a sandbox script reaches read-only tools through the proxy, and n
   await assert.rejects(invokeReadTool('remember', '{}', ctx), /not a read-only tool/);
   await assert.rejects(invokeReadTool('nope', '{}', ctx), /not a read-only tool/);
   assert.equal(await invokeReadTool('list_timers', '', ctx), JSON.stringify(await (await import('../src/lib/agent/tools.ts')).TOOLS.list_timers!.run({}, ctx)));
+});
+
+test('storeImageParts: one png part becomes an attachment of this conversation, anything dubious is skipped', async () => {
+  const u = user('mcpimg@t.dev');
+  const ctx = { userId: u, ward: 'ag', conv: 0 };
+  const res = (data: unknown, mimeType = 'image/png') => ({ content: [{ type: 'text', text: 'here' }, { type: 'image', mimeType, data }] });
+
+  const stored = await storeImageParts(res(PNG_1X1), ctx, 'mcp__lens__lens_crop');
+  assert.equal(typeof stored.file_id, 'number');
+  assert.match(stored.image_sha256!, /^[a-f0-9]{64}$/);
+  const file = getAttachment(u, stored.file_id!)!;
+  assert.equal(file.mime, 'image/png');
+  assert.equal(file.name, 'mcp__lens__lens_crop.png');
+
+  assert.deepEqual(await storeImageParts(res('not base64!!'), ctx, 't'), {});          // charset
+  assert.deepEqual(await storeImageParts(res('A'.repeat(7 * 1024 * 1024 + 4)), ctx, 't'), {}); // over 7 MiB
+  assert.deepEqual(await storeImageParts(res(PNG_1X1, 'image/gif'), ctx, 't'), {});    // not png/jpeg
+  assert.deepEqual(await storeImageParts({ content: [{ type: 'text', text: 'no image' }] }, ctx, 't'), {});
+  assert.deepEqual(await storeImageParts(null, ctx, 't'), {});
+});
+
+test('vettedFetch refuses this machine; loopbackVettedFetch reaches it and nothing else private', async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('local');
+  });
+  const url = await listen(server);
+  try {
+    await assert.rejects(vettedFetch(url), /private address 127\.0\.0\.1/);
+    const ok = await loopbackVettedFetch(url);
+    assert.equal(ok.status, 200);
+    assert.equal(Buffer.from(ok.body).toString('utf8'), 'local');
+    // 10.x is private but not this machine: still refused, with loopback allowed.
+    await assert.rejects(loopbackVettedFetch('http://10.1.2.3/mcp'), /private address 10\.1\.2\.3/);
+  } finally {
+    await shut(server);
+  }
+});
+
+test('clampLongWait: only a server on this machine, reached from the desktop, may hold a turn', () => {
+  const remote = 'https://mcp.example.com/mcp';
+  const local = 'http://127.0.0.1:7777/mcp';
+  assert.equal(clampLongWait(remote, 300_000, true), 25_000);   // not this machine
+  assert.equal(clampLongWait(local, 300_000, false), 25_000);   // this machine, but a server install
+  assert.equal(clampLongWait(local, 300_000, true), 300_000);
+  assert.equal(clampLongWait('http://localhost:7777/mcp', 60_000, true), 60_000);
+  assert.equal(clampLongWait('http://[::1]:7777/mcp', 60_000, true), 60_000);
+  assert.equal(clampLongWait(local, 900_000, true), MAX_LONG_WAIT_MS);
+  assert.equal(clampLongWait(local, undefined, true), 25_000);  // unset = the default
+  assert.equal(clampLongWait(local, 1.5, true), 25_000);
+  assert.equal(clampLongWait(local, 0, true), 25_000);
+  assert.equal(clampLongWait('not a url', 300_000, true), 25_000);
+  assert.equal(clampLongWait(local, 5_000, false), 5_000);      // shorter than the default is fine anywhere
+});
+
+test('an mcp ward on this machine: longWaitMs bounds a blocking call, an image part rides back, an interrupt cancels it server-side', async () => {
+  const u = user('mcploop@t.dev');
+  const seen: { method: string; id?: number; params?: Record<string, unknown> }[] = [];
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.setEncoding('utf8');
+    req.on('data', (c: string) => { raw += c; });
+    req.on('end', () => {
+      const body = JSON.parse(raw) as { id?: number; method: string; params?: Record<string, any> };
+      seen.push({ method: body.method, id: body.id, params: body.params });
+      const send = (result: unknown) => {
+        res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': 'loop-1' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }));
+      };
+      switch (body.method) {
+        case 'initialize':
+          return send({ protocolVersion: MCP_PROTOCOL, serverInfo: { name: 'lens', version: '1' } });
+        case 'tools/list':
+          return send({ tools: [{ name: 'wait', description: 'blocks until something happens', inputSchema: { type: 'object', properties: { ms: { type: 'number' } } } }] });
+        case 'tools/call': {
+          // The blocking tool: answers after `ms`, and drops the work when the client goes away.
+          const timer = setTimeout(() => send({ content: [{ type: 'text', text: 'woke' }, { type: 'image', mimeType: 'image/png', data: PNG_1X1 }] }), Number(body.params?.arguments?.ms ?? 0));
+          res.on('close', () => clearTimeout(timer));
+          return;
+        }
+        default:
+          res.writeHead(202);
+          return res.end();
+      }
+    });
+  });
+  const url = await listen(server);
+  const ward = (longWaitMs: number) => {
+    const layout = validateLayout([{ i: 'lens', type: 'mcp', size: '2x1', config: { name: 'lens', url, trust: 'read', longWaitMs } }]);
+    assert.ok(layout);
+    saveDashboard(u, layout!);
+    dropSession(u, 'lens');
+    return mcpToolDefs(u, loopbackVettedFetch);
+  };
+  process.env.RIMEWARD_DESKTOP = '1';
+  process.env.RIMEWARD_NATIVE_TOKEN = 'native'; // isDesktop(): the clamp only lifts here
+  const ctx = { userId: u, ward: 'ag', conv: 0 };
+  try {
+    assert.equal((getDashboard(u)[0]!.config as { longWaitMs?: number }).longWaitMs, undefined); // nothing saved yet
+
+    // 3 s under a 10 s bound: the call completes, and its image becomes an attachment
+    const out = await (await ward(10_000))['mcp__lens__wait']!.run({ reason: 'r', ms: 3000 }, ctx) as { text: string; file_id?: number; image_sha256?: string };
+    assert.match(out.text, /^woke\n\[image image\/png omitted\]$/);
+    assert.equal(getAttachment(u, out.file_id!)!.mime, 'image/png');
+
+    // the bound bites: the same call under 1 s does not wait for the server
+    const short = (await ward(1000))['mcp__lens__wait']!;
+    await assert.rejects(() => Promise.resolve(short.run({ reason: 'r', ms: 3000 }, ctx)), /deadline|timed out|socket/i);
+
+    // an interrupted turn: the call rejects and the server is told to stop working on it
+    const defs = await ward(60_000);
+    const from = seen.length;
+    const ac = new AbortController();
+    const pending = Promise.resolve(defs['mcp__lens__wait']!.run({ reason: 'r', ms: 60_000 }, { ...ctx, signal: ac.signal }));
+    const abort = setTimeout(() => ac.abort(), 200);
+    await assert.rejects(pending, /abort/i);
+    clearTimeout(abort);
+    for (let i = 0; i < 60 && !seen.some((m) => m.method === 'notifications/cancelled'); i++) await new Promise((r) => setTimeout(r, 50));
+    const call = seen.slice(from).find((m) => m.method === 'tools/call')!;
+    const cancelled = seen.find((m) => m.method === 'notifications/cancelled')!;
+    assert.equal(cancelled.params!.requestId, call.id); // the id of the call it is cancelling
+    assert.equal(cancelled.params!.reason, 'interrupted');
+  } finally {
+    delete process.env.RIMEWARD_DESKTOP;
+    delete process.env.RIMEWARD_NATIVE_TOKEN;
+    await shut(server);
+  }
 });
