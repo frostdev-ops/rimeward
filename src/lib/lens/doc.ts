@@ -1,19 +1,20 @@
 // The document: one mutable working copy of what a source currently shows, plus
 // a ring of frozen versions a consumer can diff against. Pure — no I/O, no
-// timers, no `Date.now()`. The source owns `epoch` and `seq`; this file obeys
-// them. Lifted from BlackIce src/lens/scene.ts minus `apply(signal)`, which is
+// timers, and the only clock is the one the caller injects. The source owns
+// `epoch` and `seq`; this file obeys them. Lifted from BlackIce src/lens/scene.ts minus `apply(signal)`, which is
 // the one screen-shaped part: each source translates its own signals into
 // `epoch`/`meta`/`replace` calls.
 //
-// `live`, `regions`, `dirty` and `at` on the working copy belong to the source
-// (the gate's own outputs and the source's clock); frozen versions are immutable.
+// `live`, `regions` and `dirty` on the working copy belong to the source (the
+// gate's own outputs); `at` is stamped at freeze; frozen versions are immutable.
 
-import type { Diff, Doc, Line, Rect } from './types.ts';
+import type { Diff, Doc, Line, MetaField, Rect } from './types.ts';
 import { VERSION_RING } from './types.ts';
 import { diffDocs, sameRect } from './diff.ts';
 
 /** One incoming line. `key` defaults to the normalised text; a source with its
- *  own identity (a terminal row) passes its own. */
+ *  own identity passes its own, which MUST still derive from the text alone
+ *  (see `Line.key`) — a key that survives an edit hides that edit completely. */
 export interface Draft {
   text: string;
   src: string;
@@ -41,9 +42,11 @@ export class DocState {
   #ids = 0;
   #seq = 0;
   #metaSeq = new Map<string, number>();
+  #now: () => number;
 
-  constructor(opts: { ring?: number } = {}) {
+  constructor(opts: { ring?: number; now?: () => number } = {}) {
     this.#ringSize = opts.ring ?? VERSION_RING;
+    this.#now = opts.now ?? Date.now;
   }
 
   current(): Doc {
@@ -82,18 +85,20 @@ export class DocState {
     return true;
   }
 
-  /** Set (or, with `undefined`, drop) one header value. A write older than the
-   *  last one for that key is discarded; the return says whether it changed. */
-  meta(key: string, value: string | undefined, seq: number): boolean {
+  /** Set (or, with `undefined`, drop) one header field. A write older than the
+   *  last one for that key is discarded. The return — and `Diff.metaChanged` —
+   *  is about the VALUE only: a field that merely moved is stored and reported
+   *  as unchanged, the way a window keeping its title is. */
+  meta(key: string, field: MetaField | undefined, seq: number): boolean {
     const was = this.#metaSeq.get(key);
     if (was !== undefined && seq < was) return false;
     this.#metaSeq.set(key, seq);
     this.#seq = Math.max(this.#seq, seq);
     const doc = this.#doc;
-    if (doc.meta[key] === value) return false;
-    if (value === undefined) delete doc.meta[key];
-    else doc.meta[key] = value;
-    return true;
+    const changed = doc.meta[key]?.value !== field?.value;
+    if (field === undefined) delete doc.meta[key];
+    else doc.meta[key] = field;
+    return changed;
   }
 
   /** Replace the claimed lines with `drafts`. Stale: a read that finishes after
@@ -118,7 +123,7 @@ export class DocState {
   snapshot(next: {
     epoch: number;
     seq: number;
-    meta: Record<string, string>;
+    meta: Record<string, MetaField>;
     lines: Draft[];
     live?: Rect[];
     ref?: string | null;
@@ -146,6 +151,7 @@ export class DocState {
   freeze(ref?: string | null): Doc {
     const doc = this.#doc;
     doc.v += 1;
+    doc.at = this.#now();
     if (ref !== undefined) doc.ref = ref;
     const frozen = deepFreeze(structuredClone(doc));
     doc.dirty = [];

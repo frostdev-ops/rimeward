@@ -28,9 +28,9 @@ function doc(over: Partial<Doc> = {}): Doc {
     incomplete: false,
     // The screen source's own header strings; `app` is what triage is told.
     meta: {
-      app: 'Xcode (com.apple.dt.Xcode)',
-      window: '5375 "main.rs" bounds=195,92,656,422',
-      focus: 'AXTextArea "editor" value="let x = 1"',
+      app: { value: 'Xcode (com.apple.dt.Xcode)' },
+      window: { value: '5375 "main.rs"', bounds: [195, 92, 656, 422] },
+      focus: { value: 'editor let x = 1', bounds: [0, 32, 600, 384] },
     },
     lines: [],
     regions: [],
@@ -123,6 +123,16 @@ test('candidates drop live regions, honour min_lines and keep a meta change', ()
     true,
     'a meta change is a rule hit on its own'
   );
+  assert.equal(
+    candidates(emptyDiff({ metaChanged: ['window', 'app'] }), live, d).rule,
+    false,
+    'a key outside ruleKeys forces a keyframe, it does not make a delivery'
+  );
+  assert.deepEqual(
+    candidates(emptyDiff({ metaChanged: ['window'] }), live, { ...d, ruleKeys: ['focus', 'window'] }).rule,
+    true,
+    'ruleKeys is what decides'
+  );
 });
 
 test('a visual candidate needs the threshold, open ground and no text change inside it', () => {
@@ -209,6 +219,39 @@ test('regex and filter run over the changed lines', async () => {
     watches: [watch({ spec: { filter: { tab: 'anything' }, visual: false, triage: false }, mode: 'filter' })],
   });
   assert.equal((await evaluate(noSuchKey, cand, doc(), d)).deliver, false, 'a field the source does not publish never matches');
+});
+
+test('a rect watch sees a meta change only where the field sits', async () => {
+  const d = deps();
+  const cand = candidates(emptyDiff({ metaChanged: ['focus'] }), [], d);
+  const at = (rect: Rect): Consumer =>
+    consumer({ watches: [watch({ spec: { rect, visual: false, triage: false }, mode: 'rect' })] });
+
+  // The document's focus field is bounded 0,32,600,384.
+  assert.equal((await evaluate(at([0, 0, 300, 300]), cand, doc(), d)).deliver, true);
+  assert.equal((await evaluate(at([800, 800, 100, 100]), cand, doc(), d)).deliver, false);
+
+  // A field the source could not place is inside no rectangle at all.
+  const unplaced = doc({ meta: { focus: { value: 'editor let x = 1' } } });
+  assert.equal((await evaluate(at([0, 0, 300, 300]), cand, unplaced, d)).deliver, false);
+  assert.equal(
+    (await evaluate(consumer({ watches: [watch({ spec: { regex: 'let x', visual: false, triage: false }, mode: 'regex' })] }), cand, unplaced, d)).deliver,
+    true,
+    'a watch with no rect still reads it'
+  );
+});
+
+test('the gate reads header values whole, however the render cuts them', async () => {
+  const d = deps();
+  const long = doc({ meta: { focus: { value: `${'x'.repeat(300)} error: cannot find value` } } });
+  const cand = candidates(emptyDiff({ metaChanged: ['focus'] }), [], d);
+  const c = consumer({ watches: [watch({ spec: { regex: 'cannot find', visual: false, triage: false }, mode: 'regex' })] });
+  assert.equal((await evaluate(c, cand, long, d)).deliver, true, 'past the 120-char render cut');
+
+  const filter = consumer({
+    watches: [watch({ spec: { filter: { focus: 'cannot find' }, visual: false, triage: false }, mode: 'filter' })],
+  });
+  assert.equal((await evaluate(filter, cand, long, d)).deliver, true, 'and a filter reads the same raw value');
 });
 
 test('a `for` watch passes on max cosine against its own vector', async () => {
@@ -367,7 +410,9 @@ test('a changed meta value is text a watch can read', async () => {
   const c = consumer({
     watches: [watch({ spec: { regex: 'Save As', visual: false, triage: false }, mode: 'regex' })],
   });
-  const changed = doc({ meta: { app: 'Xcode (com.apple.dt.Xcode)', sheet: '"Save As" bounds=10,20,300,200' } });
+  const changed = doc({
+    meta: { app: { value: 'Xcode (com.apple.dt.Xcode)' }, sheet: { value: '"Save As"', bounds: [10, 20, 300, 200] } },
+  });
   const cand = candidates(emptyDiff({ metaChanged: ['sheet'] }), [], d);
   assert.equal((await evaluate(c, cand, changed, d)).deliver, true);
   assert.equal((await evaluate(c, cand, doc(), d)).deliver, false, 'the key has to be there to be read');

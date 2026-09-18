@@ -23,8 +23,8 @@ const claims =
 function docs(): DocState {
   const state = new DocState();
   state.epoch(1, 1);
-  state.meta('app', 'com.apple.dt.Xcode "Xcode" pid=123', 1);
-  state.meta('window', '5375 "main.rs" bounds=0,0,656,422', 2);
+  state.meta('app', { value: 'com.apple.dt.Xcode "Xcode" pid=123' }, 1);
+  state.meta('window', { value: '5375 "main.rs"', bounds: [0, 0, 656, 422] }, 2);
   return state;
 }
 
@@ -84,21 +84,29 @@ test('metaChanged names every key that moved, and a dropped key too', () => {
   const state = docs();
   const v1 = state.freeze();
 
-  state.meta('focus', 'AXTextArea "editor" value="fn main"', 3);
+  state.meta('focus', { value: 'AXTextArea "editor" value="fn main"', bounds: [0, 32, 656, 384] }, 3);
   state.freeze();
   assert.deepEqual(state.diff(1, 2).metaChanged, ['focus']);
 
-  state.meta('sheet', '"Save As" bounds=10,10,200,100', 4);
+  state.meta('sheet', { value: '"Save As"', bounds: [10, 10, 200, 100] }, 4);
   state.meta('focus', undefined, 5);
   state.freeze();
   assert.deepEqual(state.diff(2, 3).metaChanged, ['sheet', 'focus'], 'the dropped key is reported last');
 
   // A window switch opens an epoch, which clears the rest.
   state.epoch(2, 1);
-  state.meta('window', '90 "lib.rs" bounds=0,0,656,422', 1);
+  state.meta('window', { value: '90 "lib.rs"', bounds: [0, 0, 656, 422] }, 1);
   const v4 = state.freeze();
   const across = state.diff(3, 4);
   assert.equal(across.epoch, true);
   assert.deepEqual(across.metaChanged, ['window', 'app', 'sheet']);
   assert.equal(v4.v, 4);
+});
+
+test('a field that only moved is not a change', () => {
+  const state = docs();
+  state.freeze();
+  state.meta('window', { value: '5375 "main.rs"', bounds: [200, 92, 656, 422] }, 3);
+  state.freeze();
+  assert.deepEqual(state.diff(1, 2).metaChanged, []);
 });

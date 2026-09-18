@@ -27,8 +27,8 @@ const claims =
 function started(): DocState {
   const doc = new DocState();
   doc.epoch(1, 1);
-  doc.meta('app', 'com.apple.dt.Xcode "Xcode" pid=123', 1);
-  doc.meta('window', '5375 "main.rs" bounds=195,92,656,422', 2);
+  doc.meta('app', { value: 'com.apple.dt.Xcode "Xcode" pid=123' }, 1);
+  doc.meta('window', { value: '5375 "main.rs" bounds=195,92,656,422' }, 2);
   return doc;
 }
 
@@ -45,7 +45,7 @@ test('an epoch that is not newer is discarded', () => {
 test('a new epoch clears everything the old one produced', () => {
   const state = started();
   state.replace([draft('hello', [0, 0, 100, 16])], 3, claims([0, 0, 600, 100]));
-  state.meta('focus', 'AXTextArea "editor" value="x"', 4);
+  state.meta('focus', { value: 'AXTextArea "editor" value="x"' }, 4);
   state.current().dirty = [{ bbox: [0, 0, 10, 10], d: 0.4 }];
   state.current().live = [[0, 0, 10, 10]];
   state.markIncomplete();
@@ -62,20 +62,22 @@ test('a new epoch clears everything the old one produced', () => {
   assert.equal(state.lastSeq(), 1);
 
   // The seq guard resets with the epoch: the new epoch's own header applies.
-  assert.equal(state.meta('window', '7 "Start Page"', 2), true);
-  assert.equal(state.current().meta.window, '7 "Start Page"');
+  assert.equal(state.meta('window', { value: '7 "Start Page"' }, 2), true);
+  assert.equal(state.current().meta.window?.value, '7 "Start Page"');
 });
 
 test('meta applies in ascending seq and reports what changed', () => {
   const state = started();
-  assert.equal(state.meta('window', '5375 "main.rs — edited"', 6), true);
+  assert.equal(state.meta('window', { value: '5375 "main.rs — edited"', bounds: [195, 92, 656, 422] }, 6), true);
   // An older write never overwrites the newer value.
-  assert.equal(state.meta('window', '5375 "main.rs"', 4), false);
-  assert.equal(state.current().meta.window, '5375 "main.rs — edited"');
+  assert.equal(state.meta('window', { value: '5375 "main.rs"' }, 4), false);
+  assert.equal(state.current().meta.window?.value, '5375 "main.rs — edited"');
 
-  assert.equal(state.meta('window', '5375 "main.rs — edited"', 7), false, 'the same value is not a change');
+  // Same value, new bounds: the field moved, which is not a change.
+  assert.equal(state.meta('window', { value: '5375 "main.rs — edited"', bounds: [200, 92, 656, 422] }, 7), false);
+  assert.deepEqual(state.current().meta.window?.bounds, [200, 92, 656, 422], 'the move is stored all the same');
   assert.equal(state.meta('focus', undefined, 8), false, 'dropping a key that was never set changes nothing');
-  assert.equal(state.meta('focus', 'AXTextArea "editor" value="later"', 9), true);
+  assert.equal(state.meta('focus', { value: 'AXTextArea "editor" value="later"' }, 9), true);
   assert.equal(state.meta('focus', undefined, 10), true);
   assert.deepEqual(Object.keys(state.current().meta), ['app', 'window']);
   assert.equal(state.lastSeq(), 10);
@@ -198,7 +200,10 @@ test('a snapshot rebuilds the document and clears incomplete', () => {
   state.snapshot({
     epoch: 1,
     seq: 40,
-    meta: { app: 'com.apple.dt.Xcode "Xcode" pid=123', window: '5375 "lib.rs" bounds=10,20,656,422' },
+    meta: {
+      app: { value: 'com.apple.dt.Xcode "Xcode" pid=123' },
+      window: { value: '5375 "lib.rs" bounds=10,20,656,422' },
+    },
     lines: [draft('kept line', [0, 0, 200, 16]), draft('recognised line', [0, 40, 260, 16], 'ocr')],
     ref: 'f-1-38',
   });
@@ -206,7 +211,7 @@ test('a snapshot rebuilds the document and clears incomplete', () => {
   const doc = state.current();
   assert.equal(doc.incomplete, false);
   assert.equal(state.lastSeq(), 40);
-  assert.equal(doc.meta.window, '5375 "lib.rs" bounds=10,20,656,422');
+  assert.equal(doc.meta.window?.value, '5375 "lib.rs" bounds=10,20,656,422');
   assert.equal(doc.ref, 'f-1-38');
   assert.deepEqual(doc.lines.map((l) => l.text), ['kept line', 'recognised line']);
   assert.deepEqual(doc.lines.map((l) => l.src), ['ax', 'ocr']);
@@ -215,11 +220,13 @@ test('a snapshot rebuilds the document and clears incomplete', () => {
   assert.deepEqual(doc.live, []);
 });
 
-test('freeze pins the ref, rings 32 versions and hands out immutable copies', () => {
-  const state = started();
+test('freeze pins the ref, stamps the clock, rings 32 versions and hands out immutable copies', () => {
+  let ticks = 1_000;
+  const state = new DocState({ now: () => (ticks += 10) });
   const first = state.freeze('f-1-3');
   assert.equal(first.v, 1);
   assert.equal(first.ref, 'f-1-3');
+  assert.equal(first.at, 1_010, 'the version is stamped when it is frozen');
 
   // A newer ref never moves the ref a version was pinned to.
   state.freeze('f-1-4');

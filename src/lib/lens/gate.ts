@@ -49,6 +49,10 @@ export interface GateDeps {
   liveThreshold: number;
   liveFrames: number;
   liveWindowMs: number;
+  /** The meta keys a change to which is a delivery on its own. The others
+   *  (`app`, `window`) still force a keyframe — that is `nextKind`'s job — but
+   *  they are not, by themselves, something a consumer asked to hear about. */
+  ruleKeys: string[];
   /** The newest `seq` applied, stamped onto the triage query. */
   seq?: number;
 }
@@ -136,6 +140,7 @@ export function gateDefaults(over: Partial<GateDeps> = {}): GateDeps {
     liveThreshold: calibration.liveThreshold,
     liveFrames: LIVE_FRAMES,
     liveWindowMs: LIVE_WINDOW_MS,
+    ruleKeys: ['focus'],
     ...over,
   };
 }
@@ -145,7 +150,7 @@ export interface Candidates {
   removed: Line[];
   /** `added` then `removed`, the changed text a watch reads. */
   text: Line[];
-  /** The meta keys that changed, which a watch reads as text too. */
+  /** The meta keys whose value changed, which a watch reads as text too. */
   meta: string[];
   visual: Dirty[];
   /** A consumer with no watches delivers on this. Separate from `text` because
@@ -181,7 +186,7 @@ export function liveRegions(
 export function candidates(
   diff: Diff,
   live: Rect[],
-  deps: Pick<GateDeps, 'minLines' | 'visualThreshold'>
+  deps: Pick<GateDeps, 'minLines' | 'visualThreshold' | 'ruleKeys'>
 ): Candidates {
   const outside = (bbox: Rect | undefined): boolean => outsideLive(live, bbox);
   const added = diff.added.filter((l) => outside(l.bbox));
@@ -195,7 +200,10 @@ export function candidates(
     text,
     meta: diff.metaChanged,
     visual,
-    rule: text.length >= deps.minLines || diff.metaChanged.length > 0 || visual.length > 0,
+    rule:
+      text.length >= deps.minLines ||
+      diff.metaChanged.some((key) => deps.ruleKeys.includes(key)) ||
+      visual.length > 0,
   };
 }
 
@@ -305,16 +313,17 @@ async function one(
   const mode = watchMode(spec, { ...caps, embed: vector !== undefined && vector.length > 0 });
   if (mode === 'unavailable') return { id, hit: false, mode, evaluation: 'unavailable' };
 
-  // 1. Rect selection.
+  // 1. Rect selection. Without geometry nothing is inside a rect: a `rect`
+  // watch is a question about a place, and a source with no places answers no.
   const rect = spec.rect;
-  const inRect = (b: Rect | undefined): boolean => rect === undefined || b === undefined || intersects(rect, b);
+  const inRect = (b: Rect | undefined): boolean =>
+    rect === undefined || (b !== undefined && intersects(rect, b));
   const lines = cand.text.filter((l) => inRect(l.bbox));
   const visual = cand.visual.filter((d) => inRect(d.bbox));
-  // A meta change has no bounds of its own, so it counts inside any rect: the
-  // alternative is silently dropping the one signal that says where the user
-  // is working.
-  const meta = cand.meta.length > 0;
-  if (lines.length === 0 && visual.length === 0 && !meta) return { id, hit: false, mode };
+  // A meta field is inside the rect when its own bounds are: a field the source
+  // could not place is outside every rect, exactly as a bounds-less focus was.
+  const meta = cand.meta.filter((key) => inRect(doc.meta[key]?.bounds));
+  if (lines.length === 0 && visual.length === 0 && meta.length === 0) return { id, hit: false, mode };
   if (mode === 'rect') return { id, hit: true, mode };
 
   // 2. The local description of the visual candidate, when the core spent one
@@ -326,9 +335,9 @@ async function one(
     return region ? { id, hit: true, mode } : { id, hit: true, mode, evaluation: 'rect-only' };
   }
   let texts = lines.map((l) => l.text);
-  for (const key of cand.meta) {
-    const value = doc.meta[key];
-    if (value !== undefined) texts.push(value);
+  for (const key of meta) {
+    const field = doc.meta[key];
+    if (field !== undefined) texts.push(field.value);
   }
   if (texts.length === 0 && visual.length > 0) {
     if (!region) return { id, hit: false, mode, evaluation: 'unavailable' };
@@ -366,7 +375,7 @@ async function one(
   const query: TriageQuery = {
     watch: spec.for ?? spec.regex ?? '',
     diff: renderCandidates(cand, lines, visual, region?.interpreted ?? null),
-    app: doc.meta.app ?? '',
+    app: doc.meta.app?.value ?? '',
     epoch: doc.epoch,
     seq: deps.seq ?? 0,
   };
@@ -433,7 +442,8 @@ function matchRegex(pattern: string, texts: string[]): boolean {
  *  (`app`, `window`, `focus` on a screen); every entry must match,
  *  case-insensitively. Regular expressions have their own field. */
 function matchFilter(filter: Record<string, unknown>, texts: string[], doc: Doc): boolean {
-  const haystack: Record<string, string> = { text: texts.join('\n'), ...doc.meta };
+  const haystack: Record<string, string> = { text: texts.join('\n') };
+  for (const [key, field] of Object.entries(doc.meta)) haystack[key] = field.value;
   const entries = Object.entries(filter);
   if (entries.length === 0) return false;
   return entries.every(([field, want]) => {

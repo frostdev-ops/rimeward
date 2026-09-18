@@ -21,10 +21,10 @@ function line(id: string, bbox: Rect, text: string, src = 'ax'): Line {
 }
 
 const META = {
-  app: 'com.apple.dt.Xcode "Xcode" pid=123',
-  window: '5375 "main.rs" bounds=195,92,656,422',
-  display: '1 1800x1169 @2',
-  focus: 'AXTextArea "editor" value="let x = 1" bounds=0,32,656,384',
+  app: { value: 'com.apple.dt.Xcode "Xcode" pid=123' },
+  window: { value: '5375 "main.rs" bounds=195,92,656,422' },
+  display: { value: '1 1800x1169 @2' },
+  focus: { value: 'AXTextArea "editor" value="let x = 1" bounds=0,32,656,384' },
 };
 
 function doc(over: Partial<Doc> = {}): Doc {
@@ -113,7 +113,7 @@ test('a small delta renders exactly the contract line format', () => {
   const now = doc({
     v: 1843,
     ref: 'f-7-301',
-    meta: { ...META, focus: 'AXTextField "search" value="err" bounds=10,10,100,20' },
+    meta: { ...META, focus: { value: 'AXTextField "search" value="err" bounds=10,10,100,20' } },
     regions: [{ bbox: [400, 100, 200, 150], kind: 'visual', interpreted: 'a red error dialog', ref: 'f-7-301', v: 1843 }],
     live: [[600, 0, 200, 100]],
   });
@@ -173,7 +173,7 @@ test('quoted text is JSON-escaped and bboxes are rounded integers', () => {
 
 test('delta header lines appear only for the keys the diff says changed', () => {
   const since = doc();
-  const now = doc({ v: 1843, meta: { ...META, sheet: '"Save As" bounds=10,20,300,200' } });
+  const now = doc({ v: 1843, meta: { ...META, sheet: { value: '"Save As" bounds=10,20,300,200' } } });
   const only = renderDelta(now, since, emptyDiff({ metaChanged: ['sheet'] }), consumer()).text.split('\n');
   assert.deepEqual(only.slice(2), ['sheet="Save As" bounds=10,20,300,200']);
 
@@ -183,6 +183,14 @@ test('delta header lines appear only for the keys the diff says changed', () => 
 
   const none = renderDelta(now, since, emptyDiff(), consumer()).text.split('\n');
   assert.equal(none.length, 2, 'no changed keys means banner plus header only');
+});
+
+test('a long header value is cut to 120 chars by the render, never by the store', () => {
+  const long = 'x'.repeat(400);
+  const s = doc({ meta: { focus: { value: long } } });
+  const meta = renderKeyframe(s, consumer(), { page: 1 }).text.split('\n')[2]!;
+  assert.equal(meta, `focus=${'x'.repeat(120)}…`);
+  assert.equal(s.meta.focus?.value, long, 'the document still holds the whole value');
 });
 
 test('an incomplete document carries the incomplete marker', () => {

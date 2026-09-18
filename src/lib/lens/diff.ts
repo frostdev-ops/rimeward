@@ -43,10 +43,11 @@ export function diffDocs(from: Doc | null, to: Doc): Diff {
   };
 }
 
-/** Keys whose value differs, `to`'s insertion order first, then keys only `from` had. */
+/** Keys whose VALUE differs, `to`'s insertion order first, then keys only
+ *  `from` had. A field that only moved does not count as changed. */
 function metaChanged(from: Doc | null, to: Doc): string[] {
   const out: string[] = [];
-  for (const [key, value] of Object.entries(to.meta)) if (from?.meta[key] !== value) out.push(key);
+  for (const [key, field] of Object.entries(to.meta)) if (from?.meta[key]?.value !== field.value) out.push(key);
   for (const key of Object.keys(from?.meta ?? {})) if (!(key in to.meta)) out.push(key);
   return out;
 }

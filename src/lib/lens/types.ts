@@ -10,7 +10,12 @@ export type Rect = [number, number, number, number];
 
 export interface Line {
   id: string;
-  key: string; // the identity key: normalised text, or whatever the source keys rows by
+  /** The identity key, which MUST derive from `text` and nothing else: two
+   *  lines with the same key are the same line, so a rewrite that keeps the key
+   *  is deliberately invisible — no add, no remove, no delta entry. A source
+   *  that keys rows by position (a terminal row number) would silently swallow
+   *  every edit to that row. */
+  key: string;
   text: string;
   seq: number; // the seq that wrote this line
   src: string; // which reader produced it ('ax', 'ocr', 'pty', …)
@@ -21,6 +26,13 @@ export interface Line {
 export interface Dirty {
   bbox: Rect;
   d: number;
+}
+
+/** One header field. `bounds` is where it sits, when the source knows: a watch
+ *  with a `rect` only sees a field whose bounds fall inside it. */
+export interface MetaField {
+  value: string;
+  bounds?: Rect;
 }
 
 export interface Region {
@@ -37,8 +49,10 @@ export interface Doc {
   at: number;
   epoch: number;
   incomplete: boolean;
-  /** Already-formatted header values, printed as `key=value` in insertion order. */
-  meta: Record<string, string>;
+  /** Header fields, printed as `key=value` in insertion order. The value is
+   *  the source's own formatting but stays RAW: the gate reads it as text, so
+   *  the render is what cuts it, never the store. */
+  meta: Record<string, MetaField>;
   lines: Line[];
   regions: Region[];
   dirty: Dirty[];

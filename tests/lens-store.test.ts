@@ -89,12 +89,15 @@ test('a consumer round trips with watches, delivered, baseline and the counter',
   store.saveWatches('c1', [watches[0] as Watch]);
   assert.deepEqual(store.loadConsumers().find((c) => c.id === 'c1'), after);
 
+  store.appendEvent('c1', delivery(9));
+  assert.equal(store.events('c1').length, 1);
+
   store.deleteConsumer('c1');
   assert.equal(store.loadConsumers().some((c) => c.id === 'c1'), false);
-  const orphans = getDb()
-    .prepare('SELECT count(*) n FROM lens_watches WHERE consumer_id = ?')
-    .get('c1') as { n: number };
-  assert.equal(orphans.n, 0, 'watches cascade with the consumer');
+  const count = (table: string): number =>
+    (getDb().prepare(`SELECT count(*) n FROM ${table} WHERE consumer_id = ?`).get('c1') as { n: number }).n;
+  assert.equal(count('lens_watches'), 0, 'watches cascade with the consumer');
+  assert.equal(count('lens_events'), 0, 'and so does the event history');
 });
 
 test('a broken watch row is skipped, not thrown', () => {

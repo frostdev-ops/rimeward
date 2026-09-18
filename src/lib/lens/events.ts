@@ -26,6 +26,8 @@ export interface Rendered {
 }
 
 export const KEY_AFTER_DELTAS = 20;
+/** Header values are cut HERE and nowhere else: the gate reads them whole. */
+const META_VALUE_CAP = 120;
 const ID_DIGIT_RESERVE = 12; // widest delivery counter the header budget allows for
 
 const q = (s: string): string => JSON.stringify(s);
@@ -41,8 +43,11 @@ type Fields = string[] | null;
 
 function metaLines(doc: Doc, only: Fields): string[] {
   const out: string[] = [];
-  for (const [key, value] of Object.entries(doc.meta)) {
-    if (only === null || only.includes(key)) out.push(`${key}=${value}`);
+  for (const [key, field] of Object.entries(doc.meta)) {
+    if (only !== null && !only.includes(key)) continue;
+    const value =
+      field.value.length > META_VALUE_CAP ? `${field.value.slice(0, META_VALUE_CAP)}…` : field.value;
+    out.push(`${key}=${value}`);
   }
   if (doc.incomplete) out.push('incomplete');
   return out;
