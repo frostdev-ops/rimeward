@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
 import { lens } from '../../../lib/lens/core.ts';
-import { lensPaused, lensWard, setLensPaused } from '../../../lib/lens/runtime.ts';
+import { lensNativeStatus, lensPaused, lensWard, setLensPaused } from '../../../lib/lens/runtime.ts';
+import { lensSetting } from '../../../lib/lens/settings.ts';
 
 export const prerender = false;
 
@@ -13,7 +14,7 @@ export const prerender = false;
 const SOURCE = 'screen:local';
 const OFF = 'Screen lens is not running on this computer. Open this page in the desktop app to use it.';
 
-export const GET: APIRoute = ({ params, locals }) => {
+export const GET: APIRoute = async ({ params, locals }) => {
   const userId = locals.user!.userId;
   if (!lensWard(userId, params.ward)) return Response.json({ error: 'not a lens ward' }, { status: 400 });
   // Reading the card never subscribes: `lens()` builds the core without
@@ -22,6 +23,10 @@ export const GET: APIRoute = ({ params, locals }) => {
   if (!core) return Response.json({ error: OFF }, { status: 409 });
   const s = core.status();
   const doc = core.doc();
+  // What the app itself is doing, which a core that simply never went offline
+  // cannot tell: consent withdrawn, or Screen Recording revoked, stops the
+  // capture without anything reaching this document.
+  const native = await lensNativeStatus();
   const meta = (key: string): string => doc.meta[key]?.value ?? '';
   return Response.json(
     {
@@ -31,10 +36,16 @@ export const GET: APIRoute = ({ params, locals }) => {
       lines: s.lines,
       incomplete: s.incomplete,
       paused: lensPaused(userId),
-      // The three dots, each read off what the core actually has: the source is
-      // reading, some of the text came from accessibility, and an embedder
+      consented: lensSetting('consented'),
+      // The three dots: the lens is consented to, granted and capturing and the
+      // document is live; some of the text came from accessibility; an embedder
       // answered (the helper, or whatever stands in for it).
-      dots: { screen: s.state === 'live', ax: doc.lines.some((l) => l.src === 'ax'), helper: s.embedding === true },
+      dots: {
+        screen:
+          lensSetting('consented') && native !== null && native.screen && native.state !== 'stopped' && s.state === 'live',
+        ax: doc.lines.some((l) => l.src === 'ax'),
+        helper: s.embedding === true,
+      },
       head: { app: meta('app'), window: meta('window'), focus: meta('focus') },
       // Read, never subscribe: `history` would make the card a consumer of its
       // own and connect the source behind it.

@@ -380,6 +380,63 @@ test('describe frames the question as an observation and reports a stale epoch',
   assert.deepEqual(await describe(h.core, { rect: [0, 0, 200, 100] }, h.desktop), { error: 'standalone' });
 });
 
+test('an ax-window restates the window header: a retitle changes it, a move only moves it', async () => {
+  const h = harness();
+  await primed(h, 'c');
+  const before = h.core.doc().v;
+
+  // A move alone: the value is the same, so nothing is delivered and no version
+  // is made — only where the field sits changes (BlackIce's `moved`).
+  h.inject(sig(10, { kind: 'ax-window', title: 'main.rs', bounds: [200, 92, 656, 422] }));
+  h.clock.advance(750);
+  await h.tick();
+  assert.equal(h.core.doc().v, before, 'a move is not a change anyone reads');
+  assert.deepEqual(h.core.doc().meta.window?.bounds, [200, 92, 656, 422]);
+
+  // A retitle: the header is rewritten from the `window` signal it belongs to,
+  // so the id and the display survive.
+  h.inject(sig(11, { kind: 'ax-window', title: 'main.rs — edited', bounds: [200, 92, 656, 422] }));
+  await h.tick();
+  assert.equal(h.core.doc().meta.window?.value, '5375 "main.rs — edited" display=1 1800x1169 @2');
+  const last = h.sent('c').at(-1) as Delivery;
+  assert.match(last.text, /window=5375 "main\.rs — edited"/);
+
+  // An older read never overwrites the newer title.
+  h.inject(sig(9, { kind: 'ax-window', title: 'main.rs', bounds: [195, 92, 656, 422] }));
+  assert.equal(h.core.doc().meta.window?.value, '5375 "main.rs — edited" display=1 1800x1169 @2');
+});
+
+test('a lens started again comes live on the same core and re-reads the screen', async () => {
+  const h = harness();
+  await primed(h, 'c');
+  h.inject(sig(12, { kind: 'status', state: 'stopped', reason: 'not-consented', screen: true, ax: true }));
+  assert.equal(h.core.status().state, 'offline');
+
+  // Consent back: the stream moved on without us, so the lens re-reads what is
+  // on screen now — the same core, with this consumer's cursor still on it.
+  h.reply('lens-snapshot', {
+    epoch: 2,
+    seq: 90,
+    app: { bundle: 'com.apple.Safari', name: 'Safari', pid: 7 },
+    window: { id: 9, title: 'Docs', bounds: [0, 0, 800, 600], url: null, display: DISPLAY },
+    focus: null,
+    sheet: null,
+    axText: [wire('after the restart', 20)],
+    ocr: [],
+    latest: null,
+    live: [],
+  });
+  h.inject(sig(89, { kind: 'status', state: 'running', screen: true, ax: true }));
+  await h.tick();
+
+  assert.equal(h.core.status().state, 'live');
+  assert.equal(h.core.doc().epoch, 2);
+  assert.deepEqual(h.core.doc().lines.map((l) => l.text), ['after the restart']);
+  const last = h.sent('c').at(-1) as Delivery;
+  assert.equal(last.epoch, 2);
+  assert.match(last.text, /after the restart/);
+});
+
 test('a stopped lens is offline, and its last document still reads', async () => {
   const h = harness();
   await primed(h, 'c');

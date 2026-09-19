@@ -3,7 +3,8 @@
 // `SOURCES.screen` is never registered, which is what makes the ward and the
 // tools say so (plan D7: consent and pause are runtime state, never layout).
 
-import { releaseLens } from './core.ts';
+import { LENS_SETTINGS, lens } from './core.ts';
+import type { LensSettings } from './core.ts';
 // Importing the module is what registers `SOURCES.screen` on a desktop.
 import { pushSignal } from './screen.ts';
 import { lensSetting, setLensSettings } from './settings.ts';
@@ -27,6 +28,25 @@ export function lensWard(userId: number, ward: unknown): WardInstance | null {
   return getDashboard(userId).find((w) => w.i === ward && w.type === 'lens') ?? null;
 }
 
+/** The gate knobs are the Screen lens ward's (wards.ts clamps them); with no
+ *  such ward the core's own defaults stand. Read per settle, so a layout save
+ *  takes effect without rebuilding anything. */
+const screenSettings = (user: number) => (): LensSettings => {
+  const cfg = lensWardConfig(user);
+  return {
+    settleMs: typeof cfg?.settleMs === 'number' ? cfg.settleMs : LENS_SETTINGS.settleMs,
+    minLines: typeof cfg?.minLines === 'number' ? cfg.minLines : LENS_SETTINGS.minLines,
+  };
+};
+
+function lensWardConfig(user: number): { settleMs?: unknown; minLines?: unknown } | undefined {
+  try {
+    return getDashboard(user).find((w) => w.type === 'lens')?.config as { settleMs?: unknown; minLines?: unknown } | undefined;
+  } catch {
+    return undefined; // no layout yet (first boot): the defaults stand
+  }
+}
+
 const pausedKey = (user: number): string => `lens:paused:${user}`;
 
 export const lensPaused = (user: number): boolean => getSetting(pausedKey(user)) === '1';
@@ -48,6 +68,9 @@ export function ensureLens(): void {
   if (!attached) {
     attached = true;
     (globalThis as LensGlobal).__lensAttach?.((_line: string, signal: Record<string, unknown>) => pushSignal(signal));
+    // Built here and nowhere else, so the ward's knobs reach it: `lens()` keeps
+    // one core per (user, source), and whoever reads it next gets this one.
+    lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()));
   }
   void startLens();
 }
@@ -66,11 +89,12 @@ export async function startLens(): Promise<string | null> {
   }
 }
 
-/** The Screen lens switch. Turning it back on rebuilds the core: the one that
- *  was told its source went offline can never be told otherwise. */
+/** The Screen lens switch. The core outlives it either way: consent withdrawn
+ *  stops the capture, which the source reports as offline, and consent given
+ *  back brings the same core live again (lens/screen.ts `status`), so every
+ *  bound leyline, monitor and conversation keeps its cursor. */
 export async function setLensConsent(consented: boolean): Promise<string | null> {
   setLensSettings({ consented });
-  if (consented) releaseLens(localOwner(), SCREEN_SOURCE);
   return startLens();
 }
 
@@ -85,6 +109,20 @@ export interface LensConsentStatus {
   error: string | null;
 }
 
+/** What the app itself says it is doing, or null where there is no app to ask.
+ *  `state` is `warming | running | idle | paused | stopped`. */
+export async function lensNativeStatus(): Promise<{ state: string; screen: boolean; ax: boolean } | null> {
+  if (!isDesktop()) return null;
+  const status = (await nativeDesktop('lens-status').catch(() => null)) as Record<string, unknown> | null;
+  if (!status) return null;
+  const permissions = (status.permissions ?? {}) as { screen?: unknown; ax?: unknown };
+  return {
+    state: typeof status.state === 'string' ? status.state : 'stopped',
+    screen: permissions.screen === true,
+    ax: permissions.ax === true,
+  };
+}
+
 /** What the setup page's Screen lens switch draws. Reading it is also the retry:
  *  a lens consented to before Screen Recording was granted starts here. */
 export async function lensConsentStatus(error: string | null = null): Promise<LensConsentStatus> {
@@ -93,14 +131,13 @@ export async function lensConsentStatus(error: string | null = null): Promise<Le
     return { consented, paused: false, state: 'unsupported', screen: false, ax: false, error };
   }
   const failed = error ?? (consented ? await startLens() : null);
-  const status = (await nativeDesktop('lens-status').catch(() => null)) as Record<string, unknown> | null;
-  const permissions = (status?.permissions ?? {}) as { screen?: unknown; ax?: unknown };
+  const status = await lensNativeStatus();
   return {
     consented,
     paused: lensPaused(localOwner()),
-    state: typeof status?.state === 'string' ? status.state : 'unsupported',
-    screen: permissions.screen === true,
-    ax: permissions.ax === true,
+    state: status?.state ?? 'unsupported',
+    screen: status?.screen === true,
+    ax: status?.ax === true,
     error: failed,
   };
 }

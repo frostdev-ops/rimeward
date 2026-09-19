@@ -264,7 +264,7 @@ export function allowedRelayPath(value: string, remote = false, agent = false) {
     return false;
   if (pathname.startsWith('/api/remote-desktop/')) return remote && pathname === '/api/remote-desktop/host';
   if (pathname === '/api/dev/agent-tools') return agent;
-  if (/^\/api\/dev\/(?:control-settings|pair(?:-preview|ings)?|unpair|sign-in[^/]*|open-server|onboard|folder|navigation|navigate)(?:\/|$)/.test(pathname)||pathname.startsWith('/desktop/'))
+  if (/^\/api\/dev\/(?:control-settings|lens-consent|pair(?:-preview|ings)?|unpair|sign-in[^/]*|open-server|onboard|folder|navigation|navigate)(?:\/|$)/.test(pathname)||pathname.startsWith('/desktop/'))
     return false;
   return !/^\/(?:runtime(?:\/|$)|api\/(?:native|devices)(?:\/|$))/.test(
     pathname,

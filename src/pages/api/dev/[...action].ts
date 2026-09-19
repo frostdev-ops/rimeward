@@ -83,6 +83,7 @@ export const ALL: APIRoute = async ({ params, request, locals, url }) => {
     // The Screen lens switch (plan D7): consent is this computer's own answer,
     // like the control settings beside it, so it never leaves this runtime.
     if (action === 'lens-consent') {
+      if (request.headers.has('x-rimeward-native-token')) throw new DevError('Change the screen lens in the local desktop window.', 403);
       if (request.method === 'GET') return json(await lensConsentStatus());
       if (request.method === 'POST') {
         const body = await request.json() as { consented?: unknown };

@@ -94,6 +94,9 @@ test("declined and expired approvals cannot register a device, login continuatio
     "folder",
     "onboard",
     "open-server",
+    // This computer's own settings, answered only in its own window.
+    "control-settings",
+    "lens-consent",
   ])
     assert.equal(allowedRelayPath("/api/dev/" + route), false);
 });

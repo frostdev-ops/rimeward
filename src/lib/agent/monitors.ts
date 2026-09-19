@@ -13,7 +13,7 @@ import type { ToolCtx } from './tools.ts';
 import { isLive } from './tasks.ts';
 import { agentWardConfig } from './ward-config.ts';
 import { onObservation } from './observation-events.ts';
-import { SOURCES, lens } from '../lens/core.ts';
+import { SOURCES, lens, peekLens } from '../lens/core.ts';
 
 export interface MonitorRow { id:string; user_id:number; ward:string; conversation_id:number; runtime:string; revision:number; name:string;
   source:string; filter:string; semantic:string|null; decision:string|null; status:'watching'|'paused'|'blocked'|'offline'; cursor:string; error:string|null;
@@ -70,7 +70,9 @@ export function monitorConsumer(id:string): string {
 }
 /** The one place a monitor stops being a lens consumer. */
 function dropConsumer(user:number,source:string,monitor:string): void {
-  try { lens(user,source)?.deleteConsumer(monitorConsumer(monitor)); } catch { /* nothing to drop */ }
+  // `peekLens`, never `lens`: dropping a consumer must not build (and connect)
+  // a source for a monitor that is already gone.
+  try { peekLens(user,source)?.deleteConsumer(monitorConsumer(monitor)); } catch { /* nothing to drop */ }
 }
 /** One delivery acknowledged: the lens is free to render the next one from here. */
 function ackLens(r:MonitorRow,delivery:string): void {

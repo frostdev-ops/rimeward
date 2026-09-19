@@ -98,6 +98,10 @@ export interface Feed {
   ref(ref: string | null): void;
   /** The source cannot read any more; reported by `status()`. */
   offline(error: string): void;
+  /** The source can read again. A source that recovers on its own (a screen
+   *  lens started again after consent came back) says so here rather than
+   *  leaving every bound consumer on a core that can never be live again. */
+  online(): void;
 }
 
 export interface SourceSnapshot {
@@ -298,6 +302,12 @@ export class LensCore {
 
     offline: (error) => {
       this.#offline = error;
+      this.#announce();
+    },
+
+    online: () => {
+      if (this.#offline === null) return;
+      this.#offline = null;
       this.#announce();
     },
   };
@@ -891,6 +901,12 @@ export function lens(user: number, sourceId: string, settings?: () => LensSettin
     CORES.set(key, core);
   }
   return core;
+}
+
+/** The core for one `<type>:<target>` IF one is already running: a caller that
+ *  only wants to drop a consumer must not build (and connect) a source to do it. */
+export function peekLens(user: number, sourceId: string): LensCore | null {
+  return CORES.get(`${user}:${sourceId}`) ?? null;
 }
 
 /** Stops the source and drops the core; the stored consumers stay. */

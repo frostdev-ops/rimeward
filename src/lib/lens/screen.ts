@@ -130,6 +130,10 @@ export function screenSource(deps: ScreenDeps): Source {
   let feed: Feed | null = null;
   let epoch = 0;
   let detach: (() => void) | null = null;
+  let stopped = false;
+  /** The last `window` signal, so an `ax-window` can restate the header it
+   *  belongs to (the id, the url and the display are that signal's). */
+  let lastWindow: Record<string, unknown> | null = null;
 
   const apply = (body: Record<string, unknown>): void => {
     if (!feed) return;
@@ -143,8 +147,10 @@ export function screenSource(deps: ScreenDeps): Source {
       if (e < epoch) return;
       if (e > epoch) {
         epoch = e;
+        lastWindow = null;
         feed.epoch(e, seq);
       }
+      if (kind === 'window') lastWindow = body;
       for (const field of headMeta(body)) feed.meta(field.key, field.value, seq, field.bounds);
       return;
     }
@@ -156,6 +162,20 @@ export function screenSource(deps: ScreenDeps): Source {
       case 'ax-value':
         feed.meta('focus', focusValue(body), seq, rect(body.bounds));
         return;
+      case 'ax-window': {
+        // A retitle or a move of the window already in the header. The value is
+        // rewritten from the `window` signal it belongs to, so the id, the url
+        // and the display survive; a move alone changes only the field's bounds,
+        // which is no version bump (BlackIce's `moved`). A retitle DOES change
+        // the value, and `window` forces a keyframe, where BlackIce settled a
+        // delta — the fuller answer for the rarer event.
+        if (!lastWindow) return;
+        lastWindow = { ...lastWindow, title: str(body.title), bounds: body.bounds };
+        for (const field of headMeta({ kind: 'window', ...lastWindow })) {
+          feed.meta(field.key, field.value, seq, field.bounds);
+        }
+        return;
+      }
       case 'ax-sheet':
         feed.meta('sheet', q(str(body.title)), seq, rect(body.bounds));
         return;
@@ -183,18 +203,22 @@ export function screenSource(deps: ScreenDeps): Source {
         feed.gap(num(body.from), num(body.to));
         return;
       case 'status':
-        // Only a stop is a document event: the lens has nothing to read until it
-        // is started again, which is what the ward's dot and `lens_look` report.
+        // A stop is the source going away: nothing more is read until the lens
+        // is started again. When it is, the stream moved on without us, so the
+        // lens comes back live and re-reads what is on screen now — on the SAME
+        // core, with every consumer, listener and cursor still bound to it.
         // (`helper` lands with the helper itself, in B3.)
-        if (str(body.state) === 'stopped') feed.offline(str(body.reason, 'stopped'));
+        if (str(body.state) === 'stopped') {
+          stopped = true;
+          feed.offline(str(body.reason, 'stopped'));
+        } else if (stopped) {
+          stopped = false;
+          feed.online();
+          void resync();
+        }
         return;
       default:
-        // helper and overlay are not part of the document.
-        // ponytail: `ax-window` (a retitle or a move of the same window) is
-        // dropped too, so the `window` header lags a retitle until the next
-        // window switch — rewriting it here would restate the url and the
-        // display, and `window` forces a keyframe, which a retitle is not worth.
-        return;
+        return; // helper and overlay are not part of the document
     }
   };
 

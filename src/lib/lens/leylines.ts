@@ -11,7 +11,7 @@
 // Every delivery is acknowledged as soon as it has fired: an unacknowledged
 // delivery stands, and the core would deliver nothing else to that consumer.
 
-import { lens } from './core.ts';
+import { lens, peekLens } from './core.ts';
 import type { LensCore } from './core.ts';
 import { parseWatchSpec } from './gate.ts';
 import type { Delivery, WatchSpec } from './types.ts';
@@ -38,8 +38,32 @@ interface Bound {
   edge?: LogicEdge;
   /** watch-matched: the spec its watch was installed from. */
   specKey?: string;
-  /** screen-changed: the lens wards whose edges this one consumer feeds. */
-  wards?: string[];
+  /** screen-changed: the edges this one consumer feeds, with the app each one
+   *  filters on ('' = every app). */
+  screen?: ScreenEdge[];
+}
+
+/** One `screen-changed` edge: which ward it hangs off and what its `app` filter
+ *  says. The filter is matched HERE rather than by `edgeMatches`, which is exact
+ *  equality against one string — the header value carries the bundle id, the
+ *  name and the pid at once. */
+interface ScreenEdge {
+  id: string;
+  ward: string;
+  app: string;
+}
+
+/** `com.apple.Safari "Safari" pid=812` → its bundle id and its name. */
+function appOf(header: string): { bundle: string; name: string } {
+  const match = /^(\S+) "(.*)" pid=/.exec(header);
+  return { bundle: match?.[1] ?? header, name: match?.[2] ?? '' };
+}
+
+/** The filter takes a bundle id (exactly) or the app's name (either case). */
+function appMatches(filter: string, header: string): boolean {
+  if (filter === '') return true; // no filter: every app
+  const { bundle, name } = appOf(header);
+  return filter === bundle || filter.toLowerCase() === name.toLowerCase();
 }
 
 /** Keyed `<user>:<consumer>`. */
@@ -72,15 +96,30 @@ function ack(core: LensCore, consumer: string, d: Delivery): void {
 }
 
 function fireScreen(user: number, core: LensCore, entry: Bound, d: Delivery): void {
-  try {
-    takeSlot(screenWindow, user, SCREEN_CAP_PER_HOUR, 'screen event');
-    const vars = screenVars(core, d);
-    for (const ward of entry.wards ?? []) {
-      enqueueFire(user, { type: 'screen-changed', ward, match: { app: vars['screen.app'] ?? '' }, extra: vars });
+  const vars = screenVars(core, d);
+  const header = vars['screen.app'] ?? '';
+  // The filter first: a change in an app nobody watches must not spend the
+  // hourly window, and the slot is one per change, not one per edge.
+  const want = (entry.screen ?? []).filter((e) => appMatches(e.app, header));
+  if (want.length > 0) {
+    try {
+      takeSlot(screenWindow, user, SCREEN_CAP_PER_HOUR, 'screen event');
+      for (const edge of want) {
+        // `onlyEdge`, because the match was made here: `edgeMatches` compares the
+        // edge's own `app` param against `match.app` by equality, and a name
+        // filter is not the header the bundle id came from.
+        enqueueFire(user, {
+          type: 'screen-changed',
+          ward: edge.ward,
+          match: { app: edge.app || appOf(header).bundle },
+          onlyEdge: edge.id,
+          extra: vars,
+        });
+      }
+    } catch {
+      // Over the hourly cap: the change is dropped, never held — holding the
+      // acknowledgement would wedge the consumer for the rest of the window.
     }
-  } catch {
-    // Over the hourly cap: the change is dropped, never held — holding the
-    // acknowledgement would wedge the consumer for the rest of the window.
   }
   ack(core, 'leylines', d);
 }
@@ -141,21 +180,23 @@ function drop(key: string, entry: Bound): void {
   const at = key.indexOf(':');
   const user = Number(key.slice(0, at));
   try {
-    lens(user, entry.source)?.deleteConsumer(key.slice(at + 1));
+    // `peekLens`, never `lens`: an edge going away must not build (and connect)
+    // a source nobody is reading.
+    peekLens(user, entry.source)?.deleteConsumer(key.slice(at + 1));
   } catch {
     /* nothing to drop */
   }
 }
 
-function syncScreenChanged(user: number, wards: string[]): void {
+function syncScreenChanged(user: number, edges: ScreenEdge[]): void {
   const key = `${user}:leylines`;
   const entry = bound.get(key);
-  if (wards.length === 0) {
+  if (edges.length === 0) {
     if (entry) drop(key, entry);
     return;
   }
   if (entry) {
-    entry.wards = wards;
+    entry.screen = edges;
     return;
   }
   const core = lens(user, 'screen:local');
@@ -166,18 +207,21 @@ function syncScreenChanged(user: number, wards: string[]): void {
     const held = bound.get(key);
     if (id === 'leylines' && held) fireScreen(user, core, held, d);
   });
-  bound.set(key, { source: 'screen:local', off, wards });
+  const held: Bound = { source: 'screen:local', off, screen: edges };
+  bound.set(key, held);
   core.consumer('leylines', 'edge');
-  clearStale(core, 'leylines');
+  clearStale(core, 'leylines', (d) => fireScreen(user, core, held, d));
 }
 
 /** A delivery a previous process never acknowledged stalls the consumer for
- *  good — nothing else is ever rendered for it. The firing is lost (it happened
- *  while nobody was listening); the consumer is not. */
-function clearStale(core: LensCore, consumer: string): void {
+ *  good — nothing else is ever rendered for it. It is not dropped: `look`
+ *  re-renders it from the same cursor, so the change it carries fires now and
+ *  the firing acknowledges it. */
+function clearStale(core: LensCore, consumer: string, fire: (d: Delivery) => void): void {
   try {
-    const held = core.status().consumers.find((c) => c.id === consumer)?.delivered;
-    if (held) core.look(consumer, { ack: held, fields: [] });
+    if (!core.status().consumers.find((c) => c.id === consumer)?.delivered) return;
+    const out = core.look(consumer, { fields: [] });
+    if (out.delivery) fire(out.delivery);
   } catch {
     /* nothing outstanding */
   }
@@ -201,7 +245,7 @@ function syncWatch(user: number, consumer: string, edge: LogicEdge, source: stri
   if (entry.specKey === specKey) return;
   entry.specKey = specKey;
   const held = core.consumer(consumer, 'edge');
-  clearStale(core, consumer);
+  clearStale(core, consumer, (d) => fireWatch(user, core, consumer, entry, d));
   void core.watch(consumer, { add: [spec], remove: held.watches.map((w) => w.id) }).catch(() => {
     const again = bound.get(key);
     if (again) again.specKey = undefined; // re-install on the next tick
@@ -250,7 +294,9 @@ export function syncLensEdges(user: number, edges: LogicEdge[], layout: WardInst
 
   syncScreenChanged(
     user,
-    [...new Set(edges.filter((e) => e.enabled && e.source.trigger === 'screen-changed' && wardOf(e.source.ward)?.type === 'lens').map((e) => e.source.ward))]
+    edges
+      .filter((e) => e.enabled && e.source.trigger === 'screen-changed' && wardOf(e.source.ward)?.type === 'lens')
+      .map((e) => ({ id: e.id, ward: e.source.ward, app: typeof e.source.params.app === 'string' ? e.source.params.app : '' }))
   );
 
   const want = new Map<string, { edge: LogicEdge; source: string; spec: WatchSpec }>();
