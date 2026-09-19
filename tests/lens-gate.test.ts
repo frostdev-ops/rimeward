@@ -271,7 +271,7 @@ test('a `for` watch passes on max cosine against its own vector', async () => {
   const c = consumer({ watches: [watch({ spec, vector: [0.98, 0.2, 0], mode: 'for' })] });
 
   const near = candidates(emptyDiff({ added: [line('t1', [0, 0, 200, 16], 'Build succeeded in 4.2s')] }), [], d);
-  assert.equal((await evaluate(c, near, doc(), d)).deliver, true, `cosine clears ${calibration.forThreshold}`);
+  assert.equal((await evaluate(c, near, doc(), d)).deliver, true, `cosine clears ${calibration().forThreshold}`);
 
   const far = candidates(emptyDiff({ added: [line('t2', [0, 0, 200, 16], 'Indexing | Processing files')] }), [], d);
   assert.equal((await evaluate(c, far, doc(), d)).deliver, false);

@@ -347,7 +347,9 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
       'to one region. With no watches you receive every change the lens gates. The reply lists each ' +
       'watch\'s effective `mode` and, when a path is missing on this machine, its `evaluation`: ' +
       '`weak` (matched on similarity alone), `rect-only` (a visual change with no description), ' +
-      '`unavailable` (nothing can evaluate it, so it delivers nothing).',
+      '`unavailable` (nothing can evaluate it, so it delivers nothing). `calibration: "missing"` ' +
+      'means this machine’s embedder has never been measured, so the `for` phrase is left to ' +
+      'triage; the reply’s `calibrate` field is the command that measures it.',
     inputSchema: schema({
       source,
       add: { type: 'array', items: watch, maxItems: 8 },
@@ -368,9 +370,14 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
       const reports = new Map(core.reports(consumer).map((r) => [r.id, r]));
       const watches = out.watches.map((w) => {
         const evaluation = reports.get(w.id)?.evaluation ?? w.evaluation;
-        return { id: w.id, mode: w.mode, ...(evaluation === undefined ? {} : { evaluation }) };
+        return {
+          id: w.id,
+          mode: w.mode,
+          ...(evaluation === undefined ? {} : { evaluation }),
+          ...(w.calibration === undefined ? {} : { calibration: w.calibration }),
+        };
       });
-      return json({ watches });
+      return json({ watches, ...(out.calibrate === undefined ? {} : { calibrate: out.calibrate }) });
     },
   },
 

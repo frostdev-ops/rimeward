@@ -12,10 +12,12 @@
 // delivers nothing.
 //
 // Lifted from BlackIce src/lens/gate.ts: the scene's app/window/focus fields
-// became the source's `meta` map, and the thresholds still come from the
-// calibration file beside this one.
+// became the source's `meta` map, and the thresholds are now per embedder
+// (plan D6) — a settings row written by `ops/lens-calibrate.ts`, with the
+// numbers in the file beside this one seeded for the bundled helper's model.
 
-import calibrationFile from './calibration.json' with { type: 'json' };
+import calibrationSeeds from './calibration.json' with { type: 'json' };
+import { getSetting, setSetting } from '../settings.ts';
 import { iou, outsideLive } from './diff.ts';
 import type { Consumer, Diff, Dirty, Doc, Line, Rect, Region, Watch, WatchMode, WatchSpec } from './types.ts';
 
@@ -53,6 +55,16 @@ export interface GateDeps {
    *  (`app`, `window`) still force a keyframe — that is `nextKind`'s job — but
    *  they are not, by themselves, something a consumer asked to hear about. */
   ruleKeys: string[];
+  /** Which embedder's calibration these thresholds came from; undefined is a
+   *  decider that does not name one (a test's, a hand-built one), which stands
+   *  on the fallback numbers. */
+  embedderId?: string;
+  /** False when nothing has ever measured this embedder: a `for` watch must
+   *  not be judged by numbers taken from another model, so it runs
+   *  `triage-only` or reports `unavailable` (plan D6). */
+  calibrated?: boolean;
+  /** How `for` phrases and changed lines are embedded; the calibration row's. */
+  score?: ScoreVariant;
   /** The source's own `removals`. `false` means a removed line is never
    *  rendered, so it must not be a candidate either: a frame that only cleared
    *  rows would otherwise open a delta with nothing in it. */
@@ -90,13 +102,13 @@ const LINE_TEMPLATE = 'Screen text: ';
 
 /** The text a `for` phrase is embedded as. The core calls this when a watch is
  *  registered, so the vector and the line vectors share one variant. */
-export function watchText(phrase: string, score: ScoreVariant = calibration.score): string {
+export function watchText(phrase: string, score: ScoreVariant = FALLBACK_DEFAULTS.score): string {
   return score === 'template' || score === 'template-set' ? `${WATCH_TEMPLATE}${phrase}` : phrase;
 }
 
 /** The texts a changed-line set is embedded as; the max cosine over them is
  *  the set's score. */
-export function lineTexts(lines: string[], score: ScoreVariant = calibration.score): string[] {
+export function lineTexts(lines: string[], score: ScoreVariant = FALLBACK_DEFAULTS.score): string[] {
   const prefix = score === 'template' || score === 'template-set' ? LINE_TEMPLATE : '';
   const out = lines.map((line) => `${prefix}${line}`);
   if ((score === 'set' || score === 'template-set') && lines.length > 1) out.push(`${prefix}${lines.join('\n')}`);
@@ -117,13 +129,59 @@ export const DESCRIBE_PROMPT =
 /** The helper answers these when it cannot answer at all; the cloud is asked next. */
 export const CLOUD_FALLBACK = new Set(['rate-limited', 'down', 'busy', 'unavailable']);
 
-// ponytail: one calibration file for every embedder; track D moves it to a
-// settings row keyed by embedder id.
-export const calibration = readCalibration(calibrationFile);
+export interface Calibration {
+  forThreshold: number;
+  visualThreshold: number;
+  liveThreshold: number;
+  score: ScoreVariant;
+  /** Nothing has measured this embedder: the numbers above are the fallback
+   *  ones and a `for` watch must not be decided by them. */
+  missing: boolean;
+}
 
-function readCalibration(raw: unknown): typeof FALLBACK_DEFAULTS {
-  if (!raw || typeof raw !== 'object') return FALLBACK_DEFAULTS;
-  const out = { ...FALLBACK_DEFAULTS };
+/** One row per embedder, written by `ops/lens-calibrate.ts`. */
+export const calibrationKey = (embedderId: string): string => `lens_calibration:${embedderId}`;
+
+/** What to tell whoever asked for a `for` watch this machine cannot judge. */
+export const calibrateCommand = (user: number): string => `node ops/lens-calibrate.ts --user ${user}`;
+
+// ponytail: a 30 s memo, because the gate is rebuilt per captured frame and the
+// row only ever changes when the calibrate script runs — in another process, so
+// an event would not reach here anyway.
+const CALIBRATION_TTL_MS = 30_000;
+const held = new Map<string, { at: number; value: Calibration }>();
+
+/** The thresholds for whatever is embedding right now. An embedder with no row
+ *  and no seeded measurement is `missing`, which is what degrades a `for`
+ *  watch; an embedder nobody named is not a measurement anyone could key, so
+ *  the fallback numbers stand and nothing degrades. */
+export function calibration(embedderId?: string): Calibration {
+  if (!embedderId) return { ...FALLBACK_DEFAULTS, missing: false };
+  const now = Date.now();
+  const cached = held.get(embedderId);
+  if (cached && now - cached.at < CALIBRATION_TTL_MS) return cached.value;
+  let raw: unknown = null;
+  try {
+    const row = getSetting(calibrationKey(embedderId));
+    raw = row === null ? null : JSON.parse(row);
+  } catch {
+    raw = null; // a hand-edited row is no measurement
+  }
+  raw ??= (calibrationSeeds as Record<string, unknown>)[embedderId] ?? null;
+  const value = readCalibration(raw);
+  held.set(embedderId, { at: now, value });
+  return value;
+}
+
+/** Stores one embedder's measurement; the script's whole write. */
+export function saveCalibration(embedderId: string, payload: Record<string, unknown>): void {
+  setSetting(calibrationKey(embedderId), JSON.stringify(payload));
+  held.delete(embedderId);
+}
+
+function readCalibration(raw: unknown): Calibration {
+  if (!raw || typeof raw !== 'object') return { ...FALLBACK_DEFAULTS, missing: true };
+  const out: Calibration = { ...FALLBACK_DEFAULTS, missing: false };
   const record = raw as Record<string, unknown>;
   for (const key of ['forThreshold', 'visualThreshold', 'liveThreshold'] as const) {
     const value = record[key];
@@ -135,13 +193,16 @@ function readCalibration(raw: unknown): typeof FALLBACK_DEFAULTS {
 
 /** Everything but the injected functions, so a caller only states what differs. */
 export function gateDefaults(over: Partial<GateDeps> = {}): GateDeps {
+  const cal = calibration(over.embedderId);
   return {
     settleMs: 750,
     settleCapMs: SETTLE_CAP_MS,
     minLines: 1,
-    forThreshold: calibration.forThreshold,
-    visualThreshold: calibration.visualThreshold,
-    liveThreshold: calibration.liveThreshold,
+    forThreshold: cal.forThreshold,
+    visualThreshold: cal.visualThreshold,
+    liveThreshold: cal.liveThreshold,
+    score: cal.score,
+    calibrated: !cal.missing,
     liveFrames: LIVE_FRAMES,
     liveWindowMs: LIVE_WINDOW_MS,
     ruleKeys: ['focus'],
@@ -360,7 +421,12 @@ async function one(
   const spec = watch.spec;
   const id = watch.id;
   const vector = watch.vector;
-  const mode = watchMode(spec, { ...caps, embed: vector !== undefined && vector.length > 0 });
+  // A vector this machine has no threshold for is not a judgement: an
+  // uncalibrated embedder reads exactly like no embedder at all.
+  const mode = watchMode(spec, {
+    ...caps,
+    embed: vector !== undefined && vector.length > 0 && deps.calibrated !== false,
+  });
   if (mode === 'unavailable') return { id, hit: false, mode, evaluation: 'unavailable' };
 
   // 1. Rect selection. Without geometry nothing is inside a rect: a `rect`
@@ -413,7 +479,7 @@ async function one(
     if (texts.some((t) => t.toLowerCase().includes(needle))) {
       scored = true;
     } else {
-      const vectors = deps.embed ? await deps.embed(lineTexts(texts)) : null;
+      const vectors = deps.embed ? await deps.embed(lineTexts(texts, deps.score)) : null;
       if (vectors !== null) {
         pass = maxCosine(vectors, vector ?? []) >= (spec.threshold ?? deps.forThreshold);
         scored = true;

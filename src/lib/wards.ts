@@ -1044,6 +1044,8 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
       if (rounds !== undefined) out.rounds = rounds;
       // Experimental decision assistance (agent/decisions.ts): each switch independent, stored
       // only when set, so an untouched ward has none and nothing is ever on by default.
+      // Screen lens watches may ask this ward's provider to triage; off unless set.
+      if (raw.lensCloudTriage === true) out.lensCloudTriage = true;
       if (raw.jevMonitors === 'observe' || raw.jevMonitors === 'filter') out.jevMonitors = raw.jevMonitors;
       for (const k of ['jevAdvice', 'jevTools', 'jevKnowledge'] as const) if (raw[k] === true) out[k] = true;
       if (typeof raw.jevRoute === 'string') {

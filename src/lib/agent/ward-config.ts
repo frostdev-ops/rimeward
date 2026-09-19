@@ -32,6 +32,10 @@ export interface AgentWardConfig {
    *  off unless the user set it here; a configured OpenRouter key alone turns nothing on. Always set
    *  by agentWardConfig; optional so hand-built configs read as all off. */
   decisions?: AgentDecisions;
+  /** Screen lens watches may ask this ward's model provider to triage a change
+   *  when nothing on the device can (lens/decider.ts). Off unless the user set
+   *  it here: it is what sends changed screen text off the machine. */
+  lensCloudTriage?: boolean;
 }
 export interface AgentDecisions {
   /** Monitor gate ceiling: what a monitor's `decision` argument may ask for. */
@@ -77,6 +81,9 @@ export function agentWardConfig(userId: number, ward: string): AgentWardConfig |
     ...(Number.isInteger(c.rounds) && (c.rounds as number) >= 0 ? { rounds: c.rounds as number } : {}),
     // Never inherited from the shared server Rime: the switches are this ward's own choice.
     decisions: parseDecisions((w.config ?? {}) as Record<string, unknown>),
+    // This ward's own choice as well: a shared server Rime cannot opt this
+    // machine's screen text into a cloud call.
+    ...(w.config?.lensCloudTriage === true ? { lensCloudTriage: true } : {}),
   };
 }
 

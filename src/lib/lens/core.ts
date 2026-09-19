@@ -14,6 +14,8 @@ import {
   DESCRIBE_PROMPT,
   DESCRIBE_SCHEMA,
   SETTLE_CAP_MS,
+  calibrateCommand,
+  calibration,
   candidates,
   describeTarget,
   evaluate,
@@ -435,6 +437,9 @@ export class LensCore {
       settleMs: this.#settleMs(),
       minLines: settings.minLines,
       seq: this.#doc.lastSeq(),
+      // Which embedder is judging decides which calibration the thresholds come
+      // from, and whether there is one at all.
+      ...(decider?.embedderId ? { embedderId: decider.embedderId } : {}),
       ...(this.#deps.source.ruleKeys ? { ruleKeys: this.#deps.source.ruleKeys } : {}),
       ...(this.#deps.source.removals === false ? { removals: false } : {}),
       ...(decider?.embed ? { embed: decider.embed } : {}),
@@ -779,10 +784,21 @@ export class LensCore {
     this.#stop = null;
   }
 
+  /** What is embedding for this core, when it says: the id a calibration row is
+   *  keyed by. */
+  get embedderId(): string | undefined {
+    return this.#deps.decider?.embedderId;
+  }
+
   async watch(
     id: string,
     o: { add?: WatchSpec[]; remove?: string[]; minIntervalS?: number } = {}
-  ): Promise<{ watches: { id: string; mode: WatchMode; evaluation?: 'unavailable' | 'weak' }[] }> {
+  ): Promise<{
+    watches: { id: string; mode: WatchMode; evaluation?: 'unavailable' | 'weak'; calibration?: 'missing' }[];
+    /** Present when a `for` watch degraded because this embedder has never been
+     *  measured here: the command that measures it. */
+    calibrate?: string;
+  }> {
     const consumer = this.consumer(id);
     if (o.minIntervalS !== undefined && Number.isFinite(o.minIntervalS)) {
       consumer.minIntervalMs = Math.max(0, Math.round(o.minIntervalS * 1000));
@@ -799,10 +815,11 @@ export class LensCore {
     // `Watch.vector` is not persisted (it belongs to whichever model produced
     // it), so every call re-embeds whatever is missing one, in one batch.
     const embed = this.#deps.decider?.embed;
+    const cal = calibration(this.#deps.decider?.embedderId);
     const pending = consumer.watches.filter((w) => w.spec.for && w.vector === undefined).slice(0, 32);
     if (pending.length > 0 && embed) {
       try {
-        const vectors = await embed(pending.map((w) => watchText(w.spec.for ?? '')));
+        const vectors = await embed(pending.map((w) => watchText(w.spec.for ?? '', cal.score)));
         this.#embedding = vectors !== null;
         if (vectors) {
           for (const [index, watch] of pending.entries()) {
@@ -823,15 +840,27 @@ export class LensCore {
       cloud: this.#deps.decider?.cloudTriage !== undefined,
     };
     for (const watch of consumer.watches) {
-      watch.mode = watchMode(watch.spec, { ...caps, embed: (watch.vector?.length ?? 0) > 0 });
+      // A vector scored against another model's threshold is a guess: an
+      // uncalibrated embedder counts as none (gate.ts `calibration`).
+      watch.mode = watchMode(watch.spec, {
+        ...caps,
+        embed: (watch.vector?.length ?? 0) > 0 && !cal.missing,
+      });
     }
     this.#store.saveWatches(id, consumer.watches);
     this.#store.saveConsumer(consumer);
+    const degraded = cal.missing && consumer.watches.some((w) => w.spec.for);
     return {
       watches: consumer.watches.map((w) => {
         const evaluation = watchEvaluation(w.mode, caps);
-        return { id: w.id, mode: w.mode, ...(evaluation ? { evaluation } : {}) };
+        return {
+          id: w.id,
+          mode: w.mode,
+          ...(evaluation ? { evaluation } : {}),
+          ...(cal.missing && w.spec.for ? { calibration: 'missing' as const } : {}),
+        };
       }),
+      ...(degraded ? { calibrate: calibrateCommand(this.#deps.user) } : {}),
     };
   }
 

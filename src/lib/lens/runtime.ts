@@ -5,7 +5,7 @@
 
 import { LENS_SETTINGS, lens } from './core.ts';
 import type { Decider, LensSettings } from './core.ts';
-import { helperDecider } from './decider.ts';
+import { deciderFor, helperDecider } from './decider.ts';
 // Importing the module is what registers `SOURCES.screen` on a desktop.
 import { onHelperSignal, pushSignal } from './screen.ts';
 import { lensSetting, setLensSettings } from './settings.ts';
@@ -108,7 +108,10 @@ async function syncDecider(status?: unknown): Promise<void> {
   // One instance, so a helper state change that says nothing new (a recovery,
   // a rate-limit window) is identity-equal and re-embeds nothing.
   if (capabilities.embed === true) helper ??= helperDecider(nativeDesktop);
-  await core?.setDecider(capabilities.embed === true ? helper : undefined);
+  // `deciderFor` composes the rest per capability (local embeddings, cloud
+  // triage behind the ward switch) and hands back the same instance while the
+  // parts are unchanged.
+  await core?.setDecider(deciderFor(localOwner(), capabilities.embed === true ? helper : undefined));
 }
 
 let helper: Decider | undefined;

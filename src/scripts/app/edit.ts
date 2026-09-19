@@ -2074,6 +2074,7 @@ const FIELDS: Record<string, Field[]> = {
     { sel: '#aw-ag-jev-tools', key: 'jevTools', kind: 'bool' },
     { sel: '#aw-ag-jev-knowledge', key: 'jevKnowledge', kind: 'bool' },
     { sel: '#aw-ag-jev-route', key: 'jevRoute' },
+    { sel: '#aw-ag-lens-cloud', key: 'lensCloudTriage', kind: 'bool' },
   ],
   mail: [
     { sel: '#aw-ml-account', key: 'account', def: 'all' },

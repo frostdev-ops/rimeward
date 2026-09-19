@@ -1,11 +1,13 @@
 {
-  "forThreshold": 0.645,
-  "visualThreshold": 0.15,
-  "liveThreshold": 0.05,
-  "score": "raw",
-  "at": "2026-09-18T22:20:08.965Z",
-  "auc": 0.7814,
-  "fn": 0.0469,
-  "fp": 0.8061,
-  "n": 2616
+  "helper:mobileclip-s0": {
+    "forThreshold": 0.645,
+    "visualThreshold": 0.15,
+    "liveThreshold": 0.05,
+    "score": "raw",
+    "at": "2026-09-18T22:20:08.965Z",
+    "auc": 0.7814,
+    "fn": 0.0469,
+    "fp": 0.8061,
+    "n": 2616
+  }
 }

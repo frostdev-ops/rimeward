@@ -14,6 +14,7 @@ import { isLive } from './tasks.ts';
 import { agentWardConfig } from './ward-config.ts';
 import { onObservation } from './observation-events.ts';
 import { SOURCES, lens, peekLens } from '../lens/core.ts';
+import { calibrationGap } from '../lens/decider.ts';
 
 export interface MonitorRow { id:string; user_id:number; ward:string; conversation_id:number; runtime:string; revision:number; name:string;
   source:string; filter:string; semantic:string|null; decision:string|null; status:'watching'|'paused'|'blocked'|'offline'; cursor:string; error:string|null;
@@ -157,7 +158,11 @@ export function manageMonitor(ctx:ToolCtx,args:Record<string,unknown>) {
     }
   })();
   stopSubscription(id); publish(monitorRow(id)!); ensureAgentMonitors(); void tickMonitors();
-  return monitorView(monitorRow(id)!);
+  const view = monitorView(monitorRow(id)!);
+  // A `for` watch is only as good as the embedder's calibration, and the connect
+  // that registers it reads no report: say so here, where the caller is listening.
+  const calibrate = source.watch?.for && SOURCES[source.type] ? calibrationGap(ctx.userId,lensSourceId(source)) : null;
+  return calibrate ? { ...view,calibration:'missing' as const,calibrate } : view;
 }
 /** Shared retirement, provider changes, shared continuation and child completion call this before any replay is copied. */
 export function retireMonitors(conversation:number): number {
