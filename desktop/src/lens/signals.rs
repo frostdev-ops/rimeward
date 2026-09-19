@@ -19,7 +19,7 @@
 //! window move is invisible in window points, where the rect is always
 //! `[0, 0, w, h]`.
 
-use super::bridge::{DisplayInfo, Kind, Line, Rect};
+use super::bridge::{Cover, DisplayInfo, Kind, Line, Rect};
 use super::{Lens, Target};
 use objc2_core_foundation::{
     kCFRunLoopDefaultMode, CFArray, CFBoolean, CFDictionary, CFNumber, CFRetained, CFRunLoop,
@@ -171,6 +171,100 @@ pub fn pick_window(records: &[WindowRecord], pid: i32) -> Option<&WindowRecord> 
         })
         .reduce(|best, next| if next.1 > best.1 { next } else { best })
         .map(|(record, _)| record)
+}
+
+/// What [`covering`] reports when the target window is not in the on-screen
+/// list at all: minimised, closed, or on another Space. Everything the capture
+/// holds at its rectangle then belongs to something else.
+pub const OFF_SCREEN: &str = "not on screen";
+
+/// Two rectangles that share any area at all.
+fn intersects(a: Rect, b: Rect) -> bool {
+    (a[0] + a[2]).min(b[0] + b[2]) > a[0].max(b[0])
+        && (a[1] + a[3]).min(b[1] + b[3]) > a[1].max(b[1])
+}
+
+/// What is drawn over the target window inside the target's own rectangle, or
+/// `None` when the target is the top window there.
+///
+/// `records` is `CGWindowListCopyWindowInfo`'s own front-to-back order, so
+/// everything ahead of the target's entry is in front of it. Three kinds of
+/// window are deliberately not covers:
+/// - this application's own, which the content filter excludes from every
+///   frame anyway (research/capture-matrix.md cell i),
+/// - the target application's own: a sheet, a dialog or a second document
+///   window over the target is exactly what the display filter was chosen to
+///   see (cells iii, iv, v.b), and it is the target's own content,
+/// - anything off layer 0 — the menu bar, the Dock and notification banners
+///   sit above every window and are not what "another window is over this one"
+///   means.
+///
+/// An empty list is a failed read, which says nothing rather than something
+/// false.
+pub fn covering(
+    records: &[WindowRecord],
+    window_id: u32,
+    pid: i32,
+    bounds: Rect,
+    own_pid: i32,
+) -> Option<Cover> {
+    if records.is_empty() {
+        return None;
+    }
+    let Some(front) = records.iter().position(|record| record.id == window_id) else {
+        return Some(Cover {
+            by: OFF_SCREEN.into(),
+            pid: 0,
+            bounds: None,
+        });
+    };
+    records[..front]
+        .iter()
+        .find(|record| {
+            record.layer == 0
+                && record.on_screen
+                && record.pid != pid
+                && record.pid != own_pid
+                && intersects(record.bounds, bounds)
+        })
+        .map(|record| Cover {
+            by: record.title.clone(),
+            pid: record.pid,
+            bounds: Some(screen_to_window(record.bounds, bounds)),
+        })
+}
+
+/// [`covering`] against the window server as it stands, named by the covering
+/// application rather than by its window. One `CGWindowListCopyWindowInfo`
+/// read; capture calls it once per frame, which is twice a second.
+pub fn cover_now(window_id: u32, pid: i32, bounds: Rect, own_pid: i32) -> Option<Cover> {
+    let mut cover = covering(&window_records(), window_id, pid, bounds, own_pid)?;
+    if cover.pid != 0 {
+        // The application's name beats the window's title: it is what a person
+        // recognises, and a foreign window's title is somebody else's content.
+        if let Some(name) = app_name(cover.pid) {
+            cover.by = name;
+        }
+        if cover.by.is_empty() {
+            cover.by = format!("pid {}", cover.pid);
+        }
+    }
+    Some(cover)
+}
+
+fn app_name(pid: i32) -> Option<String> {
+    use objc2_app_kit::NSRunningApplication;
+    NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?
+        .localizedName()
+        .map(|name| name.to_string())
+        .filter(|name| !name.is_empty())
+}
+
+/// The application in front right now, read rather than waited for.
+pub fn frontmost_pid() -> Option<i32> {
+    objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .map(|app| app.processIdentifier())
 }
 
 /// A display, in the same screen points as every other rectangle here.
@@ -658,10 +752,7 @@ impl Signals {
 
         // A test process has no main run loop, so the hop above may not have
         // landed. Resolving the frontmost application here needs neither.
-        let frontmost = objc2_app_kit::NSWorkspace::sharedWorkspace()
-            .frontmostApplication()
-            .map(|app| app.processIdentifier());
-        if let Some(pid) = frontmost {
+        if let Some(pid) = frontmost_pid() {
             shared.activate(pid);
         }
 
@@ -820,6 +911,20 @@ impl Ax {
     }
 
     fn tick(&mut self, run_loop: &Option<CFRetained<CFRunLoop>>, mode: Option<&CFRunLoopMode>) {
+        // The activation notification is the fast path, not the only one.
+        // Nothing else writes `want_pid`, and an `AXObserver` is scoped to one
+        // process, so a notification this app never received would pin the
+        // lens to one application for the rest of the session — a whole
+        // session of app switches inside one epoch, which is what the field
+        // report showed. Re-reading the frontmost application here is one
+        // cached AppKit read per poll and is what makes `want_pid`
+        // self-healing. `activate` stores it before it does anything else, so
+        // the notification and this poll cannot both retarget the same switch.
+        if let Some(pid) = frontmost_pid() {
+            if pid != self.shared.want_pid.load(Ordering::Acquire) {
+                self.shared.activate(pid);
+            }
+        }
         let want = self.shared.want_pid.load(Ordering::Acquire);
         if want != 0 && want != self.pid {
             self.detach(run_loop, mode);
@@ -1244,6 +1349,118 @@ mod tests {
             Some(1),
             "a titled accessory still beats an untitled panel"
         );
+    }
+
+    /// The Claude-for-Desktop delivery that started this: the app, the window
+    /// and the focus were Claude's, every OCR line was a browser's, because a
+    /// display filter captures whatever is drawn at the target's rectangle.
+    /// Front to back, which is the order `CGWindowListCopyWindowInfo` returns.
+    fn over_the_target() -> Vec<WindowRecord> {
+        vec![
+            // The menu bar sits above every window and is not a cover.
+            WindowRecord {
+                bounds: [0.0, 0.0, 1800.0, 39.0],
+                title: String::new(),
+                ..record(1, 300, 25)
+            },
+            // Ours: the content filter already keeps it out of every frame.
+            WindowRecord {
+                bounds: [1500.0, 100.0, 280.0, 120.0],
+                title: "captions".into(),
+                ..record(2, 999, 0)
+            },
+            // The browser the operator switched to, maximised over Claude.
+            WindowRecord {
+                bounds: [0.0, 39.0, 1800.0, 1130.0],
+                title: "Pick an account".into(),
+                ..record(3, 501, 0)
+            },
+            // Claude's own sheet, over Claude and behind the browser.
+            WindowRecord {
+                bounds: [500.0, 300.0, 400.0, 200.0],
+                title: "Save".into(),
+                ..record(4, 42, 0)
+            },
+            // The target.
+            WindowRecord {
+                bounds: [0.0, 39.0, 1800.0, 1130.0],
+                title: "Claude".into(),
+                ..record(7286, 42, 0)
+            },
+            // Behind it, so not a cover however large.
+            WindowRecord {
+                bounds: [0.0, 0.0, 1800.0, 1169.0],
+                title: "Finder".into(),
+                ..record(9, 77, 0)
+            },
+        ]
+    }
+
+    const TARGET: Rect = [0.0, 39.0, 1800.0, 1130.0];
+
+    #[test]
+    fn another_applications_window_over_the_target_is_a_cover() {
+        let cover = covering(&over_the_target(), 7286, 42, TARGET, 999).expect("covered");
+        assert_eq!(cover.pid, 501);
+        assert_eq!(
+            cover.by, "Pick an account",
+            "the title, until AppKit names it"
+        );
+        // Window points: where it sits over the target, the way every other
+        // in-window rectangle is reported.
+        assert_eq!(cover.bounds, Some([0.0, 0.0, 1800.0, 1130.0]));
+    }
+
+    /// The whole reason the display filter was chosen over a window filter
+    /// (research/capture-matrix.md cells iii, iv, v.b): a sheet, a dialog or a
+    /// second document window of the target's own application is its content.
+    #[test]
+    fn the_targets_own_sheets_dialogs_and_second_windows_are_never_covers() {
+        let mut records = over_the_target();
+        records.retain(|record| record.pid != 501);
+        assert_eq!(covering(&records, 7286, 42, TARGET, 999), None);
+    }
+
+    #[test]
+    fn the_menu_bar_the_dock_and_our_own_windows_are_never_covers() {
+        let mut records = over_the_target();
+        records.retain(|record| record.pid != 501 && record.pid != 42 || record.id == 7286);
+        // What is left in front of the target is the menu bar (layer 25) and
+        // this application's own overlay.
+        assert_eq!(covering(&records, 7286, 42, TARGET, 999), None);
+        // Ours only stops being ours when it belongs to somebody else.
+        assert_eq!(
+            covering(&records, 7286, 42, TARGET, 1).map(|cover| cover.pid),
+            Some(999)
+        );
+    }
+
+    #[test]
+    fn a_foreign_window_that_misses_the_target_is_not_a_cover() {
+        let mut records = over_the_target();
+        // Starting exactly on the target's right edge: touching, not covering.
+        records[2].bounds = [1800.0, 39.0, 400.0, 300.0];
+        assert_eq!(covering(&records, 7286, 42, TARGET, 999), None);
+        records[2].bounds = [1400.0, 39.0, 400.0, 300.0];
+        assert_eq!(
+            covering(&records, 7286, 42, TARGET, 999).map(|cover| cover.pid),
+            Some(501),
+            "one point of overlap is still a cover"
+        );
+    }
+
+    /// A target that is not in the on-screen list was minimised, closed or
+    /// moved to another Space, so nothing at its rectangle is its own — the
+    /// same failure as a cover, with no window to name.
+    #[test]
+    fn a_target_that_is_not_on_screen_is_reported_rather_than_read() {
+        let records = over_the_target();
+        let gone = covering(&records, 9999, 42, TARGET, 999).expect("not on screen");
+        assert_eq!(gone.by, OFF_SCREEN);
+        assert_eq!(gone.pid, 0);
+        assert_eq!(gone.bounds, None);
+        // A failed window-server read says nothing rather than something false.
+        assert_eq!(covering(&[], 7286, 42, TARGET, 999), None);
     }
 
     fn screens() -> Vec<Screen> {

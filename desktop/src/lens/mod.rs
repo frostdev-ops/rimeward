@@ -15,7 +15,7 @@ pub mod overlay;
 pub mod ring;
 pub mod signals;
 
-use bridge::{Bridge, DisplayInfo, Kind, Line, Rect};
+use bridge::{Bridge, Cover, DisplayInfo, Kind, Line, Rect};
 use capture::{Capture, Filter};
 use helper::Helper;
 use ring::Ring;
@@ -61,6 +61,10 @@ pub struct Known {
     pub focus: Option<Kind>,
     /// A `Kind::AxSheet`.
     pub sheet: Option<Kind>,
+    /// What is drawn over the target's rectangle, so nothing downstream reads
+    /// the text there as the target's own. Epoch-scoped like the rest of
+    /// `Known`: a new target is not covered until a frame says it is.
+    pub covered: Option<Cover>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -476,6 +480,9 @@ impl Lens {
             "seq": self.bridge.last_seq(),
             "target": target,
             "ring": { "n": stats.n, "bytes": stats.bytes, "oldestAt": stats.oldest_at },
+            // Whether another window is over the target right now. The
+            // covering window itself rides `lens-snapshot`; this is the flag.
+            "covered": self.known.read().unwrap().covered.is_some(),
             "permissions": { "screen": state.screen, "ax": state.ax },
             // What this build can actually answer. The model stages come
             // from the helper's `capabilities`; the overlay is its own pool,
@@ -524,6 +531,7 @@ impl Lens {
             "display": target.as_ref().map(|t| t.display),
             "focus": &known.focus,
             "sheet": &known.sheet,
+            "covered": &known.covered,
             "axText": &known.ax,
             "ocr": &known.ocr,
             "latest": latest.map(|frame| json!({ "ref": frame.frame_ref, "geometry": frame.geometry })),
@@ -916,6 +924,69 @@ mod tests {
         assert_eq!(snapshot["app"]["pid"], 42);
         assert_eq!(snapshot["window"]["url"], "https://example.test/");
         assert_eq!(snapshot["display"]["id"], 1);
+    }
+
+    /// The chain a front-window change goes through: `needs_retarget` decides,
+    /// `Lens::retarget` bumps. Worth a test of its own because the field
+    /// report showed a whole session of app switches inside one epoch — the
+    /// epoch is how a consumer knows the window it is reading about changed.
+    #[test]
+    fn every_front_window_change_opens_a_new_epoch() {
+        let (lens, _rx) = lens();
+        let switch = |lens: &Arc<Lens>, next: Target| {
+            let current = lens.target.read().unwrap().clone();
+            let changed = signals::needs_retarget(current.as_ref(), &next);
+            if changed {
+                lens.retarget(next);
+            }
+            changed
+        };
+        assert_eq!(lens.bridge.epoch(), 1);
+        assert!(switch(&lens, target()), "the first target of all");
+        assert_eq!(lens.bridge.epoch(), 2);
+
+        // Another application's window over it, which is what stops the lens
+        // reading the text at that rectangle as the target's.
+        lens.known.write().unwrap().covered = Some(Cover {
+            by: "Google Chrome".into(),
+            pid: 501,
+            bounds: Some([0.0, 0.0, 800.0, 600.0]),
+        });
+        assert_eq!(lens.status()["covered"], true);
+        assert_eq!(lens.snapshot()["covered"]["by"], "Google Chrome");
+
+        // The operator switches to it: a different process is a new epoch, and
+        // the new target is not covered until a frame of it says so.
+        let browser = Target {
+            pid: 501,
+            bundle: "com.google.Chrome".into(),
+            name: "Google Chrome".into(),
+            window_id: 12,
+            ..target()
+        };
+        assert!(switch(&lens, browser.clone()));
+        assert_eq!(lens.bridge.epoch(), 3);
+        assert_eq!(lens.snapshot()["app"]["pid"], 501);
+        assert_eq!(lens.status()["covered"], false);
+        assert!(lens.snapshot()["covered"].is_null());
+
+        // A second window of the same application is a front-window change too.
+        let second = Target {
+            window_id: 13,
+            ..browser.clone()
+        };
+        assert!(switch(&lens, second.clone()));
+        assert_eq!(lens.bridge.epoch(), 4);
+
+        // A move and a retitle of the same window are not: they reach the
+        // consumer as `ax-window` inside the epoch they belong to.
+        let moved = Target {
+            bounds: [140.0, 240.0, 800.0, 600.0],
+            title: "Renamed".into(),
+            ..second
+        };
+        assert!(!switch(&lens, moved));
+        assert_eq!(lens.bridge.epoch(), 4);
     }
 
     #[test]

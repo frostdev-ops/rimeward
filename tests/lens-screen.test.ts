@@ -642,3 +642,60 @@ test('a lens that was never running says so, and consent later brings the same c
   assert.deepEqual(h.core.doc().lines.map((l) => l.text), ['after consent']);
   assert.match((h.sent('c').at(-1) as Delivery).text, /after consent/);
 });
+
+test('a window over the target is a header field, not text: covered delivers, clears, and survives a gap', async () => {
+  const h = harness();
+  await primed(h, 'c');
+  const before = h.sent('c').length;
+
+  // The delivery that started this: the app, the window and the focus were
+  // Claude's, every recognized line was a browser's, because the capture is
+  // scoped to the target's RECTANGLE and a maximised browser was drawn over it.
+  h.inject(
+    sig(10, {
+      kind: 'covered',
+      over: { by: 'Google Chrome', pid: 501, bounds: [0, 0, 1800, 1130] },
+    })
+  );
+  assert.equal(h.core.doc().meta.covered?.value, '"Google Chrome" pid=501');
+  assert.deepEqual(h.core.doc().meta.covered?.bounds, [0, 0, 1800, 1130]);
+  assert.equal(h.sent('c').length, before + 1, 'covered does not wait for the settle window');
+  const key = ackLast(h, 'c');
+  assert.equal(key.kind, 'key');
+  assert.match(key.text, /covered="Google Chrome" pid=501 bounds=0,0,1800,1130/);
+
+  // The target window is not on screen at all: the same failure, with no
+  // process to name and nothing to place.
+  h.inject(sig(11, { kind: 'covered', over: { by: 'not on screen', pid: 0 } }));
+  assert.equal(h.core.doc().meta.covered?.value, '"not on screen"');
+  assert.equal(h.core.doc().meta.covered?.bounds, undefined);
+
+  // Clear: an explicit null drops the field.
+  h.inject(sig(12, { kind: 'covered', over: null }));
+  assert.equal(h.core.doc().meta.covered, undefined);
+  assert.equal(ackLast(h, 'c').kind, 'key', 'and says so at once');
+
+  // A gap recovers it from the snapshot, where it rides beside focus and sheet.
+  h.reply('lens-snapshot', {
+    epoch: 1,
+    seq: 50,
+    app: { bundle: 'com.apple.dt.Xcode', name: 'Xcode', pid: 123 },
+    window: { id: 5375, title: 'main.rs', bounds: [195, 92, 656, 422], url: null, display: DISPLAY },
+    focus: null,
+    sheet: null,
+    covered: { by: 'Google Chrome', pid: 501, bounds: [0, 0, 1800, 1130] },
+    axText: [wire('let x = 1', 34)],
+    ocr: [],
+    latest: null,
+    live: [],
+  });
+  h.inject(sig(51, { kind: 'gap', from: 13, to: 50 }));
+  await h.tick();
+  assert.equal(h.core.doc().meta.covered?.value, '"Google Chrome" pid=501');
+
+  // An app switch is a new epoch, and a new target is not covered until a
+  // frame of it says so.
+  h.inject(app(1, 'com.google.Chrome', 2));
+  await h.tick();
+  assert.equal(h.core.doc().meta.covered, undefined);
+});

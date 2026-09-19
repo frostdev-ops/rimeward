@@ -103,6 +103,20 @@ function headMeta(body: Record<string, unknown>): { key: string; value: string; 
 const focusValue = (body: { role?: unknown; label?: unknown; value?: unknown }): string =>
   `${str(body.role)} ${q(str(body.label))} value=${q(str(body.value))}`;
 
+/** `covered=` — something that is not the target is drawn over the target's
+ *  rectangle, so the pixels there are not its own. The capture is scoped to a
+ *  rectangle, not to a window, so the native side reports who is over it and
+ *  stops reading the text there; this is what tells a consumer that, rather
+ *  than handing it another window's lines under this window's name. `null`
+ *  clears the field. */
+export function coveredValue(over: unknown): { value: string; bounds?: Rect } | null {
+  if (!over || typeof over !== 'object') return null;
+  const body = over as { by?: unknown; pid?: unknown; bounds?: unknown };
+  const pid = num(body.pid);
+  const bounds = rect(body.bounds);
+  return { value: `${q(str(body.by))}${pid ? ` pid=${pid}` : ''}`, ...(bounds ? { bounds } : {}) };
+}
+
 // ------------------------------------------------------- what the lens is doing
 
 /** What a `lens-start` or `lens-status` reply says the lens is doing, or null
@@ -271,6 +285,15 @@ export function screenSource(deps: ScreenDeps): Source {
       case 'ax-sheet':
         feed.meta('sheet', q(str(body.title)), seq, rect(body.bounds));
         return;
+      case 'covered': {
+        // While this field is set the source stops reading text at all, so the
+        // lines standing in the document are the target's last own ones. It is
+        // a keyframe key: being told what is on top matters more than the
+        // settle window.
+        const field = coveredValue(body.over);
+        feed.meta('covered', field?.value, seq, field?.bounds);
+        return;
+      }
       case 'ax-text':
         feed.replace(wireDrafts(body.lines, 'ax'), seq, claims(rect(body.rect) ?? [0, 0, 0, 0]));
         return;
@@ -348,6 +371,8 @@ export function screenSource(deps: ScreenDeps): Source {
     if (focus) meta.focus = { value: focusValue(focus), ...(rect(focus.bounds) ? { bounds: rect(focus.bounds) as Rect } : {}) };
     const sheet = snap.sheet as Record<string, unknown> | null;
     if (sheet) meta.sheet = { value: q(str(sheet.title)), ...(rect(sheet.bounds) ? { bounds: rect(sheet.bounds) as Rect } : {}) };
+    const covered = coveredValue(snap.covered);
+    if (covered) meta.covered = { value: covered.value, ...(covered.bounds ? { bounds: covered.bounds } : {}) };
     const frame = snap.latest as { ref?: unknown; geometry?: unknown } | null;
     // A reply that arrived after the window changed describes a window nobody is
     // looking at: its frame must not become the one a crop reads.
@@ -407,7 +432,7 @@ export function screenSource(deps: ScreenDeps): Source {
   };
 
   return {
-    keyframeOn: ['app', 'window', 'sheet'],
+    keyframeOn: ['app', 'window', 'sheet', 'covered'],
     ruleKeys: ['focus'],
 
     async connect(_user, _target, f): Promise<() => void> {

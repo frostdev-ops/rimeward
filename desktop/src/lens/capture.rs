@@ -7,11 +7,31 @@
 //! - [`Filter::Display`] — the display, excluding this app, cropped to the
 //!   window's bounds. Catches everything in that rectangle, including other
 //!   applications' floating windows.
+//!
+//! [`Filter::Display`] is the default, because it is the only one that sees a
+//! sheet, a dialog or a second window of the target's own application
+//! (research/capture-matrix.md §4). Its price is cell ii of that matrix: a
+//! window of ANOTHER application over the target's rectangle is captured under
+//! the target's name. That is not solved here — the pixels really are what is
+//! at that rectangle — it is REPORTED. Every frame asks the window server who
+//! is on top ([`signals::cover_now`]), a [`Kind::Covered`] signal names the
+//! application when the answer is not the target, and recognition does not run
+//! while it holds, so nothing downstream is ever handed another window's text
+//! under this window's identity.
+//!
+//! The trade-off taken, against the alternative: `SCContentFilter` can also be
+//! built display-including-applications, which would composite the target's
+//! own application alone and drop the foreign window from the frame entirely.
+//! It needs a live screen to settle — whether an occluded window still renders,
+//! what fills the rest of the rectangle, and what happens when the target is
+//! not in `SCShareableContent::applications()`, where an empty include list
+//! captures nothing at all. Reporting fails safe and is provable without a
+//! screen; that filter is not.
 
 use super::bridge::{Dirty, FrameGeometry, Kind, Line, Rect};
 use super::ocr::{self, Print, Transform};
 use super::ring;
-use super::{Lens, Target};
+use super::{signals, Lens, Target};
 use screencapturekit::cm::{CMSampleBufferExt, CMSampleBufferSCExt, SCFrameStatus};
 use screencapturekit::cv::CVPixelBuffer;
 use screencapturekit::prelude::*;
@@ -682,6 +702,12 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
     let stamp = lens.bridge.stamp();
 
     let Placement { bounds, display } = *shared.placement.lock().unwrap();
+    let target = lens
+        .target
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|target| (target.window_id, target.pid));
     let (width, height) = (pixels.width() as u32, pixels.height() as u32);
     let content =
         info.content_rect
@@ -739,12 +765,58 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
         return;
     };
 
+    // Whose pixels these are. A display filter is scoped to the target's
+    // RECTANGLE, not to its window, so a window of another application drawn
+    // over that rectangle is captured under the target's name — the trade-off
+    // recorded when the filter was chosen (research/capture-matrix.md §4, cell
+    // ii). The pixels are real, so the frame still goes to the ring and the
+    // consumer; recognition does not run, because reading them would file
+    // another window's text as the target's. A sheet, a dialog or a second
+    // window of the target's own application is not a cover: seeing those is
+    // why the display filter was chosen over a window filter in the first
+    // place.
+    // ponytail: any overlap at all suppresses the whole read rather than the
+    // overlapped part of it. Recognizing around the cover is the upgrade, and
+    // it wants the cover's rectangle subtracted from the region of interest
+    // rather than a flag.
+    let cover = target.and_then(|(window_id, target_pid)| {
+        // A window filter composites the target's own window, so nothing drawn
+        // on top of it is in the frame to begin with.
+        (shared.filter == Filter::Display)
+            .then(|| signals::cover_now(window_id, target_pid, bounds, lens.own_pid))
+            .flatten()
+    });
+    // Edge-triggered, and only while the frame's own epoch still stands: a
+    // cover read for the old target must not be filed against the new one.
+    let changed = lens.bridge.epoch() == stamp.epoch && {
+        let mut known = lens.known.write().unwrap();
+        let changed = known.covered != cover;
+        if changed {
+            known.covered.clone_from(&cover);
+        }
+        changed
+    };
+    if changed {
+        if let Some(at) = lens.bridge.stamp_in(stamp.epoch) {
+            lens.bridge.emit_stamped(
+                at,
+                Kind::Covered {
+                    over: cover.clone(),
+                },
+            );
+        }
+    }
+
     let scored = score(shared, &pixels, &transform, &merged, width, height);
     let nothing_new = unchanged(&scored);
     if nothing_new {
         counters.ocr_unchanged.fetch_add(1, Ordering::Relaxed);
     }
-    let (lines, ocr_ms, recognized) = if nothing_new {
+    let (lines, ocr_ms, recognized) = if cover.is_some() {
+        // Another window is over the target. The `covered` signal says so; an
+        // `ocr` signal here would say the target shows this text.
+        (Vec::new(), 0, false)
+    } else if nothing_new {
         // Same pixels as last frame: reading them again would cost a
         // recognition per frame for as long as the screen stands still.
         (Vec::new(), 0, false)

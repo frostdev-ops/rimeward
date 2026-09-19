@@ -76,6 +76,22 @@ pub struct Dirty {
     pub d: f32,
 }
 
+/// Something that is not the target drawn over the target's rectangle. The
+/// display filter is scoped to a RECTANGLE, not to a window, so whatever is
+/// visually there is captured under the target's name; this is how the lens
+/// says so instead of filing another window's text as the target's.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Cover {
+    /// The covering application, named the way a person would recognise it.
+    pub by: String,
+    /// Its process, `0` when the target window is simply not on screen.
+    pub pid: i32,
+    /// Window points: where it sits over the target. Absent when the target
+    /// window is not on screen and there is nothing to place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<Rect>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Kind {
@@ -135,6 +151,14 @@ pub enum Kind {
         ms: u32,
         #[serde(rename = "axCovered")]
         ax_covered: bool,
+    },
+    /// Another window came over the target's rectangle, or the last one left.
+    /// While it holds, nothing at that rectangle is recognized: the text there
+    /// is not the target's and the lens will not file it as though it were.
+    Covered {
+        /// `None` once the target is the top window over its own rectangle
+        /// again.
+        over: Option<Cover>,
     },
     Gap {
         from: u64,
@@ -586,6 +610,35 @@ mod tests {
             format!(
                 r#"{head}"kind":"ocr","ref":"f-7-309","rect":[0.0,0.0,8.0,9.0],"lines":[{{"bbox":[1.0,2.0,3.0,4.0],"text":"hi","conf":0.5}}],"ms":115,"axCovered":false}}"#
             )
+        );
+        assert_eq!(
+            line(Kind::Covered {
+                over: Some(Cover {
+                    by: "Google Chrome".into(),
+                    pid: 501,
+                    bounds: Some([0.0, -26.0, 1800.0, 1130.0])
+                })
+            }),
+            format!(
+                r#"{head}"kind":"covered","over":{{"by":"Google Chrome","pid":501,"bounds":[0.0,-26.0,1800.0,1130.0]}}}}"#
+            )
+        );
+        // The target window is not on screen at all: nothing to place, and no
+        // process to name.
+        assert_eq!(
+            line(Kind::Covered {
+                over: Some(Cover {
+                    by: "not on screen".into(),
+                    pid: 0,
+                    bounds: None
+                })
+            }),
+            format!(r#"{head}"kind":"covered","over":{{"by":"not on screen","pid":0}}}}"#)
+        );
+        // Clear again: an explicit null, which is what drops the field.
+        assert_eq!(
+            line(Kind::Covered { over: None }),
+            format!(r#"{head}"kind":"covered","over":null}}"#)
         );
         assert_eq!(
             line(Kind::Gap { from: 4, to: 9 }),
