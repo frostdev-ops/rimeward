@@ -1,0 +1,14 @@
+{"type":"note","text":"OCR 50 finishes after OCR 51. The older read cannot overwrite the newer text, so it is discarded whole."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"c"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,25,656,20],"lines":[{"bbox":[12,34,300,18],"text":"invoice 0042"}]}
+{"type":"tick","ms":750}
+{"type":"ack","consumer":"c"}
+{"type":"source","epoch":1,"seq":51,"kind":"ocr","ref":"f-1-51","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"total 118.20","conf":0.95}],"ms":118,"axCovered":false}
+{"type":"source","epoch":1,"seq":50,"kind":"ocr","ref":"f-1-50","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"total 99.00","conf":0.95}],"ms":118,"axCovered":false}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"scene.text","contains":["total 118.20"],"notContains":["total 99.00"]}
+{"type":"expect","expect":"scene.lines","count":2}
+{"type":"expect","expect":"lines","consumer":"c","plus":1,"minus":0}
+{"type":"expect","expect":"text","consumer":"c","contains":["+ 12,52,300,18 ocr \"total 118.20\""],"notContains":["99.00"]}

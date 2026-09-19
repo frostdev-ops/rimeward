@@ -1,0 +1,15 @@
+{"type":"note","text":"An edit at the end of a long line. Rust widens the rect to the whole line, so the lens reports one removal and one addition and leaves the neighbours alone."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"c"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,25,656,100],"lines":[{"bbox":[12,34,300,18],"text":"fn total(order: Order) -> f64 {"},{"bbox":[12,52,300,18],"text":"  let tax = subtotal * 0.0825;"},{"bbox":[12,70,300,18],"text":"  let total = subtotal + tax + shipping;"},{"bbox":[12,88,300,18],"text":"  total"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"expect","expect":"lines","consumer":"c","same":4}
+{"type":"ack","consumer":"c"}
+{"type":"source","epoch":1,"seq":4,"kind":"ax-text","rect":[0,63,656,26],"lines":[{"bbox":[12,70,300,18],"text":"  let total = subtotal + tax + shipping + fee;"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"delta","consumer":"c"}
+{"type":"expect","expect":"lines","consumer":"c","plus":1,"minus":1}
+{"type":"expect","expect":"text","consumer":"c","contains":["+ 12,70,300,18 ax \"  let total = subtotal + tax + shipping + fee;\"","- 12,70,300,18 ax \"  let total = subtotal + tax + shipping;\""],"notContains":["let tax","fn total"]}
+{"type":"expect","expect":"scene.lines","count":4}

@@ -1,0 +1,12 @@
+{"type": "note", "text": "The session state is a header field a change to which is a keyframe on its own: an exit reaches every consumer at once, with the exit code in the header."}
+{"type": "term", "seq": 1, "rows": ["$ npm test", "ok 1 - it works", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "consumer", "id": "c"}
+{"type": "tick", "ms": 750}
+{"type": "ack", "consumer": "c"}
+{"type": "expect", "expect": "meta", "key": "session", "value": "running"}
+{"type": "term", "seq": 10, "rows": ["$ npm test", "ok 1 - it works", "done", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "term", "seq": 11, "session": {"state": "exited", "exitCode": 0, "cols": 80, "rows": 24}}
+{"type": "expect", "expect": "meta", "key": "session", "value": "exited exit=0"}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 2}
+{"type": "expect", "expect": "keyframe", "consumer": "c"}
+{"type": "expect", "expect": "text", "consumer": "c", "contains": ["session=exited exit=0", "done"]}

@@ -1,0 +1,14 @@
+{"type":"note","text":"Another window of the same app: Rust opens a new epoch, so the lens publishes a keyframe rather than a delta."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"c"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,25,656,20],"lines":[{"bbox":[12,34,300,18],"text":"fn render(scene: Scene) {"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"ack","consumer":"c"}
+{"type":"source","epoch":2,"seq":1,"kind":"window","id":6001,"title":"lib.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"expect","expect":"epoch","value":2}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"expect","expect":"deliveries","consumer":"c","count":2}
+{"type":"expect","expect":"scene.lines","count":0}
+{"type":"expect","expect":"text","consumer":"c","contains":["window=6001 \"lib.rs\""],"notContains":["fn render"]}

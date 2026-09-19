@@ -1,0 +1,15 @@
+{"type":"note","text":"A one-line scroll: every line keeps its id and its text and only its bbox moves, so nothing is delivered."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"c"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,10,656,120],"lines":[{"bbox":[12,34,300,18],"text":"fn render(scene: Scene) {"},{"bbox":[12,52,300,18],"text":"  let total = 118.20;"},{"bbox":[12,70,300,18],"text":"  // quartz falcon"},{"bbox":[12,88,300,18],"text":"  emit(total);"},{"bbox":[12,106,300,18],"text":"}"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"expect","expect":"lines","consumer":"c","same":5}
+{"type":"ack","consumer":"c"}
+{"type":"source","epoch":1,"seq":4,"kind":"ax-text","rect":[0,10,656,120],"lines":[{"bbox":[12,16,300,18],"text":"fn render(scene: Scene) {"},{"bbox":[12,34,300,18],"text":"  let total = 118.20;"},{"bbox":[12,52,300,18],"text":"  // quartz falcon"},{"bbox":[12,70,300,18],"text":"  emit(total);"},{"bbox":[12,88,300,18],"text":"}"}]}
+{"type":"tick","ms":3000}
+{"type":"expect","expect":"moved","count":5}
+{"type":"expect","expect":"deliveries","consumer":"c","count":1}
+{"type":"expect","expect":"version","value":3}
+{"type":"expect","expect":"scene.lines","count":5}

@@ -1,0 +1,978 @@
+{"type":"note","text":"Ten minutes of synthetic editor work: typing bursts, scrolls, idle stretches, three app switches and one save sheet. `plain` has no watches; `watch` looks for a build error and sets its own threshold for the replay harness stand-in embedder."}
+{"type":"consumer","id":"plain"}
+{"type":"consumer","id":"watch","watches":[{"for":"a build error appeared","visual":false,"triage":false,"threshold":0.55}]}
+{"type":"expect","expect":"watch","consumer":"watch","id":"watch:w1","mode":"for"}
+{"type":"note","text":"Xcode: gate.rs"}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":4211}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"gate.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,28,656,140],"lines":[{"bbox":[12,34,300,18],"text":"fn lumen(order: Order) -> f64 {"},{"bbox":[12,52,300,18],"text":"  let agate_1 = condor(29);"},{"bbox":[12,70,300,18],"text":"  let condor_2 = quartz(29);"},{"bbox":[12,88,300,18],"text":"  let condor_3 = quartz(43);"},{"bbox":[12,106,300,18],"text":"  let kestrel_4 = plover(17);"},{"bbox":[12,124,300,18],"text":"}"}]}
+{"type":"source","epoch":1,"seq":4,"kind":"ax-focus","role":"AXTextArea","label":"Source Editor","value":"  let agate_1 = condor(29);","bounds":[0,32,656,384]}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":1,"seq":5,"kind":"frame","ref":"f-1-5","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,101,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":6,"kind":"ocr","ref":"f-1-5","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":7,"kind":"ocr","ref":"f-1-6","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let qu","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":8,"kind":"ocr","ref":"f-1-7","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quar","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":9,"kind":"ocr","ref":"f-1-8","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":10,"kind":"ocr","ref":"f-1-9","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":11,"kind":"ocr","ref":"f-1-10","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":12,"kind":"ocr","ref":"f-1-11","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":13,"kind":"ocr","ref":"f-1-12","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":3000}
+{"type":"source","epoch":1,"seq":14,"kind":"frame","ref":"f-1-14","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,101,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":15,"kind":"ocr","ref":"f-1-14","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":16,"kind":"ocr","ref":"f-1-15","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let qu","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":17,"kind":"ocr","ref":"f-1-16","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quar","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":18,"kind":"ocr","ref":"f-1-17","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":19,"kind":"ocr","ref":"f-1-18","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":20,"kind":"ocr","ref":"f-1-19","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":21,"kind":"ocr","ref":"f-1-20","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":22,"kind":"ocr","ref":"f-1-21","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":23,"kind":"ocr","ref":"f-1-22","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let quartz = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":1,"seq":24,"kind":"ax-text","rect":[0,10,656,140],"lines":[{"bbox":[12,16,300,18],"text":"fn lumen(order: Order) -> f64 {"},{"bbox":[12,34,300,18],"text":"  let agate_1 = condor(29);"},{"bbox":[12,52,300,18],"text":"  let condor_2 = quartz(29);"},{"bbox":[12,70,300,18],"text":"  let condor_3 = quartz(43);"},{"bbox":[12,88,300,18],"text":"  let quartz = total +"},{"bbox":[12,106,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":5300}
+{"type":"source","epoch":1,"seq":25,"kind":"frame","ref":"f-1-25","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":26,"kind":"ocr","ref":"f-1-25","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":27,"kind":"ocr","ref":"f-1-26","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ag","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":28,"kind":"ocr","ref":"f-1-27","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agat","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":29,"kind":"ocr","ref":"f-1-28","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate ","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":30,"kind":"ocr","ref":"f-1-29","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":31,"kind":"ocr","ref":"f-1-30","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = to","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":32,"kind":"ocr","ref":"f-1-31","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = tota","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":33,"kind":"ocr","ref":"f-1-32","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":34,"kind":"ocr","ref":"f-1-33","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + ","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":35,"kind":"ocr","ref":"f-1-34","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + 46","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":7600}
+{"type":"source","epoch":1,"seq":36,"kind":"frame","ref":"f-1-36","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":37,"kind":"ocr","ref":"f-1-36","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":38,"kind":"ocr","ref":"f-1-37","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ba","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":39,"kind":"ocr","ref":"f-1-38","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basa","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":40,"kind":"ocr","ref":"f-1-39","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":41,"kind":"ocr","ref":"f-1-40","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":42,"kind":"ocr","ref":"f-1-41","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":43,"kind":"ocr","ref":"f-1-42","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":44,"kind":"ocr","ref":"f-1-43","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":45,"kind":"ocr","ref":"f-1-44","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":46,"kind":"ocr","ref":"f-1-45","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total + 9","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":47,"kind":"ocr","ref":"f-1-46","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total + 997","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":9900}
+{"type":"source","epoch":1,"seq":48,"kind":"frame","ref":"f-1-48","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":49,"kind":"ocr","ref":"f-1-48","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":50,"kind":"ocr","ref":"f-1-49","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ag","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":51,"kind":"ocr","ref":"f-1-50","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agat","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":52,"kind":"ocr","ref":"f-1-51","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate ","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":53,"kind":"ocr","ref":"f-1-52","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":54,"kind":"ocr","ref":"f-1-53","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = to","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":55,"kind":"ocr","ref":"f-1-54","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = tota","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":56,"kind":"ocr","ref":"f-1-55","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":57,"kind":"ocr","ref":"f-1-56","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + ","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":58,"kind":"ocr","ref":"f-1-57","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + 90","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":59,"kind":"ocr","ref":"f-1-58","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + 900;","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":60,"kind":"ocr","ref":"f-1-59","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + 900;","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":1,"seq":61,"kind":"ax-text","rect":[0,-8,656,140],"lines":[{"bbox":[12,-2,300,18],"text":"fn lumen(order: Order) -> f64 {"},{"bbox":[12,16,300,18],"text":"  let agate_1 = condor(29);"},{"bbox":[12,34,300,18],"text":"  let condor_2 = quartz(29);"},{"bbox":[12,52,300,18],"text":"  let condor_3 = quartz(43);"},{"bbox":[12,70,300,18],"text":"  let agate = total + 900;"},{"bbox":[12,88,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":12200}
+{"type":"source","epoch":1,"seq":62,"kind":"frame","ref":"f-1-62","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":63,"kind":"ocr","ref":"f-1-62","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":64,"kind":"ocr","ref":"f-1-63","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let fa","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":65,"kind":"ocr","ref":"f-1-64","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let falc","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":66,"kind":"ocr","ref":"f-1-65","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let falcon","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":67,"kind":"ocr","ref":"f-1-66","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let falcon =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":68,"kind":"ocr","ref":"f-1-67","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let falcon = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":69,"kind":"ocr","ref":"f-1-68","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let falcon = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":70,"kind":"ocr","ref":"f-1-69","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let falcon = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":3500}
+{"type":"source","epoch":1,"seq":71,"kind":"frame","ref":"f-1-71","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":72,"kind":"ocr","ref":"f-1-71","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":73,"kind":"ocr","ref":"f-1-72","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ke","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":74,"kind":"ocr","ref":"f-1-73","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let kest","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":75,"kind":"ocr","ref":"f-1-74","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let kestre","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":76,"kind":"ocr","ref":"f-1-75","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let kestrel ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":77,"kind":"ocr","ref":"f-1-76","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let kestrel = ","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":78,"kind":"ocr","ref":"f-1-77","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let kestrel = to","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":79,"kind":"ocr","ref":"f-1-78","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let kestrel = tota","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":80,"kind":"ocr","ref":"f-1-79","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let kestrel = total ","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":5800}
+{"type":"note","text":"A build finishes badly in the console pane."}
+{"type":"source","epoch":1,"seq":81,"kind":"ocr","ref":"f-1-80","rect":[0,295,656,28],"lines":[{"bbox":[12,300,300,18],"text":"error: build failed with 2 errors in gate.rs","conf":0.96}],"ms":121,"axCovered":false}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":1,"seq":82,"kind":"frame","ref":"f-1-82","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":83,"kind":"ocr","ref":"f-1-82","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":84,"kind":"ocr","ref":"f-1-83","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ag","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":85,"kind":"ocr","ref":"f-1-84","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let agat","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":86,"kind":"ocr","ref":"f-1-85","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let agate ","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":87,"kind":"ocr","ref":"f-1-86","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let agate = ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":88,"kind":"ocr","ref":"f-1-87","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let agate = to","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":89,"kind":"ocr","ref":"f-1-88","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let agate = tota","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":90,"kind":"ocr","ref":"f-1-89","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let agate = total ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":91,"kind":"ocr","ref":"f-1-90","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let agate = total + ","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":92,"kind":"ocr","ref":"f-1-91","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let agate = total + 93","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":1,"seq":93,"kind":"ax-text","rect":[0,-26,656,140],"lines":[{"bbox":[12,-20,300,18],"text":"fn lumen(order: Order) -> f64 {"},{"bbox":[12,-2,300,18],"text":"  let agate_1 = condor(29);"},{"bbox":[12,16,300,18],"text":"  let condor_2 = quartz(29);"},{"bbox":[12,34,300,18],"text":"  let condor_3 = quartz(43);"},{"bbox":[12,52,300,18],"text":"  let agate = total + 93"},{"bbox":[12,70,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":8100}
+{"type":"source","epoch":1,"seq":94,"kind":"frame","ref":"f-1-94","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,47,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":95,"kind":"ocr","ref":"f-1-94","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":96,"kind":"ocr","ref":"f-1-95","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let fa","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":97,"kind":"ocr","ref":"f-1-96","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let falc","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":98,"kind":"ocr","ref":"f-1-97","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let falcon","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":99,"kind":"ocr","ref":"f-1-98","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let falcon =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":100,"kind":"ocr","ref":"f-1-99","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let falcon = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":101,"kind":"ocr","ref":"f-1-100","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let falcon = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":102,"kind":"ocr","ref":"f-1-101","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let falcon = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":103,"kind":"ocr","ref":"f-1-102","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let falcon = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":104,"kind":"ocr","ref":"f-1-103","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let falcon = total + 9","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":1,"seq":105,"kind":"ocr","ref":"f-1-104","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let falcon = total + 941","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":10400}
+{"type":"note","text":"The user steps away."}
+{"type":"tick","ms":18000}
+{"type":"note","text":"Code: scene.ts"}
+{"type":"source","epoch":2,"seq":1,"kind":"app","bundle":"com.microsoft.VSCode","name":"Code","pid":4880}
+{"type":"source","epoch":2,"seq":2,"kind":"window","id":6102,"title":"scene.ts","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"source","epoch":2,"seq":3,"kind":"ax-text","rect":[0,28,656,140],"lines":[{"bbox":[12,34,300,18],"text":"fn kestrel(order: Order) -> f64 {"},{"bbox":[12,52,300,18],"text":"  let agate_1 = condor(31);"},{"bbox":[12,70,300,18],"text":"  let condor_2 = falcon(24);"},{"bbox":[12,88,300,18],"text":"  let basalt_3 = basalt(88);"},{"bbox":[12,106,300,18],"text":"  let agate_4 = plover(54);"},{"bbox":[12,124,300,18],"text":"}"}]}
+{"type":"source","epoch":2,"seq":4,"kind":"ax-focus","role":"AXTextArea","label":"Source Editor","value":"  let agate_1 = condor(31);","bounds":[0,32,656,384]}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":2,"seq":5,"kind":"frame","ref":"f-2-5","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,101,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":2,"seq":6,"kind":"ocr","ref":"f-2-5","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":7,"kind":"ocr","ref":"f-2-6","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let co","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":8,"kind":"ocr","ref":"f-2-7","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let cond","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":9,"kind":"ocr","ref":"f-2-8","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let condor","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":10,"kind":"ocr","ref":"f-2-9","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let condor =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":11,"kind":"ocr","ref":"f-2-10","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let condor = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":12,"kind":"ocr","ref":"f-2-11","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let condor = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":13,"kind":"ocr","ref":"f-2-12","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let condor = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":3700}
+{"type":"source","epoch":2,"seq":14,"kind":"frame","ref":"f-2-14","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,101,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":2,"seq":15,"kind":"ocr","ref":"f-2-14","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":16,"kind":"ocr","ref":"f-2-15","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let pl","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":17,"kind":"ocr","ref":"f-2-16","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let plov","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":18,"kind":"ocr","ref":"f-2-17","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let plover","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":19,"kind":"ocr","ref":"f-2-18","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let plover =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":20,"kind":"ocr","ref":"f-2-19","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let plover = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":21,"kind":"ocr","ref":"f-2-20","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let plover = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":22,"kind":"ocr","ref":"f-2-21","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let plover = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":23,"kind":"ocr","ref":"f-2-22","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let plover = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":2,"seq":24,"kind":"ax-text","rect":[0,10,656,140],"lines":[{"bbox":[12,16,300,18],"text":"fn kestrel(order: Order) -> f64 {"},{"bbox":[12,34,300,18],"text":"  let agate_1 = condor(31);"},{"bbox":[12,52,300,18],"text":"  let condor_2 = falcon(24);"},{"bbox":[12,70,300,18],"text":"  let basalt_3 = basalt(88);"},{"bbox":[12,88,300,18],"text":"  let plover = total +"},{"bbox":[12,106,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":6000}
+{"type":"source","epoch":2,"seq":25,"kind":"frame","ref":"f-2-25","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":2,"seq":26,"kind":"ocr","ref":"f-2-25","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":27,"kind":"ocr","ref":"f-2-26","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ag","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":28,"kind":"ocr","ref":"f-2-27","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agat","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":29,"kind":"ocr","ref":"f-2-28","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate ","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":30,"kind":"ocr","ref":"f-2-29","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":31,"kind":"ocr","ref":"f-2-30","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = to","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":32,"kind":"ocr","ref":"f-2-31","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = tota","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":33,"kind":"ocr","ref":"f-2-32","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":34,"kind":"ocr","ref":"f-2-33","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + ","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":35,"kind":"ocr","ref":"f-2-34","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + 27","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":8300}
+{"type":"source","epoch":2,"seq":36,"kind":"frame","ref":"f-2-36","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":2,"seq":37,"kind":"ocr","ref":"f-2-36","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":38,"kind":"ocr","ref":"f-2-37","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ag","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":39,"kind":"ocr","ref":"f-2-38","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agat","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":40,"kind":"ocr","ref":"f-2-39","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate ","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":41,"kind":"ocr","ref":"f-2-40","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":42,"kind":"ocr","ref":"f-2-41","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = to","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":43,"kind":"ocr","ref":"f-2-42","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = tota","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":44,"kind":"ocr","ref":"f-2-43","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":45,"kind":"ocr","ref":"f-2-44","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + ","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":46,"kind":"ocr","ref":"f-2-45","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + 46","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":47,"kind":"ocr","ref":"f-2-46","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let agate = total + 465;","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":10600}
+{"type":"source","epoch":2,"seq":48,"kind":"frame","ref":"f-2-48","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":2,"seq":49,"kind":"ocr","ref":"f-2-48","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":50,"kind":"ocr","ref":"f-2-49","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lu","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":51,"kind":"ocr","ref":"f-2-50","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lume","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":52,"kind":"ocr","ref":"f-2-51","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lumen ","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":53,"kind":"ocr","ref":"f-2-52","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lumen = ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":54,"kind":"ocr","ref":"f-2-53","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lumen = to","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":55,"kind":"ocr","ref":"f-2-54","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lumen = tota","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":56,"kind":"ocr","ref":"f-2-55","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lumen = total ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":57,"kind":"ocr","ref":"f-2-56","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lumen = total + ","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":58,"kind":"ocr","ref":"f-2-57","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lumen = total + 79","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":59,"kind":"ocr","ref":"f-2-58","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lumen = total + 798;","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":60,"kind":"ocr","ref":"f-2-59","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let lumen = total + 798;","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":2,"seq":61,"kind":"ax-text","rect":[0,-8,656,140],"lines":[{"bbox":[12,-2,300,18],"text":"fn kestrel(order: Order) -> f64 {"},{"bbox":[12,16,300,18],"text":"  let agate_1 = condor(31);"},{"bbox":[12,34,300,18],"text":"  let condor_2 = falcon(24);"},{"bbox":[12,52,300,18],"text":"  let basalt_3 = basalt(88);"},{"bbox":[12,70,300,18],"text":"  let lumen = total + 798;"},{"bbox":[12,88,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":12900}
+{"type":"note","text":"A save sheet opens: a flush, delivered to every consumer whatever it watches."}
+{"type":"source","epoch":2,"seq":62,"kind":"ax-sheet","title":"Save changes to gate.rs?","bounds":[120,140,400,200]}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":2,"seq":63,"kind":"frame","ref":"f-2-63","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":2,"seq":64,"kind":"ocr","ref":"f-2-63","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":65,"kind":"ocr","ref":"f-2-64","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let pl","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":66,"kind":"ocr","ref":"f-2-65","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plov","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":67,"kind":"ocr","ref":"f-2-66","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":68,"kind":"ocr","ref":"f-2-67","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":69,"kind":"ocr","ref":"f-2-68","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":70,"kind":"ocr","ref":"f-2-69","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":71,"kind":"ocr","ref":"f-2-70","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":4200}
+{"type":"source","epoch":2,"seq":72,"kind":"frame","ref":"f-2-72","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":2,"seq":73,"kind":"ocr","ref":"f-2-72","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":74,"kind":"ocr","ref":"f-2-73","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ba","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":75,"kind":"ocr","ref":"f-2-74","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basa","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":76,"kind":"ocr","ref":"f-2-75","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":77,"kind":"ocr","ref":"f-2-76","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":78,"kind":"ocr","ref":"f-2-77","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":79,"kind":"ocr","ref":"f-2-78","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":80,"kind":"ocr","ref":"f-2-79","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":81,"kind":"ocr","ref":"f-2-80","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":6500}
+{"type":"note","text":"A build finishes badly in the console pane."}
+{"type":"source","epoch":2,"seq":82,"kind":"ocr","ref":"f-2-81","rect":[0,295,656,28],"lines":[{"bbox":[12,300,300,18],"text":"Build failed: 3 errors","conf":0.96}],"ms":121,"axCovered":false}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":2,"seq":83,"kind":"frame","ref":"f-2-83","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":2,"seq":84,"kind":"ocr","ref":"f-2-83","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":85,"kind":"ocr","ref":"f-2-84","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let pl","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":86,"kind":"ocr","ref":"f-2-85","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plov","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":87,"kind":"ocr","ref":"f-2-86","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":88,"kind":"ocr","ref":"f-2-87","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":89,"kind":"ocr","ref":"f-2-88","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":90,"kind":"ocr","ref":"f-2-89","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":91,"kind":"ocr","ref":"f-2-90","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":92,"kind":"ocr","ref":"f-2-91","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":93,"kind":"ocr","ref":"f-2-92","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = total + 6","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":2,"seq":94,"kind":"ax-text","rect":[0,-26,656,140],"lines":[{"bbox":[12,-20,300,18],"text":"fn kestrel(order: Order) -> f64 {"},{"bbox":[12,-2,300,18],"text":"  let agate_1 = condor(31);"},{"bbox":[12,16,300,18],"text":"  let condor_2 = falcon(24);"},{"bbox":[12,34,300,18],"text":"  let basalt_3 = basalt(88);"},{"bbox":[12,52,300,18],"text":"  let plover = total + 6"},{"bbox":[12,70,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":8800}
+{"type":"source","epoch":2,"seq":95,"kind":"frame","ref":"f-2-95","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,47,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":2,"seq":96,"kind":"ocr","ref":"f-2-95","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":97,"kind":"ocr","ref":"f-2-96","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let pl","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":98,"kind":"ocr","ref":"f-2-97","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let plov","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":99,"kind":"ocr","ref":"f-2-98","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let plover","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":100,"kind":"ocr","ref":"f-2-99","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let plover =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":101,"kind":"ocr","ref":"f-2-100","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let plover = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":102,"kind":"ocr","ref":"f-2-101","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let plover = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":103,"kind":"ocr","ref":"f-2-102","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let plover = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":104,"kind":"ocr","ref":"f-2-103","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let plover = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":105,"kind":"ocr","ref":"f-2-104","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let plover = total + 1","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":2,"seq":106,"kind":"ocr","ref":"f-2-105","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let plover = total + 182","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":11100}
+{"type":"note","text":"The user steps away."}
+{"type":"tick","ms":18000}
+{"type":"note","text":"Terminal: blackice — zsh"}
+{"type":"source","epoch":3,"seq":1,"kind":"app","bundle":"com.apple.Terminal","name":"Terminal","pid":5104}
+{"type":"source","epoch":3,"seq":2,"kind":"window","id":6640,"title":"blackice — zsh","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"source","epoch":3,"seq":3,"kind":"ax-text","rect":[0,28,656,140],"lines":[{"bbox":[12,34,300,18],"text":"fn agate(order: Order) -> f64 {"},{"bbox":[12,52,300,18],"text":"  let condor_1 = quartz(40);"},{"bbox":[12,70,300,18],"text":"  let plover_2 = agate(73);"},{"bbox":[12,88,300,18],"text":"  let kestrel_3 = lumen(63);"},{"bbox":[12,106,300,18],"text":"  let plover_4 = kestrel(21);"},{"bbox":[12,124,300,18],"text":"}"}]}
+{"type":"source","epoch":3,"seq":4,"kind":"ax-focus","role":"AXTextArea","label":"Source Editor","value":"  let condor_1 = quartz(40);","bounds":[0,32,656,384]}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":3,"seq":5,"kind":"frame","ref":"f-3-5","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,101,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":3,"seq":6,"kind":"ocr","ref":"f-3-5","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":7,"kind":"ocr","ref":"f-3-6","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let co","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":8,"kind":"ocr","ref":"f-3-7","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let cond","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":9,"kind":"ocr","ref":"f-3-8","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let condor","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":10,"kind":"ocr","ref":"f-3-9","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let condor =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":11,"kind":"ocr","ref":"f-3-10","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let condor = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":12,"kind":"ocr","ref":"f-3-11","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let condor = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":13,"kind":"ocr","ref":"f-3-12","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let condor = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":4400}
+{"type":"source","epoch":3,"seq":14,"kind":"frame","ref":"f-3-14","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,101,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":3,"seq":15,"kind":"ocr","ref":"f-3-14","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":16,"kind":"ocr","ref":"f-3-15","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let ke","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":17,"kind":"ocr","ref":"f-3-16","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let kest","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":18,"kind":"ocr","ref":"f-3-17","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let kestre","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":19,"kind":"ocr","ref":"f-3-18","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let kestrel ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":20,"kind":"ocr","ref":"f-3-19","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let kestrel = ","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":21,"kind":"ocr","ref":"f-3-20","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let kestrel = to","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":22,"kind":"ocr","ref":"f-3-21","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let kestrel = tota","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":23,"kind":"ocr","ref":"f-3-22","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let kestrel = total ","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":3,"seq":24,"kind":"ax-text","rect":[0,10,656,140],"lines":[{"bbox":[12,16,300,18],"text":"fn agate(order: Order) -> f64 {"},{"bbox":[12,34,300,18],"text":"  let condor_1 = quartz(40);"},{"bbox":[12,52,300,18],"text":"  let plover_2 = agate(73);"},{"bbox":[12,70,300,18],"text":"  let kestrel_3 = lumen(63);"},{"bbox":[12,88,300,18],"text":"  let kestrel = total "},{"bbox":[12,106,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":6700}
+{"type":"source","epoch":3,"seq":25,"kind":"frame","ref":"f-3-25","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":3,"seq":26,"kind":"ocr","ref":"f-3-25","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":27,"kind":"ocr","ref":"f-3-26","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ba","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":28,"kind":"ocr","ref":"f-3-27","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basa","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":29,"kind":"ocr","ref":"f-3-28","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":30,"kind":"ocr","ref":"f-3-29","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":31,"kind":"ocr","ref":"f-3-30","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":32,"kind":"ocr","ref":"f-3-31","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":33,"kind":"ocr","ref":"f-3-32","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":34,"kind":"ocr","ref":"f-3-33","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":35,"kind":"ocr","ref":"f-3-34","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total + 1","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":9000}
+{"type":"source","epoch":3,"seq":36,"kind":"frame","ref":"f-3-36","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":3,"seq":37,"kind":"ocr","ref":"f-3-36","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":38,"kind":"ocr","ref":"f-3-37","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ba","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":39,"kind":"ocr","ref":"f-3-38","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basa","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":40,"kind":"ocr","ref":"f-3-39","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":41,"kind":"ocr","ref":"f-3-40","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":42,"kind":"ocr","ref":"f-3-41","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":43,"kind":"ocr","ref":"f-3-42","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":44,"kind":"ocr","ref":"f-3-43","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":45,"kind":"ocr","ref":"f-3-44","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":46,"kind":"ocr","ref":"f-3-45","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total + 2","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":47,"kind":"ocr","ref":"f-3-46","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total + 250","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":11300}
+{"type":"source","epoch":3,"seq":48,"kind":"frame","ref":"f-3-48","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":3,"seq":49,"kind":"ocr","ref":"f-3-48","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":50,"kind":"ocr","ref":"f-3-49","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let fa","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":51,"kind":"ocr","ref":"f-3-50","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falc","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":52,"kind":"ocr","ref":"f-3-51","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":53,"kind":"ocr","ref":"f-3-52","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":54,"kind":"ocr","ref":"f-3-53","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":55,"kind":"ocr","ref":"f-3-54","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":56,"kind":"ocr","ref":"f-3-55","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":57,"kind":"ocr","ref":"f-3-56","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":58,"kind":"ocr","ref":"f-3-57","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total + 4","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":59,"kind":"ocr","ref":"f-3-58","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total + 433","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":60,"kind":"ocr","ref":"f-3-59","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total + 433;","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":3,"seq":61,"kind":"ax-text","rect":[0,-8,656,140],"lines":[{"bbox":[12,-2,300,18],"text":"fn agate(order: Order) -> f64 {"},{"bbox":[12,16,300,18],"text":"  let condor_1 = quartz(40);"},{"bbox":[12,34,300,18],"text":"  let plover_2 = agate(73);"},{"bbox":[12,52,300,18],"text":"  let kestrel_3 = lumen(63);"},{"bbox":[12,70,300,18],"text":"  let falcon = total + 433;"},{"bbox":[12,88,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":13600}
+{"type":"source","epoch":3,"seq":62,"kind":"frame","ref":"f-3-62","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":3,"seq":63,"kind":"ocr","ref":"f-3-62","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":64,"kind":"ocr","ref":"f-3-63","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let qu","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":65,"kind":"ocr","ref":"f-3-64","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let quar","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":66,"kind":"ocr","ref":"f-3-65","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let quartz","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":67,"kind":"ocr","ref":"f-3-66","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let quartz =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":68,"kind":"ocr","ref":"f-3-67","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let quartz = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":69,"kind":"ocr","ref":"f-3-68","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let quartz = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":70,"kind":"ocr","ref":"f-3-69","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let quartz = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":4900}
+{"type":"source","epoch":3,"seq":71,"kind":"frame","ref":"f-3-71","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":3,"seq":72,"kind":"ocr","ref":"f-3-71","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":73,"kind":"ocr","ref":"f-3-72","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let pl","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":74,"kind":"ocr","ref":"f-3-73","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plov","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":75,"kind":"ocr","ref":"f-3-74","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":76,"kind":"ocr","ref":"f-3-75","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":77,"kind":"ocr","ref":"f-3-76","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":78,"kind":"ocr","ref":"f-3-77","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":79,"kind":"ocr","ref":"f-3-78","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":80,"kind":"ocr","ref":"f-3-79","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let plover = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":7200}
+{"type":"note","text":"A build finishes badly in the console pane."}
+{"type":"source","epoch":3,"seq":81,"kind":"ocr","ref":"f-3-80","rect":[0,295,656,28],"lines":[{"bbox":[12,300,300,18],"text":"the build errored out","conf":0.96}],"ms":121,"axCovered":false}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":3,"seq":82,"kind":"frame","ref":"f-3-82","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":3,"seq":83,"kind":"ocr","ref":"f-3-82","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":84,"kind":"ocr","ref":"f-3-83","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lu","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":85,"kind":"ocr","ref":"f-3-84","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lume","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":86,"kind":"ocr","ref":"f-3-85","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen ","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":87,"kind":"ocr","ref":"f-3-86","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen = ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":88,"kind":"ocr","ref":"f-3-87","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen = to","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":89,"kind":"ocr","ref":"f-3-88","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen = tota","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":90,"kind":"ocr","ref":"f-3-89","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen = total ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":91,"kind":"ocr","ref":"f-3-90","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen = total + ","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":92,"kind":"ocr","ref":"f-3-91","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen = total + 69","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":3,"seq":93,"kind":"ax-text","rect":[0,-26,656,140],"lines":[{"bbox":[12,-20,300,18],"text":"fn agate(order: Order) -> f64 {"},{"bbox":[12,-2,300,18],"text":"  let condor_1 = quartz(40);"},{"bbox":[12,16,300,18],"text":"  let plover_2 = agate(73);"},{"bbox":[12,34,300,18],"text":"  let kestrel_3 = lumen(63);"},{"bbox":[12,52,300,18],"text":"  let lumen = total + 69"},{"bbox":[12,70,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":9500}
+{"type":"source","epoch":3,"seq":94,"kind":"frame","ref":"f-3-94","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,47,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":3,"seq":95,"kind":"ocr","ref":"f-3-94","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":96,"kind":"ocr","ref":"f-3-95","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let qu","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":97,"kind":"ocr","ref":"f-3-96","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let quar","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":98,"kind":"ocr","ref":"f-3-97","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let quartz","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":99,"kind":"ocr","ref":"f-3-98","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let quartz =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":100,"kind":"ocr","ref":"f-3-99","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let quartz = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":101,"kind":"ocr","ref":"f-3-100","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let quartz = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":102,"kind":"ocr","ref":"f-3-101","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let quartz = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":103,"kind":"ocr","ref":"f-3-102","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let quartz = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":104,"kind":"ocr","ref":"f-3-103","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let quartz = total + 2","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":3,"seq":105,"kind":"ocr","ref":"f-3-104","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let quartz = total + 226","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":11800}
+{"type":"note","text":"The user steps away."}
+{"type":"tick","ms":18000}
+{"type":"note","text":"Xcode: events.ts"}
+{"type":"source","epoch":4,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":4211}
+{"type":"source","epoch":4,"seq":2,"kind":"window","id":5901,"title":"events.ts","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"source","epoch":4,"seq":3,"kind":"ax-text","rect":[0,28,656,140],"lines":[{"bbox":[12,34,300,18],"text":"fn condor(order: Order) -> f64 {"},{"bbox":[12,52,300,18],"text":"  let plover_1 = plover(41);"},{"bbox":[12,70,300,18],"text":"  let lumen_2 = basalt(92);"},{"bbox":[12,88,300,18],"text":"  let kestrel_3 = falcon(34);"},{"bbox":[12,106,300,18],"text":"  let basalt_4 = falcon(84);"},{"bbox":[12,124,300,18],"text":"}"}]}
+{"type":"source","epoch":4,"seq":4,"kind":"ax-focus","role":"AXTextArea","label":"Source Editor","value":"  let plover_1 = plover(41);","bounds":[0,32,656,384]}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":4,"seq":5,"kind":"frame","ref":"f-4-5","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,101,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":4,"seq":6,"kind":"ocr","ref":"f-4-5","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":7,"kind":"ocr","ref":"f-4-6","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let ba","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":8,"kind":"ocr","ref":"f-4-7","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let basa","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":9,"kind":"ocr","ref":"f-4-8","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let basalt","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":10,"kind":"ocr","ref":"f-4-9","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let basalt =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":11,"kind":"ocr","ref":"f-4-10","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let basalt = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":12,"kind":"ocr","ref":"f-4-11","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let basalt = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":13,"kind":"ocr","ref":"f-4-12","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let basalt = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":5100}
+{"type":"source","epoch":4,"seq":14,"kind":"frame","ref":"f-4-14","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,101,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":4,"seq":15,"kind":"ocr","ref":"f-4-14","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":16,"kind":"ocr","ref":"f-4-15","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let lu","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":17,"kind":"ocr","ref":"f-4-16","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let lume","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":18,"kind":"ocr","ref":"f-4-17","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let lumen ","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":19,"kind":"ocr","ref":"f-4-18","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let lumen = ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":20,"kind":"ocr","ref":"f-4-19","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let lumen = to","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":21,"kind":"ocr","ref":"f-4-20","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let lumen = tota","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":22,"kind":"ocr","ref":"f-4-21","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let lumen = total ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":23,"kind":"ocr","ref":"f-4-22","rect":[0,101,656,28],"lines":[{"bbox":[12,106,300,18],"text":"  let lumen = total + ","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":4,"seq":24,"kind":"ax-text","rect":[0,10,656,140],"lines":[{"bbox":[12,16,300,18],"text":"fn condor(order: Order) -> f64 {"},{"bbox":[12,34,300,18],"text":"  let plover_1 = plover(41);"},{"bbox":[12,52,300,18],"text":"  let lumen_2 = basalt(92);"},{"bbox":[12,70,300,18],"text":"  let kestrel_3 = falcon(34);"},{"bbox":[12,88,300,18],"text":"  let lumen = total + "},{"bbox":[12,106,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":7400}
+{"type":"source","epoch":4,"seq":25,"kind":"frame","ref":"f-4-25","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":4,"seq":26,"kind":"ocr","ref":"f-4-25","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":27,"kind":"ocr","ref":"f-4-26","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ba","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":28,"kind":"ocr","ref":"f-4-27","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basa","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":29,"kind":"ocr","ref":"f-4-28","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":30,"kind":"ocr","ref":"f-4-29","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":31,"kind":"ocr","ref":"f-4-30","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":32,"kind":"ocr","ref":"f-4-31","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":33,"kind":"ocr","ref":"f-4-32","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":34,"kind":"ocr","ref":"f-4-33","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":35,"kind":"ocr","ref":"f-4-34","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let basalt = total + 9","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":9700}
+{"type":"source","epoch":4,"seq":36,"kind":"frame","ref":"f-4-36","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":4,"seq":37,"kind":"ocr","ref":"f-4-36","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":38,"kind":"ocr","ref":"f-4-37","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let fa","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":39,"kind":"ocr","ref":"f-4-38","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falc","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":40,"kind":"ocr","ref":"f-4-39","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":41,"kind":"ocr","ref":"f-4-40","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":42,"kind":"ocr","ref":"f-4-41","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":43,"kind":"ocr","ref":"f-4-42","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":44,"kind":"ocr","ref":"f-4-43","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":45,"kind":"ocr","ref":"f-4-44","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":46,"kind":"ocr","ref":"f-4-45","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total + 1","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":47,"kind":"ocr","ref":"f-4-46","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total + 140","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":12000}
+{"type":"source","epoch":4,"seq":48,"kind":"frame","ref":"f-4-48","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,83,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":4,"seq":49,"kind":"ocr","ref":"f-4-48","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":50,"kind":"ocr","ref":"f-4-49","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let fa","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":51,"kind":"ocr","ref":"f-4-50","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falc","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":52,"kind":"ocr","ref":"f-4-51","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":53,"kind":"ocr","ref":"f-4-52","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":54,"kind":"ocr","ref":"f-4-53","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":55,"kind":"ocr","ref":"f-4-54","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":56,"kind":"ocr","ref":"f-4-55","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":57,"kind":"ocr","ref":"f-4-56","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":58,"kind":"ocr","ref":"f-4-57","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total + 9","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":59,"kind":"ocr","ref":"f-4-58","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total + 983","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":60,"kind":"ocr","ref":"f-4-59","rect":[0,83,656,28],"lines":[{"bbox":[12,88,300,18],"text":"  let falcon = total + 983;","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":4,"seq":61,"kind":"ax-text","rect":[0,-8,656,140],"lines":[{"bbox":[12,-2,300,18],"text":"fn condor(order: Order) -> f64 {"},{"bbox":[12,16,300,18],"text":"  let plover_1 = plover(41);"},{"bbox":[12,34,300,18],"text":"  let lumen_2 = basalt(92);"},{"bbox":[12,52,300,18],"text":"  let kestrel_3 = falcon(34);"},{"bbox":[12,70,300,18],"text":"  let falcon = total + 983;"},{"bbox":[12,88,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":3300}
+{"type":"source","epoch":4,"seq":62,"kind":"frame","ref":"f-4-62","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":4,"seq":63,"kind":"ocr","ref":"f-4-62","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":64,"kind":"ocr","ref":"f-4-63","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lu","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":65,"kind":"ocr","ref":"f-4-64","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lume","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":66,"kind":"ocr","ref":"f-4-65","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen ","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":67,"kind":"ocr","ref":"f-4-66","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen = ","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":68,"kind":"ocr","ref":"f-4-67","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen = to","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":69,"kind":"ocr","ref":"f-4-68","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen = tota","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":70,"kind":"ocr","ref":"f-4-69","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let lumen = total ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":5600}
+{"type":"source","epoch":4,"seq":71,"kind":"frame","ref":"f-4-71","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":4,"seq":72,"kind":"ocr","ref":"f-4-71","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":73,"kind":"ocr","ref":"f-4-72","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ba","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":74,"kind":"ocr","ref":"f-4-73","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basa","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":75,"kind":"ocr","ref":"f-4-74","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":76,"kind":"ocr","ref":"f-4-75","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":77,"kind":"ocr","ref":"f-4-76","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":78,"kind":"ocr","ref":"f-4-77","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":79,"kind":"ocr","ref":"f-4-78","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":80,"kind":"ocr","ref":"f-4-79","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":7900}
+{"type":"source","epoch":4,"seq":81,"kind":"frame","ref":"f-4-81","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,65,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":4,"seq":82,"kind":"ocr","ref":"f-4-81","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":83,"kind":"ocr","ref":"f-4-82","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let ba","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":84,"kind":"ocr","ref":"f-4-83","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basa","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":85,"kind":"ocr","ref":"f-4-84","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":86,"kind":"ocr","ref":"f-4-85","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":87,"kind":"ocr","ref":"f-4-86","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":88,"kind":"ocr","ref":"f-4-87","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":89,"kind":"ocr","ref":"f-4-88","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":90,"kind":"ocr","ref":"f-4-89","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":91,"kind":"ocr","ref":"f-4-90","rect":[0,65,656,28],"lines":[{"bbox":[12,70,300,18],"text":"  let basalt = total + 8","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"source","epoch":4,"seq":92,"kind":"ax-text","rect":[0,-26,656,140],"lines":[{"bbox":[12,-20,300,18],"text":"fn condor(order: Order) -> f64 {"},{"bbox":[12,-2,300,18],"text":"  let plover_1 = plover(41);"},{"bbox":[12,16,300,18],"text":"  let lumen_2 = basalt(92);"},{"bbox":[12,34,300,18],"text":"  let kestrel_3 = falcon(34);"},{"bbox":[12,52,300,18],"text":"  let basalt = total + 8"},{"bbox":[12,70,300,18],"text":"}"}]}
+{"type":"tick","ms":800}
+{"type":"tick","ms":10200}
+{"type":"source","epoch":4,"seq":93,"kind":"frame","ref":"f-4-93","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[0,47,656,28],"d":0.22}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":4,"seq":94,"kind":"ocr","ref":"f-4-93","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let ","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":95,"kind":"ocr","ref":"f-4-94","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let co","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":96,"kind":"ocr","ref":"f-4-95","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let cond","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":97,"kind":"ocr","ref":"f-4-96","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let condor","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":98,"kind":"ocr","ref":"f-4-97","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let condor =","conf":0.94}],"ms":112,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":99,"kind":"ocr","ref":"f-4-98","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let condor = t","conf":0.94}],"ms":113,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":100,"kind":"ocr","ref":"f-4-99","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let condor = tot","conf":0.94}],"ms":114,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":101,"kind":"ocr","ref":"f-4-100","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let condor = total","conf":0.94}],"ms":108,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":102,"kind":"ocr","ref":"f-4-101","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let condor = total +","conf":0.94}],"ms":109,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":103,"kind":"ocr","ref":"f-4-102","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let condor = total + 3","conf":0.94}],"ms":110,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"source","epoch":4,"seq":104,"kind":"ocr","ref":"f-4-103","rect":[0,47,656,28],"lines":[{"bbox":[12,52,300,18],"text":"  let condor = total + 398","conf":0.94}],"ms":111,"axCovered":false}
+{"type":"tick","ms":90}
+{"type":"tick","ms":800}
+{"type":"ack","consumer":"plain"}
+{"type":"ack","consumer":"watch"}
+{"type":"tick","ms":12500}
+{"type":"note","text":"The user steps away."}
+{"type":"tick","ms":18000}
+{"type":"note","text":"Idle to the ten minute mark."}
+{"type":"tick","ms":161520}
+{"type":"expect","expect":"epoch","value":4}
+{"type":"expect","expect":"deliveries","consumer":"plain","atMost":60}
+{"type":"expect","expect":"deliveries","consumer":"watch","atMost":10}
+{"type":"expect","expect":"deliveries","consumer":"watch","atLeast":4}

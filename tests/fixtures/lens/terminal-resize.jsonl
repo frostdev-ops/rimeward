@@ -1,0 +1,14 @@
+{"type": "note", "text": "A resize re-wraps every row, so the rows in the document are not the rows on screen any more: a new epoch and a keyframe, never a delta full of rewrites."}
+{"type": "term", "seq": 1, "rows": ["$ cargo build", "compiling the crate with every feature enabled", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "consumer", "id": "c"}
+{"type": "tick", "ms": 750}
+{"type": "ack", "consumer": "c"}
+{"type": "expect", "expect": "epoch", "value": 1}
+{"type": "term", "seq": 10, "rows": ["$ cargo build", "compiling the crate with every", "feature enabled", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "term", "seq": 11, "session": {"state": "running", "exitCode": null, "cols": 40, "rows": 24}}
+{"type": "tick", "ms": 750}
+{"type": "expect", "expect": "epoch", "value": 2}
+{"type": "expect", "expect": "keyframe", "consumer": "c", "pages": 1}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 2}
+{"type": "expect", "expect": "text", "consumer": "c", "contains": ["compiling the crate with every", "feature enabled"]}
+{"type": "expect", "expect": "scene.lines", "count": 3}

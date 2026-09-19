@@ -1,0 +1,27 @@
+{"type": "note", "text": "The CLI activity spinner is a live region: its row repaints forever and never reaches a consumer, while the output row beside it does."}
+{"type": "term", "seq": 1, "rows": ["$ claude", "hello there", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "consumer", "id": "c"}
+{"type": "tick", "ms": 750}
+{"type": "ack", "consumer": "c"}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 1}
+{"type": "term", "seq": 10, "rows": ["$ claude", "hello there", "✳ Churning… (1s · esc to interrupt)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 200}
+{"type": "term", "seq": 11, "rows": ["$ claude", "hello there", "✳ Churning… (2s · esc to interrupt)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 200}
+{"type": "term", "seq": 12, "rows": ["$ claude", "hello there", "✳ Churning… (3s · esc to interrupt)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 200}
+{"type": "term", "seq": 13, "rows": ["$ claude", "hello there", "✳ Churning… (4s · esc to interrupt)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 200}
+{"type": "term", "seq": 14, "rows": ["$ claude", "hello there", "✳ Churning… (5s · esc to interrupt)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 200}
+{"type": "term", "seq": 15, "rows": ["$ claude", "hello there", "✳ Churning… (6s · esc to interrupt)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 200}
+{"type": "tick", "ms": 1000}
+{"type": "note", "text": "Six spinner frames, no delivery: the row is live."}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 1}
+{"type": "expect", "expect": "live", "atLeast": 1}
+{"type": "term", "seq": 30, "rows": ["$ claude", "hello there", "✳ Churning… (7s · esc to interrupt)", "Wrote src/main.rs", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 750}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 2}
+{"type": "expect", "expect": "delta", "consumer": "c"}
+{"type": "expect", "expect": "text", "consumer": "c", "contains": ["Wrote src/main.rs"], "notContains": ["Churning"]}

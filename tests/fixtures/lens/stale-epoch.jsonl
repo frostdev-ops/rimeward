@@ -1,0 +1,18 @@
+{"type":"note","text":"OCR started against epoch 1 lands after epoch 2 began. It describes a window nobody is looking at and never enters the scene."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"c"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,25,656,20],"lines":[{"bbox":[12,34,300,18],"text":"invoice 0042 total 118.20"}]}
+{"type":"tick","ms":750}
+{"type":"ack","consumer":"c"}
+{"type":"source","epoch":2,"seq":1,"kind":"app","bundle":"com.apple.Safari","name":"Safari","pid":456}
+{"type":"source","epoch":2,"seq":2,"kind":"window","id":7100,"title":"Payments","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"expect","expect":"epoch","value":2}
+{"type":"ack","consumer":"c"}
+{"type":"source","epoch":1,"seq":99,"kind":"ocr","ref":"f-1-98","rect":[0,25,656,40],"lines":[{"bbox":[12,34,300,18],"text":"invoice 0042 total 118.20","conf":0.95}],"ms":118,"axCovered":false}
+{"type":"source","epoch":1,"seq":100,"kind":"ocr","ref":"f-1-99","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"line 07 quartz falcon","conf":0.9}],"ms":118,"axCovered":false}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"epoch","value":2}
+{"type":"expect","expect":"scene.lines","count":0}
+{"type":"expect","expect":"scene.text","notContains":["invoice 0042 total 118.20","line 07 quartz falcon"]}
+{"type":"expect","expect":"deliveries","consumer":"c","count":2}

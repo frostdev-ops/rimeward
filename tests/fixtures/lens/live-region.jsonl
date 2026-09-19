@@ -1,0 +1,36 @@
+{"type":"note","text":"A clock in the toolbar dirties the same rect on six consecutive frames: it becomes live, and its text churn stops being a candidate."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"c"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,25,656,20],"lines":[{"bbox":[12,34,300,18],"text":"fn render(scene: Scene) {"}]}
+{"type":"source","epoch":1,"seq":4,"kind":"ax-text","rect":[600,30,200,30],"lines":[{"bbox":[610,40,120,18],"text":"14:32:10"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"ack","consumer":"c"}
+{"type":"source","epoch":1,"seq":10,"kind":"frame","ref":"f-1-10","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[600,0,200,100],"d":0.3}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":11,"kind":"ocr","ref":"f-1-10","rect":[600,30,200,30],"lines":[{"bbox":[610,40,120,18],"text":"14:32:11","conf":0.92}],"ms":118,"axCovered":false}
+{"type":"tick","ms":300}
+{"type":"source","epoch":1,"seq":12,"kind":"frame","ref":"f-1-12","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[600,0,200,100],"d":0.3}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":13,"kind":"ocr","ref":"f-1-12","rect":[600,30,200,30],"lines":[{"bbox":[610,40,120,18],"text":"14:32:12","conf":0.92}],"ms":118,"axCovered":false}
+{"type":"tick","ms":300}
+{"type":"source","epoch":1,"seq":14,"kind":"frame","ref":"f-1-14","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[600,0,200,100],"d":0.3}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":15,"kind":"ocr","ref":"f-1-14","rect":[600,30,200,30],"lines":[{"bbox":[610,40,120,18],"text":"14:32:13","conf":0.92}],"ms":118,"axCovered":false}
+{"type":"tick","ms":300}
+{"type":"source","epoch":1,"seq":16,"kind":"frame","ref":"f-1-16","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[600,0,200,100],"d":0.3}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":17,"kind":"ocr","ref":"f-1-16","rect":[600,30,200,30],"lines":[{"bbox":[610,40,120,18],"text":"14:32:14","conf":0.92}],"ms":118,"axCovered":false}
+{"type":"tick","ms":300}
+{"type":"source","epoch":1,"seq":18,"kind":"frame","ref":"f-1-18","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[600,0,200,100],"d":0.3}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":19,"kind":"ocr","ref":"f-1-18","rect":[600,30,200,30],"lines":[{"bbox":[610,40,120,18],"text":"14:32:15","conf":0.92}],"ms":118,"axCovered":false}
+{"type":"tick","ms":300}
+{"type":"source","epoch":1,"seq":20,"kind":"frame","ref":"f-1-20","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[600,0,200,100],"d":0.3}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":21,"kind":"ocr","ref":"f-1-20","rect":[600,30,200,30],"lines":[{"bbox":[610,40,120,18],"text":"14:32:16","conf":0.92}],"ms":118,"axCovered":false}
+{"type":"tick","ms":300}
+{"type":"tick","ms":750}
+{"type":"note","text":"Six frames, six clock ticks, no delivery: every changed line sits inside the live rect."}
+{"type":"expect","expect":"deliveries","consumer":"c","count":1}
+{"type":"expect","expect":"version","atLeast":4}
+{"type":"note","text":"A change outside the live rect does deliver, reports the live rect with it, and leaves the clock's own churn out of the delta."}
+{"type":"source","epoch":1,"seq":30,"kind":"ocr","ref":"f-1-29","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total = 118.20;","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"deliveries","consumer":"c","count":2}
+{"type":"expect","expect":"text","consumer":"c","contains":["live 600,0,200,100","+ 12,52,300,18 ocr \"  let total = 118.20;\""],"notContains":["14:32:"]}

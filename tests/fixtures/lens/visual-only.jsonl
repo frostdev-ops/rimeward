@@ -1,0 +1,45 @@
+{"type": "note", "text": "A dirty rect with no text change. One helper-describe per settle round serves every consumer: `a` watches visually and gets the description on its `~` line; `b` watches for unrelated text and stays quiet; `c` watches for text only the description can supply and fires. Then a second rect changes and no description comes back: `a` still fires with the bare rectangle (rect-only) and `c` has nothing to read (unavailable)."}
+{"type":"consumer","id":"a","watches":[{"visual":true,"triage":false}]}
+{"type":"consumer","id":"b","watches":[{"regex":"invoice|payment","visual":false,"triage":false}]}
+{"type":"consumer","id":"c","watches":[{"regex":"save dialog","visual":false,"triage":false}]}
+{"type":"expect","expect":"watch","consumer":"a","id":"a:w1","mode":"visual"}
+{"type":"expect","expect":"watch","consumer":"b","id":"b:w1","mode":"regex"}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"ack","consumer":"a"}
+{"type":"ack","consumer":"b"}
+{"type":"ack","consumer":"c"}
+{"type":"source","epoch":1,"seq":2,"kind":"ax-text","rect":[0,25,656,40],"lines":[{"bbox":[12,34,300,18],"text":"fn render(scene: Scene) {"}]}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-focus","role":"AXTextArea","label":"Source Editor","value":"fn render(scene: Scene) {","bounds":[0,32,656,384]}
+{"type":"source","epoch":1,"seq":4,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"note","text":"The window flush hands everyone a keyframe that already carries the focus, so the repeat below is not a focus change."}
+{"type":"ack","consumer":"a"}
+{"type":"ack","consumer":"b"}
+{"type":"ack","consumer":"c"}
+{"type":"expect","expect":"deliveries","consumer":"a","count":2}
+{"type":"source","epoch":1,"seq":5,"kind":"frame","ref":"f-1-5","w":1312,"h":844,"ratio":0.12,"dirty":[{"bbox":[400,100,200,150],"d":0.4}],"geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}}
+{"type":"source","epoch":1,"seq":6,"kind":"ax-focus","role":"AXTextArea","label":"Source Editor","value":"fn render(scene: Scene) {","bounds":[0,32,656,384]}
+{"type":"reply", "op": "helper-describe", "reply": {"json": {"summary": "a save dialog is open", "elements": ["Save", "Cancel"]}}}
+{"type": "tick", "ms": 750}
+{"type": "note", "text": "`a` sees the visual candidate with the shared description on it."}
+{"type": "expect", "expect": "deliveries", "consumer": "a", "count": 3}
+{"type": "expect", "expect": "delta", "consumer": "a"}
+{"type": "expect", "expect": "text", "consumer": "a", "contains": ["~ 400,100,200,150 d=0.40 \"a save dialog is open Save, Cancel\" (ref f-1-5)"]}
+{"type": "expect", "expect": "watch", "consumer": "a", "id": "a:w1", "hit": true}
+{"type": "note", "text": "`b` asked about invoices: the description does not mention one, so nothing goes out."}
+{"type": "expect", "expect": "deliveries", "consumer": "b", "count": 2}
+{"type": "expect", "expect": "watch", "consumer": "b", "id": "b:w1", "hit": false}
+{"type": "note", "text": "`c` asked about a save dialog: the description supplies it, and the delivery carries the interpreted text beside the rect."}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 3}
+{"type": "expect", "expect": "text", "consumer": "c", "contains": ["~ 400,100,200,150 d=0.40 \"a save dialog is open Save, Cancel\" (ref f-1-5)"]}
+{"type": "expect", "expect": "watch", "consumer": "c", "id": "c:w1", "hit": true}
+{"type": "ack", "consumer": "a"}
+{"type": "ack", "consumer": "c"}
+{"type": "note", "text": "Another rect changes and the describer does not answer: `a` reports the bare rectangle and says so, `c` has nothing to read."}
+{"type":"source", "epoch": 1, "seq": 7, "kind": "frame", "ref": "f-1-7", "w": 1312, "h": 844, "ratio": 0.1, "dirty": [{"bbox": [100, 300, 150, 80], "d": 0.5}], "geometry": {"window": [195, 92, 656, 422], "scale": 2, "contentRect": [0, 0, 1312, 844], "contentScale": 2, "captured": [0, 0, 656, 422]}}
+{"type": "tick", "ms": 750}
+{"type": "expect", "expect": "deliveries", "consumer": "a", "count": 4}
+{"type": "expect", "expect": "text", "consumer": "a", "contains": ["~ 100,300,150,80 d=0.50"], "notContains": ["save dialog"]}
+{"type": "expect", "expect": "watch", "consumer": "a", "id": "a:w1", "hit": true, "evaluation": "rect-only"}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 3}
+{"type": "expect", "expect": "watch", "consumer": "c", "id": "c:w1", "hit": false, "evaluation": "unavailable"}
+{"type": "expect", "expect": "deliveries", "consumer": "b", "count": 2}

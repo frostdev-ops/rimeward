@@ -1,0 +1,29 @@
+{"type": "note", "text": "A prompt being typed repaints one row: four repaints make it a live region, so the keystrokes never reach a consumer. The submitted line arrives with the output that follows, once the repaints have stopped long enough."}
+{"type": "term", "seq": 1, "rows": ["$ claude", "ready", "❯", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "consumer", "id": "c"}
+{"type": "tick", "ms": 750}
+{"type": "ack", "consumer": "c"}
+{"type": "term", "seq": 10, "rows": ["$ claude", "ready", "❯ w", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 150}
+{"type": "term", "seq": 11, "rows": ["$ claude", "ready", "❯ wr", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 150}
+{"type": "term", "seq": 12, "rows": ["$ claude", "ready", "❯ wri", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 150}
+{"type": "term", "seq": 13, "rows": ["$ claude", "ready", "❯ writ", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 150}
+{"type": "term", "seq": 14, "rows": ["$ claude", "ready", "❯ write", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 150}
+{"type": "term", "seq": 15, "rows": ["$ claude", "ready", "❯ write t", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 150}
+{"type": "term", "seq": 16, "rows": ["$ claude", "ready", "❯ write the tests", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 150}
+{"type": "tick", "ms": 750}
+{"type": "note", "text": "Nothing: every frame repainted the same row."}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 1}
+{"type": "note", "text": "The line is submitted and the answer follows, four seconds later: the repaints are outside the live window."}
+{"type": "tick", "ms": 4000}
+{"type": "term", "seq": 30, "rows": ["$ claude", "ready", "❯ write the tests", "I will add tests for the gate.", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 750}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 2}
+{"type": "expect", "expect": "delta", "consumer": "c"}
+{"type": "expect", "expect": "text", "consumer": "c", "contains": ["write the tests", "I will add tests for the gate."]}

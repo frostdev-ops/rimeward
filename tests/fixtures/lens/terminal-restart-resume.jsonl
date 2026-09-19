@@ -1,0 +1,14 @@
+{"type": "note", "text": "The dev stream restarted: everything in between was lost, so the lens marks the document incomplete, repaints from the session itself and forces a keyframe."}
+{"type": "term", "seq": 1, "rows": ["$ claude", "the first answer", "the second answer", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "consumer", "id": "c"}
+{"type": "tick", "ms": 750}
+{"type": "ack", "consumer": "c"}
+{"type": "term", "seq": 20, "rows": ["$ claude", "the first answer", "the second answer", "the third answer", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "note", "text": "The rows above arrived while nothing was listening; the reset is the gap that finds them."}
+{"type": "term", "seq": 21, "reset": true}
+{"type": "tick", "ms": 0}
+{"type": "expect", "expect": "incomplete", "value": false}
+{"type": "expect", "expect": "scene.lines", "count": 4}
+{"type": "expect", "expect": "keyframe", "consumer": "c"}
+{"type": "expect", "expect": "text", "consumer": "c", "contains": ["the third answer"]}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 2}

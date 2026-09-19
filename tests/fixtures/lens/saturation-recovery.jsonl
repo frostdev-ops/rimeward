@@ -1,0 +1,28 @@
+{"type":"note","text":"The signal queue saturated. The lens marks the scene incomplete, asks for a snapshot, throws away everything at or below the snapshot seq, applies what is newer in order and publishes a keyframe."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"c"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,25,656,20],"lines":[{"bbox":[12,34,300,18],"text":"fn render(scene: Scene) {"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"ack","consumer":"c"}
+{"type":"reply","op":"lens-snapshot","reply":{"epoch":1,"seq":50,"app":{"bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123},"window":{"id":5375,"title":"main.rs","bounds":[195,92,656,422],"url":null,"display":{"id":1,"w":1800,"h":1169,"scale":2}},"display":{"id":1,"w":1800,"h":1169,"scale":2},"focus":null,"sheet":null,"axText":[{"bbox":[12,34,300,18],"text":"fn render(scene: Scene) {"},{"bbox":[12,52,300,18],"text":"from the snapshot"}],"ocr":[],"latest":{"ref":"f-1-50","geometry":{"window":[195,92,656,422],"scale":2,"contentRect":[0,0,1312,844],"contentScale":2,"captured":[0,0,656,422]}},"live":false}}
+{"type":"source","epoch":1,"seq":51,"kind":"gap","from":10,"to":50}
+{"type":"expect","expect":"incomplete","value":true}
+{"type":"note","text":"Queued behind the gap: one the snapshot already represents, one newer than it."}
+{"type":"source","epoch":1,"seq":45,"kind":"ax-text","rect":[0,80,656,60],"lines":[{"bbox":[12,90,300,18],"text":"stale queue"}]}
+{"type":"source","epoch":1,"seq":60,"kind":"ax-text","rect":[0,80,656,60],"lines":[{"bbox":[12,108,300,18],"text":"after the boundary"}]}
+{"type":"tick","ms":0}
+{"type":"expect","expect":"incomplete","value":false}
+{"type":"expect","expect":"scene.lines","count":3}
+{"type":"expect","expect":"scene.text","contains":["fn render(scene: Scene) {","from the snapshot","after the boundary"],"notContains":["stale queue"]}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"expect","expect":"deliveries","consumer":"c","count":2}
+{"type":"expect","expect":"text","consumer":"c","contains":["= 12,52,300,18 ax \"from the snapshot\"","= 12,108,300,18 ax \"after the boundary\""],"notContains":["incomplete"]}
+{"type":"ack","consumer":"c"}
+{"type":"note","text":"Anything at or below the boundary stays out for the rest of this epoch."}
+{"type":"source","epoch":1,"seq":50,"kind":"ax-text","rect":[0,80,656,60],"lines":[{"bbox":[12,126,300,18],"text":"still stale"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"scene.text","notContains":["still stale"]}
+{"type":"expect","expect":"scene.lines","count":3}
+{"type":"expect","expect":"deliveries","consumer":"c","count":2}

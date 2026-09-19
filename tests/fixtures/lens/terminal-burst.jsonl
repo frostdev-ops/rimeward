@@ -1,0 +1,23 @@
+{"type": "note", "text": "A burst of appended rows settles into one delta; the terminal's own rows are never removed, so no `-` line is ever rendered."}
+{"type": "term", "seq": 1, "rows": ["$ npm test", "running the suite", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "consumer", "id": "c"}
+{"type": "tick", "ms": 750}
+{"type": "expect", "expect": "keyframe", "consumer": "c", "pages": 1}
+{"type": "expect", "expect": "text", "consumer": "c", "contains": ["session=running", "= 0,0,1,1 pty \"$ npm test\""]}
+{"type": "ack", "consumer": "c"}
+{"type": "term", "seq": 10, "rows": ["$ npm test", "running the suite", "ok 1 - case 1 passed", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 100}
+{"type": "term", "seq": 11, "rows": ["$ npm test", "running the suite", "ok 1 - case 1 passed", "ok 2 - case 2 passed", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 100}
+{"type": "term", "seq": 12, "rows": ["$ npm test", "running the suite", "ok 1 - case 1 passed", "ok 2 - case 2 passed", "ok 3 - case 3 passed", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 100}
+{"type": "term", "seq": 13, "rows": ["$ npm test", "running the suite", "ok 1 - case 1 passed", "ok 2 - case 2 passed", "ok 3 - case 3 passed", "ok 4 - case 4 passed", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 100}
+{"type": "term", "seq": 14, "rows": ["$ npm test", "running the suite", "ok 1 - case 1 passed", "ok 2 - case 2 passed", "ok 3 - case 3 passed", "ok 4 - case 4 passed", "ok 5 - case 5 passed", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 100}
+{"type": "tick", "ms": 750}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 2}
+{"type": "expect", "expect": "delta", "consumer": "c"}
+{"type": "expect", "expect": "lines", "consumer": "c", "plus": 5, "minus": 0}
+{"type": "expect", "expect": "text", "consumer": "c", "contains": ["ok 5 - case 5 passed"]}
+{"type": "expect", "expect": "scene.lines", "count": 7}

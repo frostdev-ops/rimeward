@@ -12,108 +12,13 @@ import { onObservation } from './observation-events.ts';
 import { shellNetworkEnabled, vettedFetch } from './shell.ts';
 import { isCommsType } from '../comms/types.ts';
 import { TRIGGERS, wardTypes } from '../logic.ts';
+// The CLI chrome grammar lives with the terminal lens source; this branch reads it unchanged.
+import { cliKey, stableKey, terminalContent } from '../lens/terminal.ts';
 
 export interface MonitorSource { type:'terminal'|'file'|'browser'|'agent'|'note'|'notebook'|'http'|'comms'|'event';
   target?:string; project?:string; path?:string; url?:string; selector?:string; headers?:string[]; fields?:string[]; intervalSeconds?:number; event?:string }
 type Emit = (key:string,data:Record<string,unknown>,baseline?:boolean) => void;
 const hash = (v:unknown) => createHash('sha256').update(typeof v === 'string' ? v : JSON.stringify(v)).digest('hex');
-/** Content identity stays exact (apart from whitespace), including digits and bullet rows:
- *  "HTTP 500" and "HTTP 200", "1/3" and "2/3" are different rows. Only the two counters below
- *  that Claude Code redraws every second are removed from a row's identity, never from its text. */
-const stableKey = (line:string) => line.replace(/\s+/g,' ').trim();
-const SPARKLE = '[\\u2800-\\u28FF\\u00B7\\u2022\\u2722\\u2733\\u2736\\u273B\\u273D]';
-/** The activity spinner: a frame glyph, ONE gerund and an ellipsis. The verb is random and changes
- *  between frames ("Churning…", "Photosynthesizing…", "Sautéing…"), so the shape is recognized,
- *  not the word; prose never fits it. An optional parenthetical carries metadata parts joined by
- *  · — elapsed, token counts, "esc to interrupt", "thinking some more with xhigh effort", "running
- *  stop hook" — each a short run of words and numbers with no sentence punctuation. */
-const CLAUDE_SPINNER = new RegExp(`^${SPARKLE}\\s+(\\p{Lu}\\p{L}*ing)(?:…|\\.{3})(?:\\s+\\(([^()]*)\\))?$`,'u');
-const CODEX_SPINNER = /^[⠀-⣿•◦]\s+(Working|Thinking)(?:…|\.{3})?\s+\(([^()]*)\)$/i;
-const DURATION = String.raw`(?:\d+(?:\.\d+)?[hms]\s*)+`;
-// Codex also uses a changing activity title instead of Working/Thinking. Match its
-// elapsed/interrupt footer, not the title, and only its known background-terminal tail.
-const CODEX_ACTIVITY = new RegExp(String.raw`^[⠀-⣿•◦]\s+[^()\r\n]{1,160}\s+\(${DURATION}[·•]\s*esc to interrupt\)(.*)$`, 'u');
-function codexActivity(text:string): boolean {
-  const match = CODEX_ACTIVITY.exec(text);
-  if (!match) return false;
-  const tail = match[1]!.trim();
-  if (!tail) return true;
-  const truncated = /(?:…|\.{3})$/.test(tail), prefix = tail.replace(/(?:…|\.{3})$/,'').trimEnd();
-  // Even a trailer cut immediately after its separator is recognizable here: the
-  // complete elapsed/interrupt invariant above must already have matched.
-  if (truncated && prefix === '·') return true;
-  const background = /^· \d+(?: (.*))?$/.exec(prefix);
-  if (!background) return false;
-  const value = background[1] ?? '';
-  // Accept only prefixes of the known trailer, never an unrelated right-hand column.
-  return ['background terminal running','background terminals running'].some(status =>
-    [status,`${status} · /ps to view`].some(full => truncated ? full.startsWith(value) : value === full));
-}
-const SPINNER_DETAIL = /^(?:[↑↓↕]\s*)?(?:\d+(?:\.\d+)?[hms%k]?|\p{L}+)(?:\s(?:\d+(?:\.\d+)?[hms%k]?|\p{L}+)){0,7}$/u;
-function spinnerChrome(text:string): boolean {
-  if (codexActivity(text)) return true;
-  const match = CLAUDE_SPINNER.exec(text) ?? CODEX_SPINNER.exec(text);
-  if (!match) return false;
-  if (match[2] === undefined) return true;
-  return match[2].split(/[·•]/).every(part => SPINNER_DETAIL.test(part.trim()));
-}
-/** A row that is only a counter: the wrapped tail of a tool row ("· 21s") or preview ("(8s)"). */
-const COUNTER_ONLY = new RegExp(String.raw`^(?:·\s*${DURATION}|\(${DURATION}\))$`);
-/** Frame rows of the CLI's boxes and logo: box-drawing and block characters only. */
-const BOX_ONLY = /^[─-╿▀-▟\s]+$/;
-/** Chrome Claude Code paints beside the prompt, by shape: the logo rows, the empty prompt's
- *  placeholder, the mode line, the effort indicator, the slash-command completion rows (a
- *  command name, two spaces, a description), the exit hint, an empty tool marker, and the
- *  status bar (project △ branch ⎪pill⎥ ai ◆ model …), whose cost and clock tick every second. */
-const CHROME_ROW = [
-  /^[▀-▟]/, /^❯(?: Try ".+")?$/, /^⏸ .+\bmode (?:on|off)\b/, /^[◉○] .*\beffort\b/, /^Press Ctrl-C again to exit$/, /^⏺$/, /^⎿\s+Tip:\s/,
-  /^□\s.+\s△\s.+\s⎪[^⎥]*⎥\sai\s◆\s/,
-];
-const COMPLETION_ROW = /^\s*\/(?:[a-z][\w.:-]*|\S.*?\s\(MCP\))\s{2,}\S/i;
-/** Right-aligned session status Claude Code appends after a run of spaces on a spinner or
- *  preview row ("+17 files edited before this session (show)", "No changes this session"). */
-const STATUS_TAIL = /^(?:No changes this session|[+-]?\d+ files? (?:edited|changed)\b[^()]*(?:\(show\))?)$/;
-/** Claude Code's running tool call, "⏺ Reading the file · 21s" (the glyph blinks away on alternate
- *  frames), and its command preview, "⎿ $ cmd (8s)": the counter ticks every second. The ❯ that
- *  marks the selected row of a menu moves between rows as the person arrows through it. */
-const TOOL_TICK = new RegExp(String.raw`^(?:⏺\s+)?(.*?)\s*·\s*${DURATION}$`);
-const PREVIEW_TICK = new RegExp(String.raw`^(⎿.*?)\s*\(${DURATION}\)$`);
-function cliKey(text:string): string {
-  return TOOL_TICK.exec(text)?.[1] ?? PREVIEW_TICK.exec(text)?.[1] ?? text.replace(/^[⏺❯]\s+/,'');
-}
-/** A row split at a run of three or more spaces: the part before is the row, the part after a
- *  right-aligned trailer. Whitespace collapsing loses that signal, so this reads the raw row. */
-function splitTail(raw:string): { main:string; tail:string } {
-  const m = /^(.*?\S)\s{3,}(\S.*)$/.exec(raw.trimEnd());
-  return m ? { main:stableKey(m[1]!),tail:stableKey(m[2]!) } : { main:stableKey(raw),tail:'' };
-}
-/** The content of each rendered row, aligned with `lines` (null = recognized CLI chrome). Only
- *  CLI-owned shapes are removed, never arbitrary prose containing an ellipsis or a hint; a row
- *  whose right-aligned trailer is session status keeps its left part. A wrapped spinner is removed
- *  only when the complete joined row matches the same grammar. Queued input, prompts and menus
- *  stay visible: indentation or ❯ alone cannot distinguish an input repaint from a question. */
-function terminalContent(lines:string[],cli:boolean,wrapped:boolean[]): (string | null)[] {
-  if (!cli) return lines;
-  const content:(string | null)[] = lines.map(() => null);
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i]!, { main,tail } = splitTail(raw);
-    const text = tail && STATUS_TAIL.test(tail) ? main : stableKey(raw);
-    if (/^[⠀-⣿·•◦✢✳✶✻✽]\s/.test(text)) {
-      let joined = raw, matched = spinnerChrome(text) ? i : -1;
-      // Include a wrapped title, elapsed clock, or background-terminal tail only when
-      // the complete joined text has the same anchored CLI shape. Unrelated rows stay.
-      for (let end = i+1; end < lines.length && end-i <= 4 && wrapped[end] && stableKey(lines[end]!); end++) {
-        joined += lines[end]!;
-        if (spinnerChrome(stableKey(joined))) matched = end;
-      }
-      if (matched >= 0) { i = matched; continue; }
-    }
-    if (!text || COUNTER_ONLY.test(text) || BOX_ONLY.test(text) || CHROME_ROW.some(re => re.test(text)) || COMPLETION_ROW.test(raw) ||
-        text === '❯ Press up to edit queued messages' || /^\s{40,}\S/.test(raw)) continue;
-    content[i] = tail && STATUS_TAIL.test(tail) ? main : raw;
-  }
-  return content;
-}
 const commonPrefix = (a:string,b:string) => { let n = 0; while (n < a.length && n < b.length && a[n] === b[n]) n++; return n; };
 export function parseMonitorSource(raw:unknown): MonitorSource {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('Monitor source is required.');

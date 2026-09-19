@@ -1,0 +1,77 @@
+{"type":"note","text":"20 OCR replacements 80 ms apart settle into exactly one delta; a slower stream that never stops hits the 3 s cap."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"c"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,25,656,20],"lines":[{"bbox":[12,34,300,18],"text":"fn render(scene: Scene) {"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"expect","expect":"deliveries","consumer":"c","count":1}
+{"type":"ack","consumer":"c"}
+{"type":"note","text":"The burst: one line rewritten 20 times, 80 ms between keystrokes."}
+{"type":"source","epoch":1,"seq":10,"kind":"ocr","ref":"f-1-9","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":" ","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":11,"kind":"ocr","ref":"f-1-10","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  ","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":12,"kind":"ocr","ref":"f-1-11","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  l","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":13,"kind":"ocr","ref":"f-1-12","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  le","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":14,"kind":"ocr","ref":"f-1-13","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":15,"kind":"ocr","ref":"f-1-14","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let ","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":16,"kind":"ocr","ref":"f-1-15","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let t","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":17,"kind":"ocr","ref":"f-1-16","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let to","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":18,"kind":"ocr","ref":"f-1-17","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let tot","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":19,"kind":"ocr","ref":"f-1-18","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let tota","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":20,"kind":"ocr","ref":"f-1-19","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":21,"kind":"ocr","ref":"f-1-20","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total ","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":22,"kind":"ocr","ref":"f-1-21","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total =","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":23,"kind":"ocr","ref":"f-1-22","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total = ","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":24,"kind":"ocr","ref":"f-1-23","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total = 1","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":25,"kind":"ocr","ref":"f-1-24","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total = 11","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":26,"kind":"ocr","ref":"f-1-25","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total = 118","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":27,"kind":"ocr","ref":"f-1-26","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total = 118.","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":28,"kind":"ocr","ref":"f-1-27","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total = 118.2","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"source","epoch":1,"seq":29,"kind":"ocr","ref":"f-1-28","rect":[0,45,656,30],"lines":[{"bbox":[12,52,300,18],"text":"  let total = 118.20","conf":0.94}],"ms":118,"axCovered":false}
+{"type":"tick","ms":80}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"deliveries","consumer":"c","count":2}
+{"type":"expect","expect":"delta","consumer":"c"}
+{"type":"expect","expect":"lines","consumer":"c","plus":1,"minus":0}
+{"type":"expect","expect":"text","consumer":"c","contains":["+ 12,52,300,18 ocr \"  let total = 118.20\""]}
+{"type":"ack","consumer":"c"}
+{"type":"note","text":"Continuous bumps 500 ms apart: the 750 ms settle never fires, the 3 s cap does."}
+{"type":"source","epoch":1,"seq":40,"kind":"ocr","ref":"f-1-39","rect":[0,63,656,26],"lines":[{"bbox":[12,70,300,18],"text":"  // note 0","conf":0.91}],"ms":118,"axCovered":false}
+{"type":"tick","ms":500}
+{"type":"source","epoch":1,"seq":41,"kind":"ocr","ref":"f-1-40","rect":[0,63,656,26],"lines":[{"bbox":[12,70,300,18],"text":"  // note 1","conf":0.91}],"ms":118,"axCovered":false}
+{"type":"tick","ms":500}
+{"type":"source","epoch":1,"seq":42,"kind":"ocr","ref":"f-1-41","rect":[0,63,656,26],"lines":[{"bbox":[12,70,300,18],"text":"  // note 2","conf":0.91}],"ms":118,"axCovered":false}
+{"type":"tick","ms":500}
+{"type":"source","epoch":1,"seq":43,"kind":"ocr","ref":"f-1-42","rect":[0,63,656,26],"lines":[{"bbox":[12,70,300,18],"text":"  // note 3","conf":0.91}],"ms":118,"axCovered":false}
+{"type":"tick","ms":500}
+{"type":"source","epoch":1,"seq":44,"kind":"ocr","ref":"f-1-43","rect":[0,63,656,26],"lines":[{"bbox":[12,70,300,18],"text":"  // note 4","conf":0.91}],"ms":118,"axCovered":false}
+{"type":"tick","ms":500}
+{"type":"source","epoch":1,"seq":45,"kind":"ocr","ref":"f-1-44","rect":[0,63,656,26],"lines":[{"bbox":[12,70,300,18],"text":"  // note 5","conf":0.91}],"ms":118,"axCovered":false}
+{"type":"tick","ms":500}
+{"type":"source","epoch":1,"seq":46,"kind":"ocr","ref":"f-1-45","rect":[0,63,656,26],"lines":[{"bbox":[12,70,300,18],"text":"  // note 6","conf":0.91}],"ms":118,"axCovered":false}
+{"type":"tick","ms":500}
+{"type":"source","epoch":1,"seq":47,"kind":"ocr","ref":"f-1-46","rect":[0,63,656,26],"lines":[{"bbox":[12,70,300,18],"text":"  // note 7","conf":0.91}],"ms":118,"axCovered":false}
+{"type":"tick","ms":500}
+{"type":"expect","expect":"deliveries","consumer":"c","count":3}
+{"type":"note","text":"Nothing more goes out while that third delivery is unacknowledged."}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"deliveries","consumer":"c","count":3}

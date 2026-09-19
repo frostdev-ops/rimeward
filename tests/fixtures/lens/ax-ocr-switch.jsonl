@@ -1,0 +1,29 @@
+{"type":"note","text":"AX owns the text, then the window stops answering AX and OCR takes over, then AX comes back. Each source replaces the other in its rect; an axCovered OCR replaces nothing."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"c"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,25,656,60],"lines":[{"bbox":[12,34,300,18],"text":"invoice 0042 total 118.20"},{"bbox":[12,52,300,18],"text":"due 2025-10-01"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"expect","expect":"text","consumer":"c","contains":["= 12,34,300,18 ax \"invoice 0042 total 118.20\""]}
+{"type":"ack","consumer":"c"}
+{"type":"note","text":"OCR over a rect the AX tree already covers: no lines, no removals."}
+{"type":"source","epoch":1,"seq":4,"kind":"ocr","ref":"f-1-3","rect":[0,25,656,60],"lines":[],"ms":118,"axCovered":true}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"scene.lines","count":2}
+{"type":"expect","expect":"deliveries","consumer":"c","count":1}
+{"type":"note","text":"AX went quiet: OCR reads the same rect and replaces both lines."}
+{"type":"source","epoch":1,"seq":5,"kind":"ocr","ref":"f-1-5","rect":[0,25,656,60],"lines":[{"bbox":[12,34,300,18],"text":"invoice 0042 total 118.20","conf":0.95},{"bbox":[12,52,300,18],"text":"due 2025-11-01","conf":0.93}],"ms":118,"axCovered":false}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"delta","consumer":"c"}
+{"type":"note","text":"Only the line whose text changed is reported: the invoice line kept its id and its bbox across the source switch, so the delta says nothing about it."}
+{"type":"expect","expect":"lines","consumer":"c","plus":1,"minus":1}
+{"type":"expect","expect":"text","consumer":"c","contains":["+ 12,52,300,18 ocr \"due 2025-11-01\"","- 12,52,300,18 ax \"due 2025-10-01\""]}
+{"type":"expect","expect":"scene.lines","count":2}
+{"type":"ack","consumer":"c"}
+{"type":"note","text":"AX answers again and takes its rect back."}
+{"type":"source","epoch":1,"seq":6,"kind":"ax-text","rect":[0,25,656,60],"lines":[{"bbox":[12,34,300,18],"text":"invoice 0042 total 118.20"},{"bbox":[12,52,300,18],"text":"due 2025-12-01"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"lines","consumer":"c","plus":1,"minus":1}
+{"type":"expect","expect":"text","consumer":"c","contains":["+ 12,52,300,18 ax \"due 2025-12-01\"","- 12,52,300,18 ocr \"due 2025-11-01\""]}
+{"type":"expect","expect":"scene.lines","count":2}

@@ -1,0 +1,15 @@
+{"type":"note","text":"Two OK buttons are two lines, not one. Moving the lower one keeps both ids and reports a move, not an add plus a remove."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"c"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,25,656,120],"lines":[{"bbox":[12,34,300,18],"text":"OK"},{"bbox":[12,64,300,18],"text":"Cancel"},{"bbox":[12,100,300,18],"text":"OK"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"expect","expect":"lines","consumer":"c","same":3}
+{"type":"expect","expect":"scene.lines","count":3}
+{"type":"ack","consumer":"c"}
+{"type":"source","epoch":1,"seq":4,"kind":"ax-text","rect":[0,25,656,120],"lines":[{"bbox":[12,34,300,18],"text":"OK"},{"bbox":[12,64,300,18],"text":"Cancel"},{"bbox":[12,118,300,18],"text":"OK"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"moved","count":1}
+{"type":"expect","expect":"scene.lines","count":3}
+{"type":"expect","expect":"deliveries","consumer":"c","count":1}

@@ -1,0 +1,24 @@
+{"type":"note","text":"An epoch bump is an immediate keyframe for every consumer, and OCR still in flight for the old epoch never enters."}
+{"type":"source","epoch":1,"seq":1,"kind":"app","bundle":"com.apple.dt.Xcode","name":"Xcode","pid":123}
+{"type":"source","epoch":1,"seq":2,"kind":"window","id":5375,"title":"main.rs","bounds":[195,92,656,422],"display":{"id":1,"w":1800,"h":1169,"scale":2}}
+{"type":"consumer","id":"a"}
+{"type":"consumer","id":"b","kind":"feed"}
+{"type":"source","epoch":1,"seq":3,"kind":"ax-text","rect":[0,25,656,20],"lines":[{"bbox":[12,34,300,18],"text":"fn render(scene: Scene) {"}]}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"a","pages":1}
+{"type":"expect","expect":"keyframe","consumer":"b","pages":1}
+{"type":"ack","consumer":"a"}
+{"type":"ack","consumer":"b"}
+{"type":"source","epoch":2,"seq":1,"kind":"app","bundle":"com.apple.Safari","name":"Safari","pid":456}
+{"type":"expect","expect":"epoch","value":2}
+{"type":"expect","expect":"deliveries","consumer":"a","count":2}
+{"type":"expect","expect":"deliveries","consumer":"b","count":2}
+{"type":"expect","expect":"keyframe","consumer":"a","pages":1}
+{"type":"expect","expect":"keyframe","consumer":"b","pages":1}
+{"type":"expect","expect":"text","consumer":"a","contains":["app=com.apple.Safari \"Safari\" pid=456"],"notContains":["fn render"]}
+{"type":"note","text":"OCR of the window that is gone, delivered late: the old epoch is dead."}
+{"type":"source","epoch":1,"seq":99,"kind":"ocr","ref":"f-1-98","rect":[0,25,656,20],"lines":[{"bbox":[12,34,300,18],"text":"fn render(scene: Scene) {","conf":0.93}],"ms":118,"axCovered":false}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"scene.lines","count":0}
+{"type":"expect","expect":"scene.text","notContains":["fn render(scene: Scene) {"]}
+{"type":"expect","expect":"deliveries","consumer":"a","count":2}
