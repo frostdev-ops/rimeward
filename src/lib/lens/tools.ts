@@ -232,11 +232,27 @@ const receiptOf = (d: Delivery): Record<string, unknown> => ({
   ...(d.truncated === true ? { truncated: true } : {}),
 });
 
+/** Why the source is not reading, in the words the source itself put on it
+ *  (lens/screen.ts `screenOffline`), or null while it reads. */
+function offlineReason(core: LensCore): string | null {
+  const status = core.status();
+  return status.state === 'offline' ? status.error ?? 'the lens is not reading this source' : null;
+}
+
 /** A source that went away is still readable — its last document stands — so an
  *  offline core reports the reason in the receipt rather than refusing. */
 function offline(core: LensCore): Record<string, unknown> {
-  const status = core.status();
-  return status.state === 'offline' ? { offline: status.error ?? true } : {};
+  const reason = offlineReason(core);
+  return reason === null ? {} : { offline: reason };
+}
+
+/** A tool that needs the source to be READING refuses with the reason it is
+ *  not. Every symptom below — `frame-evicted` with no frame ever captured,
+ *  `no-target` with no window ever read, a wait that only ever times out — is
+ *  what a caller sees instead of the truth when this is skipped. */
+function notLive(name: string, core: LensCore): LensResult | null {
+  const reason = offlineReason(core);
+  return reason === null ? null : fail(`${name} is unavailable: ${reason}`, { offline: reason });
 }
 
 /** A source this tool could never read, screen lens or not. */
@@ -247,7 +263,9 @@ const notScreen = (name: string, opts?: LensToolOpts): LensResult | null =>
 
 /** The Screen lens ward's knobs: `pixels` off and no frame ever leaves the
  *  device through a tool; `overlay` off and nothing is ever drawn on screen.
- *  No lens ward at all leaves the defaults, which are on. */
+ *  No lens ward at all leaves the defaults, which are on — the ward is where
+ *  the knobs live, never a precondition for using the lens (plan D7: consent
+ *  and pause are runtime state, and they are what gate the lens). */
 function wardKnob(user: number | undefined, knob: 'pixels' | 'overlay'): boolean {
   if (user === undefined) return true;
   const ward = getDashboard(user).find((w) => w.type === 'lens');
@@ -301,7 +319,10 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
       if (out.delivery) Object.assign(receipt, receiptOf(out.delivery));
       let image: LensResult['image'];
       if (args.frame === true && notScreen('lens_look {frame}', opts) === null) {
+        // Nothing captured a frame, so `frame-evicted` would be the symptom.
+        const down = offlineReason(core);
         if (!pixelsAllowed(opts?.user)) receipt.frameError = PIXELS_OFF;
+        else if (down !== null) receipt.frameError = down;
         else {
           const frame = await lookFrame(core);
           if ('error' in frame) receipt.frameError = frame.error;
@@ -339,7 +360,9 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
         timeoutMs: clamp(args.timeout_s, 1, 300, 30) * 1000,
         ...(opts?.signal ? { signal: opts.signal } : {}),
       });
-      if ('timeout' in out) return json({ timeout: true, v: out.v, epoch: out.epoch });
+      // A quiet wait on a source that cannot read is not quiet, it is deaf: the
+      // reason rides the same normal result.
+      if ('timeout' in out) return json({ timeout: true, v: out.v, epoch: out.epoch, ...offline(core) });
       if ('cancelled' in out) return json({ cancelled: true, v: out.v, epoch: out.epoch });
       // The delivery was rendered against this consumer's own cap (events.ts).
       // The delivery text is already capped at DELIVERY_CAP and carries its own banner.
@@ -408,6 +431,8 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
       const refused = notScreen('lens_crop', opts);
       if (refused) return refused;
       if (!pixelsAllowed(opts?.user)) return fail(`lens_crop is off: ${PIXELS_OFF}`);
+      const down = notLive('lens_crop', core);
+      if (down) return down;
       const area = asRect(args.rect);
       if (!area) return fail('lens_crop needs a rect of four numbers: x, y, w, h.');
       const out = await crop(core, {
@@ -443,13 +468,16 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
         ...(args.src === 'ax' || args.src === 'ocr' ? { src: args.src } : {}),
         ...(args.accurate === true ? { accurate: true } : {}),
       });
-      if ('error' in out) return fail(out.error);
+      // An `accurate` read of a lens that is not reading fails `frame-evicted`;
+      // the reason it has no frame is the better answer.
+      if ('error' in out) return notLive('lens_text', core) ?? fail(out.error);
       const doc = core.doc();
       return json(
         {
           v: doc.v,
           epoch: doc.epoch,
           ref: out.ref,
+          ...offline(core),
           lines: out.lines.map((l) => ({ bbox: l.bbox, text: l.text, src: l.src, conf: l.conf })),
         },
         {
@@ -458,7 +486,7 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
           banner: true,
           ...(opts?.cap === undefined ? {} : { cap: opts.cap }),
           ...(opts?.escaped ? { escaped: true } : {}),
-          summary: (o2) => ({ v: o2.v, epoch: o2.epoch, ref: o2.ref, lines: (o2.lines as unknown[]).length,
+          summary: (o2) => ({ v: o2.v, epoch: o2.epoch, ref: o2.ref, ...offline(core), lines: (o2.lines as unknown[]).length,
             ...(o2.omitted === undefined ? {} : { omitted: o2.omitted }), ...(o2.truncated === true ? { truncated: true } : {}) }),
         }
       );
@@ -479,6 +507,8 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
     call: async (core, _consumer, args, opts) => {
       const refused = notScreen('lens_describe', opts);
       if (refused) return refused;
+      const down = notLive('lens_describe', core);
+      if (down) return down;
       const area = asRect(args.rect);
       if (!area) return fail('lens_describe needs a rect of four numbers: x, y, w, h.');
       const out = await describe(core, {
@@ -515,12 +545,12 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
         limit: clamp(args.limit, 1, 50, 10),
       });
       const result = json(
-        { events: rows.map((d) => ({ ...receiptOf(d), text: d.text })) },
+        { ...offline(core), events: rows.map((d) => ({ ...receiptOf(d), text: d.text })) },
         {
           list: 'events',
           ...(opts?.cap === undefined ? {} : { cap: opts.cap }),
           ...(opts?.escaped ? { escaped: true } : {}),
-          summary: (o2) => ({ events: (o2.events as unknown[]).length,
+          summary: (o2) => ({ ...offline(core), events: (o2.events as unknown[]).length,
             ...(o2.omitted === undefined ? {} : { omitted: o2.omitted }), ...(o2.truncated === true ? { truncated: true } : {}) }),
         }
       );
@@ -550,6 +580,14 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
       const on = args.on === true;
       // Captions are drawn on the overlay, so the same knob governs them.
       if (on && !wardKnob(opts?.user, 'overlay')) return fail(`lens_captions is off: ${OVERLAY_OFF}`);
+      // Captions read the document and draw over it: with the source not
+      // reading, turning them on would store the pair and report `on` while
+      // nothing could ever be recognised, translated or drawn. Turning them
+      // OFF is never refused — a ward that went down mid-caption still clears.
+      if (on) {
+        const down = notLive('lens_captions', core);
+        if (down) return down;
+      }
       try {
         const state = await captionsFor(core).set({
           on,
@@ -586,6 +624,10 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
       const refused = notScreen('overlay_show', opts);
       if (refused) return refused;
       if (!wardKnob(opts?.user, 'overlay')) return fail(`overlay_show is off: ${OVERLAY_OFF}`);
+      // With no window ever read there is nothing to anchor to, which the app
+      // answers `no-target`: say why there is no target instead.
+      const down = notLive('overlay_show', core);
+      if (down) return down;
       const id = typeof args.id === 'string' ? args.id : '';
       if (!/^[a-z0-9-]{1,32}$/.test(id)) return fail('overlay_show needs an id of 1 to 32 lower-case letters, digits or hyphens.');
       const kind = args.kind;
@@ -628,6 +670,10 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
     call: async (core, _consumer, args, opts) => {
       const refused = notScreen('overlay_clear', opts);
       if (refused) return refused;
+      // A lens that is not running has no overlay to clear, and says so rather
+      // than reporting a clear that cleared nothing.
+      const down = notLive('overlay_clear', core);
+      if (down) return down;
       const id = typeof args.id === 'string' && args.id !== '' ? args.id : undefined;
       try {
         await captionsFor(core).clear(id);

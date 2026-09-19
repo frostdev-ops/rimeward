@@ -17,6 +17,8 @@ import { captionsFor } from '../src/lib/lens/captions.ts';
 import { SOURCES, lens, releaseLens, systemClock } from '../src/lib/lens/core.ts';
 import type { Feed, LensSettings, Source } from '../src/lib/lens/core.ts';
 import { terminalSource } from '../src/lib/lens/terminal.ts';
+import { screenOffline } from '../src/lib/lens/screen.ts';
+import { lensSettings } from '../src/lib/lens/settings.ts';
 import { OBSERVATION_BANNER } from '../src/lib/lens/types.ts';
 import type { ToolCtx } from '../src/lib/agent/tools.ts';
 import { terminalFixture } from './lens-replay.ts';
@@ -458,4 +460,67 @@ test('short rows pay for their newlines: a look beside a truncated delta still f
   // document as fits — every line of it charged for its newline.
   const look = await run('lens_look');
   assert.ok(serialized(look) <= 12_000, `the look serialised to ${serialized(look)}`);
+});
+
+test('an offline screen source answers every tool with the reason, never the symptom', async (t) => {
+  const user = createUser('lens-tools-offline@example.com', 'pw-lens-tools-6');
+  const source = 'screen:local';
+  const real = SOURCES.screen;
+  let feed: Feed | null = null;
+  SOURCES.screen = (): Source => ({
+    async connect(_u: number, _t: string, f: Feed) {
+      feed = f;
+      return () => {};
+    },
+  });
+  t.after(() => {
+    releaseLens(user, source);
+    if (real) SOURCES.screen = real;
+    else delete SOURCES.screen;
+  });
+
+  const ctx = { userId: user, ward: 'agent:ag1', conv: 9 } as ToolCtx;
+  const run = (name: Parameters<typeof lensToolRun>[0], args: Record<string, unknown> = {}) =>
+    lensToolRun(name, { source, ...args }, ctx) as Promise<Record<string, any>>;
+
+  // The first read connects the source, which is what hands the feed over.
+  await run('lens_look');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(feed, 'the source connected');
+  // What the screen source itself would say after `lens-start` answered
+  // `not-consented` — the ONE place those words are written (screen.ts).
+  const REASON = screenOffline('not-consented');
+  assert.equal(REASON, 'the Screen lens is turned off for this Mac');
+  (feed as Feed).offline(REASON);
+
+  // The three document reads still answer — the last document stands — but the
+  // receipt says why there is nothing in it.
+  for (const name of ['lens_look', 'lens_text', 'lens_history'] as const) {
+    assert.equal((await run(name)).offline, REASON, name);
+  }
+  // A frame nobody captured is not `frame-evicted`, it is a lens that is off.
+  assert.equal((await run('lens_look', { frame: true })).frameError, REASON);
+  // A quiet wait on a deaf source says so rather than returning a bare timeout.
+  const quiet = await run('lens_wait', { timeout_s: 1 });
+  assert.equal(quiet.timeout, true);
+  assert.equal(quiet.offline, REASON);
+
+  // Everything that needs the source to be READING refuses with the reason,
+  // never with `frame-evicted` or `no-target`.
+  const args = { rect: [0, 0, 10, 10], id: 'x', kind: 'card', anchor: { corner: 'tl' }, on: true };
+  for (const name of ['lens_crop', 'lens_describe', 'overlay_show', 'overlay_clear', 'lens_captions'] as const) {
+    await assert.rejects(() => run(name, args), new RegExp(`^Error: ${name} is unavailable: ${REASON}$`), name);
+  }
+  // A refused `lens_captions {on:true}` stores nothing: the pair would otherwise
+  // outlive a call that never drew anything.
+  await assert.rejects(() => run('lens_captions', { on: true, from: 'en', to: 'es' }), /lens_captions is unavailable/);
+  assert.equal(lensSettings().caption_from, null);
+  assert.equal(lensSettings().caption_to, null);
+  // Turning captions OFF is never refused: a lens that went down mid-caption
+  // still has to be able to take them down.
+  assert.equal((await run('lens_captions', { on: false })).on, false);
+
+  // Consent given back brings the same core live, and the tools stop saying it.
+  (feed as Feed).online();
+  assert.equal((await run('lens_look')).offline, undefined);
 });

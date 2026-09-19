@@ -7,7 +7,7 @@ import { LENS_SETTINGS, lens } from './core.ts';
 import type { Decider, LensSettings } from './core.ts';
 import { deciderFor, helperDecider } from './decider.ts';
 // Importing the module is what registers `SOURCES.screen` on a desktop.
-import { onHelperSignal, pushSignal } from './screen.ts';
+import { applyNativeState, nativeState, onHelperSignal, pushSignal, screenOffline } from './screen.ts';
 import { lensSetting, setLensSettings } from './settings.ts';
 import { localOwner } from '../dev/native.ts';
 import { nativeDesktop } from '../dev/remote.ts';
@@ -130,15 +130,25 @@ let helper: Decider | undefined;
 export async function startLens(): Promise<string | null> {
   if (!isDesktop()) return null;
   const consented = lensSetting('consented');
+  const core = lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()));
   try {
     // `lens-start` answers with the whole status, so the decider is synced from
     // that reply rather than a second round trip.
     const status = await nativeDesktop('lens-start', { consented });
     if (consented && lensPaused(localOwner())) await nativeDesktop('lens-pause');
     await syncDecider(status);
+    // The same reply says whether anything is capturing at all. The source only
+    // ever learns it went down from a `status stopped` TRANSITION, and there is
+    // none when nothing was ever running: without this an unconsented lens
+    // reads as a live, empty screen, which is what every tool then reported.
+    applyNativeState(core, status);
     return null;
   } catch (err) {
-    return err instanceof Error ? err.message : String(err);
+    const reason = err instanceof Error ? err.message : String(err);
+    // The refusal IS the reason: `lens-start` answers `not-consented` or
+    // `permission` by throwing, and nothing is capturing after it.
+    core?.feed.offline(screenOffline(reason));
+    return reason;
   }
 }
 
@@ -163,17 +173,12 @@ export interface LensConsentStatus {
 }
 
 /** What the app itself says it is doing, or null where there is no app to ask.
- *  `state` is `warming | running | idle | paused | stopped`. */
-export async function lensNativeStatus(): Promise<{ state: string; screen: boolean; ax: boolean } | null> {
+ *  `state` is `warming | running | idle | paused | stopped`, and `offline` is
+ *  why it is not reading (lens/screen.ts `nativeState`, the one decode the
+ *  screen source's own connect shares). */
+export async function lensNativeStatus(): Promise<{ state: string; screen: boolean; ax: boolean; offline: string | null } | null> {
   if (!isDesktop()) return null;
-  const status = (await nativeDesktop('lens-status').catch(() => null)) as Record<string, unknown> | null;
-  if (!status) return null;
-  const permissions = (status.permissions ?? {}) as { screen?: unknown; ax?: unknown };
-  return {
-    state: typeof status.state === 'string' ? status.state : 'stopped',
-    screen: permissions.screen === true,
-    ax: permissions.ax === true,
-  };
+  return nativeState(await nativeDesktop('lens-status').catch(() => null));
 }
 
 /** What the setup page's Screen lens switch draws. Reading it is also the retry:

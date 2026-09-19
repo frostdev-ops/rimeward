@@ -64,3 +64,38 @@ test("the card's captions switch honours the ward's overlay knob like the tool d
   assert.match(src, /overlay === false\)\s*\n\s*return Response\.json\(\{ error: OVERLAY_OFF \}, \{ status: 409 \}\)/);
   assert.equal(OVERLAY_OFF, 'the Screen lens ward has the overlay turned off');
 });
+
+test('the card refuses captions when the lens is not reading, and stores no pair', async (t) => {
+  const { POST } = await import('../src/pages/api/lens/[ward].ts');
+  const { SOURCES, lens, releaseLens } = await import('../src/lib/lens/core.ts');
+  const { screenOffline } = await import('../src/lib/lens/screen.ts');
+  const { lensSettings } = await import('../src/lib/lens/settings.ts');
+  const { createUser } = await import('../src/lib/users.ts');
+  const { saveDashboard } = await import('../src/lib/dashboard.ts');
+
+  const user = createUser('lens-ward-captions@example.com', 'pw-lens-ward-1');
+  saveDashboard(user, validateLayout([{ i: 'ln1', type: 'lens', size: '3x2' }])!);
+  const real = SOURCES.screen;
+  SOURCES.screen = () => ({ async connect() { return () => {}; } });
+  t.after(() => {
+    releaseLens(user, 'screen:local');
+    if (real) SOURCES.screen = real;
+    else delete SOURCES.screen;
+  });
+
+  const core = lens(user, 'screen:local')!;
+  core.feed.offline(screenOffline('not-consented'));
+  const post = (body: unknown): Promise<Response> =>
+    POST({
+      params: { ward: 'ln1' },
+      locals: { user: { userId: user } },
+      request: new Request('https://rimeward.invalid/api/lens/ln1', { method: 'POST', body: JSON.stringify(body) }),
+    } as never) as Promise<Response>;
+
+  const res = await post({ action: 'captions', on: true, from: 'en', to: 'es' });
+  assert.equal(res.status, 409);
+  assert.equal(((await res.json()) as { error: string }).error, 'the Screen lens is turned off for this Mac');
+  // The pair is stored by the call that works, never by the one that refused.
+  assert.equal(lensSettings().caption_from, null);
+  assert.equal(lensSettings().caption_to, null);
+});

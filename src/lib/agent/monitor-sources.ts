@@ -14,7 +14,7 @@ import { isCommsType } from '../comms/types.ts';
 import { TRIGGERS, wardTypes } from '../logic.ts';
 // The CLI chrome grammar lives with the terminal lens source; this branch reads it unchanged.
 import { cliKey, stableKey, terminalContent } from '../lens/terminal.ts';
-import { SOURCES, lens } from '../lens/core.ts';
+import { SOURCES, lens, peekLens } from '../lens/core.ts';
 // Registers SOURCES.browser, the way the import above this one registers SOURCES.terminal.
 import '../lens/browser.ts';
 // The watch grammar is the lens's own (the tool schema in lens/tools.ts is the same fields).
@@ -54,7 +54,7 @@ export function parseMonitorSource(raw:unknown): MonitorSource {
   return out;
 }
 /** The `<type>:<target>` a lens-backed source reads. One screen per process, so a screen
- *  monitor names its lens ward (or nothing at all) and still reads `screen:local`. */
+ *  monitor reads `screen:local` whatever it names — a ward is not what it reads. */
 export const lensSourceId = (s:MonitorSource): string => s.type === 'screen' ? 'screen:local' : `${s.type}:${s.target ?? ''}`;
 /** The lens watch a lens-backed source holds its deliveries behind. */
 export function validateMonitorSource(user:number,s:MonitorSource): void {
@@ -62,8 +62,15 @@ export function validateMonitorSource(user:number,s:MonitorSource): void {
   const ward = layout.find(w => w.i === s.target);
   switch (s.type) {
     case 'terminal': if (!isDesktop() || !s.target) throw Error('Terminal monitoring belongs on its desktop runtime.'); readSession(user,s.target,undefined,false); break;
-    // One screen per runtime: the ward is what the user consented through, not a target to read.
-    case 'screen': if (!isDesktop() || !SOURCES.screen || !(s.target ? ward?.type === 'lens' : layout.some(w => w.type === 'lens'))) throw Error('Screen monitoring belongs on the desktop that hosts the Screen lens ward.'); break;
+    // One screen per runtime, and consent is runtime state rather than layout (plan D7):
+    // what a screen monitor needs is the desktop and a registered screen source, never a
+    // Screen lens ward. A lens that is not reading says why, in its own words.
+    case 'screen': {
+      if (!isDesktop() || !SOURCES.screen) throw Error('Screen monitoring belongs on the desktop that runs the screen lens.');
+      const status = peekLens(user,'screen:local')?.status();
+      if (status?.state === 'offline') throw Error(`The screen lens is not reading: ${status.error}`);
+      break;
+    }
     case 'file': if (!isDesktop() || !s.project) throw Error('File monitoring requires an owned project on this desktop.'); projectPath(user,s.project,s.path ?? '',true); break;
     case 'browser': if (!ward || ward.type !== 'browser') throw Error('Browser ward not found.'); break;
     case 'agent': if ((!ward || ward.type !== 'agent') && !getDb().prepare("SELECT 1 FROM agent_jobs WHERE id=? AND user_id=? AND tool='spawn_agent'").get(s.target ?? '',user)) throw Error('Agent or child task not found.'); break;
@@ -117,12 +124,16 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
       // exactly the observation the monitor was asked to watch for.
       emit(d.delivery,{ eventType:d.kind,text:d.text,v:d.v,epoch:d.epoch,delivery:d.delivery,source },false);
     });
+    // A source that stops reading says so with its reason (a withdrawn consent, a
+    // revoked grant): the monitor goes offline rather than waiting on a document
+    // that can never change again, and the caller's retry is what brings it back.
+    const offStatus = core.on('status',st => { if (st.state === 'offline') offline(st.error ?? 'the lens is not reading this source'); });
     // A delivery this consumer never acknowledged is still its next one: hand it over
     // again now that the listener is there, after the baseline rather than before it.
     if (held.delivered) core.look(consumer,{ fields:[] });
-    // ponytail: stopping is dropping the listener. The core and the consumer row
+    // ponytail: stopping is dropping the listeners. The core and the consumer row
     // outlive it on purpose — that is what an unacknowledged delivery survives.
-    return off;
+    return () => { off(); offStatus(); };
   }
   if (s.type === 'terminal') {
     const connection = randomUUID();

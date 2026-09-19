@@ -102,6 +102,58 @@ function headMeta(body: Record<string, unknown>): { key: string; value: string; 
 const focusValue = (body: { role?: unknown; label?: unknown; value?: unknown }): string =>
   `${str(body.role)} ${q(str(body.label))} value=${q(str(body.value))}`;
 
+// ------------------------------------------------------- what the lens is doing
+
+/** Why the screen lens is not reading, in the words the person needs. The
+ *  native side answers in its own vocabulary and EVERY door — the tools, the
+ *  ward card, a monitor, a leyline — shows what comes out of here, so this is
+ *  the one place those words are written. */
+export function screenOffline(reason: string): string {
+  switch (reason) {
+    case 'not-consented':
+      return 'the Screen lens is turned off for this Mac';
+    case 'permission':
+      return 'macOS has not granted Screen Recording to Rimeward';
+    case 'unsupported':
+      return 'this computer’s lens cannot run here';
+    // Stopped for no stated reason, which is also what an absent reason means.
+    case 'stopped':
+      return 'the screen lens is not running on this computer';
+    default:
+      return reason;
+  }
+}
+
+/** What a `lens-start` or `lens-status` reply says the lens is doing, or null
+ *  when it is not a reply at all (the read threw, the app is gone). `offline` is
+ *  why it is not reading, null while it reads. macOS answers `lens-status`
+ *  without a `reason`, so consent and the Screen Recording grant — both in that
+ *  same reply — are what name it; the off-macOS stub states its own. */
+export function nativeState(
+  reply: unknown
+): { state: string; screen: boolean; ax: boolean; offline: string | null } | null {
+  if (!reply || typeof reply !== 'object') return null;
+  const body = reply as Record<string, unknown>;
+  const permissions = (body.permissions ?? {}) as { screen?: unknown; ax?: unknown };
+  const state = str(body.state, 'stopped');
+  const screen = permissions.screen === true;
+  const reason =
+    state !== 'stopped'
+      ? null
+      : str(body.reason) || (body.consented === false ? 'not-consented' : screen ? 'stopped' : 'permission');
+  return { state, screen, ax: permissions.ax === true, offline: reason === null ? null : screenOffline(reason) };
+}
+
+/** Hand a core what such a reply says without waiting for a signal: the stream
+ *  reports a stop as a TRANSITION, and a lens that was never running never
+ *  emits one. Without this an unconsented lens reads as a live, empty screen. */
+export function applyNativeState(core: LensCore | null, reply: unknown): void {
+  const native = nativeState(reply);
+  if (!core || !native) return;
+  if (native.offline === null) core.feed.online();
+  else core.feed.offline(native.offline);
+}
+
 // ------------------------------------------------------------- the push hub
 
 const handlers = new Set<(signal: Record<string, unknown>) => void>();
@@ -198,6 +250,14 @@ export function screenSource(deps: ScreenDeps): Source {
       for (const field of headMeta(body)) feed.meta(field.key, field.value, seq, field.bounds);
       return;
     }
+    if (kind === 'status') {
+      // Whether the source is reading at all belongs to no epoch and to no
+      // document, so it is read ahead of the guard below: a lens that stopped
+      // (or came back) while its last signal belonged to another window would
+      // otherwise be filtered out and the core would report the opposite.
+      setOffline(str(body.state) === 'stopped' ? screenOffline(str(body.reason, 'stopped')) : null);
+      return;
+    }
     // Everything else from another epoch describes a window nobody is looking at.
     if (e !== epoch) return;
 
@@ -253,22 +313,28 @@ export function screenSource(deps: ScreenDeps): Source {
       case 'gap':
         feed.gap(num(body.from), num(body.to));
         return;
-      case 'status':
-        // A stop is the source going away: nothing more is read until the lens
-        // is started again. When it is, the stream moved on without us, so the
-        // lens comes back live and re-reads what is on screen now — on the SAME
-        // core, with every consumer, listener and cursor still bound to it.
-        if (str(body.state) === 'stopped') {
-          stopped = true;
-          feed.offline(str(body.reason, 'stopped'));
-        } else if (stopped) {
-          stopped = false;
-          feed.online();
-          void resync();
-        }
-        return;
       default:
         return; // helper and overlay are not part of the document
+    }
+  };
+
+  /** A stop is the source going away: nothing more is read until the lens is
+   *  started again. When it is, the stream moved on without us, so the lens
+   *  comes back live and re-reads what is on screen now — on the SAME core,
+   *  with every consumer, listener and cursor still bound to it.
+   *
+   *  Being off is a STATE, not only a transition: a source that connects to a
+   *  lens which was never running gets no `status stopped` signal, so `check`
+   *  lands here too and `stopped` is true whenever the feed is offline. */
+  const setOffline = (reason: string | null): void => {
+    if (!feed) return;
+    if (reason !== null) {
+      stopped = true;
+      feed.offline(reason);
+    } else if (stopped) {
+      stopped = false;
+      feed.online();
+      void resync();
     }
   };
 
@@ -343,6 +409,22 @@ export function screenSource(deps: ScreenDeps): Source {
     feed.meta('title', undefined, snap.seq);
   };
 
+  /** What the lens is doing right now, asked for rather than waited for. A read
+   *  that failed says nothing about the lens, so the snapshot below is its own
+   *  retry; only an answer that says the lens is down takes the feed offline. */
+  const check = async (): Promise<void> => {
+    const reply = await desk(deps.desktop, 'lens-status', {}, SNAPSHOT_DEADLINE_MS);
+    const native = 'error' in reply ? null : nativeState(reply.value);
+    if (native && native.offline !== null) {
+      setOffline(native.offline);
+      return;
+    }
+    // A core seeded offline before anything connected (runtime.ts `startLens`)
+    // comes back live here, whether or not this source ever saw the stop.
+    if (native) feed?.online();
+    await resync();
+  };
+
   return {
     keyframeOn: ['app', 'window', 'sheet'],
     ruleKeys: ['focus'],
@@ -352,7 +434,7 @@ export function screenSource(deps: ScreenDeps): Source {
       // One screen per process: a second connect only re-points the feed.
       if (detach) return () => {};
       detach = deps.attach(apply);
-      void resync();
+      void check();
       return () => {
         detach?.();
         detach = null;

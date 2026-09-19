@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { FakeClock } from './fake-clock.ts';
 import { LensCore } from '../src/lib/lens/core.ts';
 import type { LensSettings } from '../src/lib/lens/core.ts';
-import { crop, describe, screenSource, text } from '../src/lib/lens/screen.ts';
+import { crop, describe, nativeState, screenOffline, screenSource, text } from '../src/lib/lens/screen.ts';
 import { sqliteStore } from '../src/lib/lens/store.ts';
 import type { Delivery, Rect } from '../src/lib/lens/types.ts';
 import { createUser } from '../src/lib/users.ts';
@@ -243,8 +243,12 @@ test('a gap recovers from the snapshot: the boundary discards, newer applies, th
   h.inject(axText(60, [wire('after the boundary', 108)], 1, band));
   await h.tick();
 
-  assert.deepEqual(h.calls.map((c) => c.op), ['lens-snapshot', 'lens-snapshot'], 'one on connect, one for the gap');
-  assert.equal(h.calls[0]?.deadlineMs, 2_000);
+  assert.deepEqual(
+    h.calls.map((c) => c.op),
+    ['lens-status', 'lens-snapshot', 'lens-snapshot'],
+    'what the lens is doing, then one snapshot on connect and one for the gap'
+  );
+  assert.equal(h.calls[1]?.deadlineMs, 2_000);
   assert.deepEqual(
     h.core.doc().lines.map((l) => l.text),
     ['let x = 1', 'from the snapshot', 'after the boundary']
@@ -563,6 +567,66 @@ test('a stopped lens is offline, and its last document still reads', async () =>
   h.inject(sig(12, { kind: 'status', state: 'stopped', reason: 'permission', screen: false, ax: false }));
   const status = h.core.status();
   assert.equal(status.state, 'offline');
-  assert.equal(status.error, 'permission');
+  // The native word, in the words the person needs (screen.ts `screenOffline`).
+  assert.equal(status.error, 'macOS has not granted Screen Recording to Rimeward');
   assert.deepEqual(h.core.doc().lines.map((l) => l.text), ['let x = 1']);
+});
+
+test('the native reasons are one vocabulary, read off the reply the app already sends', () => {
+  assert.equal(screenOffline('not-consented'), 'the Screen lens is turned off for this Mac');
+  assert.equal(screenOffline('permission'), 'macOS has not granted Screen Recording to Rimeward');
+  assert.equal(screenOffline('unsupported'), 'this computer’s lens cannot run here');
+  assert.equal(screenOffline('helper wedged'), 'helper wedged', 'anything else travels verbatim');
+
+  // A running lens is not offline at all.
+  assert.equal(nativeState({ state: 'running', permissions: { screen: true, ax: true }, consented: true })?.offline, null);
+  // macOS answers `lens-status` with no `reason`, so consent and the Screen
+  // Recording grant — both in that same reply — are what name it.
+  assert.equal(
+    nativeState({ state: 'stopped', permissions: { screen: true, ax: true }, consented: false })?.offline,
+    'the Screen lens is turned off for this Mac'
+  );
+  assert.equal(
+    nativeState({ state: 'stopped', permissions: { screen: false, ax: false }, consented: true })?.offline,
+    'macOS has not granted Screen Recording to Rimeward'
+  );
+  // The off-macOS stub states its own reason, and a read that failed says nothing.
+  assert.equal(nativeState({ state: 'stopped', reason: 'unsupported' })?.offline, 'this computer’s lens cannot run here');
+  assert.equal(nativeState(null), null);
+});
+
+test('a lens that was never running says so, and consent later brings the same core live', async () => {
+  const h = harness();
+  // Nothing ever ran, so no `status stopped` transition is coming: the source
+  // asks what the lens is doing when it connects, or "off" reads as "live and
+  // empty" — an app, a window and no text at all.
+  h.reply('lens-status', { state: 'stopped', permissions: { screen: true, ax: true }, consented: false });
+  h.core.consumer('c');
+  await h.tick();
+
+  const status = h.core.status();
+  assert.equal(status.state, 'offline');
+  assert.equal(status.error, 'the Screen lens is turned off for this Mac');
+  assert.deepEqual(h.calls.map((c) => c.op), ['lens-status'], 'nothing is read off a lens that is not reading');
+
+  // Consent given later: the same core, the same consumer, a fresh read of what
+  // is on screen now — even though this source never saw a stop.
+  h.reply('lens-snapshot', {
+    epoch: 2,
+    seq: 90,
+    app: { bundle: 'com.apple.Safari', name: 'Safari', pid: 7 },
+    window: { id: 9, title: 'Docs', bounds: [0, 0, 800, 600], url: null, display: DISPLAY },
+    focus: null,
+    sheet: null,
+    axText: [wire('after consent', 20)],
+    ocr: [],
+    latest: null,
+    live: [],
+  });
+  h.inject(sig(91, { kind: 'status', state: 'running', screen: true, ax: true }));
+  await h.tick();
+
+  assert.equal(h.core.status().state, 'live');
+  assert.deepEqual(h.core.doc().lines.map((l) => l.text), ['after consent']);
+  assert.match((h.sent('c').at(-1) as Delivery).text, /after consent/);
 });

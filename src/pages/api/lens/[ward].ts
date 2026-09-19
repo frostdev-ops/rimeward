@@ -91,6 +91,11 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       // exactly as it governs the lens_captions tool.
       if (body.on === true && (ward.config as Record<string, unknown> | undefined)?.overlay === false)
         return Response.json({ error: OVERLAY_OFF }, { status: 409 });
+      // Nothing can be recognised, translated or drawn over a screen nothing is
+      // reading, and turning them on would store the pair as if it had worked.
+      const status = core.status();
+      if (body.on === true && status.state === 'offline')
+        return Response.json({ error: status.error ?? OFF }, { status: 409 });
       // A blank box is "whatever the stored pair says", never an empty code.
       const from = typeof body.from === 'string' && body.from !== '' ? body.from : undefined;
       const to = typeof body.to === 'string' && body.to !== '' ? body.to : undefined;

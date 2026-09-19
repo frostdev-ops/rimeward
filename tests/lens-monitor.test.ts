@@ -15,6 +15,7 @@ import { validateLayout } from '../src/lib/wards.ts';
 import { SOURCES, lens, releaseLens } from '../src/lib/lens/core.ts';
 import type { Feed, LensSettings, Source } from '../src/lib/lens/core.ts';
 import { OBSERVATION_BANNER } from '../src/lib/lens/types.ts';
+import { screenOffline } from '../src/lib/lens/screen.ts';
 import { connectMonitorSource, parseMonitorSource, validateMonitorSource } from '../src/lib/agent/monitor-sources.ts';
 
 interface FakeScreen {
@@ -98,30 +99,46 @@ test('a screen source folds its watch shorthand and rejects a malformed rect', (
   assert.throws(() => parseMonitorSource({ type: 'screen', regex: '([' }), /not a valid pattern/);
 });
 
-test('a screen monitor needs the desktop that hosts a Screen lens ward', (t) => {
+test('a screen monitor needs the desktop that runs the lens, not a lens ward', (t) => {
   const { user } = setup(t, 'lens-monitor-validate@example.com');
-  const refused = /Screen monitoring belongs on the desktop that hosts the Screen lens ward\./;
+  const refused = /Screen monitoring belongs on the desktop that runs the screen lens\./;
 
-  // The ward stands for the consent the user gave; no target means "the lens ward".
+  // One screen per runtime: whatever a screen monitor names, it reads screen:local.
   validateMonitorSource(user, { type: 'screen' });
   validateMonitorSource(user, { type: 'screen', target: 'ln1' });
-  assert.throws(() => validateMonitorSource(user, { type: 'screen', target: 'ag1' }), refused);
+  validateMonitorSource(user, { type: 'screen', target: 'ag1' });
 
   // Off the desktop app there is no screen to read.
   delete process.env.RIMEWARD_DESKTOP;
   assert.throws(() => validateMonitorSource(user, { type: 'screen' }), refused);
   process.env.RIMEWARD_DESKTOP = '1';
 
-  // A runtime with no screen source registered (a desktop before consent) is refused too.
+  // A runtime with no screen source registered is refused too.
   const source = SOURCES.screen!;
   delete SOURCES.screen;
   assert.throws(() => validateMonitorSource(user, { type: 'screen' }), refused);
   SOURCES.screen = source;
 
-  // No lens ward: nothing consented to.
+  // No lens ward at all: the lens is runtime state (consent, pause), never layout.
   const bare = createUser('lens-monitor-bare@example.com', 'pw-lens-monitor-1');
   saveDashboard(bare, validateLayout([{ i: 'ag1', type: 'agent', size: '2x2', config: { provider: 'codex' } }])!);
-  assert.throws(() => validateMonitorSource(bare, { type: 'screen' }), refused);
+  validateMonitorSource(bare, { type: 'screen' });
+});
+
+test('a screen monitor on a lens that is not reading is refused with the reason', async (t) => {
+  const { user } = setup(t, 'lens-monitor-offline@example.com');
+  // The core the tools and the ward read, taken offline the way the screen
+  // source takes it offline when `lens-start` answers `not-consented`.
+  const core = lens(user, 'screen:local')!;
+  core.feed.offline(screenOffline('not-consented'));
+  assert.throws(
+    () => validateMonitorSource(user, { type: 'screen' }),
+    /The screen lens is not reading: the Screen lens is turned off for this Mac/
+  );
+
+  // Consent given back: the same core, and the monitor validates again.
+  core.feed.online();
+  validateMonitorSource(user, { type: 'screen' });
 });
 
 test('a screen monitor reads screen:local: baseline, then a delivery its watch let through', async (t) => {
