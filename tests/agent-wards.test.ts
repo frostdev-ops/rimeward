@@ -162,3 +162,26 @@ test('page tools: add/rename/delete pages, wards land on pages and survive a del
   const withPages = seen.filter((e) => e.event === 'layout' && Array.isArray(e.data.pages));
   assert.ok(withPages.length >= 4, 'every page/layout write broadcasts the page list beside the layout');
 });
+
+// A real dashboard's ward configs together overrun the agent's 12k tool-output
+// cap (core.ts OUTPUT_CAP), and the whole result is dropped — leaving the model
+// with no ward ids at all. The list carries no config; one ward does.
+test('get_layout fits a big dashboard and reads one ward with its config', async () => {
+  const u = seedUser('agent-layout-cap@x.dev');
+  const links = Array.from({ length: 12 }, (_, i) => ({ url: `https://service-${i}.internal.example.com/dashboards/overview?panel=${i}` }));
+  const pages = [{ id: 'home', title: 'Home' }, { id: 'extra', title: 'Extra' }];
+  // 60 wards is two pages' worth — MAX_WARDS_PER_PAGE is 40.
+  const layout = validateLayout(Array.from({ length: 60 }, (_, i) => ({ i: `w${i}`, type: 'applink', size: '1x1', title: `Launcher ${i}`, page: i < 30 ? 'home' : 'extra', config: { links } })), pages);
+  assert.ok(layout);
+  saveDashboard(u, layout, pages);
+  const ctx = { userId: u, ward: 'ag1', conversationId: 0 } as any;
+  const all = (await TOOLS.get_layout!.run({}, ctx)) as any;
+  assert.equal(all.layout.length, 60);
+  assert.ok(all.layout.every((w: any) => w.config === undefined), 'the whole list carries no config');
+  const size = JSON.stringify(all).length;
+  assert.ok(size < 12_000, `serialized layout is ${size} chars, over the tool output cap`);
+  const one = (await TOOLS.get_layout!.run({ ward: 'w7' }, ctx)) as any;
+  assert.deepEqual(one.layout.map((w: any) => w.ward), ['w7']);
+  assert.equal((one.layout[0].config.links as unknown[]).length, 12);
+  assert.throws(() => TOOLS.get_layout!.run({ ward: 'nope' }, ctx), /no ward "nope"/);
+});

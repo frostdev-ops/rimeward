@@ -226,9 +226,12 @@ function chatWard(userId: number, ward: unknown): WardInstance {
   throw new Error(`several chat wards — say which (ward id): ${all.map((w) => `${w.i} (${w.type})`).join(', ')}`);
 }
 
-/** Compact layout view — enough to reference wards without a second call. */
-const layoutView = (userId: number) =>
-  getDashboard(userId).map((w) => ({
+/** Compact layout view — enough to reference wards without a second call. `only`
+ *  narrows it to one ward and is the ONLY view that carries config: a real
+ *  dashboard's configs together overrun the tool output cap and the whole list
+ *  would be dropped, leaving the model guessing ward ids. */
+const layoutView = (userId: number, only?: string) =>
+  getDashboard(userId).filter((w) => !only || w.i === only).map((w) => ({
     ward: w.i,
     type: w.type,
     size: w.size,
@@ -239,7 +242,7 @@ const layoutView = (userId: number) =>
     ...(w.type === 'workspace' ? { workspaceFingerprint: workspaceFingerprint(validateWorkspaceDefinition(w.config)) } : {}),
     // Absent = the first page; a nested ward's page is its group's.
     page: w.page ?? getPages(userId)[0]!.id,
-    config: w.config ?? {},
+    ...(only ? { config: w.config ?? {} } : {}),
   }));
 
 /** A `page` argument: absent is fine, otherwise it must name a page. */
@@ -492,9 +495,14 @@ export const TOOLS: Record<string, ToolDef> = {
   // ------------------------------------------------------------------ reads
   get_layout: {
     kind: 'read',
-    description: 'The saved dashboard layout: every ward with its id, type, size, title, page and config, plus the page list.',
-    parameters: obj({}),
-    run: (_a, ctx) => ({ layout: layoutView(ctx.userId), pages: getPages(ctx.userId) }),
+    description: 'The saved dashboard layout: every ward with its id, type, size, title and page, plus the page list. Pass ward to get that one ward on its own, with its full config.',
+    parameters: obj({ ward: str('one ward id — returns just that ward, with its config; omit for the whole layout, which carries no config') }),
+    run: (a, ctx) => {
+      const only = typeof a.ward === 'string' && a.ward ? a.ward : undefined;
+      const layout = layoutView(ctx.userId, only);
+      if (only && !layout.length) throw new Error(`no ward "${only}" — call get_layout with no ward for the real ids`);
+      return { layout, pages: getPages(ctx.userId) };
+    },
   },
   list_pages: {
     kind: 'read',
@@ -1318,7 +1326,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   configure_ward: {
     kind: 'write',
-    description: 'Change a ward\'s title, visibility, config, or Workspace Leyline (config replaces the old one wholesale). Workspace changes require the last read revision/fingerprint or link value and refuse active work or unsaved buffers. On an agent ward, tools, approvals and Coding CLI permissions can be narrowed here but never widened; on an mcp ward, trust can move toward confirm but never back, and its url, header and name are the user\'s to change in Configure.',
+    description: 'Change a ward\'s title, visibility, config, or Workspace Leyline (config replaces the old one wholesale — read the current one with get_layout ward:<id> first). Workspace changes require the last read revision/fingerprint or link value and refuse active work or unsaved buffers. On an agent ward, tools, approvals and Coding CLI permissions can be narrowed here but never widened; on an mcp ward, trust can move toward confirm but never back, and its url, header and name are the user\'s to change in Configure.',
     parameters: obj(
       {
         ward: str('the ward id'),
