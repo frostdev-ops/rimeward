@@ -8,7 +8,7 @@ import { embed, embeddingConfig } from './embeddings.ts';
 import { embeddingProfile } from './embedding-profiles.ts';
 import { matchesMonitor, parseMonitorFilter, parseSemanticFilter, parseDecisionFilter, fieldValue, type DecisionFilter } from './monitor-filter.ts';
 import { decide, tailText, UNTRUSTED } from './decisions.ts';
-import { connectMonitorSource, parseMonitorSource, validateMonitorSource, type MonitorSource } from './monitor-sources.ts';
+import { connectMonitorSource, lensSourceId, parseMonitorSource, validateMonitorSource, type MonitorSource } from './monitor-sources.ts';
 import type { ToolCtx } from './tools.ts';
 import { isLive } from './tasks.ts';
 import { agentWardConfig } from './ward-config.ts';
@@ -60,7 +60,7 @@ function owned(ctx:Owner,id:string): MonitorRow {
 /** `<type>:<target>` when this monitor's source has a lens, else null. */
 function lensSource(r:MonitorRow): string | null {
   const s:MonitorSource = JSON.parse(r.source);
-  return SOURCES[s.type] ? `${s.type}:${s.target ?? ''}` : null;
+  return SOURCES[s.type] ? lensSourceId(s) : null;
 }
 /** The lens consumer id, inside its `^[a-z0-9-]{1,40}$` shape: `monitor:<uuid>` fits
  *  exactly, anything else is hashed rather than truncated into a collision. */

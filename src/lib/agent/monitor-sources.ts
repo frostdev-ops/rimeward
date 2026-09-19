@@ -14,13 +14,13 @@ import { isCommsType } from '../comms/types.ts';
 import { TRIGGERS, wardTypes } from '../logic.ts';
 // The CLI chrome grammar lives with the terminal lens source; this branch reads it unchanged.
 import { cliKey, stableKey, terminalContent } from '../lens/terminal.ts';
-import { lens } from '../lens/core.ts';
+import { SOURCES, lens } from '../lens/core.ts';
 // The watch grammar is the lens's own (the tool schema in lens/tools.ts is the same fields).
 import { parseWatchSpec } from '../lens/gate.ts';
 import { DELIVERY_CAP, OBSERVATION_BANNER } from '../lens/types.ts';
 import type { Rect, WatchSpec } from '../lens/types.ts';
 
-export interface MonitorSource { type:'terminal'|'file'|'browser'|'agent'|'note'|'notebook'|'http'|'comms'|'event';
+export interface MonitorSource { type:'terminal'|'screen'|'file'|'browser'|'agent'|'note'|'notebook'|'http'|'comms'|'event';
   target?:string; project?:string; path?:string; url?:string; selector?:string; headers?:string[]; fields?:string[]; intervalSeconds?:number; event?:string;
   /** Lens sources only: deliveries are held until this watch hits. */
   watch?:WatchSpec }
@@ -30,7 +30,7 @@ const commonPrefix = (a:string,b:string) => { let n = 0; while (n < a.length && 
 export function parseMonitorSource(raw:unknown): MonitorSource {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('Monitor source is required.');
   const r = raw as Record<string,unknown>;
-  if (!['terminal','file','browser','agent','note','notebook','http','comms','event'].includes(String(r.type))) throw Error('Unsupported monitor source.');
+  if (!['terminal','screen','file','browser','agent','note','notebook','http','comms','event'].includes(String(r.type))) throw Error('Unsupported monitor source.');
   const out:MonitorSource = { type:r.type as MonitorSource['type'] };
   for (const field of ['target','project','path','url','selector','event'] as const) {
     if (r[field] !== undefined) { if (typeof r[field] !== 'string' || r[field].length > (field === 'url' ? 2000 : 500)) throw Error(`Invalid source ${field}.`); out[field] = r[field]; }
@@ -44,14 +44,24 @@ export function parseMonitorSource(raw:unknown): MonitorSource {
     if (!Array.isArray(values) || values.length > 20 || values.some(x => typeof x !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(x))) throw Error(`Select at most 20 response ${field}.`);
     out[field] = values;
   }
+  // A watch is the whole grammar; `for`/`regex`/`rect`/`visual` beside the source are the
+  // shorthand the tool schema documents for a screen. An explicit `watch` object wins.
+  const shorthand = Object.fromEntries((['for','regex','rect','visual'] as const).filter(field => r[field] !== undefined).map(field => [field,r[field]]));
   if (r.watch !== undefined) out.watch = parseWatchSpec(r.watch,{ triage:false });
+  else if (Object.keys(shorthand).length > 0) out.watch = parseWatchSpec(shorthand,{ triage:false });
   return out;
 }
+/** The `<type>:<target>` a lens-backed source reads. One screen per process, so a screen
+ *  monitor names its lens ward (or nothing at all) and still reads `screen:local`. */
+export const lensSourceId = (s:MonitorSource): string => s.type === 'screen' ? 'screen:local' : `${s.type}:${s.target ?? ''}`;
 /** The lens watch a lens-backed source holds its deliveries behind. */
 export function validateMonitorSource(user:number,s:MonitorSource): void {
-  const ward = getDashboard(user).find(w => w.i === s.target);
+  const layout = getDashboard(user);
+  const ward = layout.find(w => w.i === s.target);
   switch (s.type) {
     case 'terminal': if (!isDesktop() || !s.target) throw Error('Terminal monitoring belongs on its desktop runtime.'); readSession(user,s.target,undefined,false); break;
+    // One screen per runtime: the ward is what the user consented through, not a target to read.
+    case 'screen': if (!isDesktop() || !SOURCES.screen || !(s.target ? ward?.type === 'lens' : layout.some(w => w.type === 'lens'))) throw Error('Screen monitoring belongs on the desktop that hosts the Screen lens ward.'); break;
     case 'file': if (!isDesktop() || !s.project) throw Error('File monitoring requires an owned project on this desktop.'); projectPath(user,s.project,s.path ?? '',true); break;
     case 'browser': if (!ward || ward.type !== 'browser') throw Error('Browser ward not found.'); break;
     case 'agent': if ((!ward || ward.type !== 'agent') && !getDb().prepare("SELECT 1 FROM agent_jobs WHERE id=? AND user_id=? AND tool='spawn_agent'").get(s.target ?? '',user)) throw Error('Agent or child task not found.'); break;
@@ -76,7 +86,7 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
   // A source with a lens (terminal today, screen next) delivers through its core:
   // versioned, settled, ack-gated, one delivery outstanding at a time. Only a caller
   // that named a consumer takes that door; every other call keeps the branches below.
-  const source = `${s.type}:${s.target ?? ''}`;
+  const source = lensSourceId(s);
   const core = consumer ? lens(user,source) : null;
   if (core && consumer) {
     const held = core.consumer(consumer,'monitor');
