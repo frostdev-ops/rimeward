@@ -14,7 +14,7 @@ import { rtcIce, withRtcHeader } from '../browser/rtc.ts';
 import { isCredentialAction } from '../agent/provider-scope.ts';
 
 const localPaths = /^\/(?:_astro\/|api\/(?:native\/|logout(?:\?|$)|runtime(?:\?|$)|dashboard(?:\?|$)|instance(?:\/|\?|$)|dev\/|store\/|agent\/models(?:\?|$)|logic\/stream(?:\?|$)|account\/(?:theme|background)(?:\?|$))|desktop\/|dash(?:\/|\?|$)|brand\/|favicon|apple-touch-icon)/;
-const wardPath = /^\/api\/(?:(?:agent|browser(?:\/stream)?|note|notebook|comms)\/([^/?]+)|agent\/([^/?]+)\/voice)$/;
+const wardPath = /^\/api\/(?:(?:agent|browser(?:\/stream)?|note|notebook|comms|lens)\/([^/?]+)|agent\/([^/?]+)\/voice)$/;
 /** Kept pure so routing can be checked without starting either backend. */
 export function requestWard(path: string): string | undefined {
   const url = new URL(path, 'https://rimeward.invalid');

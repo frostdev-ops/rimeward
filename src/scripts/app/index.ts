@@ -12,6 +12,7 @@ import './workspace.ts';
 import './note.ts';
 import './notebook.ts';
 import './store.ts';
+import './lens.ts';
 import './mcp.ts';
 import './chat.ts';
 import { RENDERERS, body } from './wards.ts';

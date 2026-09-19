@@ -1962,6 +1962,12 @@ const FIELDS: Record<string, Field[]> = {
     { sel: '#aw-rd-view', key: 'view', def: 'fit' },
     { sel: '#aw-rd-diagnostics', key: 'diagnostics', kind: 'bool' },
   ],
+  lens: [
+    { sel: '#aw-ln-settle', key: 'settleMs', kind: 'num' },
+    { sel: '#aw-ln-lines', key: 'minLines', kind: 'num' },
+    { sel: '#aw-ln-pixels', key: 'pixels', kind: 'bool', def: true },
+    { sel: '#aw-ln-overlay', key: 'overlay', kind: 'bool', def: true },
+  ],
   embed: [{ sel: '#aw-em-url', key: 'url' }],
   weather: [
     { sel: '#aw-we-name', key: 'name' },

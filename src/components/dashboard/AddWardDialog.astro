@@ -131,6 +131,15 @@ const groups = (Object.keys(CATEGORIES) as Category[])
       </div>
       <p class="mt-1 text-[10px] text-ink-faint">Remote servers over HTTP only. The token goes in on the ward itself, sealed — never in this form. A server can claim its tools are read-only; only you decide that here. Past 25 s only for a server on this computer, in the Rimeward app — a tool that blocks until something happens.</p>
     </div>
+    <div data-cfg="lens" class="hidden flex-col gap-3">
+      <div class="flex gap-2">
+        <label class="flex-1 text-[10px] text-ink-faint">Settle (ms)<input id="aw-ln-settle" name="ln-settle" type="number" min="100" max="5000" step="50" class="input" placeholder="400" autocomplete="off" /></label>
+        <label class="flex-1 text-[10px] text-ink-faint">Smallest change (lines)<input id="aw-ln-lines" name="ln-lines" type="number" min="1" max="50" step="1" class="input" placeholder="2" autocomplete="off" /></label>
+      </div>
+      <label><input type="checkbox" id="aw-ln-pixels" checked /> Read pixels too, where the app exposes no text</label>
+      <label><input type="checkbox" id="aw-ln-overlay" checked /> Let Rime draw on the overlay above your screen</label>
+      <p class="mt-1 text-[10px] text-ink-faint">The lens reads the frontmost window on the computer running the Rimeward app, and only after you turn Screen lens on there. Settle is how long the screen must hold still before what changed is handed over; a change smaller than the line count is left for the next one. Pause is on the ward itself.</p>
+    </div>
     <div data-cfg="discord" class="hidden flex-col gap-3">
       <div>
         <label class="label" for="aw-dc-guild">Server id</label>

@@ -152,6 +152,11 @@ export type Category = keyof typeof CATEGORIES;
 
 export const CATALOG: Record<string, CatalogEntry> = {
   'remote-desktop': { title: 'Remote Desktop', defaultSize: '6x4', icon: 'host', blurb: 'View and control one of your paired computers.', multi: true, configurable: true, category: 'rime', concepts: ['computer', 'screen', 'remote', 'desktop', 'monitor', 'control', 'sharing'], does: ['view computer screen', 'control mouse and keyboard', 'select display', 'hand control to Rime'] },
+  lens: {
+    title: 'Screen lens', defaultSize: '3x2', icon: 'eye', blurb: 'What Rime can see on this computer’s screen — the frontmost window’s text, settled and versioned, with pause in your hands.', configurable: true, category: 'rime',
+    concepts: ['screen', 'lens', 'see my screen', 'watch my screen', 'screen reading', 'ocr', 'accessibility text', 'frontmost window', 'what am i looking at', 'captions', 'translate my screen', 'overlay', 'shoulder surfing', 'context'],
+    does: ['shows whether the screen lens is running', 'shows the app window and focused field it is reading', 'lists the deliveries it last handed over', 'pauses and resumes reading the screen', 'turns live captions on and off', 'clears the overlay'],
+  },
   workspace: { title: 'Workspace', defaultSize: '3x3', icon: 'folder', blurb: 'Connect folders and agent instructions to your tools with Leylines.', multi: true, configurable: true, category: 'rime', concepts: ['workspace','folder','directory','mount','files','project','AGENTS.md','CLAUDE.md'], does: ['connect folders','select agent instructions','link terminals and editors','configure workspace locations'] },
   'project-files': { title: 'Files', defaultSize: '2x3', icon: 'folder', blurb: 'Browse and search the folders in a workspace.', multi: true, category: 'rime', concepts: ['project','folder','files','tree','workspace','search'], does: ['browse folders','create files','rename files'] },
   editor: { title: 'Editor', defaultSize: '6x4', icon: 'code', blurb: 'Edit workspace files with linting and recovery.', multi: true, category: 'rime', concepts: ['code','text','file','editor','source','buffer','lint','vscode','explorer'], does: ['edit files','save changes','recover drafts','find problems','format code'] },
@@ -886,6 +891,14 @@ function validateConfig(type: string, raw: Record<string, unknown>): Record<stri
     case 'remote-desktop': {
       return { autoConnect: raw.autoConnect === true, quality: ['saver', 'auto', 'sharp'].includes(String(raw.quality)) ? raw.quality : 'auto',
         view: ['fill', 'actual'].includes(String(raw.view)) ? raw.view : 'fit', diagnostics: raw.diagnostics === true };
+    }
+    // The screen lens: knobs only. Consent and pause are runtime state (a
+    // settings row), never the layout. Never null — a bad knob must not take
+    // the layout down.
+    case 'lens': {
+      const n = (v: unknown, d: number, lo: number, hi: number) =>
+        Math.min(Math.max(Math.round(v === undefined || v === null || v === '' || Number.isNaN(Number(v)) ? d : Number(v)), lo), hi);
+      return { settleMs: n(raw.settleMs, 400, 100, 5000), minLines: n(raw.minLines, 2, 1, 50), pixels: raw.pixels !== false, overlay: raw.overlay !== false };
     }
     case 'service-group': {
       // A group, a list of members, or neither: every monitor in the registry.

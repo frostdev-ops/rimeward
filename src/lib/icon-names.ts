@@ -142,6 +142,8 @@ export const ICONS = {
   reset: ['↺', 'rotate-ccw', 'arrow-counter-clockwise', 'rotate', 'restart', 'restart-alt'],
   attach: ['📎', 'paperclip', 'paperclip', 'paperclip', 'paperclip', 'attach-file'],
   stop: ['⏹', 'square', 'stop', 'player-stop', 'stop', 'stop'],
+  pause: ['⏸', 'pause', 'pause', 'player-pause', 'pause', 'pause'],
+  play: ['▶', 'play', 'play', 'player-play', 'play', 'play-arrow'],
   send: ['➤', 'send', 'paper-plane-tilt', 'send', 'plain', 'send'],
   // --- the notepad's toolbar ---
   sparkle: ['✨', 'sparkles', 'sparkle', 'sparkles', 'stars-minimalistic', 'auto-awesome'],
