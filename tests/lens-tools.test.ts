@@ -11,12 +11,13 @@ import { saveDashboard } from '../src/lib/dashboard.ts';
 import { validateLayout } from '../src/lib/wards.ts';
 import { activeConversation } from '../src/lib/agent/conversations.ts';
 import { LOCAL_DEV_TOOLS, DEV_TOOLS } from '../src/lib/dev/tools.ts';
-import { LENS_TOOLS, LENS_TOOL_NAMES } from '../src/lib/lens/tools.ts';
+import { LENS_TOOLS, LENS_TOOL_NAMES, describeTrouble, frameTrouble } from '../src/lib/lens/tools.ts';
 import { consumerOf, lensToolRun } from '../src/lib/lens/agent.ts';
 import { captionsFor } from '../src/lib/lens/captions.ts';
 import { SOURCES, lens, releaseLens, systemClock } from '../src/lib/lens/core.ts';
 import type { Feed, LensSettings, Source } from '../src/lib/lens/core.ts';
 import { terminalSource } from '../src/lib/lens/terminal.ts';
+import { getDb } from '../src/lib/db.ts';
 import { screenOffline } from '../src/lib/lens/types.ts';
 import { lensSettings } from '../src/lib/lens/settings.ts';
 import { setLensPaused } from '../src/lib/lens/runtime.ts';
@@ -90,9 +91,17 @@ test('the screen-only tools read a screen lens, and refuse anything else by name
   const ctx = { userId: user, ward: 'agent:ag1', conv: 5 } as ToolCtx;
   const args = { rect: [0, 0, 10, 10], id: 'x', kind: 'card', anchor: { corner: 'tl' }, on: true };
   // The three reads are live: with no frame ever captured there is nothing to
-  // crop or describe, and the empty document has no text to page.
-  await assert.rejects(() => lensToolRun('lens_crop', { source, ...args }, ctx), /^Error: frame-evicted$/);
-  await assert.rejects(() => lensToolRun('lens_describe', { source, ...args }, ctx), /^Error: frame-evicted$/);
+  // crop or describe, and the empty document has no text to page. The refusal is
+  // a sentence that says what happened and what to do instead, never the app's
+  // one-word condition.
+  await assert.rejects(
+    () => lensToolRun('lens_crop', { source, ...args }, ctx),
+    /^Error: lens_crop has no such frame: frames are kept for about 15 s .* Read a fresh `ref` from lens_look/s
+  );
+  await assert.rejects(
+    () => lensToolRun('lens_describe', { source, ...args }, ctx),
+    /^Error: lens_describe has no such frame: .* Read a fresh `ref` from lens_look/s
+  );
   const read = await lensToolRun('lens_text', { source }, ctx) as Record<string, unknown>;
   // The receipt is counts and ids; the body is in `text`, once.
   assert.equal(read.lines, 0);
@@ -152,11 +161,11 @@ test('the overlay and caption tools draw through the native side, and the ward k
   // ref at all, are both refused before anything is drawn.
   await assert.rejects(
     () => lensToolRun('overlay_show', { source, id: 'card-1', kind: 'card', anchor: { rect: [0, 0, 10, 10], ref: `f-${epoch + 9}-3` } }, ctx),
-    /^Error: stale-epoch$/
+    /^Error: overlay_show refused that frame: it is from a window the user has since left\./
   );
   await assert.rejects(
     () => lensToolRun('overlay_show', { source, id: 'card-1', kind: 'card', anchor: { rect: [0, 0, 10, 10], ref: 'nope' } }, ctx),
-    /^Error: frame-evicted$/
+    /^Error: overlay_show has no such frame: /
   );
   await assert.rejects(() => lensToolRun('overlay_show', { source, id: 'CARD', kind: 'card', anchor: { corner: 'tl' } }, ctx), /id of 1 to 32/);
   await assert.rejects(() => lensToolRun('overlay_show', { source, id: 'c', kind: 'toast', anchor: { corner: 'tl' } }, ctx), /card, caption or highlight/);
@@ -222,8 +231,16 @@ test('lens_look, lens_wait and lens_history acknowledge one delivery at a time',
   const run = (name: 'lens_look' | 'lens_wait' | 'lens_history', args: Record<string, unknown> = {}) =>
     lensToolRun(name, { source, ...args }, ctx) as Promise<Record<string, any>>;
 
-  // The first read attaches the consumer and connects the source.
-  await run('lens_look');
+  // The first read attaches the consumer, connects the source and hands the
+  // document over AS a delivery: what it renders carries an id to acknowledge,
+  // from the very first call, and is never handed over again unasked.
+  const first = await run('lens_look');
+  assert.match(String(first.delivery), new RegExp(`^${consumer}:\\d+$`), 'the first look reports the delivery it rendered');
+  assert.equal(first.kind, 'key');
+  assert.ok(String(first.text).includes('building…'), 'the first look waited for the source to connect');
+  assert.ok(String(first.text).includes(`d=${first.delivery}`), 'the id in the receipt is the id in the text');
+  assert.equal(core.status().consumers[0]?.delivered, first.delivery);
+
   const key = await run('lens_wait', { timeout_s: 5 });
   assert.equal(key.kind, 'key');
   assert.equal(key.since, null);
@@ -248,9 +265,9 @@ test('lens_look, lens_wait and lens_history acknowledge one delivery at a time',
   // lens_history acknowledges the outstanding one in the same call, and lists
   // every delivery already rendered for this consumer.
   const history = await run('lens_history', { ack: again.delivery, limit: 10 });
-  assert.equal(history.events, 2, 'the receipt counts, the body lists');
+  assert.equal(history.events, 3, 'the receipt counts, the body lists');
   const listed = (JSON.parse(String(history.text)) as { events: { delivery: string }[] }).events;
-  assert.deepEqual(listed.map((e) => e.delivery), [key.delivery, again.delivery]);
+  assert.deepEqual(listed.map((e) => e.delivery), [first.delivery, key.delivery, again.delivery]);
   assert.equal(core.status().consumers[0]?.delivered, null);
   assert.equal(core.status().consumers[0]?.cursor, key.v);
 
@@ -575,4 +592,142 @@ test('a paused lens says so in every receipt, and a wait returns at once instead
 
   setLensPaused(user, false);
   assert.equal((await run('lens_wait', { timeout_s: 1 })).paused, undefined);
+});
+
+test('a look waits for the source to connect, and reports why it cannot read', async (t) => {
+  // A source says what is wrong with it from inside its own connect, which the
+  // first look used to race: a browser ward with no session answered `v=1` with
+  // no lines and nothing else, which reads exactly like a live, empty page.
+  const user = createUser('lens-tools-connect@example.com', 'pw-lens-tools-8');
+  const source = 'browser:b1';
+  const REASON = 'Browser is offline; waiting for its session to reconnect.';
+  const real = SOURCES.browser;
+  SOURCES.browser = (): Source => ({
+    async connect(_u: number, _t: string, f: Feed) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      f.offline(REASON);
+      return () => {};
+    },
+  });
+  t.after(() => {
+    releaseLens(user, source);
+    if (real) SOURCES.browser = real; else delete SOURCES.browser;
+  });
+
+  const ctx = { userId: user, ward: 'agent:ag1', conv: 21 } as ToolCtx;
+  const look = await lensToolRun('lens_look', { source }, ctx) as Record<string, any>;
+  assert.equal(look.offline, REASON, 'the first look carries the source’s own reason');
+  assert.equal(look.connecting, undefined, 'the connect settled inside the call');
+  assert.equal(look.delivery, undefined, 'an empty document is not claimed as a delivery');
+});
+
+test('a terminal ward id reads that ward’s session, and an id that is neither says which ids are valid', async (t) => {
+  const user = createUser('lens-tools-terminal-id@example.com', 'pw-lens-tools-9');
+  const ward = 'tm1';
+  // What the pane strip writes when a session is placed in a terminal ward.
+  getDb()
+    .prepare('INSERT INTO terminal_placements(user_id,ward,session_id,runtime_id,root_id,json) VALUES(?,?,?,?,?,?)')
+    .run(user, ward, 's1', 'local', 'root', '{}');
+
+  const fixture = terminalFixture(() => Date.now());
+  const real = SOURCES.terminal;
+  SOURCES.terminal = (): Source =>
+    terminalSource({
+      ...fixture.deps,
+      // dev/terminals.ts answers a 404 for an id it does not hold; the fixture
+      // holds exactly one session.
+      read: ((u: number, id: string) => {
+        if (id !== 's1') throw Object.assign(new Error('Terminal not found.'), { status: 404 });
+        return (fixture.deps.read as unknown as (a: number, b: string) => unknown)(u, id);
+      }) as typeof fixture.deps.read,
+    });
+  t.after(() => {
+    releaseLens(user, `terminal:${ward}`);
+    releaseLens(user, 'terminal:nope');
+    SOURCES.terminal = real;
+  });
+  fixture.inject({ rows: ['ready'], seq: 1 });
+
+  const ctx = { userId: user, ward: 'agent:ag1', conv: 23 } as ToolCtx;
+  const byWard = await lensToolRun('lens_look', { source: `terminal:${ward}` }, ctx) as Record<string, any>;
+  assert.equal(byWard.offline, undefined, 'the ward id resolved to the session it is showing');
+  assert.ok(String(byWard.text).includes('ready'), byWard.text);
+
+  // Neither a session nor a ward: the refusal names both kinds of id and where
+  // each comes from, rather than ending at "Terminal not found."
+  const missing = await lensToolRun('lens_look', { source: 'terminal:nope' }, ctx) as Record<string, any>;
+  const said = String(missing.offline);
+  assert.match(said, /Terminal not found\./);
+  assert.match(said, /terminal:<session id>/);
+  assert.match(said, /terminal_list/);
+  assert.match(said, /terminal ward id/);
+  assert.match(said, /get_layout/);
+});
+
+test('a refused frame and a model that cannot answer are sentences with the way out', async (t) => {
+  const user = createUser('lens-tools-sentences@example.com', 'pw-lens-tools-10');
+  const source = 'screen:local';
+  const real = SOURCES.screen;
+  SOURCES.screen = (): Source => ({ async connect(_u: number, _t: string, _f: Feed) { return () => {}; } });
+  t.after(() => {
+    releaseLens(user, source);
+    if (real) SOURCES.screen = real; else delete SOURCES.screen;
+  });
+  const core = lens(user, source)!;
+  // The window the rects are measured in: screen points in the header, so what
+  // a rect may be is its size from the origin.
+  core.feed.meta('window', '42 "Safari" display=1 1800x1169 @2', 1, [0, 39, 1800, 1130]);
+
+  const refused = frameTrouble('lens_crop', core, 'bad-rect', [715, 480, 210, 35]);
+  assert.match(refused, /715,480,210,35/, 'the rect it refused');
+  assert.match(refused, /window points/, 'the space a rect is in');
+  assert.match(refused, /0,0,1800,1130/, 'the bounds that are valid');
+  assert.match(frameTrouble('lens_crop', core, 'frame-evicted'), /frames are kept for about 15 s/);
+  assert.match(frameTrouble('lens_crop', core, 'stale-epoch'), /window the user has since left/);
+
+  // A missing model and a model that could not run the call are not the same
+  // answer: one is worth asking again and the other never will be.
+  assert.match(describeTrouble('unavailable'), /no on-device model with vision/);
+  assert.match(describeTrouble('busy'), /busy with other work.*Ask again/s);
+  assert.notEqual(describeTrouble('unavailable'), describeTrouble('busy'));
+  for (const error of ['unavailable', 'assets-missing', 'busy', 'rate-limited', 'down', 'deadline', 'nonsense']) {
+    assert.ok(describeTrouble(error).length > 40 && describeTrouble(error).endsWith('.'), error);
+  }
+});
+
+test('lens_watch says how each watch will be judged, and whether its threshold was measured', async (t) => {
+  const user = createUser('lens-tools-watch-says@example.com', 'pw-lens-tools-11');
+  const source = 'terminal:s7';
+  const real = SOURCES.terminal;
+  SOURCES.terminal = (): Source => ({ async connect(_u: number, _t: string, _f: Feed) { return () => {}; } });
+  t.after(() => {
+    releaseLens(user, source);
+    SOURCES.terminal = real;
+  });
+  const core = lens(user, source)!;
+  const ctx = { userId: user, ward: 'agent:ag1', conv: 25 } as ToolCtx;
+  const watch = (args: Record<string, unknown> = {}) =>
+    lensToolRun('lens_watch', { source, ...args }, ctx) as Promise<Record<string, any>>;
+  const of = (out: Record<string, any>, mode: string) =>
+    (out.watches as { mode: string; says: string; calibration?: string }[]).find((w) => w.mode === mode)!;
+
+  const literal = await watch({ add: [{ regex: 'error' }] });
+  assert.match(of(literal, 'regex').says, /literal pattern/);
+
+  // The same `for` watch, twice: judged against a threshold measured for this
+  // embedder, then against the fallback numbers standing in for a measurement
+  // nobody took. Both are `mode: "for"` — only the sentence tells them apart.
+  const embed = async (texts: string[]) => texts.map(() => [1, 0, 0]);
+  await core.setDecider({ embedderId: 'helper:mobileclip-s0', embed, triage: async () => ({ yes: true }) });
+  const measured = await watch({ add: [{ for: 'the build failed' }] });
+  assert.equal(of(measured, 'for').calibration, 'measured');
+  assert.match(of(measured, 'for').says, /threshold measured on this machine/);
+  assert.equal(measured.calibrate, undefined);
+
+  await core.setDecider({ embed, triage: async () => ({ yes: true }) });
+  const fallback = await watch();
+  assert.equal(of(fallback, 'for').mode, 'for', 'the mode is the same word');
+  assert.equal(of(fallback, 'for').calibration, 'missing');
+  assert.match(of(fallback, 'for').says, /fallback thresholds nobody has measured here/);
+  assert.match(String(fallback.calibrate), /ops\/lens-calibrate\.ts --user \d+/);
 });

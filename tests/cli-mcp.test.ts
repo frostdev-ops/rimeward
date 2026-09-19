@@ -138,8 +138,11 @@ test('an image rides beside the text, and an error passes through as isError', a
   LENS_TOOLS.lens_crop.call = realCall;
   const missing = await callTool(user, 'sess-4', 'lens_crop', { rect: [0, 0, 8, 8] });
   assert.equal(missing.result.isError, true);
-  assert.deepEqual(missing.result.content, [{ type: 'text', text: 'frame-evicted' }]);
-  assert.deepEqual(missing.result.structuredContent, { error: 'frame-evicted', text: 'frame-evicted' });
+  // A sentence for the host to read, with the app's own condition beside it.
+  const said = missing.result.content[0].text as string;
+  assert.match(said, /^lens_crop has no such frame: /);
+  assert.deepEqual(missing.result.content, [{ type: 'text', text: said }]);
+  assert.deepEqual(missing.result.structuredContent, { error: said, detail: 'frame-evicted', text: said });
 });
 
 test('the four Rime tools answer exactly as they did before the lens door', async (t) => {

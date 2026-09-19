@@ -46,6 +46,10 @@ import type {
 
 /** How much frame history the live-region detector needs. */
 const FRAME_HISTORY_MS = 3000;
+/** How long `ready()` waits for a source's first connect before answering that
+ *  it is still connecting. ponytail: one number for every source — a connect
+ *  slower than this is a source with its own trouble to report. */
+const CONNECT_SETTLE_MS = 2000;
 /** Interpreted regions kept on the working copy within one epoch. */
 const REGION_CAP = 16;
 /** Dirty rectangles kept on the working copy between two versions. */
@@ -217,6 +221,8 @@ export class LensCore {
   #offline: string | null = null;
   #stop: (() => void) | null = null;
   #connected = false;
+  /** The connect in flight, while there is one: what `ready()` waits on. */
+  #connecting: Promise<void> | null = null;
   /** Bumped on every connect and disconnect: a `connect()` that lands after a
    *  disconnect must stop what it started rather than install it. */
   #connectToken = 0;
@@ -742,16 +748,43 @@ export class LensCore {
     if (this.#connected) return;
     this.#connected = true;
     const token = ++this.#connectToken;
-    void this.#deps.source.connect(this.#deps.user, this.#deps.target, this.feed).then(
-      (stop) => {
-        // Disconnected while this connect was in flight: stop what it started.
-        if (token !== this.#connectToken) return stop();
-        this.#stop = stop;
-      },
-      (err: unknown) => {
-        if (token === this.#connectToken) this.feed.offline(err instanceof Error ? err.message : String(err));
-      }
-    );
+    const chain: Promise<void> = this.#deps.source
+      .connect(this.#deps.user, this.#deps.target, this.feed)
+      .then(
+        (stop) => {
+          // Disconnected while this connect was in flight: stop what it started.
+          if (token !== this.#connectToken) return stop();
+          this.#stop = stop;
+        },
+        (err: unknown) => {
+          if (token === this.#connectToken) this.feed.offline(err instanceof Error ? err.message : String(err));
+        }
+      )
+      .then(() => {
+        if (this.#connecting === chain) this.#connecting = null;
+      });
+    this.#connecting = chain;
+  }
+
+  /** Connects the source and waits for that first connect to SETTLE: `true`
+   *  once it has, `false` while it is still connecting after `ms`. A source
+   *  says what is wrong with it from inside its own connect (a browser ward
+   *  with no session, a terminal id that names nothing), so a read that answers
+   *  before then describes a document nothing has written to yet — which is
+   *  indistinguishable from a live, empty one. */
+  async ready(ms = CONNECT_SETTLE_MS): Promise<boolean> {
+    this.#connect();
+    const connecting = this.#connecting;
+    if (!connecting) return true;
+    let timer: unknown = null;
+    const settled = await Promise.race([
+      connecting.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = this.#hold(this.#clock.setTimeout(() => resolve(false), ms));
+      }),
+    ]);
+    this.#clock.clearTimeout(timer);
+    return settled;
   }
 
   /** Stop the source, keeping the document and every stored consumer row. */
@@ -771,7 +804,7 @@ export class LensCore {
     if (applied === 'applied') this.#store.saveConsumer(consumer);
   }
 
-  look(id: string, o: { ack?: string; fields?: string[]; offer?: boolean } = {}): LookResult {
+  look(id: string, o: { ack?: string; fields?: string[]; offer?: boolean; claim?: boolean } = {}): LookResult {
     const consumer = this.consumer(id);
     this.#ack(consumer, o.ack);
     const doc = this.#frozen();
@@ -787,7 +820,23 @@ export class LensCore {
     // unchanged cursor; a keyframe mid-paging hands over its next page. A reader
     // that only wants the document (`offer: false`) never claims one: a
     // re-render IS a delivery, counter, stored event, listeners and all.
-    if (o.offer !== false && consumer.delivered !== null) out.delivery = this.#produce(consumer);
+    //
+    // `claim` is the first read of all: a consumer that has never read is handed
+    // the document AS a keyframe, so what it is shown carries a delivery id it
+    // can acknowledge. Without one the caller reads the whole document off an
+    // unackable result and is then handed the very same lines again, as the
+    // first keyframe, under an id it never saw — the churn the ack protocol
+    // exists to stop. Only a read of the whole document claims (a `fields`
+    // narrowing asked for less than a keyframe carries), and only when there is
+    // a document to hand over: claiming an empty one would pin the consumer to
+    // that empty version until it was acknowledged.
+    const first =
+      o.claim === true &&
+      o.fields === undefined &&
+      consumer.cursor === null &&
+      consumer.delivered === null &&
+      (doc.lines.length > 0 || Object.keys(doc.meta).length > 0);
+    if ((o.offer !== false && consumer.delivered !== null) || first) out.delivery = this.#produce(consumer);
     return out;
   }
 
@@ -856,7 +905,7 @@ export class LensCore {
     id: string,
     o: { add?: WatchSpec[]; remove?: string[]; minIntervalS?: number } = {}
   ): Promise<{
-    watches: { id: string; mode: WatchMode; evaluation?: 'unavailable' | 'weak'; calibration?: 'missing' }[];
+    watches: { id: string; mode: WatchMode; evaluation?: 'unavailable' | 'weak'; calibration?: 'missing' | 'measured' }[];
     /** Present when a `for` watch degraded because this embedder has never been
      *  measured here: the command that measures it. */
     calibrate?: string;
@@ -917,7 +966,17 @@ export class LensCore {
     }
     this.#store.saveWatches(id, consumer.watches);
     this.#store.saveConsumer(consumer);
-    const degraded = cal.missing && consumer.watches.some((w) => w.spec.for);
+    // What a `for` watch is scored against: a measurement of THIS embedder, or
+    // the fallback numbers standing in for one. An embedder nobody named is a
+    // measurement nobody could key, so it is a fallback too — and the caller is
+    // told, rather than left to read a threshold it cannot see. `calibration`
+    // is reported either way: a calibrated watch and one running on the
+    // fallback are otherwise the same two words to whoever registered it.
+    const measured = this.#deps.decider?.embedderId !== undefined && !cal.missing;
+    // The command measures whatever embeds here, so it is only worth naming
+    // when something does: with nothing to embed with, a `for` watch is short
+    // of a decider, not of a measurement.
+    const degraded = !measured && this.#deps.decider?.embed !== undefined && consumer.watches.some((w) => w.spec.for);
     return {
       watches: consumer.watches.map((w) => {
         const evaluation = watchEvaluation(w.mode, caps);
@@ -925,7 +984,7 @@ export class LensCore {
           id: w.id,
           mode: w.mode,
           ...(evaluation ? { evaluation } : {}),
-          ...(cal.missing && w.spec.for ? { calibration: 'missing' as const } : {}),
+          ...(w.spec.for ? { calibration: measured ? ('measured' as const) : ('missing' as const) } : {}),
         };
       }),
       ...(degraded ? { calibrate: calibrateCommand(this.#deps.user) } : {}),

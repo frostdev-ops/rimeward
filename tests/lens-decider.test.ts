@@ -116,11 +116,13 @@ test('a `for` watch on an uncalibrated embedder runs triage-only, and says so', 
   assert.equal(out.watches[0]!.calibration, 'missing');
   assert.match(out.calibrate ?? '', /ops\/lens-calibrate\.ts --user \d+/);
 
-  // The same watch, once the embedder has been measured: the cosine is allowed.
+  // The same watch, once the embedder has been measured: the cosine is allowed,
+  // and the reply says the threshold was measured rather than leaving a
+  // calibrated watch and a fallback one looking the same.
   saveCalibration('local:uncalibrated', { forThreshold: 0.6, visualThreshold: 0.15, liveThreshold: 0.05, score: 'raw' });
   const after = await core.watch('conv-1');
   assert.equal(after.watches[0]!.mode, 'for');
-  assert.equal(after.watches[0]!.calibration, undefined);
+  assert.equal(after.watches[0]!.calibration, 'measured');
   assert.equal(after.calibrate, undefined);
 });
 

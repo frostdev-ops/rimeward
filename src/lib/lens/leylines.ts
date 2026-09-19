@@ -14,11 +14,13 @@
 import { lens, peekLens } from './core.ts';
 import type { LensCore } from './core.ts';
 import { parseWatchSpec } from './gate.ts';
+// One resolution of a terminal WARD id to the session it is showing, shared with
+// the lens source itself (a `terminal:<ward id>` source resolves the same way).
+import { terminalSession } from './terminal.ts';
 import type { Delivery, WatchSpec } from './types.ts';
 import { broadcast, enqueueFire, takeSlot } from '../logic-engine.ts';
 import type { LogicEdge } from '../logic.ts';
 import type { WardInstance } from '../wards.ts';
-import { getDb } from '../db.ts';
 
 /** Screen changes a user's graph may fire on per hour. */
 const SCREEN_CAP_PER_HOUR = 300;
@@ -145,25 +147,6 @@ function fireWatch(user: number, core: LensCore, consumer: string, entry: Bound,
     });
   }
   ack(core, consumer, d);
-}
-
-/** A terminal ward is panes over many sessions; a leyline watches the one it is
- *  showing (the pane strip's own selection), else the first session placed in it.
- *  ponytail: one consumer per ward — watching a background pane too needs one per pane. */
-function terminalSession(user: number, ward: string): string | null {
-  const row = getDb().prepare('SELECT json FROM terminal_placement_views WHERE user_id=? AND ward=?').get(user, ward) as
-    | { json: string }
-    | undefined;
-  try {
-    const session = row ? (JSON.parse(row.json) as { session?: unknown }).session : undefined;
-    if (typeof session === 'string' && session !== '') return session;
-  } catch {
-    /* the stored view is unreadable; fall through to the first placement */
-  }
-  const first = getDb()
-    .prepare('SELECT session_id FROM terminal_placements WHERE user_id=? AND ward=? ORDER BY rowid LIMIT 1')
-    .get(user, ward) as { session_id: string } | undefined;
-  return first?.session_id ?? null;
 }
 
 /** The `<type>:<target>` a ward's leyline reads, or null when it has none. */

@@ -14,6 +14,7 @@ import type { Feed, Source, SourceSnapshot } from './core.ts';
 import type { MetaField, Rect } from './types.ts';
 import { subscribeDev } from '../dev/runtime.ts';
 import { readSession, renderedLines } from '../dev/terminals.ts';
+import { getDb } from '../db.ts';
 
 // ------------------------------------------------------- CLI chrome grammar
 // Moved verbatim out of agent/monitor-sources.ts, which imports them from here.
@@ -126,6 +127,37 @@ export const KEEP = 400;
 /** A pure repaint, loud enough for the live detector (>= liveThreshold) and
  *  quiet enough never to be a visual candidate (< visualThreshold). */
 const REPAINT_D = 0.1;
+
+/** A terminal ward is panes over many sessions; a reader watches the one it is
+ *  showing (the pane strip's own selection), else the first session placed in
+ *  it. `null` when the id is no ward of this user's — which is what a plain
+ *  session id is. The leyline path (lens/leylines.ts) resolves a
+ *  `watch-matched` ward through this same function.
+ *  ponytail: one session per ward — reading a background pane too needs one
+ *  source per pane. */
+export function terminalSession(user: number, ward: string): string | null {
+  const row = getDb().prepare('SELECT json FROM terminal_placement_views WHERE user_id=? AND ward=?').get(user, ward) as
+    | { json: string }
+    | undefined;
+  try {
+    const session = row ? (JSON.parse(row.json) as { session?: unknown }).session : undefined;
+    if (typeof session === 'string' && session !== '') return session;
+  } catch {
+    /* the stored view is unreadable; fall through to the first placement */
+  }
+  const first = getDb()
+    .prepare('SELECT session_id FROM terminal_placements WHERE user_id=? AND ward=? ORDER BY rowid LIMIT 1')
+    .get(user, ward) as { session_id: string } | undefined;
+  return first?.session_id ?? null;
+}
+
+/** What to say when `terminal:<target>` names neither. The ids are in two
+ *  different places and nothing else tells a caller which, which is how
+ *  "Terminal not found." became a dead end. */
+const unknownTerminal = (target: string, reason: string): string =>
+  `${reason} "${target}" is neither a terminal session nor a terminal ward of this user's. ` +
+  'A terminal source is `terminal:<session id>` — terminal_list gives the session ids — or ' +
+  '`terminal:<terminal ward id>` from get_layout, which reads the session that ward is showing.';
 
 export interface TerminalDeps {
   subscribe: typeof subscribeDev;
@@ -242,7 +274,10 @@ export function terminalSource(deps: TerminalDeps): Source {
 
     async connect(u, t, f): Promise<() => void> {
       user = u;
-      target = t;
+      // A ward id is what `get_layout` hands out, and it is the id a caller has:
+      // it resolves to the session that ward is showing. A session id resolves
+      // to nothing here and stands as itself.
+      target = terminalSession(u, t) ?? t;
       feed = f;
       let started = false;
       const stop = deps.subscribe(user, (event) => {
@@ -289,7 +324,10 @@ export function terminalSource(deps: TerminalDeps): Source {
       try {
         open(seq);
       } catch (err) {
-        f.offline(err instanceof Error ? err.message : String(err));
+        const reason = err instanceof Error ? err.message : String(err);
+        // `rowOf` in dev/terminals.ts answers a 404 for an id it does not hold,
+        // and that is the whole of what the caller used to be told.
+        f.offline((err as { status?: number })?.status === 404 ? unknownTerminal(t, reason) : reason);
       }
       return () => {
         feed = null;
