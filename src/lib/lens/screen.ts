@@ -182,7 +182,10 @@ export function screenSource(deps: ScreenDeps): Source {
         lastWindow = null;
         feed.epoch(e, seq);
       }
-      if (kind === 'window') lastWindow = body;
+      if (kind === 'window') {
+        lastWindow = body;
+        feed.meta('title', undefined, seq); // whatever `ax-window` renamed belonged to the old one
+      }
       for (const field of headMeta(body)) feed.meta(field.key, field.value, seq, field.bounds);
       return;
     }
@@ -195,17 +198,24 @@ export function screenSource(deps: ScreenDeps): Source {
         feed.meta('focus', focusValue(body), seq, rect(body.bounds));
         return;
       case 'ax-window': {
-        // A retitle or a move of the window already in the header. The value is
-        // rewritten from the `window` signal it belongs to, so the id, the url
-        // and the display survive; a move alone changes only the field's bounds,
-        // which is no version bump (BlackIce's `moved`). A retitle DOES change
-        // the value, and `window` forces a keyframe, where BlackIce settled a
-        // delta — the fuller answer for the rarer event.
+        // A move or a retitle of the window already in the header.
         if (!lastWindow) return;
-        lastWindow = { ...lastWindow, title: str(body.title), bounds: body.bounds };
+        // The move: the same value in a new place, which is no version bump
+        // (BlackIce's `moved`) — only where the field sits changes. The value is
+        // restated from the `window` signal, so the id, the url and the display
+        // survive.
+        lastWindow = { ...lastWindow, bounds: body.bounds };
         for (const field of headMeta({ kind: 'window', ...lastWindow })) {
           feed.meta(field.key, field.value, seq, field.bounds);
         }
+        // The retitle rides a header field of its own. `window` forces a
+        // keyframe, and a title that ticks — an unread count, a call timer —
+        // would then keyframe, deliver and fire a leyline once a second;
+        // BlackIce settled a retitle as a delta, which a consumer with no watch
+        // never received. `title` is neither a keyframe key nor a rule key, so
+        // that is what this is, and it goes when the window does.
+        const title = str(body.title);
+        feed.meta('title', title === str(lastWindow.title) ? undefined : q(title), seq);
         return;
       }
       case 'ax-sheet':
@@ -272,7 +282,9 @@ export function screenSource(deps: ScreenDeps): Source {
     const sheet = snap.sheet as Record<string, unknown> | null;
     if (sheet) meta.sheet = { value: q(str(sheet.title)), ...(rect(sheet.bounds) ? { bounds: rect(sheet.bounds) as Rect } : {}) };
     const frame = snap.latest as { ref?: unknown; geometry?: unknown } | null;
-    if (frame && str(frame.ref)) {
+    // A reply that arrived after the window changed describes a window nobody is
+    // looking at: its frame must not become the one a crop reads.
+    if (frame && str(frame.ref) && num(snap.epoch) >= epoch) {
       latest = { ref: str(frame.ref), geometry: frame.geometry as FrameGeometry | undefined, expires: now() + FRAME_TTL_MS };
     }
     epoch = Math.max(epoch, num(snap.epoch));
@@ -290,12 +302,14 @@ export function screenSource(deps: ScreenDeps): Source {
   /** The stream carries changes only, so a reader that attaches to a lens which
    *  is already running starts from what it already shows. */
   const resync = async (): Promise<void> => {
-    const before = epoch;
     const snap = await snapshot();
-    // A live signal that opened a newer epoch in the meantime already said more
-    // than this reply can.
-    if (!feed || !snap || snap.epoch === 0 || snap.epoch < before) return;
-    epoch = snap.epoch;
+    // The epoch as it stands NOW, not as it stood before the call: a live `app`
+    // or `window` signal may have opened a newer one while the reply was in
+    // flight, and that window is the one on screen. Everything below — the
+    // lines, the live rectangles and the frame the next version is pinned to —
+    // belongs to the epoch this reply describes, so none of it is applied
+    // unless that is still the epoch.
+    if (!feed || !snap || snap.epoch === 0 || snap.epoch !== epoch) return;
     feed.epoch(snap.epoch, snap.seq);
     feed.replace(snap.lines, snap.seq);
     feed.live(snap.live ?? []);

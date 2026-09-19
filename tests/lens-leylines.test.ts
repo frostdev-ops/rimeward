@@ -12,6 +12,7 @@ import { validateLayout } from '../src/lib/wards.ts';
 import { SOURCES, lens, releaseLens } from '../src/lib/lens/core.ts';
 import type { Feed, LensSettings, Source } from '../src/lib/lens/core.ts';
 import { screenWindow, syncLensEdges } from '../src/lib/lens/leylines.ts';
+import { parseWatchSpec } from '../src/lib/lens/gate.ts';
 import { ACTION_EXECS, getGraph, saveGraph, subscribeLogic } from '../src/lib/logic-engine.ts';
 import { renderTemplate, type LogicEdge } from '../src/lib/logic.ts';
 import { getDashboard } from '../src/lib/dashboard.ts';
@@ -117,8 +118,10 @@ async function setup(t: TestContext, email: string, edges: LogicEdge[]) {
 
   const sync = (): void => syncLensEdges(user, getGraph(user).edges, getDashboard(user));
   sync();
-  // `connect` resolves on a microtask; the header it writes is the first keyframe.
-  await until('the source to connect', () => core.status().v > 0);
+  // `connect` resolves on a microtask; the header it writes is the first
+  // keyframe. With no edges nothing has bound a consumer yet, so nothing has
+  // connected the source either — that test connects it itself.
+  if (edges.length > 0) await until('the source to connect', () => core.status().v > 0);
   return { user, core, screen, asks, sync };
 }
 
@@ -235,6 +238,45 @@ test('watch-matched fires only its own edge, and a disabled edge drops its consu
   saveGraph(user, { edges: [watchEdge({ enabled: false })] });
   sync();
   assert.deepEqual(rows(), [], 'a disabled edge and a deleted one both drop their consumer');
+});
+
+/** A consumer with a delivery nobody acknowledged and no listener bound: what a
+ *  restart leaves behind. Nothing is synced yet, so nothing is listening. */
+async function stranded(t: TestContext, email: string, regex: string, hit: string) {
+  const state = await setup(t, email, []);
+  state.core.consumer('edge-w1', 'edge'); // the first read is what connects the source
+  await until('the source to connect', () => state.core.status().v > 0);
+  await state.core.watch('edge-w1', { add: [parseWatchSpec({ regex, triage: false })] });
+  state.screen.paint([hit]);
+  await until('the delivery to stand unacknowledged', () => delivered(state.core, 'edge-w1') !== null);
+  return state;
+}
+
+test('an outstanding delivery fires when the edge still carries the spec that made it', async (t) => {
+  const { user, core, asks, sync } = await stranded(t, 'lens-ly-stale-same@t.dev', 'error', 'error TS2345: nope');
+  saveGraph(user, { edges: [watchEdge()] }); // the same spec: regex 'error'
+  sync();
+  await until('the hit nobody filed to fire', () => asks.length === 1);
+  assert.match(asks[0]!, /error TS2345/);
+  assert.equal(delivered(core, 'edge-w1'), null, 'and the firing acknowledged it');
+});
+
+test('an outstanding delivery from an edited edge is acknowledged, never fired', async (t) => {
+  const { user, core, screen, asks, sync } = await stranded(t, 'lens-ly-stale-edit@t.dev', 'error', 'error TS2345: nope');
+  // Edited while nobody was listening: the delivery answers a question nobody is
+  // asking any more.
+  saveGraph(user, {
+    edges: [watchEdge({ source: { ward: 'ln1', trigger: 'watch-matched', params: { for: 'a deploy', regex: 'deployed' } } })],
+  });
+  sync();
+  await until('the stale delivery to be acknowledged', () => delivered(core, 'edge-w1') === null);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(asks.length, 0, 'the old spec never fires the new edge');
+
+  // And the consumer is free, not wedged: the next hit under the new spec fires.
+  screen.paint(['deployed to production']);
+  await until('the next hit to fire', () => asks.length === 1);
+  assert.match(asks[0]!, /deployed to production/);
 });
 
 test('scene events coalesce into one lens refresh', async (t) => {

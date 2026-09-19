@@ -30,14 +30,27 @@ export function lensWard(userId: number, ward: unknown): WardInstance | null {
 }
 
 /** The gate knobs are the Screen lens ward's (wards.ts clamps them); with no
- *  such ward the core's own defaults stand. Read per settle, so a layout save
- *  takes effect without rebuilding anything. */
+ *  such ward the core's own defaults stand.
+ *
+ *  The core asks per dirty rectangle, which is per captured frame, so the answer
+ *  is memoised: reading it is a row read, a JSON parse and a whole
+ *  `validateLayout`, and a scrolling window must not pay that at frame rate.
+ *  ponytail: a one-second memo rather than an invalidation pushed from
+ *  `saveDashboard` — `dashboards.updated_at` has one-second resolution anyway,
+ *  so this is the same freshness for none of the wiring. */
+const KNOBS_TTL_MS = 1000;
+let knobs: { user: number; at: number; value: LensSettings } | null = null;
+
 const screenSettings = (user: number) => (): LensSettings => {
+  const now = Date.now();
+  if (knobs && knobs.user === user && now - knobs.at < KNOBS_TTL_MS) return knobs.value;
   const cfg = lensWardConfig(user);
-  return {
+  const value: LensSettings = {
     settleMs: typeof cfg?.settleMs === 'number' ? cfg.settleMs : LENS_SETTINGS.settleMs,
     minLines: typeof cfg?.minLines === 'number' ? cfg.minLines : LENS_SETTINGS.minLines,
   };
+  knobs = { user, at: now, value };
+  return value;
 };
 
 function lensWardConfig(user: number): { settleMs?: unknown; minLines?: unknown } | undefined {

@@ -380,10 +380,11 @@ test('describe frames the question as an observation and reports a stale epoch',
   assert.deepEqual(await describe(h.core, { rect: [0, 0, 200, 100] }, h.desktop), { error: 'standalone' });
 });
 
-test('an ax-window restates the window header: a retitle changes it, a move only moves it', async () => {
+test('an ax-window move moves the field, and a ticking title delivers nothing on its own', async () => {
   const h = harness();
   await primed(h, 'c');
   const before = h.core.doc().v;
+  const sent = h.sent('c').length;
 
   // A move alone: the value is the same, so nothing is delivered and no version
   // is made — only where the field sits changes (BlackIce's `moved`).
@@ -393,17 +394,66 @@ test('an ax-window restates the window header: a retitle changes it, a move only
   assert.equal(h.core.doc().v, before, 'a move is not a change anyone reads');
   assert.deepEqual(h.core.doc().meta.window?.bounds, [200, 92, 656, 422]);
 
-  // A retitle: the header is rewritten from the `window` signal it belongs to,
-  // so the id and the display survive.
-  h.inject(sig(11, { kind: 'ax-window', title: 'main.rs — edited', bounds: [200, 92, 656, 422] }));
-  await h.tick();
-  assert.equal(h.core.doc().meta.window?.value, '5375 "main.rs — edited" display=1 1800x1169 @2');
-  const last = h.sent('c').at(-1) as Delivery;
-  assert.match(last.text, /window=5375 "main\.rs — edited"/);
+  // A title that ticks — an unread count, a call timer — is a settled delta,
+  // which a consumer with no watch never receives. It must never keyframe.
+  for (let n = 1; n <= 5; n++) {
+    h.inject(sig(10 + n, { kind: 'ax-window', title: `(${n}) Inbox`, bounds: [200, 92, 656, 422] }));
+    h.clock.advance(750);
+    await h.tick();
+  }
+  assert.equal(h.sent('c').length, sent, 'five retitles, no deliveries');
+  assert.equal(h.core.doc().meta.title?.value, '"(5) Inbox"', 'the head shows the new title');
+  assert.equal(
+    h.core.doc().meta.window?.value,
+    '5375 "main.rs" display=1 1800x1169 @2',
+    'the window field is still the window signal\'s own'
+  );
 
   // An older read never overwrites the newer title.
   h.inject(sig(9, { kind: 'ax-window', title: 'main.rs', bounds: [195, 92, 656, 422] }));
-  assert.equal(h.core.doc().meta.window?.value, '5375 "main.rs — edited" display=1 1800x1169 @2');
+  assert.equal(h.core.doc().meta.title?.value, '"(5) Inbox"');
+
+  // A real window switch is still a keyframe, and takes the title with it.
+  h.inject(windowSig(20, 'lib.rs'));
+  await h.tick();
+  assert.equal(h.sent('c').at(-1)?.kind, 'key');
+  assert.equal(h.core.doc().meta.title, undefined);
+  assert.equal(h.core.doc().meta.window?.value, '5375 "lib.rs" display=1 1800x1169 @2');
+});
+
+test('a snapshot that lands after the window changed is discarded whole', async () => {
+  const h = harness();
+  h.reply('lens-snapshot', {
+    epoch: 4,
+    seq: 80,
+    app: { bundle: 'com.apple.Safari', name: 'Safari', pid: 7 },
+    window: { id: 9, title: 'Docs', bounds: [0, 0, 800, 600], url: null, display: DISPLAY },
+    focus: null,
+    sheet: null,
+    axText: [wire('the window that was', 20)],
+    ocr: [],
+    latest: { ref: 'f-4-79', geometry: GEOMETRY },
+    live: [[0, 0, 10, 10]],
+  });
+
+  // The reply is in flight when the user switches windows: it describes a window
+  // nobody is looking at, so none of it lands — not its lines, not its live
+  // rectangles, and not the frame a crop would otherwise read.
+  h.core.consumer('c');
+  h.inject(app(1, 'com.apple.Mail', 5));
+  h.inject(axText(2, [wire('the window that is', 10)], 5));
+  await h.tick();
+
+  const doc = h.core.doc();
+  assert.equal(doc.epoch, 5);
+  assert.deepEqual(doc.lines.map((l) => l.text), ['the window that is']);
+  assert.deepEqual(doc.live, []);
+  assert.equal(doc.ref, null);
+  // Nor did its frame become the newest one: a crop never asks for `f-4-79`
+  // (`latest` is process state — one screen per process — so this is asserted
+  // on what was asked for, not on the read failing).
+  await crop(h.core, { rect: [0, 0, 10, 10] }, h.desktop);
+  assert.notEqual((h.calls.at(-1)?.value as { ref?: string } | undefined)?.ref, 'f-4-79');
 });
 
 test('a lens started again comes live on the same core and re-reads the screen', async () => {

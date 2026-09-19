@@ -210,18 +210,20 @@ function syncScreenChanged(user: number, edges: ScreenEdge[]): void {
   const held: Bound = { source: 'screen:local', off, screen: edges };
   bound.set(key, held);
   core.consumer('leylines', 'edge');
-  clearStale(core, 'leylines', (d) => fireScreen(user, core, held, d));
+  clearStale(core, 'leylines', true);
 }
 
 /** A delivery a previous process never acknowledged stalls the consumer for
- *  good — nothing else is ever rendered for it. It is not dropped: `look`
- *  re-renders it from the same cursor, so the change it carries fires now and
- *  the firing acknowledges it. */
-function clearStale(core: LensCore, consumer: string, fire: (d: Delivery) => void): void {
+ *  good — nothing else is ever rendered for it. `refire`: `look` re-renders it
+ *  from the same cursor, and that re-render reaches the listener bound just
+ *  above, which fires it and acknowledges it (so nothing fires it here — that
+ *  would file the same change twice). Otherwise it is only acknowledged. */
+function clearStale(core: LensCore, consumer: string, refire: boolean): void {
   try {
-    if (!core.status().consumers.find((c) => c.id === consumer)?.delivered) return;
-    const out = core.look(consumer, { fields: [] });
-    if (out.delivery) fire(out.delivery);
+    const held = core.status().consumers.find((c) => c.id === consumer)?.delivered;
+    if (!held) return;
+    if (refire) core.look(consumer, { fields: [] });
+    else core.look(consumer, { ack: held, fields: [], offer: false });
   } catch {
     /* nothing outstanding */
   }
@@ -245,7 +247,13 @@ function syncWatch(user: number, consumer: string, edge: LogicEdge, source: stri
   if (entry.specKey === specKey) return;
   entry.specKey = specKey;
   const held = core.consumer(consumer, 'edge');
-  clearStale(core, consumer, (d) => fireWatch(user, core, consumer, entry, d));
+  // An outstanding delivery was rendered under the spec the LAST process
+  // installed. If that is still this edge's spec, it is a hit nobody filed and
+  // it fires now; if the edge has been edited since, the delivery answers a
+  // question nobody is asking any more, so it is acknowledged and not fired —
+  // the consumer would otherwise stall on it for good.
+  const unchanged = held.watches.length === 1 && JSON.stringify(held.watches[0]!.spec) === specKey;
+  clearStale(core, consumer, unchanged);
   void core.watch(consumer, { add: [spec], remove: held.watches.map((w) => w.id) }).catch(() => {
     const again = bound.get(key);
     if (again) again.specKey = undefined; // re-install on the next tick
