@@ -675,6 +675,23 @@ export class LensCore {
     return consumer;
   }
 
+  /** Take the document as it stands as this consumer's starting point, without
+   *  delivering it: its next delivery is a delta of what changes AFTER this,
+   *  not a keyframe of everything that was already there. A reader that shows
+   *  the document itself (a monitor's connect baseline) seeds its cursor here,
+   *  so the first change it is told about is the change. A consumer that has
+   *  read anything, or is holding a delivery, is left exactly as it is —
+   *  seeding it would move its cursor past what it has not seen. */
+  seed(id: string): void {
+    const consumer = this.consumer(id);
+    if (consumer.cursor !== null || consumer.delivered !== null) return;
+    const doc = this.#frozen();
+    consumer.cursor = doc.v;
+    consumer.baseline = { v: doc.v, complete: true };
+    consumer.deltas = 0;
+    this.#store.saveConsumer(consumer);
+  }
+
   deleteConsumer(id: string): void {
     const doc = this.#doc.current();
     this.#resolve(id, { cancelled: true, v: doc.v, epoch: doc.epoch });

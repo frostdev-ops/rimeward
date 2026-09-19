@@ -21,7 +21,7 @@ import { crop, describe, lookFrame, text } from './screen.ts';
 import type { Delivery, Line, MetaField, Rect, Region } from './types.ts';
 import { OBSERVATION_BANNER } from './types.ts';
 import { parseWatchSpec } from './gate.ts';
-import { escapedLength } from './events.ts';
+import { lineCost } from './events.ts';
 import { getDashboard } from '../dashboard.ts';
 
 /** CLAUDE.md: tool results are capped at 12,000 serialised chars. */
@@ -133,7 +133,9 @@ function lookResult(
   receipt: Record<string, unknown>,
   o: { cap?: number; escaped?: boolean } = {}
 ): LensResult {
-  const charge = (line: string): number => (o.escaped ? escapedLength(line) : line.length);
+  // Every line carries the newline that joins it to the one before, at the
+  // width it serialises to (events.ts `lineCost`).
+  const charge = (line: string): number => lineCost(line, o.escaped === true);
   const tail = (n: number): string => `… ${n} lines omitted; read them with lens_wait or lens_text {rect}`;
   const head: string[] = [`v=${out.v} epoch=${out.epoch}${out.incomplete ? ' incomplete' : ''}`];
   for (const [key, field] of Object.entries(out.meta ?? {})) {
@@ -153,18 +155,18 @@ function lookResult(
         ...(out.live ?? []).map((r) => `live ${box(r)}`),
       ];
 
-  const reserve = JSON.stringify({ ...receipt, truncated: true }).length + charge(tail(head.length + scene.length)) + 1;
+  const reserve = JSON.stringify({ ...receipt, truncated: true }).length + charge(tail(head.length + scene.length));
   const fixed = [OBSERVATION_BANNER, ...delivery];
   // With a delivery in hand the budget is the whole result cap: the delivery
   // already fits its own, and the head is extra rather than taken from it.
   let room = (delivery.length > 0 ? RESULT_CAP : (o.cap ?? RESULT_CAP)) - reserve
-    - fixed.reduce((n, l) => n + 1 + charge(l), 0);
+    - fixed.reduce((n, l) => n + charge(l), 0);
   const keep = (candidates: string[]): string[] => {
     const kept: string[] = [];
     for (const line of candidates) {
-      if (1 + charge(line) > room) break;
+      if (charge(line) > room) break;
       kept.push(line);
-      room -= 1 + charge(line);
+      room -= charge(line);
     }
     return kept;
   };
@@ -195,7 +197,7 @@ function json(
 ): LensResult {
   const out = { ...value };
   const head = o.banner ? `${OBSERVATION_BANNER}\n` : '';
-  const charge = (body: string): number => (o.escaped ? escapedLength(body) : body.length);
+  const charge = (body: string): number => lineCost(body, o.escaped === true);
   const receipt = (): Record<string, unknown> => (o.summary ? o.summary(out) : out);
   const size = (): number => charge(head + JSON.stringify(out)) + JSON.stringify(receipt()).length;
   const list = o.list === undefined ? null : (out[o.list] as unknown[] | undefined);

@@ -33,14 +33,17 @@ export const KEY_AFTER_DELTAS = 20;
  *  receipt, and the lifted fixtures are recorded against that. */
 export const deliveryCap = (kind: ConsumerKind): number => (kind === 'conv' ? AGENT_DELIVERY_CAP : DELIVERY_CAP);
 
-/** What one line costs against a delivery cap. Inside a JSON string every
- *  quote, backslash and newline becomes two characters, and a line of Windows
- *  paths or quoted output can be half as long again — enough for a page
- *  budgeted raw to blow the agent's output cap and be dropped whole. The `- 2`
+/** What one line costs against a delivery cap, INCLUDING the newline that
+ *  joins it to the line before. Inside a JSON string every quote, backslash and
+ *  newline becomes two characters, and a line of Windows paths or quoted output
+ *  can be half as long again — enough for a page budgeted raw to blow the
+ *  agent's output cap and be dropped whole. The separator counts too: `\n` is
+ *  one character in the text and two in the field the model reads. The `- 2`
  *  drops the quotes JSON.stringify puts around the value. */
 export const escapedLength = (line: string): number => JSON.stringify(line).length - 2;
-export const cost = (line: string, kind: ConsumerKind): number =>
-  kind === 'conv' ? escapedLength(line) : line.length;
+export const lineCost = (line: string, escaped: boolean): number =>
+  escaped ? escapedLength(line) + 2 : line.length + 1;
+export const cost = (line: string, kind: ConsumerKind): number => lineCost(line, kind === 'conv');
 /** Header values are cut HERE and nowhere else: the gate reads them whole. */
 const META_VALUE_CAP = 120;
 const ID_DIGIT_RESERVE = 12; // widest delivery counter the header budget allows for
@@ -107,18 +110,18 @@ function headerReserve(consumer: Consumer, doc: Doc, pages: number): number {
 }
 
 function pack(meta: string[], body: string[], reserve: number, cap: number, kind: ConsumerKind): string[][] {
-  const base = cost(OBSERVATION_BANNER, kind) + 1 + reserve; // banner \n header
+  const base = cost(OBSERVATION_BANNER, kind) + reserve; // banner \n header, separators included
   const out: string[][] = [];
   let cur: string[] = [...meta]; // page 1 carries the metadata block
-  let used = base + cur.reduce((n, l) => n + 1 + cost(l, kind), 0);
+  let used = base + cur.reduce((n, l) => n + cost(l, kind), 0);
   for (const line of body) {
-    if (cur.length > 0 && used + 1 + cost(line, kind) > cap) {
+    if (cur.length > 0 && used + cost(line, kind) > cap) {
       out.push(cur);
       cur = [];
       used = base;
     }
     cur.push(line);
-    used += 1 + cost(line, kind);
+    used += cost(line, kind);
   }
   out.push(cur);
   return out;
@@ -176,17 +179,17 @@ export function renderDelta(
   const cap = deliveryCap(consumer.kind);
   const charge = (line: string): number => cost(line, consumer.kind);
   const full = [...head, ...body].join('\n');
-  if ([...head, ...body].reduce((n, l) => n + 1 + charge(l), -1) <= cap) {
+  if ([...head, ...body].reduce((n, l) => n + charge(l), 0) <= cap) {
     return { text: full, kind: 'delta', page: 1, pages: 1, truncated: false, omitted: 0, since: since.v };
   }
   // Never slice a line: keep whole lines while the omission receipt still fits.
-  const tail = 1 + charge(omittedTail(body.length)); // widest tail, so the real one always fits
-  let used = head.reduce((n, l) => n + 1 + charge(l), -1);
+  const tail = charge(omittedTail(body.length)); // widest tail, so the real one always fits
+  let used = head.reduce((n, l) => n + charge(l), 0);
   const kept: string[] = [];
   for (const line of body) {
-    if (used + 1 + charge(line) + tail > cap) break;
+    if (used + charge(line) + tail > cap) break;
     kept.push(line);
-    used += 1 + charge(line);
+    used += charge(line);
   }
   const omitted = body.length - kept.length;
   const text = [...head, ...kept, omittedTail(omitted)].join('\n');

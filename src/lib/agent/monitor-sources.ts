@@ -98,6 +98,11 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
     // from claiming the outstanding delivery as a side effect — that re-offer is the
     // explicit one below, after the listener exists.
     const view = core.look(consumer,{ fields:['meta','text'],offer:false });
+    // The baseline IS this consumer's starting point, so its cursor starts there
+    // too: the first delivery after a connect is then a delta of what changed,
+    // not a keyframe of the document the baseline just carried. A consumer that
+    // has read before keeps its own cursor.
+    core.seed(consumer);
     const head = Object.entries(view.meta ?? {}).map(([key,field]) => `${key}=${field.value}`);
     const text = [OBSERVATION_BANNER,...head,...(view.lines ?? []).map(line => line.text)].join('\n').slice(0,DELIVERY_CAP);
     emit(`baseline:${randomUUID()}`,{ eventType:'baseline',text,v:view.v,epoch:view.epoch,source },true);

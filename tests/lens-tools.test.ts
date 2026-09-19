@@ -340,3 +340,47 @@ test('a full document fits the agent output cap, page by page, and never liveloc
   assert.ok(serialized(after) <= 12_000, `the delivery after it serialised to ${serialized(after)}`);
   assert.notEqual(after.delivery, delta.delivery);
 });
+
+test('short rows pay for their newlines: a look beside a truncated delta still fits', async (t) => {
+  const user = createUser('lens-tools-newline@example.com', 'pw-lens-tools-6');
+  saveDashboard(user, validateLayout([{ i: 'ag1', type: 'agent', size: '2x2', config: { provider: 'codex' } }])!);
+  const conversation = activeConversation(user, 'ag1', 'codex');
+  const ctx = { userId: user, ward: 'agent:ag1', conv: conversation.id } as ToolCtx;
+
+  const fixture = terminalFixture(() => Date.now());
+  const real = SOURCES.terminal;
+  SOURCES.terminal = (): Source => terminalSource(fixture.deps);
+  const source = 'terminal:s1';
+  t.after(() => {
+    releaseLens(user, source);
+    SOURCES.terminal = real;
+  });
+  // The shortest rows that still have distinct identities: the more lines a
+  // result holds, the more newlines it carries, and a newline is two characters
+  // inside the JSON string the model reads it as.
+  const rows = Array.from({ length: 400 }, (_, i) => `a${i}`);
+  fixture.inject({ rows, seq: 1 });
+  lens(user, source, (): LensSettings => ({ settleMs: 0, minLines: 1 }));
+
+  const run = (name: 'lens_look' | 'lens_wait', args: Record<string, unknown> = {}) =>
+    lensToolRun(name, { source, ...args }, ctx) as Promise<Record<string, any>>;
+  const serialized = (out: unknown) => JSON.stringify(out).length;
+
+  const key = await run('lens_wait', { timeout_s: 5 });
+  let ack = String(key.delivery);
+  for (let n = 2; n <= Number(String(key.page ?? '1/1').split('/')[1]); n++) {
+    ack = String((await run('lens_wait', { ack, timeout_s: 5 })).delivery);
+  }
+  // A change big enough to cut, left unacknowledged.
+  const waiting = run('lens_wait', { ack, timeout_s: 5 });
+  setTimeout(() => fixture.inject({ rows: [...rows, ...Array.from({ length: 400 }, (_, i) => `b${i}`)], seq: 2 }), 10);
+  const delta = await waiting;
+  assert.equal(delta.kind, 'delta');
+  assert.equal(delta.truncated, true);
+  assert.ok(serialized(delta) <= 12_000, `the delta serialised to ${serialized(delta)}`);
+
+  // The look that re-offers it also carries the header and as much of the
+  // document as fits — every line of it charged for its newline.
+  const look = await run('lens_look');
+  assert.ok(serialized(look) <= 12_000, `the look serialised to ${serialized(look)}`);
+});

@@ -177,17 +177,19 @@ test('a monitor consumes lens deliveries: baseline, delta, notice, ack, delete',
     'the connect baseline is not a delivery'
   );
 
-  // The first delivery is the whole document: a keyframe, which the monitor records
-  // as a baseline and acknowledges without matching anything.
+  // That baseline seeded the consumer's cursor too, so the first delivery is a
+  // DELTA of what changed after it — not a keyframe of the document it just carried.
+  const seeded = consumerRow(user, sourceId, consumer)!.cursor;
+  assert.ok(seeded > 0, 'the connect baseline seeds the cursor');
   terminal.paint(['ready', 'hello world']);
-  await until('the baseline keyframe to be acknowledged', () => {
+  await until('the first delivery to be acknowledged', () => {
     const row = consumerRow(user, sourceId, consumer);
-    return !!row && row.delivered_id === null && row.cursor > 0;
+    return !!row && row.delivered_id === null && row.cursor > seeded;
   });
   const first = db()
     .prepare('SELECT * FROM lens_events WHERE user_id=? AND source=? AND consumer_id=? ORDER BY id LIMIT 1')
     .get(user, sourceId, consumer) as { since: number | null } | undefined;
-  assert.equal(first?.since, null, 'the first delivery is a keyframe');
+  assert.equal(first?.since, seeded, 'the first delivery is a delta from the seeded cursor');
   assert.deepEqual(pending(monitor), []);
   const afterBaseline = consumerRow(user, sourceId, consumer)!.cursor;
 
@@ -296,7 +298,7 @@ test('a keyframe forced by an evicted cursor is an observation, not a swallowed 
   assert.ok(payload.text.includes('error: build failed'), payload.text.slice(0, 200));
 });
 
-test("a watch's first hit wakes the ward even though it arrives as a keyframe", async (t) => {
+test("a watch's first hit wakes the ward, as a delta from the connect baseline", async (t) => {
   const monitor = 'monitor:cccccccc-dddd-eeee-ffff-000000000000';
   // `regex` needs no embedder, so the gate can evaluate it on any machine.
   const { user, sourceId, consumer, terminal } = await setup(
@@ -315,11 +317,14 @@ test("a watch's first hit wakes the ward even though it arrives as a keyframe", 
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.deepEqual(pending(monitor), []);
 
-  // The first thing this consumer is ever handed is a keyframe (it has
-  // acknowledged nothing), and it is the hit itself.
+  // The first thing this consumer is ever handed is the hit itself, and because
+  // the connect baseline seeded its cursor it is a delta of exactly that row.
   terminal.paint(['$ npm run build', 'compiling…', 'error: build failed']);
   await until('the first hit to be recorded', () => pending(monitor).length === 1);
   const payload = JSON.parse(pending(monitor)[0]!.payload) as { eventType: string; text: string };
-  assert.equal(payload.eventType, 'key');
+  assert.equal(payload.eventType, 'delta');
+  // Everything since the baseline, and nothing the baseline already carried.
+  assert.ok(payload.text.includes('compiling…'));
+  assert.ok(!payload.text.includes('$ npm run build'), 'not the document the baseline already carried');
   assert.ok(payload.text.includes('error: build failed'), payload.text.slice(0, 200));
 });
