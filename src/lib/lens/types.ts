@@ -157,3 +157,37 @@ export const DELIVERY_CAP = 11_800; // chars per delivery text (tool results are
  *  escaping instead of discovering it as an omitted page that renders again. */
 export const AGENT_DELIVERY_CAP = 9_000;
 export const VERSION_RING = 32;
+
+/** Why the screen lens is not reading, in the words the person needs. The
+ *  native side answers in its own vocabulary — a `status` signal's `reason`, a
+ *  `lens-start` refusal, a macOS error string `build_capture` handed to
+ *  `stop()` — and EVERY door shows what comes out of here: the tools, the ward
+ *  card, a monitor, the Mac permissions row. It lives in this module because it
+ *  is the one that ships to the browser.
+ *
+ *  Nothing ever travels bare: an unmapped reason keeps its own words, but
+ *  inside a sentence, because "permission" alone told the user nothing. */
+export function screenOffline(reason: string): string {
+  switch (reason) {
+    case 'not-consented':
+      return 'the Screen lens is turned off for this Mac';
+    case 'permission':
+      return 'macOS has not granted Screen Recording to Rimeward';
+    // `unsupported` is the off-macOS stub; `unavailable` is a runtime with no
+    // lens to ask at all.
+    case 'unsupported':
+    case 'unavailable':
+      return 'this computer’s lens cannot run here';
+    // The capture stream went down and could not be rebuilt (lens/capture.rs),
+    // or the display it was running on changed under it.
+    case 'stream':
+    case 'display-changed':
+      return 'the screen lens lost its capture of this Mac’s screen';
+    // Stopped with nothing said, which is also what an absent reason means.
+    case '':
+    case 'stopped':
+      return 'the screen lens is not running on this computer';
+    default:
+      return `the screen lens stopped on this computer (${reason})`;
+  }
+}

@@ -17,8 +17,9 @@ import { captionsFor } from '../src/lib/lens/captions.ts';
 import { SOURCES, lens, releaseLens, systemClock } from '../src/lib/lens/core.ts';
 import type { Feed, LensSettings, Source } from '../src/lib/lens/core.ts';
 import { terminalSource } from '../src/lib/lens/terminal.ts';
-import { screenOffline } from '../src/lib/lens/screen.ts';
+import { screenOffline } from '../src/lib/lens/types.ts';
 import { lensSettings } from '../src/lib/lens/settings.ts';
+import { setLensPaused } from '../src/lib/lens/runtime.ts';
 import { OBSERVATION_BANNER } from '../src/lib/lens/types.ts';
 import type { ToolCtx } from '../src/lib/agent/tools.ts';
 import { terminalFixture } from './lens-replay.ts';
@@ -480,6 +481,7 @@ test('an offline screen source answers every tool with the reason, never the sym
   });
 
   const ctx = { userId: user, ward: 'agent:ag1', conv: 9 } as ToolCtx;
+  const core = lens(user, source)!;
   const run = (name: Parameters<typeof lensToolRun>[0], args: Record<string, unknown> = {}) =>
     lensToolRun(name, { source, ...args }, ctx) as Promise<Record<string, any>>;
 
@@ -508,9 +510,14 @@ test('an offline screen source answers every tool with the reason, never the sym
   // Everything that needs the source to be READING refuses with the reason,
   // never with `frame-evicted` or `no-target`.
   const args = { rect: [0, 0, 10, 10], id: 'x', kind: 'card', anchor: { corner: 'tl' }, on: true };
-  for (const name of ['lens_crop', 'lens_describe', 'overlay_show', 'overlay_clear', 'lens_captions'] as const) {
+  for (const name of ['lens_crop', 'lens_describe', 'overlay_show', 'lens_captions'] as const) {
     await assert.rejects(() => run(name, args), new RegExp(`^Error: ${name} is unavailable: ${REASON}$`), name);
   }
+  // overlay_clear is the exception: stopping the lens leaves the overlay pool
+  // alone, so a card drawn before consent was withdrawn is still on screen and
+  // refusing here would strand it there for its whole ttl.
+  captionsFor(core, { clock: systemClock, settings: () => ({ caption_from: null, caption_to: null }), desktop: async () => true });
+  assert.equal((await run('overlay_clear')).cleared, 'all');
   // A refused `lens_captions {on:true}` stores nothing: the pair would otherwise
   // outlive a call that never drew anything.
   await assert.rejects(() => run('lens_captions', { on: true, from: 'en', to: 'es' }), /lens_captions is unavailable/);
@@ -523,4 +530,49 @@ test('an offline screen source answers every tool with the reason, never the sym
   // Consent given back brings the same core live, and the tools stop saying it.
   (feed as Feed).online();
   assert.equal((await run('lens_look')).offline, undefined);
+});
+
+test('a paused lens says so in every receipt, and a wait returns at once instead of parking', async (t) => {
+  const user = createUser('lens-tools-paused@example.com', 'pw-lens-tools-7');
+  const source = 'screen:local';
+  const real = SOURCES.screen;
+  const realTerminal = SOURCES.terminal;
+  const idle = (): Source => ({ async connect(_u: number, _t: string, _f: Feed) { return () => {}; } });
+  SOURCES.screen = idle;
+  SOURCES.terminal = idle;
+  t.after(() => {
+    setLensPaused(user, false);
+    releaseLens(user, source);
+    releaseLens(user, 'terminal:s9');
+    if (real) SOURCES.screen = real; else delete SOURCES.screen;
+    if (realTerminal) SOURCES.terminal = realTerminal; else delete SOURCES.terminal;
+  });
+
+  const ctx = { userId: user, ward: 'agent:ag1', conv: 11 } as ToolCtx;
+  const run = (name: Parameters<typeof lensToolRun>[0], args: Record<string, unknown> = {}) =>
+    lensToolRun(name, { source, ...args }, ctx) as Promise<Record<string, any>>;
+
+  assert.equal((await run('lens_look')).paused, undefined, 'a running lens says nothing about pause');
+  setLensPaused(user, true);
+  for (const name of ['lens_look', 'lens_text', 'lens_history'] as const) {
+    assert.equal((await run(name)).paused, true, name);
+  }
+
+  // Nothing will arrive until the user resumes, so the wait says so now rather
+  // than five minutes from now.
+  const started = Date.now();
+  const quiet = await run('lens_wait', { timeout_s: 300 });
+  assert.equal(quiet.timeout, true);
+  assert.equal(quiet.paused, true);
+  assert.ok(Date.now() - started < 2000, 'a paused wait does not park');
+  // Paused is not offline: the lens is consented to, granted and still bound.
+  assert.equal(quiet.offline, undefined);
+
+  // Pause is the SCREEN's, not every source's: a terminal on this runtime is
+  // unaffected by it.
+  const terminal = await lensToolRun('lens_look', { source: 'terminal:s9' }, ctx) as Record<string, any>;
+  assert.equal(terminal.paused, undefined);
+
+  setLensPaused(user, false);
+  assert.equal((await run('lens_wait', { timeout_s: 1 })).paused, undefined);
 });

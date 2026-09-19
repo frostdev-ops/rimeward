@@ -15,6 +15,7 @@
 import { SOURCES } from './core.ts';
 import type { Feed, LensCore, Source, SourceSnapshot } from './core.ts';
 import type { Draft } from './doc.ts';
+import { screenOffline } from './types.ts';
 import type { Line, MetaField, Rect } from './types.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { nativeDesktop } from '../dev/remote.ts';
@@ -103,26 +104,6 @@ const focusValue = (body: { role?: unknown; label?: unknown; value?: unknown }):
   `${str(body.role)} ${q(str(body.label))} value=${q(str(body.value))}`;
 
 // ------------------------------------------------------- what the lens is doing
-
-/** Why the screen lens is not reading, in the words the person needs. The
- *  native side answers in its own vocabulary and EVERY door — the tools, the
- *  ward card, a monitor, a leyline — shows what comes out of here, so this is
- *  the one place those words are written. */
-export function screenOffline(reason: string): string {
-  switch (reason) {
-    case 'not-consented':
-      return 'the Screen lens is turned off for this Mac';
-    case 'permission':
-      return 'macOS has not granted Screen Recording to Rimeward';
-    case 'unsupported':
-      return 'this computer’s lens cannot run here';
-    // Stopped for no stated reason, which is also what an absent reason means.
-    case 'stopped':
-      return 'the screen lens is not running on this computer';
-    default:
-      return reason;
-  }
-}
 
 /** What a `lens-start` or `lens-status` reply says the lens is doing, or null
  *  when it is not a reply at all (the read threw, the app is gone). `offline` is

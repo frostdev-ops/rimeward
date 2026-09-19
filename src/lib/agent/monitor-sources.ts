@@ -14,7 +14,7 @@ import { isCommsType } from '../comms/types.ts';
 import { TRIGGERS, wardTypes } from '../logic.ts';
 // The CLI chrome grammar lives with the terminal lens source; this branch reads it unchanged.
 import { cliKey, stableKey, terminalContent } from '../lens/terminal.ts';
-import { SOURCES, lens, peekLens } from '../lens/core.ts';
+import { SOURCES, lens } from '../lens/core.ts';
 // Registers SOURCES.browser, the way the import above this one registers SOURCES.terminal.
 import '../lens/browser.ts';
 // The watch grammar is the lens's own (the tool schema in lens/tools.ts is the same fields).
@@ -64,13 +64,10 @@ export function validateMonitorSource(user:number,s:MonitorSource): void {
     case 'terminal': if (!isDesktop() || !s.target) throw Error('Terminal monitoring belongs on its desktop runtime.'); readSession(user,s.target,undefined,false); break;
     // One screen per runtime, and consent is runtime state rather than layout (plan D7):
     // what a screen monitor needs is the desktop and a registered screen source, never a
-    // Screen lens ward. A lens that is not reading says why, in its own words.
-    case 'screen': {
-      if (!isDesktop() || !SOURCES.screen) throw Error('Screen monitoring belongs on the desktop that runs the screen lens.');
-      const status = peekLens(user,'screen:local')?.status();
-      if (status?.state === 'offline') throw Error(`The screen lens is not reading: ${status.error}`);
-      break;
-    }
+    // Screen lens ward. A lens that is off is NOT invalid — validity is what `validMonitor`
+    // reads every second, and an invalid monitor is `blocked` with a generic message. Being
+    // off is a connect-time answer instead (below), which carries the reason and retries.
+    case 'screen': if (!isDesktop() || !SOURCES.screen) throw Error('Screen monitoring belongs on the desktop that runs the screen lens.'); break;
     case 'file': if (!isDesktop() || !s.project) throw Error('File monitoring requires an owned project on this desktop.'); projectPath(user,s.project,s.path ?? '',true); break;
     case 'browser': if (!ward || ward.type !== 'browser') throw Error('Browser ward not found.'); break;
     case 'agent': if ((!ward || ward.type !== 'agent') && !getDb().prepare("SELECT 1 FROM agent_jobs WHERE id=? AND user_id=? AND tool='spawn_agent'").get(s.target ?? '',user)) throw Error('Agent or child task not found.'); break;
@@ -98,6 +95,15 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
   const source = lensSourceId(s);
   const core = consumer ? lens(user,source) : null;
   if (core && consumer) {
+    // A source that is not reading has no baseline to give and no change to wait for.
+    // Its reason is the monitor's, and the caller's retry is what brings it back when
+    // consent, a grant or a capture returns.
+    const notReading = (): string | null => {
+      const st = core.status();
+      return st.state === 'offline' ? st.error ?? 'the lens is not reading this source' : null;
+    };
+    const already = notReading();
+    if (already !== null) { offline(already); return () => {}; }
     const held = core.consumer(consumer,'monitor');
     await core.watch(consumer,{ remove:held.watches.map(w => w.id),...(s.watch ? { add:[s.watch] } : {}),...(s.intervalSeconds === undefined ? {} : { minIntervalS:s.intervalSeconds }) });
     // One baseline per connect, and it is the ONLY baseline: taken before anything can
@@ -124,10 +130,10 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
       // exactly the observation the monitor was asked to watch for.
       emit(d.delivery,{ eventType:d.kind,text:d.text,v:d.v,epoch:d.epoch,delivery:d.delivery,source },false);
     });
-    // A source that stops reading says so with its reason (a withdrawn consent, a
-    // revoked grant): the monitor goes offline rather than waiting on a document
-    // that can never change again, and the caller's retry is what brings it back.
-    const offStatus = core.on('status',st => { if (st.state === 'offline') offline(st.error ?? 'the lens is not reading this source'); });
+    // And one that stops reading later says so the same way, rather than waiting on a
+    // document that can never change again. (The screen source learns it is off from a
+    // `lens-status` read that lands after this connect, so this is the usual path.)
+    const offStatus = core.on('status',() => { const reason = notReading(); if (reason !== null) offline(reason); });
     // A delivery this consumer never acknowledged is still its next one: hand it over
     // again now that the listener is there, after the baseline rather than before it.
     if (held.delivered) core.look(consumer,{ fields:[] });

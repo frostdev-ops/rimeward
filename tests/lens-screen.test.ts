@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { FakeClock } from './fake-clock.ts';
 import { LensCore } from '../src/lib/lens/core.ts';
 import type { LensSettings } from '../src/lib/lens/core.ts';
-import { crop, describe, nativeState, screenOffline, screenSource, text } from '../src/lib/lens/screen.ts';
+import { crop, describe, nativeState, screenSource, text } from '../src/lib/lens/screen.ts';
+import { screenOffline } from '../src/lib/lens/types.ts';
 import { sqliteStore } from '../src/lib/lens/store.ts';
 import type { Delivery, Rect } from '../src/lib/lens/types.ts';
 import { createUser } from '../src/lib/users.ts';
@@ -576,7 +577,18 @@ test('the native reasons are one vocabulary, read off the reply the app already 
   assert.equal(screenOffline('not-consented'), 'the Screen lens is turned off for this Mac');
   assert.equal(screenOffline('permission'), 'macOS has not granted Screen Recording to Rimeward');
   assert.equal(screenOffline('unsupported'), 'this computer’s lens cannot run here');
-  assert.equal(screenOffline('helper wedged'), 'helper wedged', 'anything else travels verbatim');
+  // A runtime with no lens to ask at all answers the same way.
+  assert.equal(screenOffline('unavailable'), 'this computer’s lens cannot run here');
+  // The capture stream went down (lens/capture.rs), or its display changed.
+  assert.equal(screenOffline('stream'), 'the screen lens lost its capture of this Mac’s screen');
+  assert.equal(screenOffline('display-changed'), 'the screen lens lost its capture of this Mac’s screen');
+  assert.equal(screenOffline(''), 'the screen lens is not running on this computer');
+  // A macOS error string `build_capture` handed to `stop()`: its own words, but
+  // never bare — every reason the user sees is a sentence.
+  assert.equal(
+    screenOffline('SCStreamErrorDomain error -3801'),
+    'the screen lens stopped on this computer (SCStreamErrorDomain error -3801)'
+  );
 
   // A running lens is not offline at all.
   assert.equal(nativeState({ state: 'running', permissions: { screen: true, ax: true }, consented: true })?.offline, null);

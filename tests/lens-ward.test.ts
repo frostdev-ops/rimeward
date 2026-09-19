@@ -68,7 +68,7 @@ test("the card's captions switch honours the ward's overlay knob like the tool d
 test('the card refuses captions when the lens is not reading, and stores no pair', async (t) => {
   const { POST } = await import('../src/pages/api/lens/[ward].ts');
   const { SOURCES, lens, releaseLens } = await import('../src/lib/lens/core.ts');
-  const { screenOffline } = await import('../src/lib/lens/screen.ts');
+  const { screenOffline } = await import('../src/lib/lens/types.ts');
   const { lensSettings } = await import('../src/lib/lens/settings.ts');
   const { createUser } = await import('../src/lib/users.ts');
   const { saveDashboard } = await import('../src/lib/dashboard.ts');

@@ -1,6 +1,8 @@
 import { el } from './dom.ts';
 import { prepareWorkspaceNavigation } from './workspace-dialogs.ts';
 import { readDesktopState, readDesktopCheckpoint, saveDesktopState } from './desktop-state.ts';
+// The lens' offline vocabulary, from the one pure lens module that ships to the browser.
+import { screenOffline } from '../../lib/lens/types.ts';
 
 type Permissions = { screen: boolean; input: boolean };
 const native = (window as unknown as { __TAURI__?: { core: { invoke<T>(command: string, args: unknown): Promise<T> } } }).__TAURI__?.core;
@@ -91,7 +93,9 @@ if (native && document.querySelector('meta[name="fd-mac-user"]')) {
         : data.screen
           ? `The screen lens is on${data.paused ? ', paused from its ward' : ''} (${data.state}).`
           : 'Waiting for Screen Recording. Choose Request access under Screen & System Audio Recording above, then recheck.';
-      if (data.consented && data.error) lensState.textContent += ` ${data.error}`;
+      // The app answers in its own vocabulary (`permission`, `stream`); the row
+      // shows what the lens tools and the ward card show.
+      if (data.consented && data.error) lensState.textContent += ` ${screenOffline(data.error)}`;
     };
     // A runtime without the lens (an ordinary server) answers 403: leave the row hidden.
     const refreshLens = () => lensConsent().then(showLens).catch(() => { lensRow.hidden = true; });

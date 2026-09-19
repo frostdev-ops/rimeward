@@ -60,3 +60,14 @@ export function setLensSettings(patch: Record<string, unknown>): LensSettings {
   }
   return lensSettings();
 }
+
+/** Pause is per user and per computer: the Screen lens keeps its consent and
+ *  its consumers, and simply stops capturing (lens/runtime.ts `setLensPaused`
+ *  is what tells the app). It lives here, beside the lens' other rows, so a
+ *  reader does not have to reach into the runtime to ask.
+ *  ponytail: one row per user rather than a column — there is one screen. */
+const pausedKey = (user: number): string => `lens:paused:${user}`;
+
+export const lensPaused = (user: number): boolean => getSetting(pausedKey(user)) === '1';
+
+export const setLensPausedRow = (user: number, paused: boolean): void => setSetting(pausedKey(user), paused ? '1' : '0');

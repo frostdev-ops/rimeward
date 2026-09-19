@@ -15,8 +15,12 @@ import { validateLayout } from '../src/lib/wards.ts';
 import { SOURCES, lens, releaseLens } from '../src/lib/lens/core.ts';
 import type { Feed, LensSettings, Source } from '../src/lib/lens/core.ts';
 import { OBSERVATION_BANNER } from '../src/lib/lens/types.ts';
-import { screenOffline } from '../src/lib/lens/screen.ts';
+import { screenOffline } from '../src/lib/lens/types.ts';
 import { connectMonitorSource, parseMonitorSource, validateMonitorSource } from '../src/lib/agent/monitor-sources.ts';
+import { getDb } from '../src/lib/db.ts';
+import { activeConversation } from '../src/lib/agent/conversations.ts';
+import { monitorRuntime, shutdownAgentMonitors, tickMonitors } from '../src/lib/agent/monitors.ts';
+import { parseMonitorFilter } from '../src/lib/agent/monitor-filter.ts';
 
 interface FakeScreen {
   source: Source;
@@ -125,20 +129,35 @@ test('a screen monitor needs the desktop that runs the lens, not a lens ward', (
   validateMonitorSource(bare, { type: 'screen' });
 });
 
-test('a screen monitor on a lens that is not reading is refused with the reason', async (t) => {
-  const { user } = setup(t, 'lens-monitor-offline@example.com');
-  // The core the tools and the ward read, taken offline the way the screen
-  // source takes it offline when `lens-start` answers `not-consented`.
+test('a lens that is not reading takes its monitor offline with the reason, and comes back', async (t) => {
+  const { user, screen } = setup(t, 'lens-monitor-offline@example.com');
+  const monitor = 'monitor:99999999-8888-7777-6666-555555555555';
+  const conversation = activeConversation(user, 'ag1', 'codex');
+  getDb().prepare("UPDATE agent_conversations SET task_id='task-lens-off' WHERE id=?").run(conversation.id);
+  getDb()
+    .prepare('INSERT INTO agent_monitors(id,user_id,ward,conversation_id,runtime,name,source,filter,status,min_interval_seconds,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+    .run(monitor, user, 'ag1', conversation.id, monitorRuntime(), 'screen', JSON.stringify({ type: 'screen' }),
+      JSON.stringify(parseMonitorFilter({ field: 'text', op: 'contains', value: 'error' })), 'watching', 1, Date.now());
+  t.after(() => shutdownAgentMonitors());
+
+  // The core the tools and the ward read, taken offline the way the screen source
+  // takes it offline when `lens-start` answers `not-consented`.
   const core = lens(user, 'screen:local')!;
   core.feed.offline(screenOffline('not-consented'));
-  assert.throws(
-    () => validateMonitorSource(user, { type: 'screen' }),
-    /The screen lens is not reading: the Screen lens is turned off for this Mac/
-  );
 
-  // Consent given back: the same core, and the monitor validates again.
-  core.feed.online();
+  // Being off is NOT invalid: an invalid monitor is `blocked` with a generic
+  // message every tick, and would never reach the reconnect that carries this.
   validateMonitorSource(user, { type: 'screen' });
+  await tickMonitors();
+  const off = getDb().prepare('SELECT status,error FROM agent_monitors WHERE id=?').get(monitor) as { status: string; error: string | null };
+  assert.equal(off.status, 'offline');
+  assert.equal(off.error, 'the Screen lens is turned off for this Mac');
+
+  // Consent given back: the retry window is 5 s, so this proves the row rather
+  // than the timer — the same core, live again, and a source that connects.
+  core.feed.online();
+  assert.equal(core.status().state, 'live');
+  assert.equal(screen.live(), false, 'nothing connected to a lens that was not reading');
 });
 
 test('a screen monitor reads screen:local: baseline, then a delivery its watch let through', async (t) => {

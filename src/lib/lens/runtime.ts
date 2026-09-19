@@ -7,12 +7,12 @@ import { LENS_SETTINGS, lens } from './core.ts';
 import type { Decider, LensSettings } from './core.ts';
 import { deciderFor, helperDecider } from './decider.ts';
 // Importing the module is what registers `SOURCES.screen` on a desktop.
-import { applyNativeState, nativeState, onHelperSignal, pushSignal, screenOffline } from './screen.ts';
-import { lensSetting, setLensSettings } from './settings.ts';
+import { applyNativeState, nativeState, onHelperSignal, pushSignal } from './screen.ts';
+import { screenOffline } from './types.ts';
+import { lensPaused, setLensPausedRow, lensSetting, setLensSettings } from './settings.ts';
 import { localOwner } from '../dev/native.ts';
 import { nativeDesktop } from '../dev/remote.ts';
 import { isDesktop } from '../dev/runtime.ts';
-import { getSetting, setSetting } from '../settings.ts';
 import { getDashboard } from '../dashboard.ts';
 import type { WardInstance } from '../wards.ts';
 
@@ -61,13 +61,13 @@ function lensWardConfig(user: number): { settleMs?: unknown; minLines?: unknown 
   }
 }
 
-const pausedKey = (user: number): string => `lens:paused:${user}`;
-
-export const lensPaused = (user: number): boolean => getSetting(pausedKey(user)) === '1';
+// The row itself lives with the lens' other settings (lens/settings.ts), where a
+// reader that is not the runtime — the tools' receipts — can ask for it.
+export { lensPaused };
 
 /** Pause stops the capture itself: no frames, no signals, so no deliveries. */
 export function setLensPaused(user: number, paused: boolean): void {
-  setSetting(pausedKey(user), paused ? '1' : '0');
+  setLensPausedRow(user, paused);
   if (isDesktop()) void nativeDesktop(paused ? 'lens-pause' : 'lens-resume').catch(() => {});
 }
 

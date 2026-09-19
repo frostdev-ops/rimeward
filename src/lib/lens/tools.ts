@@ -23,6 +23,7 @@ import { crop, describe, lookFrame, text } from './screen.ts';
 import type { Delivery, Line, MetaField, Rect, Region } from './types.ts';
 import { OBSERVATION_BANNER } from './types.ts';
 import { parseWatchSpec } from './gate.ts';
+import { lensPaused } from './settings.ts';
 import { lineCost } from './events.ts';
 import { getDashboard } from '../dashboard.ts';
 
@@ -255,6 +256,20 @@ function notLive(name: string, core: LensCore): LensResult | null {
   return reason === null ? null : fail(`${name} is unavailable: ${reason}`, { offline: reason });
 }
 
+/** The user's own hand on the Screen lens: it keeps its consent, its document
+ *  and every consumer, and simply captures nothing until they resume. Reported
+ *  BESIDE `offline`, never folded into it — a paused lens is not a broken one,
+ *  and the two are answered differently (a wait does not park on a pause). */
+const pausedNow = (opts?: LensToolOpts): boolean =>
+  opts?.user !== undefined && (opts.source === undefined || opts.source.startsWith('screen:')) && lensPaused(opts.user);
+
+/** What the source is doing, for a receipt: why it cannot read, or that the
+ *  user paused it. Every read carries this, so a result is never just empty. */
+const doing = (core: LensCore, opts?: LensToolOpts): Record<string, unknown> => ({
+  ...offline(core),
+  ...(pausedNow(opts) ? { paused: true } : {}),
+});
+
 /** A source this tool could never read, screen lens or not. */
 const notScreen = (name: string, opts?: LensToolOpts): LensResult | null =>
   opts?.source !== undefined && !opts.source.startsWith('screen:')
@@ -315,7 +330,7 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
         ...(typeof args.ack === 'string' ? { ack: args.ack } : {}),
         ...(Array.isArray(args.fields) ? { fields: args.fields as string[] } : {}),
       });
-      const receipt: Record<string, unknown> = { v: out.v, epoch: out.epoch, incomplete: out.incomplete, ...offline(core) };
+      const receipt: Record<string, unknown> = { v: out.v, epoch: out.epoch, incomplete: out.incomplete, ...doing(core, opts) };
       if (out.delivery) Object.assign(receipt, receiptOf(out.delivery));
       let image: LensResult['image'];
       if (args.frame === true && notScreen('lens_look {frame}', opts) === null) {
@@ -357,12 +372,15 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
     call: async (core, consumer, args, opts) => {
       const out = await core.wait(consumer, {
         ...(typeof args.ack === 'string' ? { ack: args.ack } : {}),
-        timeoutMs: clamp(args.timeout_s, 1, 300, 30) * 1000,
+        // A paused lens captures nothing, so parking for the full timeout would
+        // only be a slower way of saying so: the ack and any outstanding
+        // delivery still run, and what is left times out at once with `paused`.
+        timeoutMs: pausedNow(opts) ? 0 : clamp(args.timeout_s, 1, 300, 30) * 1000,
         ...(opts?.signal ? { signal: opts.signal } : {}),
       });
       // A quiet wait on a source that cannot read is not quiet, it is deaf: the
       // reason rides the same normal result.
-      if ('timeout' in out) return json({ timeout: true, v: out.v, epoch: out.epoch, ...offline(core) });
+      if ('timeout' in out) return json({ timeout: true, v: out.v, epoch: out.epoch, ...doing(core, opts) });
       if ('cancelled' in out) return json({ cancelled: true, v: out.v, epoch: out.epoch });
       // The delivery was rendered against this consumer's own cap (events.ts).
       // The delivery text is already capped at DELIVERY_CAP and carries its own banner.
@@ -477,7 +495,7 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
           v: doc.v,
           epoch: doc.epoch,
           ref: out.ref,
-          ...offline(core),
+          ...doing(core, opts),
           lines: out.lines.map((l) => ({ bbox: l.bbox, text: l.text, src: l.src, conf: l.conf })),
         },
         {
@@ -486,7 +504,7 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
           banner: true,
           ...(opts?.cap === undefined ? {} : { cap: opts.cap }),
           ...(opts?.escaped ? { escaped: true } : {}),
-          summary: (o2) => ({ v: o2.v, epoch: o2.epoch, ref: o2.ref, ...offline(core), lines: (o2.lines as unknown[]).length,
+          summary: (o2) => ({ v: o2.v, epoch: o2.epoch, ref: o2.ref, ...doing(core, opts), lines: (o2.lines as unknown[]).length,
             ...(o2.omitted === undefined ? {} : { omitted: o2.omitted }), ...(o2.truncated === true ? { truncated: true } : {}) }),
         }
       );
@@ -545,12 +563,12 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
         limit: clamp(args.limit, 1, 50, 10),
       });
       const result = json(
-        { ...offline(core), events: rows.map((d) => ({ ...receiptOf(d), text: d.text })) },
+        { ...doing(core, opts), events: rows.map((d) => ({ ...receiptOf(d), text: d.text })) },
         {
           list: 'events',
           ...(opts?.cap === undefined ? {} : { cap: opts.cap }),
           ...(opts?.escaped ? { escaped: true } : {}),
-          summary: (o2) => ({ ...offline(core), events: (o2.events as unknown[]).length,
+          summary: (o2) => ({ ...doing(core, opts), events: (o2.events as unknown[]).length,
             ...(o2.omitted === undefined ? {} : { omitted: o2.omitted }), ...(o2.truncated === true ? { truncated: true } : {}) }),
         }
       );
@@ -665,15 +683,13 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
       'no id is given. Overlay windows also hide themselves when their `ttl_s` runs out, so this is ' +
       'for taking something down early.',
     inputSchema: schema({ source, id: str('The id it was shown with; omit to clear every window') }),
-    // No `overlay` knob check: taking something down is never what the knob is
-    // for, and a ward turned off mid-draw still has to be able to clear it.
+    // No `overlay` knob check and no liveness check: taking something down is
+    // never what either is for. Stopping the lens leaves the overlay pool alone
+    // (Rust `stop()`), so a card drawn before consent was withdrawn is still on
+    // screen for up to its 600 s ttl — refusing here would strand it there.
     call: async (core, _consumer, args, opts) => {
       const refused = notScreen('overlay_clear', opts);
       if (refused) return refused;
-      // A lens that is not running has no overlay to clear, and says so rather
-      // than reporting a clear that cleared nothing.
-      const down = notLive('overlay_clear', core);
-      if (down) return down;
       const id = typeof args.id === 'string' && args.id !== '' ? args.id : undefined;
       try {
         await captionsFor(core).clear(id);
