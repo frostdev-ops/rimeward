@@ -72,7 +72,7 @@ test('an unknown source type is refused before any core is made', async () => {
   );
 });
 
-test('the screen-only tools say so, and refuse a source they could never read', async (t) => {
+test('the screen-only tools read a screen lens, and refuse anything else by name', async (t) => {
   const user = createUser('lens-tools-screen@example.com', 'pw-lens-tools-2');
   const source = 'screen:local';
   // A screen source that never feeds: enough for `lens()` to build a core.
@@ -85,13 +85,22 @@ test('the screen-only tools say so, and refuse a source they could never read', 
 
   const ctx = { userId: user, ward: 'agent:ag1', conv: 5 } as ToolCtx;
   const args = { rect: [0, 0, 10, 10], id: 'x', kind: 'card', anchor: { corner: 'tl' }, on: true };
-  for (const name of ['lens_crop', 'lens_text', 'lens_describe', 'lens_captions', 'overlay_show', 'overlay_clear'] as const) {
+  // The overlay and the captions have no body until B4.
+  for (const name of ['lens_captions', 'overlay_show', 'overlay_clear'] as const) {
     await assert.rejects(
       () => lensToolRun(name, { source, ...args }, ctx),
-      new RegExp(`^Error: ${name} is unavailable until the screen lens is bundled \\(B2/B4\\)$`),
+      new RegExp(`^Error: ${name} is unavailable until the screen lens overlay is bundled \\(B4\\)$`),
       name
     );
   }
+  // The three reads are live: with no frame ever captured there is nothing to
+  // crop or describe, and the empty document has no text to page.
+  await assert.rejects(() => lensToolRun('lens_crop', { source, ...args }, ctx), /^Error: frame-evicted$/);
+  await assert.rejects(() => lensToolRun('lens_describe', { source, ...args }, ctx), /^Error: frame-evicted$/);
+  const read = await lensToolRun('lens_text', { source }, ctx) as Record<string, unknown>;
+  assert.deepEqual(read.lines, []);
+  assert.equal(read.ref, null);
+  assert.match(String(read.text), /^\[lens observation: /, 'observed text always carries the banner');
 
   // A source it could never read, screen lens or not, is refused by name.
   const realTerminal = SOURCES.terminal;

@@ -65,7 +65,7 @@ export async function routeInstance(context: APIContext): Promise<Response | und
   if (url.pathname.startsWith('/api/devices/')) return;
   // Retrieval settings belong to this runtime; inference carries an explicit target.
   if (['/api/account/embeddings','/api/dev/embeddings','/api/agent/embeddings','/api/agent/decisions'].includes(url.pathname)) return;
-  if (url.pathname === '/api/dev/agent-tools' || url.pathname === '/api/dev/control-settings') return;
+  if (url.pathname === '/api/dev/agent-tools' || url.pathname === '/api/dev/control-settings' || url.pathname === '/api/dev/lens-consent') return;
   const desktop = isDesktop();
   // A relayed request (this desktop's own channel proxy, native token) is at its destination.
   // Routing it again could hand it back to the server (sync lag) and loop up to the channel cap.

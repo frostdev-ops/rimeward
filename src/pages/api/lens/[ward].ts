@@ -1,7 +1,7 @@
 import type { APIRoute } from 'astro';
 import { getDashboard } from '../../../lib/dashboard.ts';
 import { lens } from '../../../lib/lens/core.ts';
-import { getSetting, setSetting } from '../../../lib/settings.ts';
+import { lensPaused, setLensPaused } from '../../../lib/lens/runtime.ts';
 import type { WardInstance } from '../../../lib/wards.ts';
 
 export const prerender = false;
@@ -18,12 +18,6 @@ const OFF = 'Screen lens is not running on this computer. Open this page in the 
 export function lensWard(userId: number, ward: unknown): WardInstance | null {
   return getDashboard(userId).find((w) => w.i === ward && w.type === 'lens') ?? null;
 }
-
-// Pause is runtime state, never layout config (plan D7): the engine reads this
-// row on every round, so a pause survives a restart and a layout save.
-const pausedKey = (userId: number): string => `lens:paused:${userId}`;
-export const lensPaused = (userId: number): boolean => getSetting(pausedKey(userId)) === '1';
-export const setLensPaused = (userId: number, paused: boolean): void => setSetting(pausedKey(userId), paused ? '1' : '0');
 
 export const GET: APIRoute = ({ params, locals }) => {
   const userId = locals.user!.userId;
@@ -67,8 +61,8 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
   switch (body?.action) {
     case 'pause':
     case 'resume': {
-      // ponytail: the row is the whole of pause until the engine lands (B2) —
-      // it is what `ensureLens` reads to stop and restart the capture.
+      // The row survives a restart (`startLens` re-applies it); the op stops the
+      // capture itself, so a paused lens produces no signals and no deliveries.
       setLensPaused(userId, body.action === 'pause');
       return Response.json({ paused: lensPaused(userId) });
     }

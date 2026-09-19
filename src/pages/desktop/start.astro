@@ -71,6 +71,17 @@ if (restoring) Astro.cookies.delete('rimeward_ui_restore', { path: '/' });
       <div id="computer-control-approvals" class="flex flex-col gap-2"></div>
       <div id="computer-access-policies" class="flex flex-col gap-3"></div>
     </section>
+    <section class="setup-card" aria-labelledby="lens-title">
+      <h2 id="lens-title">Screen lens</h2>
+      <p>Rime can read the frontmost window on this computer — its text, settled and versioned — so it knows what you are looking at. Nothing is captured until you turn this on, and pixels leave this computer only when you ask for a crop. Pause it at any time from the Screen lens ward.</p>
+      <form id="lens-form">
+        <label><input type="checkbox" id="lens-consented" /> Let Rime read this computer’s screen</label>
+        <p id="lens-permission" class="setup-help" hidden>macOS has not granted Screen Recording to Rimeward yet, so the lens has nothing to read.</p>
+        <button type="button" class="btn" data-macos-permissions hidden>Set up Mac permissions…</button>
+        <button type="submit" class="btn">Save screen lens setting</button>
+        <p id="lens-status" role="status" aria-live="polite"></p>
+      </form>
+    </section>
     <p class="setup-footnote">Rime’s chats, memories, and workspace connections stay in sync. Folder contents stay on their original machines.<br />Unlinked tools start in Documents/Rimeward/workspace on this computer.</p>
   </div>
   <script>

@@ -23,6 +23,7 @@ import { isDesktop } from './lib/dev/runtime.ts';
 import { ensureUpdateChecks } from './lib/updates.ts';
 import { ensureAgentMonitors } from './lib/agent/monitors.ts';
 import { ensureKnowledge } from './lib/agent/knowledge.ts';
+import { ensureLens } from './lib/lens/runtime.ts';
 
 // The status + logic engines live in-process; middleware load is the one place
 // that runs exactly once per server boot (guarded against dev-HMR double-starts).
@@ -42,6 +43,7 @@ ensureRemote();
 ensureTunnel(); // publishes the desktop app's upgrade handler for server.mjs / the dev hook
 ensureUpdateChecks(); // the release lookup every 6 h; installs under the `install` policy
 ensureAgentMonitors();
+ensureLens(); // the bundled screen lens: the signal channel and the stored consent (desktop only)
 ensureKnowledge();
 
 // Public: the splash (exact match — everything else under / is gated), login,

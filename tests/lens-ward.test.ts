@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { CATALOG, validateLayout, type WardInstance } from '../src/lib/wards.ts';
 import { shareCeiling } from '../src/lib/shares.ts';
 import { requestWard } from '../src/lib/dev/instance-routing.ts';
-import { lensPaused, setLensPaused } from '../src/pages/api/lens/[ward].ts';
+import { lensPaused, setLensPaused } from '../src/lib/lens/runtime.ts';
 
 const cfg = (config: Record<string, unknown>): Record<string, unknown> =>
   validateLayout([{ i: 'l', type: 'lens', size: '3x2', config }])![0]!.config!;

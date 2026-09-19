@@ -186,6 +186,38 @@ void settings().then(data => {
   controlStatus.textContent = data.enabled ? 'Screen control is enabled.' : 'Screen control is off.';
 }).catch(e => { controlStatus.textContent = e.message; });
 
+// The Screen lens switch: consent is a local setting too (plan D7), and the
+// macOS grant beside it is the same dialog the control settings point at.
+
+const lensForm = required<HTMLFormElement>('#lens-form');
+const lensConsented = required<HTMLInputElement>('#lens-consented');
+const lensStatus = required<HTMLElement>('#lens-status');
+const lensPermission = required<HTMLElement>('#lens-permission');
+type LensConsent = { consented: boolean; paused: boolean; state: string; screen: boolean; ax: boolean; error: string | null };
+async function lensConsent(value?: { consented: boolean }) {
+  const response = await fetch('/api/dev/lens-consent', value ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) } : { cache: 'no-store' });
+  const data = await response.json();
+  if (!response.ok) throw Error(data.error ?? 'Screen lens unavailable.');
+  return data as LensConsent;
+}
+function showLens(data: LensConsent) {
+  lensConsented.checked = data.consented;
+  lensPermission.hidden = !data.consented || data.screen;
+  lensStatus.textContent = !data.consented
+    ? 'The screen lens is off. Nothing on this screen is read.'
+    : data.screen
+      ? `The screen lens is on${data.paused ? ', paused from its ward' : ''} (${data.state}).`
+      : 'Waiting for Screen Recording. Grant it in System Settings, then check again.';
+}
+lensForm.onsubmit = event => {
+  event.preventDefault();
+  const submit = required<HTMLButtonElement>('button[type="submit"]', lensForm); submit.disabled = true;
+  void lensConsent({ consented: lensConsented.checked }).then(showLens)
+    .catch(e => { lensStatus.textContent = e.message; })
+    .finally(() => { submit.disabled = false; });
+};
+void lensConsent().then(showLens).catch(e => { lensStatus.textContent = e.message; });
+
 const approvals = required<HTMLElement>('#computer-control-approvals');
 async function refreshApprovals() {
   const data = await settings();

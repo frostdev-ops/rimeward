@@ -52,6 +52,7 @@ export async function lensToolRun(name: LensToolName, args: Record<string, any>,
   }
   const r = await tool.call(core, CONSUMERLESS.has(name) ? 'overlay' : consumerOf(ctx), args, {
     source,
+    user: ctx.userId,
     cap: Math.min(AGENT_CAP, RESULT_CAP),
     ...(ctx.signal ? { signal: ctx.signal } : {}),
   });

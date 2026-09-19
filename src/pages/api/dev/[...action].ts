@@ -65,6 +65,7 @@ import {
   deleteSession,
   configureSession,
 } from "../../../lib/dev/terminals.ts";
+import { lensConsentStatus, setLensConsent } from "../../../lib/lens/runtime.ts";
 
 export const prerender = false;
 const json = (data: unknown, status = 200) =>
@@ -79,6 +80,15 @@ export const ALL: APIRoute = async ({ params, request, locals, url }) => {
     const user = locals.user.userId,
       action = params.action ?? "";
     if (action === 'agent-tools' && request.method === 'POST') return await serveDeviceTool(user, request);
+    // The Screen lens switch (plan D7): consent is this computer's own answer,
+    // like the control settings beside it, so it never leaves this runtime.
+    if (action === 'lens-consent') {
+      if (request.method === 'GET') return json(await lensConsentStatus());
+      if (request.method === 'POST') {
+        const body = await request.json() as { consented?: unknown };
+        return json(await lensConsentStatus(await setLensConsent(body?.consented === true)));
+      }
+    }
     if (action === 'control-settings') {
       if (request.headers.has('x-rimeward-native-token')) throw new DevError('Change control permissions in the local desktop window.', 403);
       if (request.method === 'GET') return json(await controlSettings(user));
