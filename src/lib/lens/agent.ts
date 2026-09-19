@@ -12,8 +12,8 @@ import type { ToolCtx } from '../agent/tools.ts';
 
 export const DEFAULT_SOURCE = 'screen:local';
 
-/** core.ts drops a tool result whole once its JSON passes this, so the result
- *  is cut to whole lines here instead. Kept in step with OUTPUT_CAP there. */
+/** core.ts drops a tool result whole once its JSON passes this. Kept in step
+ *  with OUTPUT_CAP there. */
 const OUTPUT_CAP = 12_000;
 /** What a tool renders against for this door. The rendered text is one JSON
  *  string field by the time the model sees it, and escaping a quote, a
@@ -54,29 +54,29 @@ export async function lensToolRun(name: LensToolName, args: Record<string, any>,
     source,
     user: ctx.userId,
     cap: Math.min(AGENT_CAP, RESULT_CAP),
+    // Every line costs its escaped length against that cap, the same way the
+    // core budgets a delivery for a `conv` consumer (events.ts `cost`).
+    escaped: true,
     ...(ctx.signal ? { signal: ctx.signal } : {}),
   });
   if (r.isError) throw new DevError(r.text);
-  return budget({
+  return assertFits(name, {
     ...r.receipt,
     text: r.text,
     ...(r.image ? { image: r.image.data, imageMime: r.image.mime } : {}),
   });
 }
 
-/** The last guard: a result core.ts would drop whole loses whole lines of its
- *  text instead, so the caller still sees the receipt and knows what is
- *  missing. Nothing is sliced mid-line — a half-line of observed text reads
- *  like the source said it.
- *  ponytail: one serialisation per dropped line, on a path that only runs when
- *  a result is already over budget; bisect if that ever shows up in a profile. */
-function budget(value: Record<string, unknown>): Record<string, unknown> {
-  if (JSON.stringify(value).length <= OUTPUT_CAP) return value;
-  const tail = (n: number): string => `… ${n} lines omitted; read the rest with lens_text {rect} or another lens_wait`;
-  const all = String(value.text ?? '').split('\n');
-  for (let kept = all.length - 1; kept > 0; kept--) {
-    const out = { ...value, truncated: true, text: [...all.slice(0, kept), tail(all.length - kept)].join('\n') };
-    if (JSON.stringify(out).length <= OUTPUT_CAP) return out;
-  }
-  return { ...value, truncated: true, text: tail(all.length) };
+/** Everything that renders for this door is budgeted in ESCAPED characters —
+ *  the delivery inside the core (`deliveryCap`/`cost`), the surrounding result
+ *  in lens/tools.ts — so nothing should ever reach core.ts's cap. If something
+ *  does, the delivery has already been claimed and cutting it here would lose
+ *  observed lines the moment the model acknowledged it: fail loudly instead,
+ *  which leaves the delivery outstanding and hands it over again. */
+function assertFits(name: LensToolName, value: Record<string, unknown>): Record<string, unknown> {
+  const size = JSON.stringify(value).length;
+  if (size <= OUTPUT_CAP) return value;
+  const message = `lens ${name}: ${size} serialised chars over the ${OUTPUT_CAP} tool output cap after budgeting`;
+  console.error(message);
+  throw new DevError(`${message}. The delivery was not acknowledged; read it again.`);
 }

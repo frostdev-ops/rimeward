@@ -81,23 +81,27 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
   if (core && consumer) {
     const held = core.consumer(consumer,'monitor');
     await core.watch(consumer,{ remove:held.watches.map(w => w.id),...(s.watch ? { add:[s.watch] } : {}),...(s.intervalSeconds === undefined ? {} : { minIntervalS:s.intervalSeconds }) });
-    const off = core.on('delivery',(id,d) => {
-      if (id !== consumer) return;
-      // Only a consumer's FIRST keyframe is a baseline (nothing acknowledged yet, so the
-      // delivery has nothing to be a delta from). Every later keyframe — a session exit or
-      // a resize, the one after a run of deltas, a truncated delta, gap recovery — carries
-      // an observation the monitor's filter has to see.
-      const baseline = d.kind === 'key' && held.cursor === null && held.baseline === null;
-      emit(d.delivery,{ eventType:d.kind,text:d.text,v:d.v,epoch:d.epoch,delivery:d.delivery,source },baseline);
-    });
-    // One baseline per connect: it is what gives the monitor's cursor a `previous` (a
-    // `changed` filter would otherwise fire on the first delta after a monitor update
-    // reset that cursor). Never acknowledged, so it moves nothing — and the same call
-    // hands over a delivery this consumer never acknowledged, which is still its next one.
+    // One baseline per connect, taken BEFORE anything can be delivered: it is what
+    // gives the monitor's cursor a `previous` (a `changed` filter would otherwise fire
+    // on the first delta after a monitor update reset that cursor, and would compare a
+    // re-offered delivery against `{}`). Never acknowledged, so it moves nothing.
     const view = core.look(consumer,{ fields:['meta','text'] });
     const head = Object.entries(view.meta ?? {}).map(([key,field]) => `${key}=${field.value}`);
     const text = [OBSERVATION_BANNER,...head,...(view.lines ?? []).map(line => line.text)].join('\n').slice(0,DELIVERY_CAP);
     emit(`baseline:${randomUUID()}`,{ eventType:'baseline',text,v:view.v,epoch:view.epoch,source },true);
+    const off = core.on('delivery',(id,d) => {
+      if (id !== consumer) return;
+      // A keyframe is a baseline only when it carries no observation of its own: the
+      // consumer's first, or one forced because what it acknowledged is no longer in the
+      // ring (a restart, 32 settles of silence). Every other keyframe — a session exit or
+      // a resize, the one after a run of deltas, a truncated delta, gap recovery — is
+      // something the monitor's filter has to see.
+      emit(d.delivery,{ eventType:d.kind,text:d.text,v:d.v,epoch:d.epoch,delivery:d.delivery,source },
+        d.kind === 'key' && (d.reason === 'first' || d.reason === 'evicted'));
+    });
+    // A delivery this consumer never acknowledged is still its next one: hand it over
+    // again now that the listener is there, after the baseline rather than before it.
+    if (held.delivered) core.look(consumer,{ fields:[] });
     // ponytail: stopping is dropping the listener. The core and the consumer row
     // outlive it on purpose — that is what an unacknowledged delivery survives.
     return off;

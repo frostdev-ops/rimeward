@@ -1,8 +1,6 @@
 import type { APIRoute } from 'astro';
-import { getDashboard } from '../../../lib/dashboard.ts';
 import { lens } from '../../../lib/lens/core.ts';
-import { lensPaused, setLensPaused } from '../../../lib/lens/runtime.ts';
-import type { WardInstance } from '../../../lib/wards.ts';
+import { lensPaused, lensWard, setLensPaused } from '../../../lib/lens/runtime.ts';
 
 export const prerender = false;
 
@@ -15,13 +13,11 @@ export const prerender = false;
 const SOURCE = 'screen:local';
 const OFF = 'Screen lens is not running on this computer. Open this page in the desktop app to use it.';
 
-export function lensWard(userId: number, ward: unknown): WardInstance | null {
-  return getDashboard(userId).find((w) => w.i === ward && w.type === 'lens') ?? null;
-}
-
 export const GET: APIRoute = ({ params, locals }) => {
   const userId = locals.user!.userId;
   if (!lensWard(userId, params.ward)) return Response.json({ error: 'not a lens ward' }, { status: 400 });
+  // Reading the card never subscribes: `lens()` builds the core without
+  // connecting (only a consumer does that), and paused stays paused.
   const core = lens(userId, SOURCE);
   if (!core) return Response.json({ error: OFF }, { status: 409 });
   const s = core.status();
@@ -40,7 +36,9 @@ export const GET: APIRoute = ({ params, locals }) => {
       // answered (the helper, or whatever stands in for it).
       dots: { screen: s.state === 'live', ax: doc.lines.some((l) => l.src === 'ax'), helper: s.embedding === true },
       head: { app: meta('app'), window: meta('window'), focus: meta('focus') },
-      recent: core.history('leylines', { limit: 5 }).map((d) => ({
+      // Read, never subscribe: `history` would make the card a consumer of its
+      // own and connect the source behind it.
+      recent: core.recent('leylines', 5).map((d) => ({
         delivery: d.delivery,
         v: d.v,
         kind: d.kind,
@@ -68,7 +66,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     }
     case 'captions':
     case 'overlay-clear':
-      return Response.json({ error: 'Captions and the overlay are unavailable until B4.' }, { status: 409 });
+      return Response.json({ error: 'Captions and the overlay are not available on this computer yet.' }, { status: 409 });
     default:
       return Response.json({ error: 'bad action' }, { status: 400 });
   }

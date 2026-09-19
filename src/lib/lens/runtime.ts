@@ -11,6 +11,8 @@ import { localOwner } from '../dev/native.ts';
 import { nativeDesktop } from '../dev/remote.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { getSetting, setSetting } from '../settings.ts';
+import { getDashboard } from '../dashboard.ts';
+import type { WardInstance } from '../wards.ts';
 
 /** The one screen per process (plan D5). */
 export const SCREEN_SOURCE = 'screen:local';
@@ -18,6 +20,12 @@ export const SCREEN_SOURCE = 'screen:local';
 type LensGlobal = typeof globalThis & {
   __lensAttach?: (fn: (line: string, signal: Record<string, unknown>) => void) => void;
 };
+
+/** The user's Screen lens ward, if they have one: what the ward route checks
+ *  before it answers, and where the lens knobs live. */
+export function lensWard(userId: number, ward: unknown): WardInstance | null {
+  return getDashboard(userId).find((w) => w.i === ward && w.type === 'lens') ?? null;
+}
 
 const pausedKey = (user: number): string => `lens:paused:${user}`;
 

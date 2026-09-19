@@ -366,6 +366,7 @@ test('acking a truncated delta marks the baseline incomplete so the next deliver
     kind: 'key',
     page: 1,
     v: 1844,
+    reason: 'truncated',
   });
 });
 
@@ -433,15 +434,15 @@ test('nextKind table', () => {
   const still = { epoch: false, key: false };
   const complete = { v: 1842, complete: true };
 
-  assert.deepEqual(nextKind(consumer(), s, yes, still, false), { kind: 'key', page: 1, v: 1900 }, 'null cursor');
+  assert.deepEqual(nextKind(consumer(), s, yes, still, false), { kind: 'key', page: 1, v: 1900, reason: 'first' }, 'null cursor');
   assert.deepEqual(
     nextKind(consumer({ cursor: 1800, baseline: complete }), s, () => false, still, false),
-    { kind: 'key', page: 1, v: 1900 },
+    { kind: 'key', page: 1, v: 1900, reason: 'evicted' },
     'evicted cursor'
   );
   assert.deepEqual(
     nextKind(consumer({ cursor: 1842, baseline: { v: 1842, complete: false } }), s, yes, still, false),
-    { kind: 'key', page: 1, v: 1900 },
+    { kind: 'key', page: 1, v: 1900, reason: 'truncated' },
     'incomplete baseline'
   );
   assert.deepEqual(
@@ -451,17 +452,17 @@ test('nextKind table', () => {
   );
   assert.deepEqual(
     nextKind(consumer({ cursor: 1842, baseline: complete }), s, yes, { epoch: true, key: false }, false),
-    { kind: 'key', page: 1, v: 1900 },
+    { kind: 'key', page: 1, v: 1900, reason: 'epoch' },
     'the epoch changed'
   );
   assert.deepEqual(
     nextKind(consumer({ cursor: 1842, baseline: complete }), s, yes, { epoch: false, key: true }, false),
-    { kind: 'key', page: 1, v: 1900 },
+    { kind: 'key', page: 1, v: 1900, reason: 'meta' },
     'the source asked for a keyframe'
   );
   assert.deepEqual(
     nextKind(consumer({ cursor: 1842, baseline: complete, deltas: KEY_AFTER_DELTAS }), s, yes, still, false),
-    { kind: 'key', page: 1, v: 1900 },
+    { kind: 'key', page: 1, v: 1900, reason: 'deltas' },
     '20 deltas'
   );
   assert.deepEqual(
@@ -471,7 +472,7 @@ test('nextKind table', () => {
   );
   assert.deepEqual(
     nextKind(consumer({ cursor: 1842, baseline: complete }), s, yes, still, true),
-    { kind: 'key', page: 1, v: 1900 },
+    { kind: 'key', page: 1, v: 1900, reason: 'recovery' },
     'forceKey'
   );
 });

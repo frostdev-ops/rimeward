@@ -70,7 +70,9 @@ const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 /** The fixtures name a consumer the way BlackIce did; these are the kinds the
  *  lens store keeps. A BlackIce `mcp` consumer is an MCP host reading raw text
  *  — our `cli` door — not the Rime conversation, whose deliveries are budgeted
- *  for JSON (`deliveryCap`): the lifted page counts are the raw-text ones. */
+ *  as escaped JSON (`deliveryCap`/`cost`). An MCP host is handed the text as
+ *  content, not as a field of a JSON receipt, so `cli` stays on the raw
+ *  DELIVERY_CAP for good and the lifted page counts hold unchanged. */
 const KINDS: Record<string, ConsumerKind> = { mcp: 'cli', feed: 'monitor', conv: 'conv', cli: 'cli', monitor: 'monitor', edge: 'edge' };
 
 export function parseFixture(text: string): Step[] {

@@ -76,10 +76,19 @@ export interface Diff {
 
 // Delivery bookkeeping (lens/events.ts, lens/store.ts).
 
+/** Why a keyframe was rendered instead of a delta. `first` (this consumer has
+ *  acknowledged nothing) and `evicted` (what it acknowledged is no longer in
+ *  the ring — a restart, or 32 settles of silence) carry no observation of
+ *  their own: they are where a reader's baseline comes from. Every other cause
+ *  IS an observation, and a reader that treats it as a baseline swallows it. */
+export type KeyReason = 'first' | 'evicted' | 'epoch' | 'meta' | 'deltas' | 'truncated' | 'recovery';
+
 export interface Delivered {
   id: string; // "<consumer>:<n>"
   v: number;
   kind: 'key' | 'delta';
+  /** Keyframes only; not persisted, so a page resumed after a restart has none. */
+  reason?: KeyReason;
   page: number;
   pages: number;
   truncated: boolean;
@@ -133,6 +142,7 @@ export interface Delivery {
   epoch: number;
   ref: string | null;
   kind: 'key' | 'delta';
+  reason?: KeyReason; // keyframes only
   page?: string; // "n/m" for paged keyframes
   truncated?: boolean;
   text: string; // the rendered lines, prefixed with the observation banner and the d= header

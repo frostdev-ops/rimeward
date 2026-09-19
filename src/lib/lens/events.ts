@@ -11,7 +11,7 @@
 //   app= / window= / focus= / …one line per meta entry… / incomplete
 //   = + - x,y,w,h src "text"      ~ x,y,w,h d=0.31 "interpreted" (ref f-7-298)
 //   live x,y,w,h                  … N lines omitted; use lens_text {rect} or lens_look
-import type { Consumer, ConsumerKind, Delivery, Diff, Dirty, Doc, Line, Rect, Region } from './types.ts';
+import type { Consumer, ConsumerKind, Delivery, Diff, Dirty, Doc, KeyReason, Line, Rect, Region } from './types.ts';
 import { AGENT_DELIVERY_CAP, DELIVERY_CAP, OBSERVATION_BANNER } from './types.ts';
 import { iou, outsideLive } from './diff.ts';
 
@@ -26,10 +26,21 @@ export interface Rendered {
 }
 
 export const KEY_AFTER_DELTAS = 20;
-/** A conversation reads its deliveries as JSON, where escaping inflates the
- *  text (types.ts). Every other consumer reads them raw. ponytail: `cli` joins
- *  `conv` when the CLI MCP door lands (C4) and has a host cap to answer to. */
+/** A conversation reads its deliveries as one JSON string field, so what it
+ *  costs is the ESCAPED length (`cost` below) against a tighter cap. Every
+ *  other consumer reads the text raw and keeps DELIVERY_CAP — including `cli`:
+ *  an MCP host is handed the text as content, not as a JSON field of a tool
+ *  receipt, and the lifted fixtures are recorded against that. */
 export const deliveryCap = (kind: ConsumerKind): number => (kind === 'conv' ? AGENT_DELIVERY_CAP : DELIVERY_CAP);
+
+/** What one line costs against a delivery cap. Inside a JSON string every
+ *  quote, backslash and newline becomes two characters, and a line of Windows
+ *  paths or quoted output can be half as long again — enough for a page
+ *  budgeted raw to blow the agent's output cap and be dropped whole. The `- 2`
+ *  drops the quotes JSON.stringify puts around the value. */
+export const escapedLength = (line: string): number => JSON.stringify(line).length - 2;
+export const cost = (line: string, kind: ConsumerKind): number =>
+  kind === 'conv' ? escapedLength(line) : line.length;
 /** Header values are cut HERE and nowhere else: the gate reads them whole. */
 const META_VALUE_CAP = 120;
 const ID_DIGIT_RESERVE = 12; // widest delivery counter the header budget allows for
@@ -92,22 +103,22 @@ function header(
 // document reports the same `m`.
 function headerReserve(consumer: Consumer, doc: Doc, pages: number): number {
   const id = `${consumer.id}:${'9'.repeat(ID_DIGIT_RESERVE)}`;
-  return header(id, 'key', doc.v, null, doc.epoch, doc.ref, pages, pages).length;
+  return cost(header(id, 'key', doc.v, null, doc.epoch, doc.ref, pages, pages), consumer.kind);
 }
 
-function pack(meta: string[], body: string[], reserve: number, cap: number): string[][] {
-  const base = OBSERVATION_BANNER.length + 1 + reserve; // banner \n header
+function pack(meta: string[], body: string[], reserve: number, cap: number, kind: ConsumerKind): string[][] {
+  const base = cost(OBSERVATION_BANNER, kind) + 1 + reserve; // banner \n header
   const out: string[][] = [];
   let cur: string[] = [...meta]; // page 1 carries the metadata block
-  let used = base + cur.reduce((n, l) => n + 1 + l.length, 0);
+  let used = base + cur.reduce((n, l) => n + 1 + cost(l, kind), 0);
   for (const line of body) {
-    if (cur.length > 0 && used + 1 + line.length > cap) {
+    if (cur.length > 0 && used + 1 + cost(line, kind) > cap) {
       out.push(cur);
       cur = [];
       used = base;
     }
     cur.push(line);
-    used += 1 + line.length;
+    used += 1 + cost(line, kind);
   }
   out.push(cur);
   return out;
@@ -117,11 +128,11 @@ function paginate(consumer: Consumer, doc: Doc, meta: string[], body: string[]):
   const cap = deliveryCap(consumer.kind);
   let pages = 1;
   for (let i = 0; i < 8; i++) {
-    const out = pack(meta, body, headerReserve(consumer, doc, pages), cap);
+    const out = pack(meta, body, headerReserve(consumer, doc, pages), cap, consumer.kind);
     if (out.length === pages) return out;
     pages = out.length; // reserve only grows with the page token, so this converges
   }
-  return pack(meta, body, headerReserve(consumer, doc, pages), cap);
+  return pack(meta, body, headerReserve(consumer, doc, pages), cap, consumer.kind);
 }
 
 export function renderKeyframe(doc: Doc, consumer: Consumer, opts: { page: number }): Rendered {
@@ -163,8 +174,9 @@ export function renderDelta(
     ...meta,
   ];
   const cap = deliveryCap(consumer.kind);
+  const charge = (line: string): number => cost(line, consumer.kind);
   const full = [...head, ...body].join('\n');
-  if (full.length <= cap) {
+  if ([...head, ...body].reduce((n, l) => n + 1 + charge(l), -1) <= cap) {
     return { text: full, kind: 'delta', page: 1, pages: 1, truncated: false, omitted: 0, since: since.v };
   }
   // Never slice a line: keep whole lines while the omission receipt still fits.
@@ -189,7 +201,8 @@ export function claimDelivery(
   rendered: Rendered,
   v: number,
   epoch: number,
-  ref: string | null
+  ref: string | null,
+  reason?: KeyReason
 ): Delivery {
   consumer.nextDelivery += 1;
   const id = `${consumer.id}:${consumer.nextDelivery}`;
@@ -200,6 +213,7 @@ export function claimDelivery(
     page: rendered.page,
     pages: rendered.pages,
     truncated: rendered.truncated,
+    ...(reason === undefined ? {} : { reason }),
   };
   const delivery: Delivery = {
     delivery: id,
@@ -208,6 +222,7 @@ export function claimDelivery(
     epoch,
     ref,
     kind: rendered.kind,
+    ...(reason === undefined ? {} : { reason }),
     text: rendered.text,
   };
   if (rendered.pages > 1) delivery.page = `${rendered.page}/${rendered.pages}`;
@@ -246,23 +261,24 @@ export function nextKind(
   versionExists: (v: number) => boolean,
   changed: { epoch: boolean; key: boolean },
   forceKey: boolean
-): { kind: 'key'; page: number; v: number } | { kind: 'delta'; since: number } {
+): { kind: 'key'; page: number; v: number; reason?: KeyReason } | { kind: 'delta'; since: number } {
   const d = consumer.delivered;
   // Paging runs to the end on its own frozen version, newer versions or not.
-  if (d && d.kind === 'key') return { kind: 'key', page: d.pendingPage ?? d.page, v: d.v };
-  if (
-    forceKey ||
-    consumer.cursor === null ||
-    !versionExists(consumer.cursor) ||
-    consumer.baseline === null ||
-    !consumer.baseline.complete ||
-    changed.epoch ||
-    changed.key ||
-    consumer.deltas >= KEY_AFTER_DELTAS
-  ) {
-    return { kind: 'key', page: 1, v: doc.v };
-  }
-  return { kind: 'delta', since: consumer.cursor };
+  if (d && d.kind === 'key') return { kind: 'key', page: d.pendingPage ?? d.page, v: d.v, ...(d.reason ? { reason: d.reason } : {}) };
+  // In cause order: the first read of all, then what the ring no longer holds,
+  // then the changes that are themselves the observation.
+  if (consumer.cursor === null || consumer.baseline === null) return { kind: 'key', page: 1, v: doc.v, reason: 'first' };
+  const cursor = consumer.cursor;
+  const reason: KeyReason | null =
+    !versionExists(cursor) ? 'evicted'
+      : forceKey ? 'recovery'
+      : !consumer.baseline.complete ? 'truncated'
+      : changed.epoch ? 'epoch'
+      : changed.key ? 'meta'
+      : consumer.deltas >= KEY_AFTER_DELTAS ? 'deltas'
+      : null;
+  if (reason !== null) return { kind: 'key', page: 1, v: doc.v, reason };
+  return { kind: 'delta', since: cursor };
 }
 
 /** True while the last delivery is still unacknowledged: re-render it from the unchanged cursor. */

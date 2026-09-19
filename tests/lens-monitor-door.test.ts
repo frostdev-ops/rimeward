@@ -266,3 +266,39 @@ test('every keyframe after the first is an observation, not a baseline', async (
   assert.equal(payload.eventType, 'key');
   assert.ok(payload.text.includes('session=exited exit=0'), payload.text.slice(0, 200));
 });
+
+test('a keyframe forced by an evicted cursor is a baseline, not a wake', async (t) => {
+  const monitor = 'monitor:bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+  const { user, sourceId, consumer, terminal } = await setup(t, 'lens-evicted@example.com', monitor, {
+    field: 'text',
+    op: 'contains',
+    value: 'build failed',
+  });
+
+  // A consumer restored from the store whose acknowledged version is no longer in
+  // the ring: a restart, or 32 settles it never answered. What comes back is a
+  // keyframe of the whole document, and nothing in it is news — it is where this
+  // monitor's baseline comes from, exactly like its first keyframe.
+  db()
+    .prepare(
+      'INSERT INTO lens_consumers(user_id,source,id,kind,cursor,baseline_v,baseline_complete,next_delivery,seen_at) VALUES(?,?,?,?,?,?,?,?,?)'
+    )
+    .run(user, sourceId, consumer, 'monitor', 999, 999, 1, 3, Date.now());
+  // The core loads its consumers when it is built, so rebuild it on that row.
+  releaseLens(user, sourceId);
+  assert.ok(lens(user, sourceId, (): LensSettings => ({ settleMs: 0, minLines: 1 })));
+
+  terminal.paint(['$ npm run build', 'error: build failed']);
+  await tickMonitors();
+  await until('the evicted keyframe to be acknowledged', () => {
+    const row = consumerRow(user, sourceId, consumer);
+    return !!row && row.delivered_id === null && row.cursor > 0 && row.cursor !== 999;
+  });
+  assert.deepEqual(pending(monitor), [], 'a keyframe with nothing to be a delta from is not an observation');
+
+  // The same text arriving as a change IS an observation.
+  terminal.paint(['$ npm run build', 'error: build failed', 'error: build failed again']);
+  await until('the delta to be recorded', () => pending(monitor).length === 1);
+  const payload = JSON.parse(pending(monitor)[0]!.payload) as { eventType: string };
+  assert.equal(payload.eventType, 'delta');
+});

@@ -14,19 +14,20 @@
 // Every tool takes an optional `source` (`<type>:<target>`, default
 // `screen:local`); the caller resolves it to a core before calling. The
 // screen-only reads live in lens/screen.ts (a terminal document has no pixels);
-// the overlay and the captions have no body until B4.
+// the overlay and the captions cannot draw anything yet.
 
 import type { LensCore, LookResult } from './core.ts';
 import { crop, describe, lookFrame, text } from './screen.ts';
 import type { Delivery, Line, MetaField, Rect, Region } from './types.ts';
 import { OBSERVATION_BANNER } from './types.ts';
 import { parseWatchSpec } from './gate.ts';
+import { escapedLength } from './events.ts';
 import { getDashboard } from '../dashboard.ts';
 
 /** CLAUDE.md: tool results are capped at 12,000 serialised chars. */
 export const RESULT_CAP = 12_000;
-/** The overlay and the captions land with the helper and the overlay pool (B4). */
-const SCREEN_PENDING = 'unavailable until the screen lens overlay is bundled (B4)';
+/** The overlay window and the translation captions are not built yet. */
+const SCREEN_PENDING = 'not available on this computer yet';
 
 export const LENS_TOOL_NAMES = [
   'lens_look',
@@ -54,10 +55,12 @@ export interface LensResult {
 
 export interface LensToolOpts {
   signal?: AbortSignal;
-  /** The caller's own result budget, when it is tighter than RESULT_CAP: the
-   *  agent door reads results as JSON, where escaping costs a second character
-   *  per quote and newline (lens/agent.ts). */
+  /** The caller's own result budget, when it is tighter than RESULT_CAP, and
+   *  whether a line costs its ESCAPED length against it: the agent door reads a
+   *  result as one JSON string field, where every quote, backslash and newline
+   *  is two characters (lens/agent.ts, events.ts `cost`). */
   cap?: number;
+  escaped?: boolean;
   /** The resolved `<type>:<target>` this core reads, for the screen-only refusals. */
   source?: string;
   /** Whose lens this is, for the ward's `pixels` knob. */
@@ -118,16 +121,18 @@ const clamp = (value: unknown, lo: number, hi: number, fallback: number): number
 /** Text over the cap loses whole lines from the tail plus a receipt saying so.
  *  The receipt does NOT carry `text`: the door that needs both in one object
  *  (Claude Code reads `structuredContent` as the whole result) merges them. */
-function lines(body: string[], receipt: Record<string, unknown>, hint: string, cap = RESULT_CAP): LensResult {
+function lines(body: string[], receipt: Record<string, unknown>, hint: string, o: { cap?: number; escaped?: boolean } = {}): LensResult {
+  const cap = o.cap ?? RESULT_CAP;
+  const charge = (line: string): number => (o.escaped ? escapedLength(line) : line.length);
   const tail = (n: number): string => `… ${n} lines omitted; ${hint}`;
   // The widest possible receipt and tail, so the real ones always fit.
-  const reserve = JSON.stringify({ ...receipt, truncated: true }).length + tail(body.length).length + 1;
+  const reserve = JSON.stringify({ ...receipt, truncated: true }).length + charge(tail(body.length)) + 1;
   const kept: string[] = [];
   let used = 0;
   for (const line of body) {
-    if (used + line.length + 1 + reserve > cap) break;
+    if (used + charge(line) + 1 + reserve > cap) break;
     kept.push(line);
-    used += line.length + 1;
+    used += charge(line) + 1;
   }
   const omitted = body.length - kept.length;
   if (omitted > 0) kept.push(tail(omitted));
@@ -190,7 +195,7 @@ const notScreen = (name: string, opts?: LensToolOpts): LensResult | null =>
     ? fail(`${name} reads a screen lens; ${opts.source} is not a screen source`)
     : null;
 
-/** The body the overlay and caption tools have until B4. */
+/** The body the overlay and caption tools have until they can draw. */
 const screenOnly = (name: string): LensTool['call'] =>
   (_core, _consumer, _args, opts) => notScreen(name, opts) ?? fail(`${name} is ${SCREEN_PENDING}`);
 
@@ -247,7 +252,8 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
           }
         }
       }
-      const result = lines(lookLines(out), receipt, 'acknowledge it and read the rest with lens_wait', opts?.cap);
+      const result = lines(lookLines(out), receipt, 'acknowledge it and read the rest with lens_wait',
+        { ...(opts?.cap === undefined ? {} : { cap: opts.cap }), ...(opts?.escaped ? { escaped: true } : {}) });
       return image ? { ...result, image } : result;
     },
   },

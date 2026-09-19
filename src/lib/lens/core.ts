@@ -566,7 +566,7 @@ export class LensCore {
       rendered = renderKeyframe(target, consumer, { page: kind.kind === 'key' ? kind.page : 1 });
     }
 
-    const delivery = claimDelivery(consumer, rendered, target.v, target.epoch, target.ref);
+    const delivery = claimDelivery(consumer, rendered, target.v, target.epoch, target.ref, kind.kind === 'key' ? kind.reason : undefined);
     consumer.lastSentAt = this.#clock.now();
     this.#forceKey.delete(consumer.id);
     this.#store.saveConsumer(consumer);
@@ -812,6 +812,14 @@ export class LensCore {
   /** The last evaluation's per-watch report. */
   reports(id: string): WatchReport[] {
     return this.#reports.get(id) ?? [];
+  }
+
+  /** What was already delivered to a consumer, without becoming one: a reader
+   *  that only wants to SHOW recent deliveries (the ward card) must not create
+   *  a consumer row or connect the source, which `consumer()` would. An id with
+   *  no events answers []. */
+  recent(id: string, limit: number): Delivery[] {
+    return this.#store.events(id, undefined, limit);
   }
 
   history(id: string, o: { ack?: string; since?: number; limit: number }): Delivery[] {

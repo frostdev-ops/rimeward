@@ -89,7 +89,7 @@ test('the screen-only tools read a screen lens, and refuse anything else by name
   for (const name of ['lens_captions', 'overlay_show', 'overlay_clear'] as const) {
     await assert.rejects(
       () => lensToolRun(name, { source, ...args }, ctx),
-      new RegExp(`^Error: ${name} is unavailable until the screen lens overlay is bundled \\(B4\\)$`),
+      new RegExp(`^Error: ${name} is not available on this computer yet$`),
       name
     );
   }
@@ -233,9 +233,15 @@ test('a full document fits the agent output cap, page by page, and never liveloc
     releaseLens(user, source);
     SOURCES.terminal = real;
   });
-  // Far more text than one delivery can carry: 400 rows of ~60 chars, with the
-  // quotes and backslashes that make a rendered line cost more as JSON.
-  fixture.inject({ rows: Array.from({ length: 400 }, (_, i) => `row ${i} "quoted" \\ path=/a/b/c/${i} — some output text here`), seq: 1 });
+  // Far more text than one delivery can carry, and as hostile to JSON as real
+  // output gets: every row is quotes or Windows backslashes, each of which is
+  // two characters once the result is serialised for the model.
+  const rows = Array.from({ length: 400 }, (_, i) =>
+    i % 2 === 0
+      ? `r${i} "${'"'.repeat(30)}" said "the thing" "${i}"`
+      : `r${i} C:\\Users\\rime\\${'\\'.repeat(30)}build\\out${i}`
+  );
+  fixture.inject({ rows, seq: 1 });
   lens(user, source, (): LensSettings => ({ settleMs: 0, minLines: 1 }));
 
   const run = (name: 'lens_look' | 'lens_wait', args: Record<string, unknown> = {}) =>
@@ -243,32 +249,50 @@ test('a full document fits the agent output cap, page by page, and never liveloc
   // What core.ts measures before it drops a whole result (OUTPUT_CAP).
   const serialized = (out: unknown) => JSON.stringify(out).length;
 
-  // Nothing may need the last-resort cut in lensToolRun: a result that reaches
-  // it is one the consumer's own cap got wrong. (lens_look's own tail, which
-  // names lens_wait, is the designed cut for a document larger than one read.)
-  const guardCut = 'another lens_wait';
+  // lensToolRun's assertion throws rather than cut an already-claimed delivery,
+  // so every call below reaching its receipt at all is the proof that the
+  // escaped-length budget held.
   const look = await run('lens_look');
   assert.ok(serialized(look) <= 12_000, `lens_look serialised to ${serialized(look)}`);
-  assert.ok(!String(look.text).includes(guardCut), 'lens_look was cut by the last-resort guard');
+
 
   const page1 = await run('lens_wait', { timeout_s: 5 });
   assert.ok(serialized(page1) <= 12_000, `page 1 serialised to ${serialized(page1)}`);
   assert.equal(page1.kind, 'key');
   assert.match(String(page1.page), /^1\/[2-9]\d*$/, 'a document this size is paged');
-  assert.equal(page1.truncated, undefined, 'page 1 was cut by the last-resort guard');
+  assert.equal(page1.truncated, undefined);
 
   // The pending page is handed over again inside a look, which must also fit.
   const pending = await run('lens_look');
   assert.ok(serialized(pending) <= 12_000, `look with a pending page serialised to ${serialized(pending)}`);
   // A look wraps the pending page in its own header, so the page's tail can
-  // fall to lens_look's cut — but never to the guard, and never to core.ts.
-  assert.ok(!String(pending.text).includes(guardCut), 'the pending page was cut by the last-resort guard');
+  // fall to lens_look's own cut — but never to core.ts's.
   assert.ok(String(pending.text).includes(`d=${pending.delivery} key`), 'the pending page is handed over whole-headed');
 
-  // Acknowledging page 1 moves to page 2 rather than rendering page 1 again.
-  const page2 = await run('lens_wait', { ack: pending.delivery, timeout_s: 5 });
-  assert.ok(serialized(page2) <= 12_000, `page 2 serialised to ${serialized(page2)}`);
-  assert.equal(page2.truncated, undefined, 'page 2 was cut by the last-resort guard');
-  assert.equal(String(page2.page).split('/')[0], '2');
-  assert.ok(!String(page2.text).includes('"row 0 '), 'page 2 is not page 1 over again');
+  // Acknowledging a page moves to the next one rather than rendering it again,
+  // and walking the whole keyframe hands over every row exactly once: no line
+  // is lost at a page boundary, and no page is over the cap.
+  const seen: string[] = [];
+  const collect = (out: Record<string, any>): void => {
+    assert.ok(serialized(out) <= 12_000, `${String(out.page)} serialised to ${serialized(out)}`);
+    assert.equal(out.truncated, undefined, `${String(out.page)} was truncated`);
+    for (const line of String(out.text).split('\n')) {
+      const row = /^[=+] [\d,]+ pty "(.*)"$/.exec(line);
+      if (row) seen.push(JSON.parse(`"${row[1]}"`) as string);
+    }
+  };
+  collect(page1);
+  const pages = Number(String(page1.page).split('/')[1]);
+  assert.ok(pages >= 2, 'a document this size is paged');
+  // The look above re-rendered page 1 under a new id, so that is what is
+  // outstanding; every page after it comes back through lens_wait, whose text
+  // is the delivery itself and is never wrapped or cut.
+  let ack = String(pending.delivery);
+  for (let n = 2; n <= pages; n++) {
+    const page = await run('lens_wait', { ack, timeout_s: 5 });
+    assert.equal(String(page.page).split('/')[0], String(n), 'each ack moves one page on');
+    collect(page);
+    ack = String(page.delivery);
+  }
+  assert.deepEqual(seen, rows, 'every row arrives exactly once, in order, across the pages');
 });
