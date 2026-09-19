@@ -15,6 +15,13 @@ import { isPermissionMode } from './types.ts';
 const endpoint = '/api/dev/agent-tools';
 const deviceId = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
 const remoteAppCleanup = new Map<string, () => void>();
+/** Tools whose result may carry image bytes: they become a conversation-local
+ *  attachment here, never a foreign file id. */
+const imaging = (name: string) => name === 'computer_screenshot' || name.startsWith('computer_app') || name.startsWith('lens_') || name.startsWith('overlay_');
+/** Tools whose caller identity is the conversation, not just the ward: a lens
+ *  consumer and a background app session are per agent, so the caller hash both
+ *  sides compute must include it. */
+const perAgentTool = (name: string) => name.startsWith('computer_app') || name.startsWith('lens_') || name.startsWith('overlay_');
 export async function agentDevices(user: number) {
   if (!isDesktop()) return { devices: listDevices(user) };
   const local = { id: 'local', name: os.hostname(), platform: process.platform, online: true };
@@ -36,7 +43,7 @@ export function deviceTool(name: string, args: Record<string, unknown>, ctx: Too
   if (args.device === undefined || args.device === 'local') {
     if (!isDesktop()) throw new DevError('Choose a device ID from list_devices; local tools are unavailable on the server.');
     const value = local(args, ctx);
-    return name === 'computer_screenshot' || name.startsWith('computer_app') ? Promise.resolve(value).then(v => storeImage(v, args, ctx)) : value;
+    return imaging(name) ? Promise.resolve(value).then(v => storeImage(v, args, ctx)) : value;
   }
   return remoteDeviceTool(name, args, ctx, local);
 }
@@ -46,7 +53,7 @@ async function remoteDeviceTool(name: string, args: Record<string, unknown>, ctx
   const pair = isDesktop() ? await rimeConnection(ctx.userId) : undefined;
   if (args.device === pair?.id) value = await local(args, ctx);
   else {
-    const agent = name.startsWith('computer_app') ? `${ctx.conv}:${ctx.task ?? ''}` : '';
+    const agent = perAgentTool(name) ? `${ctx.conv}:${ctx.task ?? ''}` : '';
     const caller = createHash('sha256').update(`${pair?.id ?? `server:${ctx.userId}`}:${ctx.ward}${agent ? `:${agent}` : ''}`).digest('hex');
     const request = new Request(`https://rimeward.invalid${endpoint}`, { method: 'POST',
       headers: { 'content-type': 'application/json' }, signal: ctx.signal,
@@ -98,7 +105,7 @@ async function remoteDeviceTool(name: string, args: Record<string, unknown>, ctx
     signal.addEventListener('abort', cancel, { once: true });
     if (signal.aborted) { cancel(); signal.throwIfAborted(); }
   }
-  return name === 'computer_screenshot' || name.startsWith('computer_app') ? storeImage(value, args, ctx) : value;
+  return imaging(name) ? storeImage(value, args, ctx) : value;
 }
 async function storeImage(value: unknown, args: Record<string, unknown>, ctx: ToolCtx) {
   // Store image bytes on the conversation's runtime, never a foreign attachment ID.
@@ -137,7 +144,7 @@ export async function relayAgentCaller(user: number, authentication: string | un
   const body = await toolBody(request);
   const ward = getDashboard(user).find(w => w.i === body?.ward && w.type === 'agent');
   if (!source || !ward || wardDevice(user, ward.i) !== source.id) throw new DevError('The agent source must match its signed-in computer and ward.', 403);
-  const agent = typeof body.name === 'string' && body.name.startsWith('computer_app') ? body.agent : '';
+  const agent = typeof body.name === 'string' && perAgentTool(body.name) ? body.agent : '';
   if (agent !== '' && (typeof agent !== 'string' || !/^[0-9]+:[a-zA-Z0-9:-]{0,100}$/.test(agent))) throw new DevError('Invalid background agent identity.', 403);
   return createHash('sha256').update(`${source.id}:${ward.i}${agent ? `:${agent}` : ''}`).digest('hex');
 }

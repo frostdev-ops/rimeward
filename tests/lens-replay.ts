@@ -230,7 +230,7 @@ const TERMINAL_TARGET = 's1';
 
 /** The dev runtime a terminal fixture stands in for: one session, whatever rows
  *  the last `term` step painted, and the stream every event rides. */
-function terminalFixture(now: () => number): { deps: TerminalDeps; inject(body: Record<string, unknown>): void } {
+export function terminalFixture(now: () => number): { deps: TerminalDeps; inject(body: Record<string, unknown>): void } {
   const session = {
     id: TERMINAL_TARGET,
     project: 'p',

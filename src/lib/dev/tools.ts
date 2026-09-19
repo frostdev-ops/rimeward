@@ -41,6 +41,8 @@ import { applyProjectPatch } from './apply-patch.ts';
 import { PATCH_EDIT_GUIDANCE } from './patch.ts';
 import { deviceTool, agentDevices } from './tool-routing.ts';
 import { computerStatus, computerScreenshot, computerInput, computerApp } from './computer.ts';
+import { LENS_TOOLS, LENS_TOOL_NAMES } from '../lens/tools.ts';
+import { lensToolRun } from '../lens/agent.ts';
 const str = (description: string) => ({ type: "string", description });
 const schema = (
   properties: Record<string, unknown>,
@@ -438,6 +440,17 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
     ),
     (a, c) => worktreeOp(c.userId, a.project, a.operation, a.name),
   ),
+  // The lens tools are one table (src/lib/lens/tools.ts) behind one runtime arg:
+  // the source they read is an argument, not a tool, so a terminal lens and the
+  // screen lens are the same ten tools.
+  ...Object.fromEntries(LENS_TOOL_NAMES.map(name => {
+    const tool = LENS_TOOLS[name];
+    return [name, { ...wrap(tool.kind, tool.description,
+      schema({ runtime: context.runtime, ...tool.inputSchema.properties }, ['runtime', ...tool.inputSchema.required]),
+      (a, c) => lensToolRun(name, a, c)),
+      // A wait parks for up to five minutes: the turn must be able to take it back.
+      ...(name === 'lens_wait' ? { cancellable: true } : {}) }];
+  })),
 };
 
 function workspaceParameters(def: ToolDef, extra: Record<string, unknown> = {}) {
