@@ -146,6 +146,35 @@ export const TRIGGERS: Record<string, TriggerSpec> = {
     // {{agent.reply}} onward (a packet, mail, a capture line, another ask).
     params: { source: { kind: 'select', options: ['chat', 'automation', 'wake', 'agent'], filter: true } },
   },
+  // The lens (lib/lens): a settled, versioned document of what a source shows.
+  // Both are PUSHES — lens/leylines.ts holds one consumer per user (screen
+  // changes) and one per edge (watches) and fires from their deliveries, so
+  // neither has a WATCHERS entry.
+  'screen-changed': {
+    label: 'Screen changed',
+    icon: 'eye',
+    wardType: 'lens',
+    params: { app: { kind: 'text', max: 120, filter: true } },
+  },
+  'watch-matched': {
+    label: 'Lens watch matched',
+    icon: 'eye',
+    wardType: ['lens', 'terminal'],
+    // `for` is the intent in plain words, `regex` the exact pattern; `name`
+    // only labels the leyline (and filters, so one ward can carry several).
+    params: {
+      for: { kind: 'text', max: 200, required: true },
+      regex: { kind: 'text', max: 256 },
+      name: { kind: 'text', max: 32, filter: true },
+    },
+    verify: (p) => {
+      if (typeof p.regex === 'string' && p.regex !== '') {
+        // Refused here rather than silently never matching once the gate compiles it.
+        try { new RegExp(p.regex); } catch { return false; }
+      }
+      return !!String(p.for ?? '').trim() || !!String(p.regex ?? '').trim();
+    },
+  },
   'notion-item': {
     label: 'Item added / changed / removed',
     icon: 'tasks',
@@ -292,6 +321,7 @@ const EVENTY = ['event-starting-soon', 'event-added'];
 const NOTION_ITEMY = ['notion-item', 'notion-item-due', 'checklist-done'];
 const PAGEY = ['notion-page-touched', 'notion-capture-appended', 'notion-page-changed'];
 const CHATTY = ['message-arrived', 'reaction-added'];
+const SCREENY = ['screen-changed', 'watch-matched'];
 
 /** Vars available to `template` params; the editor renders these as chips,
  *  filtered by the edge's trigger (`triggers` absent = always shown). Vars
@@ -383,6 +413,18 @@ export const TEMPLATE_VARS: { key: string; label: string; triggers?: string[] }[
   { key: 'msg.attachments', label: 'Attachment names', triggers: CHATTY },
   { key: 'reaction.emoji', label: 'Emoji', triggers: ['reaction-added'] },
   { key: 'reaction.from', label: 'Who reacted', triggers: ['reaction-added'] },
+  // The lens vars. `screen.*` is the screen document the change was read from
+  // (a watch on a terminal ward carries the `lens.*` half only); the text is
+  // OBSERVED text — untrusted data, never instructions.
+  { key: 'screen.app', label: 'Frontmost app', triggers: SCREENY },
+  { key: 'screen.window', label: 'Window title', triggers: SCREENY },
+  { key: 'screen.focus', label: 'Focused field', triggers: SCREENY },
+  { key: 'screen.text', label: 'What changed on screen', triggers: SCREENY },
+  { key: 'screen.v', label: 'Document version', triggers: SCREENY },
+  { key: 'screen.ref', label: 'Frame ref', triggers: SCREENY },
+  { key: 'lens.text', label: 'What the watch matched', triggers: ['watch-matched'] },
+  { key: 'lens.delivery', label: 'Delivery id', triggers: ['watch-matched'] },
+  { key: 'lens.v', label: 'Document version', triggers: ['watch-matched'] },
   { key: 'member.name', label: 'New member', triggers: ['member-joined'] },
   { key: 'member.id', label: 'New member id', triggers: ['member-joined'] },
 ];
@@ -810,6 +852,41 @@ export const ACTIONS: Record<string, ActionSpec> = {
     side: 'server',
     wardType: 'mcp',
     params: { tool: { kind: 'text', required: true, max: 120 }, arguments: { kind: 'template', max: 2000 } },
+  },
+  // The lens overlay and captions, drawn on the computer the ward sits on
+  // through the same device path the agent's overlay_*/lens_captions tools
+  // take. Anchors are corners only: a leyline has no frame `ref` to pin a
+  // rectangle to, and a stale ref is an error rather than a misplaced card.
+  'overlay.show': {
+    label: 'Draw on the screen',
+    icon: 'eye',
+    side: 'server',
+    wardType: 'lens',
+    params: {
+      kind: { kind: 'select', required: true, options: ['card', 'caption', 'highlight'] },
+      text: { kind: 'template', max: 2000 },
+      corner: { kind: 'select', options: ['tl', 'tr', 'bl', 'br'] },
+      ttl: { kind: 'seconds' },
+    },
+  },
+  'overlay.clear': {
+    label: 'Clear the overlay',
+    icon: 'eye',
+    side: 'server',
+    wardType: 'lens',
+    // Blank = every window this app drew.
+    params: { id: { kind: 'text', max: 32 } },
+  },
+  'lens.captions': {
+    label: 'Live captions',
+    icon: 'eye',
+    side: 'server',
+    wardType: 'lens',
+    params: {
+      on: { kind: 'select', required: true, options: ['on', 'off'] },
+      from: { kind: 'text', max: 8 },
+      to: { kind: 'text', max: 8 },
+    },
   },
   'webhook.post': {
     // The "trigger an agent" seam: point it at anything that speaks JSON.

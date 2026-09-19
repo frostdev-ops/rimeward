@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 
 import { getDb } from './db.ts';
 import { getDashboard } from './dashboard.ts';
-import { wardTitle } from './wards.ts';
+import { wardTitle, type WardInstance } from './wards.ts';
 import {
   MAX_FIRES,
   edgeMatches,
@@ -908,9 +908,57 @@ export const ACTION_EXECS: Record<string, (ctx: FireCtx, edge: LogicEdge) => Pro
     const result = await callTool(ctx.userId, e.action.ward!, String(e.action.params.tool), args);
     return toolText(result).slice(0, 500) || 'ok';
   },
+  'overlay.show': async (ctx, e) => {
+    const kind = String(e.action.params.kind);
+    await lensDeviceTool(ctx, e, 'overlay_show', {
+      id: `ly-${e.id}`,
+      kind,
+      text: renderTemplate(String(e.action.params.text ?? ''), ctx.vars),
+      // Corners only: a leyline has no frame `ref` to pin a rectangle to.
+      anchor: { corner: String(e.action.params.corner ?? 'tl') },
+      ...(e.action.params.ttl ? { ttl_s: Math.min(600, Number(e.action.params.ttl)) } : {}),
+    });
+    return `drew a ${kind}`;
+  },
+  'overlay.clear': async (ctx, e) => {
+    const id = String(e.action.params.id ?? '');
+    await lensDeviceTool(ctx, e, 'overlay_clear', id ? { id } : {});
+    return id ? `cleared ${id}` : 'cleared';
+  },
+  'lens.captions': async (ctx, e) => {
+    const on = e.action.params.on === 'on';
+    await lensDeviceTool(ctx, e, 'lens_captions', {
+      on,
+      ...(e.action.params.from ? { from: String(e.action.params.from) } : {}),
+      ...(e.action.params.to ? { to: String(e.action.params.to) } : {}),
+    });
+    return on ? 'captions on' : 'captions off';
+  },
   'audio.play': deliverClientAct,
   'youtube.play': deliverClientAct,
 };
+
+const overlayWindow = new Map<number, number[]>();
+const OVERLAY_CAP_PER_HOUR = 120;
+
+/** The lens write tools, down the same device path the agent's own calls take:
+ *  the ward names the computer (its device, or the page's), and the tool draws
+ *  there. Imported late — dev/tools.ts is the whole native tool surface. */
+async function lensDeviceTool(ctx: FireCtx, edge: LogicEdge, name: string, args: Record<string, unknown>): Promise<void> {
+  takeSlot(overlayWindow, ctx.userId, OVERLAY_CAP_PER_HOUR, 'overlay');
+  const [{ deviceTool }, { LOCAL_DEV_TOOLS }, { wardDevice }] = await Promise.all([
+    import('./dev/tool-routing.ts'),
+    import('./dev/tools.ts'),
+    import('./dev/instance.ts'),
+  ]);
+  const ward = edge.action.ward!;
+  await deviceTool(
+    name,
+    { runtime: 'desktop', device: wardDevice(ctx.userId, ward) ?? 'local', ...args },
+    { userId: ctx.userId, ward, conv: 0 },
+    LOCAL_DEV_TOOLS[name]!.run
+  );
+}
 
 // ---------------------------------------------------------- notebook helpers
 
@@ -1869,6 +1917,26 @@ export const WATCHERS: Record<string, WatcherSpec> = {
   },
 };
 
+/** The lens triggers are pushes, not probes: the tick only keeps their
+ *  consumers in step with the graph (lens/leylines.ts). Users it has touched
+ *  are remembered so the last lens edge (or ward) leaving still tears down. */
+const LENS_TRIGGERS = new Set(['screen-changed', 'watch-matched']);
+const lensUsers = new Set<number>();
+
+async function syncLensLeylines(userId: number, graph: LogicGraph, layout: WardInstance[]): Promise<void> {
+  const edges = graph.edges.filter((e) => e.enabled && LENS_TRIGGERS.has(e.source.trigger));
+  const wanted = edges.length > 0 || layout.some((w) => w.type === 'lens');
+  if (!wanted && !lensUsers.has(userId)) return; // nothing lens-shaped here: never load the lens
+  if (wanted) lensUsers.add(userId);
+  else lensUsers.delete(userId);
+  try {
+    const { syncLensEdges } = await import('./lens/leylines.ts');
+    syncLensEdges(userId, edges, layout);
+  } catch (err) {
+    console.error('[logic] lens leylines sync failed:', err);
+  }
+}
+
 // Keys are `${trigger}:${userId}:${ward}:${configJson}` — the config
 // fingerprint means re-pointing a ward (new service id, new checklist db)
 // gets a fresh baseline instead of a phantom transition fire.
@@ -1891,6 +1959,7 @@ export async function watchTick(now = Date.now()): Promise<void> {
     for (const { user_id: userId } of users) {
       const layout = getDashboard(userId);
       const graph = getGraph(userId, layout);
+      await syncLensLeylines(userId, graph, layout);
       const groups = new Map<string, { trigger: string; ward: string; edges: LogicEdge[] }>();
       for (const e of graph.edges) {
         if (!e.enabled || !WATCHERS[e.source.trigger]) continue;

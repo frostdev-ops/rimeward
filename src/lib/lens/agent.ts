@@ -34,6 +34,11 @@ export function consumerOf(ctx: ToolCtx): string {
   return `remote-${ctx.ward.slice(7, 39)}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 }
 
+/** The write tools draw on the screen; they read no document, so they have no
+ *  cursor and need no consumer. A leyline calls them with no conversation of
+ *  its own (logic-engine `lensDeviceTool`), which `consumerOf` would refuse. */
+const CONSUMERLESS = new Set<string>(['overlay_show', 'overlay_clear', 'lens_captions']);
+
 export async function lensToolRun(name: LensToolName, args: Record<string, any>, ctx: ToolCtx): Promise<unknown> {
   const tool = LENS_TOOLS[name];
   if (!tool) throw new DevError(`Unknown lens tool ${name}.`);
@@ -45,7 +50,7 @@ export async function lensToolRun(name: LensToolName, args: Record<string, any>,
       `No lens for source "${source}" on this computer. ${known ? `Available: ${known}.` : 'No lens source is available here.'}`
     );
   }
-  const r = await tool.call(core, consumerOf(ctx), args, {
+  const r = await tool.call(core, CONSUMERLESS.has(name) ? 'overlay' : consumerOf(ctx), args, {
     source,
     cap: Math.min(AGENT_CAP, RESULT_CAP),
     ...(ctx.signal ? { signal: ctx.signal } : {}),

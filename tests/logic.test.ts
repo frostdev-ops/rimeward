@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TARGETS } from '../src/lib/targets.ts';
 import type { WardInstance } from '../src/lib/wards.ts';
-import { edgeMatches, renderTemplate, validateGraph } from '../src/lib/logic.ts';
+import { TEMPLATE_VARS, edgeMatches, renderTemplate, validateGraph } from '../src/lib/logic.ts';
 
 const LAYOUT: WardInstance[] = [
   { i: 't1', type: 'timer', size: '1x1' },
@@ -22,6 +22,8 @@ const LAYOUT: WardInstance[] = [
   { i: 'g1', type: 'mail', size: '2x2', config: { account: 'google' } },
   { i: 'cl1', type: 'checklist', size: '2x2', config: { db: 'deadbeef-dead-beef-dead-beefdeadbeef' } },
   { i: 'nt1', type: 'notion-tasks', size: '2x2' },
+  { i: 'ln1', type: 'lens', size: '3x2' },
+  { i: 'tm1', type: 'terminal', size: '3x3' },
 ];
 
 const edge = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -296,4 +298,41 @@ test('notion-db wards anchor the notion triggers and checklist actions', () => {
   assert.ok(on({ action: { type: 'checklist.add', ward: 'nt1', params: { title: 'x' } } }));
   // a non-task ward is still refused
   assert.equal(on({ action: { type: 'checklist.add', ward: 'w1', params: { title: 'x' } } }), null);
+});
+
+test('the lens triggers anchor on lens and terminal wards; a watch needs something to match', () => {
+  assert.ok(graph([edge({ source: { ward: 'ln1', trigger: 'screen-changed', params: { app: 'Xcode' } } })]));
+  assert.equal(graph([edge({ source: { ward: 't1', trigger: 'screen-changed', params: {} } })]), null);
+  assert.equal(graph([edge({ source: { ward: 'tm1', trigger: 'screen-changed', params: {} } })]), null);
+
+  const watch = (params: Record<string, unknown>, ward = 'ln1') =>
+    graph([edge({ source: { ward, trigger: 'watch-matched', params } })]);
+  assert.ok(watch({ for: 'a build error' }));
+  assert.ok(watch({ for: 'a test failed', regex: 'FAIL', name: 'tests' }, 'tm1'));
+  assert.equal(watch({}), null); // `for` is required
+  assert.equal(watch({ for: '   ' }), null); // and must say something
+  assert.equal(watch({ for: 'a build error', regex: '(' }), null); // never compiles, never matches
+  assert.equal(watch({ for: 'x' }, 'w1'), null); // a weather ward has no lens
+});
+
+test('the overlay and caption actions are lens-ward writes', () => {
+  const act = (params: Record<string, unknown>, ward: string | undefined = 'ln1') =>
+    graph([edge({ action: { type: 'overlay.show', ward, params } })]);
+  const ok = act({ kind: 'card', text: 'now on {{screen.window}}', corner: 'tr', ttl: 20 });
+  assert.deepEqual(ok!.edges[0]!.action.params, { kind: 'card', text: 'now on {{screen.window}}', corner: 'tr', ttl: 20 });
+  assert.equal(act({ text: 'no kind' }), null);
+  assert.equal(act({ kind: 'sticker' }), null);
+  assert.equal(act({ kind: 'card', corner: 'middle' }), null);
+  assert.equal(act({ kind: 'card' }, 'f1'), null); // a flow ward draws nothing
+  assert.ok(graph([edge({ action: { type: 'overlay.clear', ward: 'ln1', params: { id: 'ly-e1' } } })]));
+  assert.ok(graph([edge({ action: { type: 'lens.captions', ward: 'ln1', params: { on: 'on', from: 'ja', to: 'en' } } })]));
+  assert.equal(graph([edge({ action: { type: 'lens.captions', ward: 'ln1', params: { from: 'ja' } } })]), null);
+});
+
+test('the lens template vars are offered to the lens triggers', () => {
+  const on = (key: string) => TEMPLATE_VARS.find((v) => v.key === key)?.triggers;
+  for (const key of ['screen.app', 'screen.window', 'screen.focus', 'screen.text', 'screen.v', 'screen.ref']) {
+    assert.deepEqual(on(key), ['screen-changed', 'watch-matched'], key);
+  }
+  for (const key of ['lens.text', 'lens.delivery', 'lens.v']) assert.deepEqual(on(key), ['watch-matched'], key);
 });
