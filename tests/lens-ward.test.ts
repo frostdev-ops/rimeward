@@ -55,3 +55,12 @@ test('pause is a settings row, not layout config', () => {
   setLensPaused(7, false);
   assert.equal(lensPaused(7), false);
 });
+
+test("the card's captions switch honours the ward's overlay knob like the tool does", async () => {
+  const { OVERLAY_OFF } = await import('../src/lib/lens/tools.ts');
+  const src = await import('node:fs').then((fs) => fs.readFileSync(new URL('../src/pages/api/lens/[ward].ts', import.meta.url), 'utf8'));
+  // The route refuses `captions {on:true}` with the tool's own message when the
+  // Screen lens ward has the overlay turned off — one knob, every door.
+  assert.match(src, /overlay === false\)\s*\n\s*return Response\.json\(\{ error: OVERLAY_OFF \}, \{ status: 409 \}\)/);
+  assert.equal(OVERLAY_OFF, 'the Screen lens ward has the overlay turned off');
+});

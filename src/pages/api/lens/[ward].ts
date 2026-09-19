@@ -4,6 +4,7 @@ import { lens } from '../../../lib/lens/core.ts';
 import { lensOverlay } from '../../../lib/lens/screen.ts';
 import { lensNativeStatus, lensPaused, lensWard, setLensPaused } from '../../../lib/lens/runtime.ts';
 import { lensSetting } from '../../../lib/lens/settings.ts';
+import { OVERLAY_OFF } from '../../../lib/lens/tools.ts';
 
 export const prerender = false;
 
@@ -70,7 +71,8 @@ export const GET: APIRoute = async ({ params, locals }) => {
 
 export const POST: APIRoute = async ({ params, request, locals }) => {
   const userId = locals.user!.userId;
-  if (!lensWard(userId, params.ward)) return Response.json({ error: 'not a lens ward' }, { status: 400 });
+  const ward = lensWard(userId, params.ward);
+  if (!ward) return Response.json({ error: 'not a lens ward' }, { status: 400 });
   const core = lens(userId, SOURCE);
   if (!core) return Response.json({ error: OFF }, { status: 409 });
   const body = (await request.json().catch(() => null)) as
@@ -85,6 +87,10 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       return Response.json({ paused: lensPaused(userId) });
     }
     case 'captions': {
+      // Captions are drawn on the overlay, so the ward's knob governs this door
+      // exactly as it governs the lens_captions tool.
+      if (body.on === true && (ward.config as Record<string, unknown> | undefined)?.overlay === false)
+        return Response.json({ error: OVERLAY_OFF }, { status: 409 });
       // A blank box is "whatever the stored pair says", never an empty code.
       const from = typeof body.from === 'string' && body.from !== '' ? body.from : undefined;
       const to = typeof body.to === 'string' && body.to !== '' ? body.to : undefined;

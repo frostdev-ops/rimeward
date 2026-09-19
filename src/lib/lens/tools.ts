@@ -255,7 +255,7 @@ function wardKnob(user: number | undefined, knob: 'pixels' | 'overlay'): boolean
 }
 const pixelsAllowed = (user: number | undefined): boolean => wardKnob(user, 'pixels');
 const PIXELS_OFF = 'the Screen lens ward has pixels turned off';
-const OVERLAY_OFF = 'the Screen lens ward has the overlay turned off';
+export const OVERLAY_OFF = 'the Screen lens ward has the overlay turned off';
 
 /** `f-<epoch>-<seq>`: the epoch is readable without asking the app, so a caller
  *  anchoring on a frame from a window the user has left is refused here. */
