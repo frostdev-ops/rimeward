@@ -164,5 +164,6 @@ delivery id.
 | `browser-navigation` | a new document is a new epoch and a keyframe forced by `url`; nothing the old page said survives it |
 | `browser-ticker` | a clock repainting the same box becomes live: twelve repaints, no delivery |
 | `browser-mutation-burst` | a message list growing a row at a time settles into exactly one delta, and distinct boxes never become live |
+| `browser-reveal` | a block revealed by an attribute change (`hidden`/`class`/`style`) is a repaint like any other, and settles into one delta |
 | `browser-scroll` | a scroll moves every box and changes no text: same ids, same version, no delivery |
 | `terminal-restart-resume` | a dev-stream `reset` is a gap: the document is repainted from the session and a keyframe is forced |

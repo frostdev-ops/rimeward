@@ -12,7 +12,7 @@ import { SOURCES, lens, releaseLens } from '../src/lib/lens/core.ts';
 import type { Feed, LensSettings, Source } from '../src/lib/lens/core.ts';
 import { sqliteStore } from '../src/lib/lens/store.ts';
 import type { Consumer } from '../src/lib/lens/types.ts';
-import { DELETE, GET } from '../src/pages/api/lens/watches.ts';
+import { DELETE, GET } from '../src/pages/api/lens-watches.ts';
 
 interface Watch {
   source: string;
@@ -27,11 +27,11 @@ interface Watch {
 const ctx = (userId: number, body?: unknown): APIContext =>
   ({
     locals: { user: { userId } },
-    request: new Request('https://rimeward.invalid/api/lens/watches', {
+    request: new Request('https://rimeward.invalid/api/lens-watches', {
       method: body === undefined ? 'GET' : 'DELETE',
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }),
-    url: new URL('https://rimeward.invalid/api/lens/watches'),
+    url: new URL('https://rimeward.invalid/api/lens-watches'),
   }) as unknown as APIContext;
 
 async function list(userId: number): Promise<Watch[]> {
@@ -100,7 +100,7 @@ test('the list spans every source, enriched only where a core is live', async (t
   const other = createUser('lens-watches-other@example.com', 'pw-lens-watches-1');
 
   // Source one: a terminal nobody is reading — the row is all there is.
-  storedWatch(user, 'terminal:s1', 'mon-abc', 'mon-abc:w1', { regex: 'error: ', visual: false, triage: false });
+  storedWatch(user, 'terminal:s1', 'cli-abc', 'cli-abc:w1', { regex: 'error: ', visual: false, triage: false });
   // Another user's watch on the same source, to prove the scope.
   storedWatch(other, 'terminal:s1', 'mon-xyz', 'mon-xyz:w1', { regex: 'theirs', visual: false, triage: false });
 
@@ -134,7 +134,7 @@ test('the list spans every source, enriched only where a core is live', async (t
   const watches = await list(user);
   assert.equal(watches.length, 2);
   const terminal = watches.find((w) => w.source === 'terminal:s1')!;
-  assert.equal(terminal.consumer, 'mon-abc');
+  assert.equal(terminal.consumer, 'cli-abc');
   assert.equal(terminal.mode, 'regex');
   assert.equal(terminal.evaluation, undefined, 'no core, so nothing has evaluated it');
   assert.equal(terminal.spec.regex, 'error: ');
@@ -156,9 +156,25 @@ test('the list spans every source, enriched only where a core is live', async (t
   assert.deepEqual((await list(user)).map((w) => w.source), ['terminal:s1']);
 
   // With no core, the row goes straight from the table.
-  assert.equal((await remove(user, { source: 'terminal:s1', consumer: 'mon-abc', id: terminal.id })).status, 200);
+  assert.equal((await remove(user, { source: 'terminal:s1', consumer: 'cli-abc', id: terminal.id })).status, 200);
   assert.deepEqual(await list(user), []);
   assert.deepEqual((await list(other)).length, 1, "another user's watch was never touched");
+});
+
+test('a leyline\'s and a monitor\'s watches are read-only here', async () => {
+  const user = createUser('lens-watches-managed@example.com', 'pw-lens-watches-1');
+  storedWatch(user, 'terminal:s3', 'edge-e1', 'edge-e1:w1', { regex: 'deployed', visual: false, triage: false });
+  storedWatch(user, 'browser:br1', 'mon-5', 'mon-5:w1', { regex: 'failed', visual: false, triage: false });
+
+  for (const [source, consumer, owner] of [
+    ['terminal:s3', 'edge-e1', 'leyline'],
+    ['browser:br1', 'mon-5', 'monitor'],
+  ] as const) {
+    const res = await remove(user, { source, consumer, id: `${consumer}:w1` });
+    assert.equal(res.status, 409);
+    assert.match(((await res.json()) as { error: string }).error, new RegExp(`remove the ${owner} instead`));
+  }
+  assert.equal((await list(user)).length, 2, 'both watches are still there');
 });
 
 test('a delete names a watch that exists, or says so', async () => {

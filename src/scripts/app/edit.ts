@@ -1782,7 +1782,7 @@ async function loadLensWatches(dialog: HTMLDialogElement): Promise<void> {
   const host = q('[data-ag-watches]', dialog);
   if (!host) return;
   host.replaceChildren(el('p', 'text-[10px] text-ink-faint', 'Loading…'));
-  const { status, data } = await getJson('/api/lens/watches');
+  const { status, data } = await getJson('/api/lens-watches');
   if (status !== 200) {
     host.replaceChildren(el('p', 'text-[10px] text-ink-faint', 'Watches are unavailable on this computer.'));
     return;
@@ -1802,13 +1802,20 @@ async function loadLensWatches(dialog: HTMLDialogElement): Promise<void> {
     const chip = el('span', `shrink-0 rounded px-1.5 py-0.5 text-[10px] ${weak ? 'bg-surface-2 text-warn' : 'bg-surface-2 text-ink-faint'}`,
       w.evaluation ?? w.mode);
     row.append(chip);
+    // A leyline's or a monitor's watch is theirs to add and to take away: the
+    // list says who owns it rather than offering a Remove that comes back.
+    const managed = w.consumer.startsWith('edge-') ? 'leyline' : w.consumer.startsWith('mon-') ? 'monitor' : '';
+    if (managed) {
+      row.append(el('span', 'shrink-0 text-[10px] text-ink-faint', `managed by its ${managed}`));
+      return row;
+    }
     const rm = el('button', 'shrink-0 text-ink-faint hover:text-err');
     rm.type = 'button';
     rm.title = 'Remove';
     rm.setAttribute('aria-label', `Remove watch ${watchSpec(w.spec)}`);
     rm.append(icon('close'));
     rm.addEventListener('click', () => void (async () => {
-      const res = await postJson('/api/lens/watches', { source: w.source, consumer: w.consumer, id: w.id }, 'DELETE');
+      const res = await postJson('/api/lens-watches', { source: w.source, consumer: w.consumer, id: w.id }, 'DELETE');
       if (!res.ok) toast(res.data?.error ?? 'Could not remove that watch.', undefined, true);
       await loadLensWatches(dialog);
     })());

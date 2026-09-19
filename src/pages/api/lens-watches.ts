@@ -1,6 +1,6 @@
 import type { APIRoute } from 'astro';
-import { peekLens } from '../../../lib/lens/core.ts';
-import { allWatches, deleteWatch } from '../../../lib/lens/store.ts';
+import { peekLens } from '../../lib/lens/core.ts';
+import { allWatches, deleteWatch } from '../../lib/lens/store.ts';
 
 export const prerender = false;
 
@@ -9,13 +9,13 @@ export const prerender = false;
 // (`lens_watch`), a monitor or a leyline — none of which is a place to see what
 // is still running.
 //
-// Not ward-scoped and not relayed: `wardDevice` finds no ward called `watches`,
-// so this answers from the runtime serving the dialog, which is the runtime
-// whose cores wrote the rows.
-// ponytail: a joined desktop forwards every unlisted /api path to the server
-// (lib/dev/instance-routing.ts), so its dialog lists the server's watches; a
-// per-device relay is worth building when a second runtime's watches need
-// managing from here, not before.
+// NOT under /api/lens/, which is the ward route's shape (`/api/lens/<ward>`): a
+// ward whose id is `watches` is a legal id, and it would shadow this. It is
+// local on a joined desktop too (`localPaths` in lib/dev/instance-routing.ts) —
+// a screen core only ever exists on the runtime that owns the screen, so the
+// list has to be that runtime's own.
+// ponytail: one runtime's watches at a time; a per-device relay is worth
+// building when a second runtime's watches need managing from here.
 
 export const GET: APIRoute = ({ locals }) => {
   const userId = locals.user!.userId;
@@ -57,6 +57,10 @@ export const DELETE: APIRoute = async ({ request, locals }) => {
   if (!allWatches(userId).some((w) => w.source === source && w.consumer === consumer && w.id === id)) {
     return Response.json({ error: 'no such watch' }, { status: 404 });
   }
+  // A leyline's or a monitor's watch is written by the thing that owns it and
+  // rewritten on its next sync: removing it here would come straight back.
+  const managed = consumer.startsWith('edge-') ? 'leyline' : consumer.startsWith('mon-') ? 'monitor' : '';
+  if (managed) return Response.json({ error: `This watch belongs to a ${managed}; remove the ${managed} instead.` }, { status: 409 });
   const core = peekLens(userId, source);
   // A live core holds its consumers' watches in memory: deleting the row under
   // it would leave the watch evaluating until the next restart.

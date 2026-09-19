@@ -287,8 +287,13 @@ export function screenSource(deps: ScreenDeps): Source {
       // `title`. Taking the snapshot's window as the one an `ax-window` restates
       // from is what keeps the two consistent: after a recovery the next retitle
       // still changes `title` alone, and never keyframes through `window`.
-      lastWindow = { kind: 'window', ...window };
-      for (const field of headMeta(lastWindow)) {
+      const stated = { kind: 'window', ...window };
+      // Only while this reply still describes the window on screen — the same
+      // test `latest` below makes. A newer `window` signal that arrived while
+      // the reply was in flight owns the header, and a stale one taken here
+      // would be what the next `ax-window` restated from.
+      if (num(snap.epoch) >= epoch) lastWindow = stated;
+      for (const field of headMeta(stated)) {
         meta[field.key] = { value: field.value, ...(field.bounds ? { bounds: field.bounds } : {}) };
       }
     }

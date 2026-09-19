@@ -494,6 +494,38 @@ test('a recovery keeps the window header consistent, so the next retitle is stil
   assert.equal(h.core.doc().meta.title?.value, '"(2) Inbox"');
 });
 
+test('a stale snapshot never becomes the window the next retitle restates', async () => {
+  const h = harness();
+  await primed(h, 'c');
+  // The snapshot describes epoch 1; by the time it lands the user has switched
+  // windows twice and epoch 5 is what is on screen.
+  h.reply('lens-snapshot', {
+    epoch: 1,
+    seq: 50,
+    app: { bundle: 'com.apple.dt.Xcode', name: 'Xcode', pid: 123 },
+    window: { id: 5375, title: 'main.rs', bounds: [195, 92, 656, 422], url: null, display: DISPLAY },
+    focus: null,
+    sheet: null,
+    axText: [wire('let x = 1', 34)],
+    ocr: [],
+    latest: null,
+    live: [],
+  });
+  h.inject(sig(51, { kind: 'gap', from: 11, to: 50 }));
+  h.inject(app(1, 'com.apple.Mail', 5));
+  h.inject(windowSig(2, 'Inbox — Mail', 5));
+  await h.tick();
+  assert.equal(h.core.doc().epoch, 5);
+
+  // The retitle restates the window it belongs to, never the one the stale
+  // snapshot carried.
+  h.inject(sig(10, { kind: 'ax-window', title: '(1) Inbox — Mail', bounds: [195, 92, 656, 422] }, 5));
+  h.clock.advance(750);
+  await h.tick();
+  assert.match(h.core.doc().meta.window?.value ?? '', /"Inbox — Mail"/);
+  assert.equal(h.core.doc().meta.title?.value, '"(1) Inbox — Mail"');
+});
+
 test('a lens started again comes live on the same core and re-reads the screen', async () => {
   const h = harness();
   await primed(h, 'c');

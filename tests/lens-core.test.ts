@@ -139,11 +139,13 @@ test('setDecider re-scores stored watches, in both directions, once per change',
   assert.equal(embedded, 1, 'the identity guard skips a re-sweep');
 
   // The helper goes down: the watch is still there, and says out loud that it
-  // is degraded — `unavailable` if nothing is left to judge it, `weak` if all
-  // that survives is the similarity of the vector it already has.
+  // can no longer be evaluated. The vector it already has is not a capability —
+  // nothing can embed the NEXT line to score against it — so a `for` watch
+  // reports `unavailable` rather than reading as one that still works.
   await core.setDecider();
   const gone = await core.watch('c');
-  assert.ok(gone.watches[0]?.evaluation !== undefined, `degraded, got ${JSON.stringify(gone.watches[0])}`);
+  assert.equal(gone.watches[0]?.mode, 'unavailable', JSON.stringify(gone.watches[0]));
+  assert.equal(gone.watches[0]?.evaluation, 'unavailable');
   assert.equal(core.status().consumers[0]?.watches, 1);
   core.close();
 });

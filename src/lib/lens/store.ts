@@ -270,7 +270,7 @@ export interface StoredWatch {
   createdAt: number;
 }
 
-/** Every watch this user has, across every source — what `/api/lens/watches`
+/** Every watch this user has, across every source — what `/api/lens-watches`
  *  lists. Read straight from the table: building a core per source to ask it
  *  would connect each source behind the question. */
 export function allWatches(userId: number): StoredWatch[] {

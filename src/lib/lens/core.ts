@@ -217,6 +217,12 @@ export class LensCore {
   #offline: string | null = null;
   #stop: (() => void) | null = null;
   #connected = false;
+  /** Bumped on every connect and disconnect: a `connect()` that lands after a
+   *  disconnect must stop what it started rather than install it. */
+  #connectToken = 0;
+  /** A reader that is not a consumer asked for the source (captions): it keeps
+   *  running even with nothing to deliver to. */
+  #pinned = false;
   #listeners: { [K in keyof CoreEvents]: Set<CoreEvents[K]> } = {
     delivery: new Set(),
     scene: new Set(),
@@ -383,6 +389,7 @@ export class LensCore {
    *  and acknowledge nothing, so a caption window is not something a cursor
    *  should be kept for — but it still needs the source to be running. */
   connect(): void {
+    this.#pinned = true;
     this.#connect();
   }
 
@@ -719,6 +726,11 @@ export class LensCore {
     this.#reports.delete(id);
     this.#forceKey.delete(id);
     this.#store.deleteConsumer(id);
+    // Nobody is reading this source any more: stop it. A source that polls
+    // (a browser page) would otherwise keep reading for the life of the
+    // process. The core, its document and its versions stay exactly as they
+    // are, and the next `consumer()` connects again.
+    if (this.#consumers.size === 0 && !this.#pinned) this.#disconnect();
   }
 
   consumerCount(): number {
@@ -729,14 +741,28 @@ export class LensCore {
   #connect(): void {
     if (this.#connected) return;
     this.#connected = true;
+    const token = ++this.#connectToken;
     void this.#deps.source.connect(this.#deps.user, this.#deps.target, this.feed).then(
       (stop) => {
+        // Disconnected while this connect was in flight: stop what it started.
+        if (token !== this.#connectToken) return stop();
         this.#stop = stop;
       },
       (err: unknown) => {
-        this.feed.offline(err instanceof Error ? err.message : String(err));
+        if (token === this.#connectToken) this.feed.offline(err instanceof Error ? err.message : String(err));
       }
     );
+  }
+
+  /** Stop the source, keeping the document and every stored consumer row. */
+  #disconnect(): void {
+    if (!this.#connected) return;
+    this.#connected = false;
+    this.#connectToken += 1;
+    const stop = this.#stop;
+    this.#stop = null;
+    this.#clearSettle();
+    stop?.();
   }
 
   #ack(consumer: Consumer, id: string | undefined): void {
@@ -817,8 +843,7 @@ export class LensCore {
   /** Shutdown plus the source: what `releaseLens` calls. */
   close(): void {
     this.settle();
-    this.#stop?.();
-    this.#stop = null;
+    this.#disconnect();
   }
 
   /** What is embedding for this core, when it says: the id a calibration row is
@@ -883,7 +908,11 @@ export class LensCore {
       // uncalibrated embedder counts as none (gate.ts `calibration`).
       watch.mode = watchMode(watch.spec, {
         ...caps,
-        embed: (watch.vector?.length ?? 0) > 0 && !cal.missing,
+        // The vector alone is not the capability: an embedder that went away
+        // leaves a stored vector nothing can score a NEW line against, so the
+        // watch says `triage-only` or `unavailable` rather than reading as a
+        // working `for` that quietly delivers on similarity.
+        embed: (watch.vector?.length ?? 0) > 0 && !cal.missing && this.#deps.decider?.embed !== undefined,
       });
     }
     this.#store.saveWatches(id, consumer.watches);

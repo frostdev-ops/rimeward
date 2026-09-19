@@ -78,7 +78,16 @@ function readInPage({ marker, force, cap, chars }: { marker: string; force: bool
         }
       }
     });
-    next.observer.observe(document, { subtree: true, childList: true, characterData: true });
+    // Attributes too, but only the three that reveal or hide something: a
+    // banner that was `hidden` (or display:none) becoming visible is a repaint
+    // nothing else reports. Every attribute would make a hover a repaint.
+    next.observer.observe(document, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden'],
+    });
     // Scrolling and resizing move every box without mutating anything: they ask
     // for a re-read, and carry no repaint of their own — the lines then only
     // move, which is no version bump and no delivery.

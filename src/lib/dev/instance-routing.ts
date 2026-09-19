@@ -13,7 +13,7 @@ import { shareDevRelay } from '../share-dev.ts';
 import { rtcIce, withRtcHeader } from '../browser/rtc.ts';
 import { isCredentialAction } from '../agent/provider-scope.ts';
 
-const localPaths = /^\/(?:_astro\/|api\/(?:native\/|logout(?:\?|$)|runtime(?:\?|$)|dashboard(?:\?|$)|instance(?:\/|\?|$)|dev\/|store\/|agent\/models(?:\?|$)|logic\/stream(?:\?|$)|account\/(?:theme|background)(?:\?|$))|desktop\/|dash(?:\/|\?|$)|brand\/|favicon|apple-touch-icon)/;
+const localPaths = /^\/(?:_astro\/|api\/(?:native\/|logout(?:\?|$)|runtime(?:\?|$)|dashboard(?:\?|$)|instance(?:\/|\?|$)|dev\/|store\/|agent\/models(?:\?|$)|lens-watches(?:\?|$)|logic\/stream(?:\?|$)|account\/(?:theme|background)(?:\?|$))|desktop\/|dash(?:\/|\?|$)|brand\/|favicon|apple-touch-icon)/;
 const wardPath = /^\/api\/(?:(?:agent|browser(?:\/stream)?|note|notebook|comms|lens)\/([^/?]+)|agent\/([^/?]+)\/voice)$/;
 /** Kept pure so routing can be checked without starting either backend. */
 export function requestWard(path: string): string | undefined {

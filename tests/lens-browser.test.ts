@@ -207,6 +207,36 @@ test('the browser source stops polling when the core closes', async (t) => {
   assert.equal(clock.pending(), 0, 'and leaves no timer behind');
 });
 
+test('the last consumer leaving stops the poll, and a new one starts it again', async (t) => {
+  const clock = new FakeClock(5_000_000);
+  const page = fakePage(clock);
+  page.show([['Only paragraph', 0]]);
+  const lensCore = core('lens-browser-idle@example.com', page, clock);
+  t.after(() => lensCore.close());
+
+  lensCore.consumer('c');
+  await poll(clock, 0);
+  await poll(clock);
+  const reads = page.reads;
+  assert.ok(reads > 0);
+  const v = lensCore.status().v;
+
+  // Nobody is reading this page any more: the poll stops, and the document it
+  // built stays exactly where it was.
+  lensCore.deleteConsumer('c');
+  await poll(clock, 5000);
+  assert.equal(page.reads, reads, 'a source nobody reads is not polled');
+  assert.equal(clock.pending(), 0, 'and owns no timer');
+  assert.equal(lensCore.status().v, v);
+  assert.equal(lensCore.doc().lines.length, 1);
+
+  // A new consumer reads it again: the source connects a second time.
+  lensCore.consumer('d');
+  await poll(clock, 0);
+  await poll(clock);
+  assert.ok(page.reads > reads, 'a new consumer starts the source again');
+});
+
 test('snapshot() is a full re-read even when nothing changed', async (t) => {
   const clock = new FakeClock(3_000_000);
   const page = fakePage(clock);

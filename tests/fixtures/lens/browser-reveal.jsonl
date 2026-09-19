@@ -1,0 +1,13 @@
+{"type":"note","text":"A banner revealed by an attribute change (hidden/class/style) is a repaint the page's observer reports like any other: the block appears and settles into one delta."}
+{"type":"page","url":"https://pages.test/checkout","title":"Checkout","nodes":[{"text":"Card number","rect":[0,0,600,24]},{"text":"Pay now","rect":[0,32,600,24]}]}
+{"type":"consumer","id":"c"}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"ack","consumer":"c"}
+{"type":"page","nodes":[{"text":"Card number","rect":[0,0,600,24]},{"text":"Pay now","rect":[0,32,600,24]},{"text":"That card was declined","rect":[0,64,600,24]}],"changed":[[0,64,600,24]]}
+{"type":"tick","ms":250}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"deliveries","consumer":"c","count":2}
+{"type":"expect","expect":"delta","consumer":"c"}
+{"type":"expect","expect":"lines","consumer":"c","plus":1,"minus":0}
+{"type":"expect","expect":"text","consumer":"c","contains":["That card was declined"]}
