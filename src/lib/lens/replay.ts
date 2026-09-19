@@ -68,8 +68,10 @@ const num = (v: unknown, fallback = 0): number => (typeof v === 'number' && Numb
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
 /** The fixtures name a consumer the way BlackIce did; these are the kinds the
- *  lens store keeps. */
-const KINDS: Record<string, ConsumerKind> = { mcp: 'conv', feed: 'monitor', conv: 'conv', cli: 'cli', monitor: 'monitor', edge: 'edge' };
+ *  lens store keeps. A BlackIce `mcp` consumer is an MCP host reading raw text
+ *  — our `cli` door — not the Rime conversation, whose deliveries are budgeted
+ *  for JSON (`deliveryCap`): the lifted page counts are the raw-text ones. */
+const KINDS: Record<string, ConsumerKind> = { mcp: 'cli', feed: 'monitor', conv: 'conv', cli: 'cli', monitor: 'monitor', edge: 'edge' };
 
 export function parseFixture(text: string): Step[] {
   const steps: Step[] = [];

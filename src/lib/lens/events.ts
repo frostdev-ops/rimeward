@@ -11,8 +11,8 @@
 //   app= / window= / focus= / …one line per meta entry… / incomplete
 //   = + - x,y,w,h src "text"      ~ x,y,w,h d=0.31 "interpreted" (ref f-7-298)
 //   live x,y,w,h                  … N lines omitted; use lens_text {rect} or lens_look
-import type { Consumer, Delivery, Diff, Dirty, Doc, Line, Rect, Region } from './types.ts';
-import { DELIVERY_CAP, OBSERVATION_BANNER } from './types.ts';
+import type { Consumer, ConsumerKind, Delivery, Diff, Dirty, Doc, Line, Rect, Region } from './types.ts';
+import { AGENT_DELIVERY_CAP, DELIVERY_CAP, OBSERVATION_BANNER } from './types.ts';
 import { iou, outsideLive } from './diff.ts';
 
 export interface Rendered {
@@ -26,6 +26,10 @@ export interface Rendered {
 }
 
 export const KEY_AFTER_DELTAS = 20;
+/** A conversation reads its deliveries as JSON, where escaping inflates the
+ *  text (types.ts). Every other consumer reads them raw. ponytail: `cli` joins
+ *  `conv` when the CLI MCP door lands (C4) and has a host cap to answer to. */
+export const deliveryCap = (kind: ConsumerKind): number => (kind === 'conv' ? AGENT_DELIVERY_CAP : DELIVERY_CAP);
 /** Header values are cut HERE and nowhere else: the gate reads them whole. */
 const META_VALUE_CAP = 120;
 const ID_DIGIT_RESERVE = 12; // widest delivery counter the header budget allows for
@@ -91,13 +95,13 @@ function headerReserve(consumer: Consumer, doc: Doc, pages: number): number {
   return header(id, 'key', doc.v, null, doc.epoch, doc.ref, pages, pages).length;
 }
 
-function pack(meta: string[], body: string[], reserve: number): string[][] {
+function pack(meta: string[], body: string[], reserve: number, cap: number): string[][] {
   const base = OBSERVATION_BANNER.length + 1 + reserve; // banner \n header
   const out: string[][] = [];
   let cur: string[] = [...meta]; // page 1 carries the metadata block
   let used = base + cur.reduce((n, l) => n + 1 + l.length, 0);
   for (const line of body) {
-    if (cur.length > 0 && used + 1 + line.length > DELIVERY_CAP) {
+    if (cur.length > 0 && used + 1 + line.length > cap) {
       out.push(cur);
       cur = [];
       used = base;
@@ -110,13 +114,14 @@ function pack(meta: string[], body: string[], reserve: number): string[][] {
 }
 
 function paginate(consumer: Consumer, doc: Doc, meta: string[], body: string[]): string[][] {
+  const cap = deliveryCap(consumer.kind);
   let pages = 1;
   for (let i = 0; i < 8; i++) {
-    const out = pack(meta, body, headerReserve(consumer, doc, pages));
+    const out = pack(meta, body, headerReserve(consumer, doc, pages), cap);
     if (out.length === pages) return out;
     pages = out.length; // reserve only grows with the page token, so this converges
   }
-  return pack(meta, body, headerReserve(consumer, doc, pages));
+  return pack(meta, body, headerReserve(consumer, doc, pages), cap);
 }
 
 export function renderKeyframe(doc: Doc, consumer: Consumer, opts: { page: number }): Rendered {
@@ -157,8 +162,9 @@ export function renderDelta(
     header(nextDeliveryId(consumer), 'delta', doc.v, since.v, doc.epoch, doc.ref, 1, 1),
     ...meta,
   ];
+  const cap = deliveryCap(consumer.kind);
   const full = [...head, ...body].join('\n');
-  if (full.length <= DELIVERY_CAP) {
+  if (full.length <= cap) {
     return { text: full, kind: 'delta', page: 1, pages: 1, truncated: false, omitted: 0, since: since.v };
   }
   // Never slice a line: keep whole lines while the omission receipt still fits.
@@ -166,7 +172,7 @@ export function renderDelta(
   let used = head.reduce((n, l) => n + l.length, 0) + head.length - 1;
   const kept: string[] = [];
   for (const line of body) {
-    if (used + 1 + line.length + tail > DELIVERY_CAP) break;
+    if (used + 1 + line.length + tail > cap) break;
     kept.push(line);
     used += 1 + line.length;
   }

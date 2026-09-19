@@ -79,6 +79,26 @@ test('agent relay source comes from the paired session and owned ward, never cal
   await assert.rejects(() => relayAgentCaller(user, session.id, request('rime-source')), /Sign in/);
 });
 
+test('a lens call carries its conversation into the caller hash, the same way on both sides', async () => {
+  const user = createUser('agent-lens-caller@example.com', null);
+  const device = claimEnrollment(enroll(user).code, 'Lens desktop', 'darwin', 1), session = createSession(user);
+  getDb().prepare('INSERT INTO device_sessions(device_id,session_id) VALUES(?,?)').run(device.id, session.id);
+  saveDashboard(user, [{ i: 'rime-source', type: 'agent', size: '3x2', device: device.id }]);
+  const call = (name: string, agent?: string) => new Request('https://rime.example/api/dev/agent-tools', {
+    method: 'POST', body: JSON.stringify({ ward: 'rime-source', name, ...(agent === undefined ? {} : { agent }) }),
+  });
+  // The sender (tool-routing remoteDeviceTool) hashes `<device>:<ward>:<conv>:<task>`
+  // for a per-agent tool; a lens consumer is per conversation, so both halves
+  // must agree or every relayed lens call is a 403.
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  assert.equal(await relayAgentCaller(user, session.id, call('lens_wait', '7:')), hash(`${device.id}:rime-source:7:`));
+  assert.equal(await relayAgentCaller(user, session.id, call('overlay_show', '7:task-3')), hash(`${device.id}:rime-source:7:task-3`));
+  // Everything else is per ward, and a caller-supplied agent does not change it.
+  for (const name of ['computer_status', 'computer_screenshot', 'terminal_read'])
+    assert.equal(await relayAgentCaller(user, session.id, call(name, '7:')), hash(`${device.id}:rime-source`));
+  await assert.rejects(() => relayAgentCaller(user, session.id, call('lens_look', 'not an agent')), /background agent identity/);
+});
+
 test('session IDs are not bearer credentials and a client-supplied account is ignored', async () => {
   const user = createUser('remote-viewer@example.com', null), other = createUser('remote-viewer-other@example.com', null);
   const pair = claimEnrollment(enroll(user).code, 'Test host', 'darwin', 1), auth = createSession(user);

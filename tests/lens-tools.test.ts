@@ -54,8 +54,9 @@ test('a consumer is the conversation, or the relayed caller when there is none',
   assert.match(remote, CONSUMER_ID);
   assert.equal(remote.length, 39);
 
-  // Anything else still has to be a legal consumer id.
-  assert.match(consumerOf({ userId: 1, ward: 'agent:Ops Board', conv: 0 } as ToolCtx), CONSUMER_ID);
+  // Anything else has no identity of its own: sharing one cursor between
+  // unrelated callers would hand each of them the other's deliveries.
+  assert.throws(() => consumerOf({ userId: 1, ward: 'agent:ag1', conv: 0 } as ToolCtx), /conversation or a relayed caller/);
 });
 
 test('an unknown source type is refused before any core is made', async () => {
@@ -83,10 +84,28 @@ test('the screen-only tools say so, and refuse a source they could never read', 
   });
 
   const ctx = { userId: user, ward: 'agent:ag1', conv: 5 } as ToolCtx;
+  const args = { rect: [0, 0, 10, 10], id: 'x', kind: 'card', anchor: { corner: 'tl' }, on: true };
   for (const name of ['lens_crop', 'lens_text', 'lens_describe', 'lens_captions', 'overlay_show', 'overlay_clear'] as const) {
-    const out = await lensToolRun(name, { source, rect: [0, 0, 10, 10], id: 'x', kind: 'card', anchor: { corner: 'tl' }, on: true }, ctx) as Record<string, string>;
-    assert.equal(out.error, `${name} is unavailable until the screen lens is bundled (B2/B4)`, name);
-    assert.equal(out.text, out.error);
+    await assert.rejects(
+      () => lensToolRun(name, { source, ...args }, ctx),
+      new RegExp(`^Error: ${name} is unavailable until the screen lens is bundled \\(B2/B4\\)$`),
+      name
+    );
+  }
+
+  // A source it could never read, screen lens or not, is refused by name.
+  const realTerminal = SOURCES.terminal;
+  SOURCES.terminal = (): Source => ({ async connect(_u: number, _t: string, _f: Feed) { return () => {}; } });
+  t.after(() => {
+    releaseLens(user, 'terminal:s1');
+    SOURCES.terminal = realTerminal;
+  });
+  for (const name of ['lens_crop', 'lens_text', 'lens_describe', 'lens_captions', 'overlay_show', 'overlay_clear'] as const) {
+    await assert.rejects(
+      () => lensToolRun(name, { source: 'terminal:s1', ...args }, ctx),
+      new RegExp(`^Error: ${name} reads a screen lens; terminal:s1 is not a screen source$`),
+      name
+    );
   }
 });
 
@@ -189,4 +208,58 @@ test('an image result becomes a conversation-local file through the device tool 
   assert.equal(typeof out.file_id, 'number');
   assert.ok(!('image' in out), 'the bytes never reach the model as base64');
   assert.equal(out.device, 'local');
+});
+
+test('a full document fits the agent output cap, page by page, and never livelocks', async (t) => {
+  const user = createUser('lens-tools-cap@example.com', 'pw-lens-tools-5');
+  saveDashboard(user, validateLayout([{ i: 'ag1', type: 'agent', size: '2x2', config: { provider: 'codex' } }])!);
+  const conversation = activeConversation(user, 'ag1', 'codex');
+  const ctx = { userId: user, ward: 'agent:ag1', conv: conversation.id } as ToolCtx;
+
+  const fixture = terminalFixture(() => Date.now());
+  const real = SOURCES.terminal;
+  SOURCES.terminal = (): Source => terminalSource(fixture.deps);
+  const source = 'terminal:big';
+  t.after(() => {
+    releaseLens(user, source);
+    SOURCES.terminal = real;
+  });
+  // Far more text than one delivery can carry: 400 rows of ~60 chars, with the
+  // quotes and backslashes that make a rendered line cost more as JSON.
+  fixture.inject({ rows: Array.from({ length: 400 }, (_, i) => `row ${i} "quoted" \\ path=/a/b/c/${i} — some output text here`), seq: 1 });
+  lens(user, source, (): LensSettings => ({ settleMs: 0, minLines: 1 }));
+
+  const run = (name: 'lens_look' | 'lens_wait', args: Record<string, unknown> = {}) =>
+    lensToolRun(name, { source, ...args }, ctx) as Promise<Record<string, any>>;
+  // What core.ts measures before it drops a whole result (OUTPUT_CAP).
+  const serialized = (out: unknown) => JSON.stringify(out).length;
+
+  // Nothing may need the last-resort cut in lensToolRun: a result that reaches
+  // it is one the consumer's own cap got wrong. (lens_look's own tail, which
+  // names lens_wait, is the designed cut for a document larger than one read.)
+  const guardCut = 'another lens_wait';
+  const look = await run('lens_look');
+  assert.ok(serialized(look) <= 12_000, `lens_look serialised to ${serialized(look)}`);
+  assert.ok(!String(look.text).includes(guardCut), 'lens_look was cut by the last-resort guard');
+
+  const page1 = await run('lens_wait', { timeout_s: 5 });
+  assert.ok(serialized(page1) <= 12_000, `page 1 serialised to ${serialized(page1)}`);
+  assert.equal(page1.kind, 'key');
+  assert.match(String(page1.page), /^1\/[2-9]\d*$/, 'a document this size is paged');
+  assert.equal(page1.truncated, undefined, 'page 1 was cut by the last-resort guard');
+
+  // The pending page is handed over again inside a look, which must also fit.
+  const pending = await run('lens_look');
+  assert.ok(serialized(pending) <= 12_000, `look with a pending page serialised to ${serialized(pending)}`);
+  // A look wraps the pending page in its own header, so the page's tail can
+  // fall to lens_look's cut — but never to the guard, and never to core.ts.
+  assert.ok(!String(pending.text).includes(guardCut), 'the pending page was cut by the last-resort guard');
+  assert.ok(String(pending.text).includes(`d=${pending.delivery} key`), 'the pending page is handed over whole-headed');
+
+  // Acknowledging page 1 moves to page 2 rather than rendering page 1 again.
+  const page2 = await run('lens_wait', { ack: pending.delivery, timeout_s: 5 });
+  assert.ok(serialized(page2) <= 12_000, `page 2 serialised to ${serialized(page2)}`);
+  assert.equal(page2.truncated, undefined, 'page 2 was cut by the last-resort guard');
+  assert.equal(String(page2.page).split('/')[0], '2');
+  assert.ok(!String(page2.text).includes('"row 0 '), 'page 2 is not page 1 over again');
 });

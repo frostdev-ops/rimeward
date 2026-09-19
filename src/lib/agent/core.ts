@@ -1308,7 +1308,7 @@ async function loop(
       if (r.step) steps.push(r.step);
       pushOutput(cfg.provider, items, r.call, r.output);
     }
-    const images = settled.flatMap(r => r && (['computer_screenshot', 'computer_app_state', 'computer_app_input', 'lens_crop', 'lens_look', 'render_document_page', 'browser_download'].includes(r.call.name) || r.call.name.startsWith('mcp__')) && r.output && typeof r.output === 'object' && 'file_id' in r.output && typeof r.output.file_id === 'number' && getAttachment(ctx.userId, r.output.file_id)?.mime.startsWith('image/') ? [r.output.file_id] : []);
+    const images = settled.flatMap(r => r && (['computer_screenshot', 'computer_app_state', 'computer_app_input', 'lens_crop', 'render_document_page', 'browser_download'].includes(r.call.name) || r.call.name.startsWith('mcp__')) && r.output && typeof r.output === 'object' && 'file_id' in r.output && typeof r.output.file_id === 'number' && getAttachment(ctx.userId, r.output.file_id)?.mime.startsWith('image/') ? [r.output.file_id] : []);
     if (park.cur) {
       const pending = parkConfirm(cfg.conv, { call_id: park.cur.call.call_id, name: park.cur.call.name, type: park.cur.call.type, workspace: ctx.workspace, args: park.cur.args, images,revision:park.cur.revision, cli: ctx.cli });
       emit?.({ type: 'pending', pending });

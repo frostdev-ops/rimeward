@@ -212,6 +212,51 @@ export function candidates(
   };
 }
 
+/** The watch grammar, shared by every door that accepts one (the `lens_watch`
+ *  tool, a monitor source). Unknown keys are refused rather than ignored: a
+ *  misspelled `regexp` would otherwise be a watch that silently matches
+ *  everything. `triage` defaults to the caller's own policy. */
+const WATCH_KEYS = ['for', 'regex', 'filter', 'rect', 'visual', 'threshold', 'triage'] as const;
+
+export function parseWatchSpec(raw: unknown, defaults: { triage: boolean } = { triage: true }): WatchSpec {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('A watch must be an object.');
+  const r = raw as Record<string, unknown>;
+  const unknown = Object.keys(r).filter((key) => !(WATCH_KEYS as readonly string[]).includes(key));
+  if (unknown.length > 0) throw Error(`Unknown watch field(s): ${unknown.join(', ')}. Use ${WATCH_KEYS.join(', ')}.`);
+  const watch: WatchSpec = { visual: false, triage: defaults.triage };
+  for (const field of ['visual', 'triage'] as const) {
+    if (r[field] === undefined) continue;
+    if (typeof r[field] !== 'boolean') throw Error(`Watch ${field} must be true or false.`);
+    watch[field] = r[field];
+  }
+  if (r.for !== undefined) {
+    if (typeof r.for !== 'string' || r.for.length > 500) throw Error('Watch for must be at most 500 characters of plain words.');
+    watch.for = r.for;
+  }
+  if (r.regex !== undefined) {
+    if (typeof r.regex !== 'string' || r.regex.length > 256) throw Error('Watch regex must be at most 256 characters.');
+    // Rejected here rather than silently never matching once the gate compiles it.
+    try { new RegExp(r.regex); } catch (e) { throw Error(`Watch regex is not a valid pattern: ${e instanceof Error ? e.message : String(e)}`); }
+    watch.regex = r.regex;
+  }
+  if (r.filter !== undefined) {
+    const filter = r.filter;
+    if (!filter || typeof filter !== 'object' || Array.isArray(filter) || Object.keys(filter).length > 20 ||
+        Object.values(filter).some((v) => typeof v !== 'string' || v.length > 200)) throw Error('Watch filter must be at most 20 header/text values of 200 characters.');
+    watch.filter = filter as Record<string, unknown>;
+  }
+  if (r.rect !== undefined) {
+    const rect = r.rect;
+    if (!Array.isArray(rect) || rect.length !== 4 || rect.some((n) => typeof n !== 'number' || !Number.isFinite(n))) throw Error('Watch rect must be [x,y,w,h].');
+    watch.rect = rect as Rect;
+  }
+  if (r.threshold !== undefined) {
+    if (typeof r.threshold !== 'number' || !(r.threshold >= 0 && r.threshold <= 1)) throw Error('Watch threshold must be 0–1.');
+    watch.threshold = r.threshold;
+  }
+  return watch;
+}
+
 /** The mode a watch will actually run in, given what this machine can do.
  *  `caps.embed` is per watch: it means "this watch has a vector", not "the
  *  embedder exists", because a `for` without a vector has to go to triage. */

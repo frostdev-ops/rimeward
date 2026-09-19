@@ -15,6 +15,8 @@ import { TRIGGERS, wardTypes } from '../logic.ts';
 // The CLI chrome grammar lives with the terminal lens source; this branch reads it unchanged.
 import { cliKey, stableKey, terminalContent } from '../lens/terminal.ts';
 import { lens } from '../lens/core.ts';
+// The watch grammar is the lens's own (the tool schema in lens/tools.ts is the same fields).
+import { parseWatchSpec } from '../lens/gate.ts';
 import { DELIVERY_CAP, OBSERVATION_BANNER } from '../lens/types.ts';
 import type { Rect, WatchSpec } from '../lens/types.ts';
 
@@ -42,42 +44,10 @@ export function parseMonitorSource(raw:unknown): MonitorSource {
     if (!Array.isArray(values) || values.length > 20 || values.some(x => typeof x !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(x))) throw Error(`Select at most 20 response ${field}.`);
     out[field] = values;
   }
-  if (r.watch !== undefined) out.watch = parseWatch(r.watch);
+  if (r.watch !== undefined) out.watch = parseWatchSpec(r.watch,{ triage:false });
   return out;
 }
 /** The lens watch a lens-backed source holds its deliveries behind. */
-function parseWatch(raw:unknown): WatchSpec {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('Monitor source watch must be an object.');
-  const r = raw as Record<string,unknown>, watch:WatchSpec = { visual:false,triage:false };
-  for (const field of ['visual','triage'] as const) {
-    if (r[field] === undefined) continue;
-    if (typeof r[field] !== 'boolean') throw Error(`Watch ${field} must be true or false.`);
-    watch[field] = r[field];
-  }
-  for (const field of ['for','regex'] as const) {
-    if (r[field] === undefined) continue;
-    if (typeof r[field] !== 'string' || r[field].length > 500) throw Error(`Invalid watch ${field}.`);
-    watch[field] = r[field];
-  }
-  // Rejected here rather than silently never matching once the gate compiles it.
-  if (watch.regex !== undefined) try { new RegExp(watch.regex); } catch (e) { throw Error(`Watch regex is not a valid pattern: ${e instanceof Error ? e.message : String(e)}`); }
-  if (r.filter !== undefined) {
-    const filter = r.filter;
-    if (!filter || typeof filter !== 'object' || Array.isArray(filter) || Object.keys(filter).length > 20 ||
-        Object.values(filter).some(v => typeof v !== 'string' || v.length > 200)) throw Error('Watch filter must be at most 20 header/text values of 200 characters.');
-    watch.filter = filter as Record<string,unknown>;
-  }
-  if (r.rect !== undefined) {
-    const rect = r.rect;
-    if (!Array.isArray(rect) || rect.length !== 4 || rect.some(n => typeof n !== 'number' || !Number.isFinite(n))) throw Error('Watch rect must be [x,y,w,h].');
-    watch.rect = rect as Rect;
-  }
-  if (r.threshold !== undefined) {
-    if (typeof r.threshold !== 'number' || !(r.threshold >= 0 && r.threshold <= 1)) throw Error('Watch threshold must be 0–1.');
-    watch.threshold = r.threshold;
-  }
-  return watch;
-}
 export function validateMonitorSource(user:number,s:MonitorSource): void {
   const ward = getDashboard(user).find(w => w.i === s.target);
   switch (s.type) {
