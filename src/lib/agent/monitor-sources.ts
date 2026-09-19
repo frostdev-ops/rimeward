@@ -15,6 +15,7 @@ import { TRIGGERS, wardTypes } from '../logic.ts';
 // The CLI chrome grammar lives with the terminal lens source; this branch reads it unchanged.
 import { cliKey, stableKey, terminalContent } from '../lens/terminal.ts';
 import { lens } from '../lens/core.ts';
+import { DELIVERY_CAP, OBSERVATION_BANNER } from '../lens/types.ts';
 import type { Rect, WatchSpec } from '../lens/types.ts';
 
 export interface MonitorSource { type:'terminal'|'file'|'browser'|'agent'|'note'|'notebook'|'http'|'comms'|'event';
@@ -58,9 +59,12 @@ function parseWatch(raw:unknown): WatchSpec {
     if (typeof r[field] !== 'string' || r[field].length > 500) throw Error(`Invalid watch ${field}.`);
     watch[field] = r[field];
   }
+  // Rejected here rather than silently never matching once the gate compiles it.
+  if (watch.regex !== undefined) try { new RegExp(watch.regex); } catch (e) { throw Error(`Watch regex is not a valid pattern: ${e instanceof Error ? e.message : String(e)}`); }
   if (r.filter !== undefined) {
     const filter = r.filter;
-    if (!filter || typeof filter !== 'object' || Array.isArray(filter) || Object.values(filter).some(v => typeof v !== 'string')) throw Error('Watch filter must be an object of header/text values.');
+    if (!filter || typeof filter !== 'object' || Array.isArray(filter) || Object.keys(filter).length > 20 ||
+        Object.values(filter).some(v => typeof v !== 'string' || v.length > 200)) throw Error('Watch filter must be at most 20 header/text values of 200 characters.');
     watch.filter = filter as Record<string,unknown>;
   }
   if (r.rect !== undefined) {
@@ -109,11 +113,21 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
     await core.watch(consumer,{ remove:held.watches.map(w => w.id),...(s.watch ? { add:[s.watch] } : {}),...(s.intervalSeconds === undefined ? {} : { minIntervalS:s.intervalSeconds }) });
     const off = core.on('delivery',(id,d) => {
       if (id !== consumer) return;
-      emit(d.delivery,{ eventType:d.kind,text:d.text,v:d.v,epoch:d.epoch,delivery:d.delivery,source },d.kind === 'key');
+      // Only a consumer's FIRST keyframe is a baseline (nothing acknowledged yet, so the
+      // delivery has nothing to be a delta from). Every later keyframe — a session exit or
+      // a resize, the one after a run of deltas, a truncated delta, gap recovery — carries
+      // an observation the monitor's filter has to see.
+      const baseline = d.kind === 'key' && held.cursor === null && held.baseline === null;
+      emit(d.delivery,{ eventType:d.kind,text:d.text,v:d.v,epoch:d.epoch,delivery:d.delivery,source },baseline);
     });
-    // A delivery this consumer never acknowledged is still its next one: hand it over
-    // again (the core re-renders it from the unchanged cursor) now that it is listening.
-    if (held.delivered) core.look(consumer,{ fields:[] });
+    // One baseline per connect: it is what gives the monitor's cursor a `previous` (a
+    // `changed` filter would otherwise fire on the first delta after a monitor update
+    // reset that cursor). Never acknowledged, so it moves nothing — and the same call
+    // hands over a delivery this consumer never acknowledged, which is still its next one.
+    const view = core.look(consumer,{ fields:['meta','text'] });
+    const head = Object.entries(view.meta ?? {}).map(([key,field]) => `${key}=${field.value}`);
+    const text = [OBSERVATION_BANNER,...head,...(view.lines ?? []).map(line => line.text)].join('\n').slice(0,DELIVERY_CAP);
+    emit(`baseline:${randomUUID()}`,{ eventType:'baseline',text,v:view.v,epoch:view.epoch,source },true);
     // ponytail: stopping is dropping the listener. The core and the consumer row
     // outlive it on purpose — that is what an unacknowledged delivery survives.
     return off;

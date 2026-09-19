@@ -43,7 +43,7 @@ async function judgeObservation(user:number, d:DecisionFilter, text:string, sour
   return { at:Date.now(),match:d.combine === 'all' ? hits.every(Boolean) : hits.some(Boolean),answers:p,model,ms };
 }
 type Owner = Pick<ToolCtx,'userId'|'ward'> & Partial<Pick<ToolCtx,'conv'>>;
-const subscriptions = new Map<string,{ revision:number; close:()=>void; chain:Promise<unknown>; pending:number }>();
+const subscriptions = new Map<string,{ revision:number; close:()=>void; chain:Promise<unknown>; pending:number; user:number; lens:string|null }>();
 const observationChains = new Map<string,Promise<unknown>>();
 const queued = new Set<string>(), retryAt = new Map<string,number>(), publishedAt = new Map<string,number>();
 let timer:ReturnType<typeof setInterval> | undefined, ticking = false;
@@ -68,6 +68,10 @@ export function monitorConsumer(id:string): string {
   const tail = id.replace(/^monitor:/,'');
   return `mon-${/^[a-z0-9-]{1,36}$/.test(tail) ? tail : createHash('sha256').update(id).digest('hex').slice(0,32)}`;
 }
+/** The one place a monitor stops being a lens consumer. */
+function dropConsumer(user:number,source:string,monitor:string): void {
+  try { lens(user,source)?.deleteConsumer(monitorConsumer(monitor)); } catch { /* nothing to drop */ }
+}
 /** One delivery acknowledged: the lens is free to render the next one from here. */
 function ackLens(r:MonitorRow,delivery:string): void {
   const source = lensSource(r); if (!source) return;
@@ -76,8 +80,7 @@ function ackLens(r:MonitorRow,delivery:string): void {
 }
 /** A monitor that is gone stops being a consumer: its cursor, watches and events go with it. */
 function dropLensConsumer(r:MonitorRow): void {
-  const source = lensSource(r); if (!source) return;
-  try { lens(r.user_id,source)?.deleteConsumer(monitorConsumer(r.id)); } catch { /* nothing to drop */ }
+  const source = lensSource(r); if (source) dropConsumer(r.user_id,source,r.id);
 }
 function sourceScope(r:MonitorRow): string {
   const source:MonitorSource = JSON.parse(r.source);
@@ -326,7 +329,11 @@ export async function tickMonitors(): Promise<void> {
   try {
     for (const row of getDb().prepare('SELECT DISTINCT user_id FROM agent_monitors').all() as { user_id:number }[]) reconcileAgentMonitors(row.user_id);
     const rows = getDb().prepare('SELECT * FROM agent_monitors').all() as MonitorRow[], live = new Set(rows.map(r => r.id));
-    for (const id of subscriptions.keys()) if (!live.has(id)) stopSubscription(id);
+    // A row deleted behind our back (another runtime, a cascade) takes its consumer too.
+    for (const id of [...subscriptions.keys()]) if (!live.has(id)) {
+      const gone = subscriptions.get(id); stopSubscription(id);
+      if (gone?.lens) dropConsumer(gone.user,gone.lens,id);
+    }
     for (const id of observationChains.keys()) if (!live.has(id)) observationChains.delete(id);
     for (const r of rows) {
       if (!validMonitor(r)) {
@@ -338,8 +345,8 @@ export async function tickMonitors(): Promise<void> {
       }
       const current = subscriptions.get(r.id);
       if (!current && Date.now() >= (retryAt.get(r.id) ?? 0)) {
-        const state = { revision:r.revision,close:() => {},chain:observationChains.get(r.id) ?? Promise.resolve(),pending:0 }; subscriptions.set(r.id,state);
-        const lensBacked = lensSource(r) !== null;
+        const state = { revision:r.revision,close:() => {},chain:observationChains.get(r.id) ?? Promise.resolve(),pending:0,user:r.user_id,lens:lensSource(r) }; subscriptions.set(r.id,state);
+        const lensBacked = state.lens !== null;
         try {
           state.close = await connectMonitorSource(r.user_id,JSON.parse(r.source),(key,data,baseline) => {
             if (subscriptions.get(r.id) !== state) return;

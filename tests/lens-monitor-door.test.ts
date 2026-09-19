@@ -1,5 +1,6 @@
 import './_setup.ts';
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -49,7 +50,7 @@ import type { RuntimeEvent } from '../src/lib/dev/types.ts';
 
 // The dev runtime the lens terminal source reads: whatever `paint()` last wrote,
 // announced on the stream the same way a real session announces its output.
-function fakeTerminal(target: string): { deps: TerminalDeps; paint(rows: string[]): void } {
+function fakeTerminal(target: string): { deps: TerminalDeps; paint(rows: string[]): void; exit(code: number): void } {
   const session = { id: target, project: 'p', kind: 'claude', state: 'running', exitCode: null, cols: 80, rows: 24, title: 'claude' };
   let lines: string[] = [];
   let sequence = 0;
@@ -72,6 +73,14 @@ function fakeTerminal(target: string): { deps: TerminalDeps; paint(rows: string[
       sequence += 1;
       for (const fn of [...listeners]) fn({ sequence, type: 'output', id: target, data: { sequence } });
     },
+    /** The session ends: a `session` header change, which forces a keyframe. */
+    exit(code: number): void {
+      session.state = 'exited';
+      session.exitCode = code as never;
+      sequence += 1;
+      for (const fn of [...listeners])
+        fn({ sequence, type: 'session', id: target, data: { state: session.state, exitCode: code, cols: session.cols, rows: session.rows } });
+    },
   };
 }
 
@@ -93,17 +102,17 @@ async function until(what: string, fn: () => boolean, ms = 4000): Promise<void> 
   assert.fail(`timed out waiting for ${what}`);
 }
 
-test('a monitor consumes lens deliveries: baseline, delta, notice, ack, delete', async (t) => {
-  const user = createUser('lens-monitor@example.com', 'pw-lens-monitor-1');
+/** A user, a real session (only so `validateMonitorSource` finds one), the fake dev deps
+ *  the lens actually reads, and one monitor row on it. */
+async function setup(t: TestContext, email: string, monitor: string, filter: unknown) {
+  const user = createUser(email, 'pw-lens-monitor-1');
   saveDashboard(user, validateLayout([{ i: 'ag1', type: 'agent', size: '2x2', config: { provider: 'codex' } }])!);
-
-  // A real session only so `validateMonitorSource` finds one; every row the lens
-  // reads comes from the fake deps below.
   const root = fs.mkdtempSync(os.tmpdir() + '/fdlens-');
   const project = addProject(user, root);
   const session = await startSession(user, { project: project.id, kind: 'shell' });
+  const sourceId = `terminal:${session.id}`;
   t.after(async () => {
-    releaseLens(user, `terminal:${session.id}`);
+    releaseLens(user, sourceId);
     shutdownAgentMonitors();
     await shutdownTerminals();
     fs.rmSync(root, { recursive: true, force: true });
@@ -115,17 +124,14 @@ test('a monitor consumes lens deliveries: baseline, delta, notice, ack, delete',
   t.after(() => {
     SOURCES.terminal = real;
   });
-  const sourceId = `terminal:${session.id}`;
   // Created here so the core settles instantly; `connectMonitorSource` reuses it.
-  const core = lens(user, sourceId, (): LensSettings => ({ settleMs: 0, minLines: 1 }));
-  assert.ok(core);
+  assert.ok(lens(user, sourceId, (): LensSettings => ({ settleMs: 0, minLines: 1 })));
 
   const conversation = activeConversation(user, 'ag1', 'codex');
   // A task conversation never wakes from `tickMonitors`, which keeps the door under
   // test (deliver → record → notice → ack) clear of a headless turn.
   db().prepare("UPDATE agent_conversations SET task_id='task-lens' WHERE id=?").run(conversation.id);
 
-  const monitor = 'monitor:11111111-2222-3333-4444-555555555555';
   const consumer = monitorConsumer(monitor);
   assert.match(consumer, /^[a-z0-9-]{1,40}$/);
   db()
@@ -138,17 +144,38 @@ test('a monitor consumes lens deliveries: baseline, delta, notice, ack, delete',
       'ag1',
       conversation.id,
       monitorRuntime(),
-      'build errors',
+      'observations',
       JSON.stringify({ type: 'terminal', target: session.id }),
-      JSON.stringify(parseMonitorFilter({ field: 'text', op: 'contains', value: 'error' })),
+      JSON.stringify(parseMonitorFilter(filter)),
       'watching',
       1,
       Date.now()
     );
+  return { user, sourceId, consumer, terminal, conversation };
+}
+
+test('a monitor consumes lens deliveries: baseline, delta, notice, ack, delete', async (t) => {
+  const monitor = 'monitor:11111111-2222-3333-4444-555555555555';
+  const { user, sourceId, consumer, terminal, conversation } = await setup(t, 'lens-monitor@example.com', monitor, {
+    field: 'text',
+    op: 'contains',
+    value: 'error',
+  });
 
   terminal.paint(['ready']);
   await tickMonitors();
   await until('the consumer to be attached', () => consumerRow(user, sourceId, consumer) !== undefined);
+  // The connect baseline (never acknowledged, never a delivery) is what gives the monitor
+  // a `previous`, so a `changed` filter cannot fire on the first delta after a reset.
+  await until('the connect baseline to be recorded', () => {
+    const row = db().prepare('SELECT cursor FROM agent_monitors WHERE id=?').get(monitor) as { cursor: string };
+    return (JSON.parse(row.cursor).previous as { eventType?: string } | undefined)?.eventType === 'baseline';
+  });
+  assert.equal(
+    (db().prepare('SELECT count(*) AS n FROM lens_events WHERE user_id=? AND source=? AND consumer_id=?').get(user, sourceId, consumer) as { n: number }).n,
+    0,
+    'the connect baseline is not a delivery'
+  );
 
   // The first delivery is the whole document: a keyframe, which the monitor records
   // as a baseline and acknowledges without matching anything.
@@ -209,4 +236,33 @@ test('a monitor consumes lens deliveries: baseline, delta, notice, ack, delete',
     (db().prepare('SELECT count(*) AS n FROM lens_events WHERE user_id=? AND source=? AND consumer_id=?').get(user, sourceId, consumer) as { n: number }).n,
     0
   );
+});
+
+test('every keyframe after the first is an observation, not a baseline', async (t) => {
+  const monitor = 'monitor:66666666-7777-8888-9999-aaaaaaaaaaaa';
+  const { user, sourceId, consumer, terminal } = await setup(t, 'lens-exit@example.com', monitor, {
+    field: 'text',
+    op: 'contains',
+    value: 'exit=',
+  });
+
+  terminal.paint(['$ npm run build']);
+  await tickMonitors();
+  await until('the consumer to be attached', () => consumerRow(user, sourceId, consumer) !== undefined);
+
+  // The first keyframe is the baseline, swallowed before the filter.
+  terminal.paint(['$ npm run build', 'building…']);
+  await until('the baseline keyframe to be acknowledged', () => {
+    const row = consumerRow(user, sourceId, consumer);
+    return !!row && row.delivered_id === null && row.cursor > 0;
+  });
+  assert.deepEqual(pending(monitor), []);
+
+  // The session ends: a `session` header change, so a second keyframe — which the filter
+  // must see, or a terminal exit is silently swallowed.
+  terminal.exit(0);
+  await until('the exit keyframe to be recorded', () => pending(monitor).length === 1);
+  const payload = JSON.parse(pending(monitor)[0]!.payload) as { eventType: string; text: string };
+  assert.equal(payload.eventType, 'key');
+  assert.ok(payload.text.includes('session=exited exit=0'), payload.text.slice(0, 200));
 });
