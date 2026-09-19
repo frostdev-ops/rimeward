@@ -1,0 +1,19 @@
+{"type":"note","text":"Scrolling moves every box and changes no text: the lines keep their ids, the version does not bump, and nothing is delivered."}
+{"type":"page","url":"https://pages.test/article","title":"Article","nodes":[{"text":"The first paragraph of the article","rect":[0,0,600,48]},{"text":"The second paragraph of the article","rect":[0,56,600,48]},{"text":"The third paragraph of the article","rect":[0,112,600,48]}]}
+{"type":"consumer","id":"c"}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"expect","expect":"version","value":1}
+{"type":"ack","consumer":"c"}
+{"type":"page","nodes":[{"text":"The first paragraph of the article","rect":[0,-40,600,48]},{"text":"The second paragraph of the article","rect":[0,16,600,48]},{"text":"The third paragraph of the article","rect":[0,72,600,48]}]}
+{"type":"tick","ms":250}
+{"type":"page","nodes":[{"text":"The first paragraph of the article","rect":[0,-80,600,48]},{"text":"The second paragraph of the article","rect":[0,-24,600,48]},{"text":"The third paragraph of the article","rect":[0,32,600,48]}]}
+{"type":"tick","ms":250}
+{"type":"page","nodes":[{"text":"The first paragraph of the article","rect":[0,-120,600,48]},{"text":"The second paragraph of the article","rect":[0,-64,600,48]},{"text":"The third paragraph of the article","rect":[0,-8,600,48]}]}
+{"type":"tick","ms":250}
+{"type":"tick","ms":750}
+{"type":"note","text":"Three scrolls later: the same three lines, one version, one delivery."}
+{"type":"expect","expect":"deliveries","consumer":"c","count":1}
+{"type":"expect","expect":"version","value":1}
+{"type":"expect","expect":"scene.lines","count":3}
+{"type":"expect","expect":"scene.text","contains":["The third paragraph of the article"]}

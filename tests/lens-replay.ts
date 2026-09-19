@@ -18,6 +18,8 @@ import type { ReplayCtx, ReplayReport, Step } from '../src/lib/lens/replay.ts';
 import { terminalSource } from '../src/lib/lens/terminal.ts';
 import type { TerminalDeps } from '../src/lib/lens/terminal.ts';
 import { screenSource } from '../src/lib/lens/screen.ts';
+import { browserSource } from '../src/lib/lens/browser.ts';
+import type { BrowserDeps, PageRead } from '../src/lib/lens/browser.ts';
 import type { Delivery } from '../src/lib/lens/types.ts';
 import type { RuntimeEvent } from '../src/lib/dev/types.ts';
 import { createUser } from '../src/lib/users.ts';
@@ -168,6 +170,58 @@ export function terminalFixture(now: () => number): { deps: TerminalDeps; inject
   };
 }
 
+// ------------------------------------------------------ the browser fixture
+
+const BROWSER_TARGET = 'w1';
+
+/** The page a browser fixture stands in for. A `page` step sets what the tab
+ *  now shows; the real `browserSource` pulls it on its own poll, so the read
+ *  answers null until something changed, exactly as the page-side reader does.
+ *  A step that changes the url is a NEW DOCUMENT: the reader is gone with it,
+ *  which is what `fresh` means. */
+export function browserFixture(clock: FakeClock): { deps: BrowserDeps; inject(body: Record<string, unknown>): void } {
+  let url = 'https://pages.test/start';
+  let title = 'Start';
+  let nodes: PageRead['nodes'] = [];
+  let changed: PageRead['nodes'][number]['rect'][] = [];
+  let dirty = false;
+  let fresh = true;
+
+  const rects = (value: unknown): PageRead['nodes'][number]['rect'][] =>
+    arr(value)
+      .map((raw) => arr(raw).map((n) => num(n)))
+      .filter((r) => r.length === 4) as PageRead['nodes'][number]['rect'][];
+
+  return {
+    deps: {
+      clock,
+      read: async (_user, _ward, force): Promise<PageRead | null> => {
+        if (!fresh && !dirty && !force) return null;
+        const read: PageRead = { url, title, fresh, nodes: [...nodes], changed: [...changed] };
+        fresh = false;
+        dirty = false;
+        changed = [];
+        return read;
+      },
+    },
+    inject(body: Record<string, unknown>): void {
+      if (typeof body.url === 'string' && body.url !== url) {
+        url = body.url;
+        fresh = true;
+      }
+      if (typeof body.title === 'string') title = body.title;
+      if (Array.isArray(body.nodes)) {
+        nodes = arr(body.nodes).map((raw) => {
+          const node = (raw ?? {}) as { text?: unknown; rect?: unknown };
+          return { text: str(node.text), rect: (rects([node.rect])[0] ?? [0, 0, 0, 0]) };
+        });
+      }
+      changed = [...changed, ...rects(body.changed)];
+      dirty = true;
+    },
+  };
+}
+
 // ------------------------------------------------------------- the harness
 
 export function replay(fixturePath: string, opts: ReplayOptions = {}): Promise<ReplayReport> {
@@ -192,15 +246,25 @@ export function replay(fixturePath: string, opts: ReplayOptions = {}): Promise<R
   };
 
   const terminal = steps.some((step) => step.body.type === 'term');
+  const browser = !terminal && steps.some((step) => step.body.type === 'page');
   const fixture = terminal ? terminalFixture(() => clock.now()) : null;
-  const screen = terminal ? null : screenFixture(replies, () => clock.now());
-  const source = fixture ? terminalSource(fixture.deps) : (screen as { source: Source }).source;
-  const sourceId = terminal ? `terminal:${TERMINAL_TARGET}` : `screen:${path.basename(file)}`;
+  const web = browser ? browserFixture(clock) : null;
+  const screen = terminal || browser ? null : screenFixture(replies, () => clock.now());
+  const source = fixture
+    ? terminalSource(fixture.deps)
+    : web
+      ? browserSource(web.deps)
+      : (screen as { source: Source }).source;
+  const sourceId = terminal
+    ? `terminal:${TERMINAL_TARGET}`
+    : browser
+      ? `browser:${BROWSER_TARGET}`
+      : `screen:${path.basename(file)}`;
 
   const store = sqliteStore(user, sourceId, () => clock.now());
   const core = new LensCore({
     user,
-    target: terminal ? TERMINAL_TARGET : 'local',
+    target: terminal ? TERMINAL_TARGET : browser ? BROWSER_TARGET : 'local',
     source,
     clock,
     store: { ...store, loadConsumers: () => [] },
@@ -237,6 +301,7 @@ export function replay(fixturePath: string, opts: ReplayOptions = {}): Promise<R
     drain,
     inject: (body) => {
       if (fixture) fixture.inject(body);
+      else if (web) web.inject(body);
       else screen?.inject(body);
     },
     reply: (op, value) => {

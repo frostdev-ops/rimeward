@@ -1,0 +1,21 @@
+{"type":"note","text":"A burst of mutations — a message list growing a row at a time — settles into exactly one delta, and each new box is its own rectangle, so nothing becomes live."}
+{"type":"page","url":"https://pages.test/chat","title":"Chat","nodes":[{"text":"Thread with the build bot","rect":[0,0,600,24]}]}
+{"type":"consumer","id":"c"}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"ack","consumer":"c"}
+{"type":"page","nodes":[{"text":"Thread with the build bot","rect":[0,0,600,24]},{"text":"step one queued","rect":[0,32,600,24]}],"changed":[[0,32,600,24]]}
+{"type":"tick","ms":250}
+{"type":"page","nodes":[{"text":"Thread with the build bot","rect":[0,0,600,24]},{"text":"step one queued","rect":[0,32,600,24]},{"text":"step two queued","rect":[0,64,600,24]}],"changed":[[0,64,600,24]]}
+{"type":"tick","ms":250}
+{"type":"page","nodes":[{"text":"Thread with the build bot","rect":[0,0,600,24]},{"text":"step one queued","rect":[0,32,600,24]},{"text":"step two queued","rect":[0,64,600,24]},{"text":"step three queued","rect":[0,96,600,24]}],"changed":[[0,96,600,24]]}
+{"type":"tick","ms":250}
+{"type":"page","nodes":[{"text":"Thread with the build bot","rect":[0,0,600,24]},{"text":"step one queued","rect":[0,32,600,24]},{"text":"step two queued","rect":[0,64,600,24]},{"text":"step three queued","rect":[0,96,600,24]},{"text":"step four queued","rect":[0,128,600,24]}],"changed":[[0,128,600,24]]}
+{"type":"tick","ms":250}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"deliveries","consumer":"c","count":2}
+{"type":"expect","expect":"delta","consumer":"c"}
+{"type":"expect","expect":"lines","consumer":"c","plus":4,"minus":0}
+{"type":"expect","expect":"text","consumer":"c","contains":["step four queued"]}
+{"type":"expect","expect":"live","count":0}
+{"type":"expect","expect":"scene.lines","count":5}

@@ -1,0 +1,17 @@
+{"type":"note","text":"A navigation is a new document: a new epoch, a keyframe forced by the url header, and nothing the old page said survives it."}
+{"type":"page","url":"https://pages.test/start","title":"Start","nodes":[{"text":"Welcome to the start page","rect":[0,0,600,24]},{"text":"Sign in to continue","rect":[0,32,600,24]}]}
+{"type":"consumer","id":"c"}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"epoch","value":1}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"expect","expect":"text","consumer":"c","contains":["url=https://pages.test/start","title=Start","= 0,0,600,24 dom \"Welcome to the start page\""]}
+{"type":"ack","consumer":"c"}
+{"type":"page","url":"https://pages.test/report","title":"Report","nodes":[{"text":"Quarterly report","rect":[0,0,600,24]},{"text":"Revenue is up","rect":[0,32,600,24]}]}
+{"type":"tick","ms":250}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"epoch","value":2}
+{"type":"expect","expect":"deliveries","consumer":"c","count":2}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"expect","expect":"text","consumer":"c","contains":["url=https://pages.test/report","Quarterly report"],"notContains":["Welcome to the start page"]}
+{"type":"expect","expect":"scene.lines","count":2}
+{"type":"expect","expect":"scene.text","contains":["Revenue is up"],"notContains":["Sign in to continue"]}

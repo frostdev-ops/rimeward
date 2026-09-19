@@ -15,6 +15,8 @@ import { TRIGGERS, wardTypes } from '../logic.ts';
 // The CLI chrome grammar lives with the terminal lens source; this branch reads it unchanged.
 import { cliKey, stableKey, terminalContent } from '../lens/terminal.ts';
 import { SOURCES, lens } from '../lens/core.ts';
+// Registers SOURCES.browser, the way the import above this one registers SOURCES.terminal.
+import '../lens/browser.ts';
 // The watch grammar is the lens's own (the tool schema in lens/tools.ts is the same fields).
 import { parseWatchSpec } from '../lens/gate.ts';
 import { DELIVERY_CAP, OBSERVATION_BANNER } from '../lens/types.ts';

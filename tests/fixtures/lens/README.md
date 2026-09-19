@@ -26,6 +26,7 @@ number.
 | `note` | `text` | nothing; a comment that survives JSON Lines |
 | `source` | a screen wire signal: `epoch`, `seq`, `kind`, plus that kind's fields | the screen fixture source turns it into `Feed` calls |
 | `term` | `seq`, plus `rows`+`scrolled`+`lost?`, or `session`, or `reset` | drives the real `terminalSource` over a fake dev runtime |
+| `page` | `url?`, `title?`, `nodes:[{text,rect}]`, `changed?` | what a browser tab now shows; the real `browserSource` reads it on its next poll |
 | `tick` | `ms` | advance the fake clock by `ms`, then drain the async work |
 | `consumer` | `id`, `kind?`, `watches?` (`WatchSpec[]`), `minIntervalS?` | `core.consumer` then `core.watch` |
 | `ack` | `consumer`, `id?` (default `"last"`) | acknowledges through `core.history`, which never produces |
@@ -33,8 +34,9 @@ number.
 | `reply` | `op`, `reply` | queues one reply for the next `helper-triage` / `helper-describe` / `lens-snapshot` |
 | `expect` | `expect` plus that verb's fields | asserts; see below |
 
-A fixture is a terminal fixture when it contains any `term` step, and a screen
-fixture otherwise; that is what picks the core's source.
+A fixture is a terminal fixture when it contains any `term` step, a browser
+fixture when it contains any `page` step, and a screen fixture otherwise; that
+is what picks the core's source.
 
 ### Screen signals
 
@@ -69,6 +71,22 @@ A `term` step is what the dev runtime would have produced:
 
 Row `i` of the window is document line `[0, position, 1, 1]`, where `position`
 is `scrolled - above + i`.
+
+### Browser signals
+
+A `page` step is what the tab shows after some change, and the whole state each
+time (like `term`'s rows, not a patch):
+
+- `nodes` are the block-level boxes, `[{ "text": "…", "rect": [x, y, w, h] }]`
+  in CSS pixels; `changed` are the rectangles the page's MutationObserver saw
+  repaint since the last read. A step with no `changed` is a scroll or a resize:
+  every box moves, no text changes, and the lines only `moved`.
+- A step whose `url` differs is a NEW DOCUMENT — the page-side reader goes with
+  it — so the source opens a new epoch and `url` forces the keyframe.
+- The browser source POLLS (250 ms, `POLL_MS`): a `page` step only sets what the
+  next read will find, and a `tick` of at least that long is what performs it.
+  There is no `seq` — a page has no stream to carry one, so the source counts its
+  own reads.
 
 ### Expect verbs
 
@@ -143,4 +161,8 @@ delivery id.
 | `terminal-resize` | a re-wrap is a new epoch and a keyframe, not a delta full of rewrites |
 | `terminal-exit` | `session` is a header field a change to which is a keyframe on its own, exit code included |
 | `terminal-ack-and-pages` | 300 rows page into more than one keyframe, each acknowledged on its own |
+| `browser-navigation` | a new document is a new epoch and a keyframe forced by `url`; nothing the old page said survives it |
+| `browser-ticker` | a clock repainting the same box becomes live: twelve repaints, no delivery |
+| `browser-mutation-burst` | a message list growing a row at a time settles into exactly one delta, and distinct boxes never become live |
+| `browser-scroll` | a scroll moves every box and changes no text: same ids, same version, no delivery |
 | `terminal-restart-resume` | a dev-stream `reset` is a gap: the document is repainted from the session and a keyframe is forced |

@@ -1,0 +1,35 @@
+{"type":"note","text":"A clock in the corner repaints the same box forever: it becomes a live region, its own churn stops being a candidate, and the consumer hears nothing after the first keyframe."}
+{"type":"page","url":"https://pages.test/dash","title":"Dashboard","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:00","rect":[400,40,120,20]}]}
+{"type":"consumer","id":"c"}
+{"type":"tick","ms":750}
+{"type":"expect","expect":"keyframe","consumer":"c","pages":1}
+{"type":"ack","consumer":"c"}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:01","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:02","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:03","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:04","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:05","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:06","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:07","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:08","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:09","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:10","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:11","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"page","nodes":[{"text":"Orders today 41","rect":[0,0,600,24]},{"text":"12:00:12","rect":[400,40,120,20]}],"changed":[[400,40,120,20]]}
+{"type":"tick","ms":300}
+{"type":"tick","ms":750}
+{"type":"note","text":"Twelve repaints of the same box, no delivery: every changed line sits inside the live rect."}
+{"type":"expect","expect":"live","atLeast":1}
+{"type":"expect","expect":"deliveries","consumer":"c","count":1}
+{"type":"expect","expect":"scene.text","contains":["12:00:12"]}

@@ -8,8 +8,8 @@
 //
 // Lifted from BlackIce src/lens/replay.ts: its `lens` step (a screen wire
 // signal) is now an opaque `source` step the harness's own source reads (`term`
-// is the same step for a terminal fixture), and its `desktop` step is a `reply`
-// for the scripted decider.
+// for a terminal fixture, `page` for a browser one), and its `desktop` step is
+// a `reply` for the scripted decider.
 
 import { readFileSync } from 'node:fs';
 import type { LensCore } from './core.ts';
@@ -130,7 +130,8 @@ export async function runSteps(steps: Step[], ctx: ReplayCtx): Promise<ReplayRep
         break;
 
       case 'source':
-      case 'term': {
+      case 'term':
+      case 'page': {
         const before = boxes();
         ctx.inject(body);
         for (const [id, box] of boxes()) {
