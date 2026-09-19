@@ -1,5 +1,6 @@
-//! The frame ring: 30 immutable JPEGs, a 60 s age ceiling, and cropping that
-//! goes through each frame's own capture-time geometry.
+//! The frame ring: 30 immutable JPEGs, a 60 s age ceiling that the newest
+//! frame alone outlives, and cropping that goes through each frame's own
+//! capture-time geometry.
 //!
 //! A `ref` names one frame forever. A crop taken against `f-7-310` maps its
 //! window-point rect with the geometry recorded when `f-7-310` was captured,
@@ -12,7 +13,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 /// 30 frames is about 15 s under continuous change. 60 s is a ceiling, not a
-/// guarantee: a busy screen evicts by count long before the age applies.
+/// guarantee: a busy screen evicts by count long before the age applies. The
+/// newest frame is exempt from the ceiling: see [`expire`].
 pub const CAP: usize = 30;
 pub const MAX_AGE_MS: i64 = 60_000;
 /// The ring's own JPEGs and every crop. Cheap, and visibly lossy only on text
@@ -31,7 +33,9 @@ pub struct Frame {
     /// The full captured frame, JPEG q80.
     pub jpeg: Arc<[u8]>,
     /// A BGRA copy kept only while this is the latest frame, so `lens-ocr` can
-    /// re-run recognition on it. `None` once a newer frame arrives.
+    /// re-run recognition on it. `None` once a newer frame arrives — which on
+    /// an idle screen can be a long while: the newest frame outlives the age
+    /// ceiling ([`expire`]), pixels and all.
     pub pixels: Option<Arc<[u8]>>,
 }
 
@@ -155,9 +159,16 @@ impl Ring {
     }
 }
 
+/// Everything past the ceiling goes except the newest frame. The stream only
+/// delivers a frame when something changed, so on a screen that stands still
+/// the newest one is the only picture of what the document describes — and it
+/// is what a crop, a description or a caption anchors to when nothing names a
+/// `ref`. Ageing it out made every one of those fail `frame-evicted` a minute
+/// into an idle screen. It goes when the next frame arrives, or with the ring
+/// when the target changes.
 fn expire(frames: &mut VecDeque<Arc<Frame>>) {
     let floor = super::bridge::now_ms() - MAX_AGE_MS;
-    while frames.front().is_some_and(|frame| frame.at < floor) {
+    while frames.len() > 1 && frames.front().is_some_and(|frame| frame.at < floor) {
         frames.pop_front();
     }
 }
@@ -233,6 +244,22 @@ mod tests {
         assert_eq!(ring.stats().n, 1);
         assert!(ring.get("f-1-1").is_none());
         assert_eq!(ring.stats().oldest_at, Some(now));
+    }
+
+    /// An idle screen's last frame is the only one there is, and a crop of
+    /// "the newest frame" a minute later must still find it.
+    #[test]
+    fn the_newest_frame_outlives_the_age_ceiling() {
+        let ring = Ring::new();
+        let old = now_ms() - MAX_AGE_MS - 1;
+        ring.push(frame(1, old));
+        ring.push(frame(2, old));
+        assert_eq!(ring.stats().n, 1, "older frames still expire");
+        assert!(ring.get("f-1-1").is_none());
+        assert_eq!(ring.latest().map(|frame| frame.seq), Some(2));
+        assert!(ring.crop("f-1-2", None, 1024).is_ok());
+        ring.clear();
+        assert!(ring.latest().is_none(), "a cleared ring keeps nothing");
     }
 
     #[test]

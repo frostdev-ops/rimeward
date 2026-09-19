@@ -27,7 +27,7 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::{
     kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowName, kCGWindowNumber,
-    kCGWindowOwnerPID, CGWindowListCopyWindowInfo, CGWindowListOption,
+    kCGWindowOwnerName, kCGWindowOwnerPID, CGWindowListCopyWindowInfo, CGWindowListOption,
 };
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -143,7 +143,18 @@ pub struct WindowRecord {
     /// Screen points.
     pub bounds: Rect,
     pub title: String,
+    /// `kCGWindowOwnerName`: the owning process's name, which is how the
+    /// system's own furniture is told from an application.
+    pub owner: String,
 }
+
+/// The process behind window tiling and Stage Manager. It keeps a small
+/// layer-0 "Tiling Handle Window" over every tiled window — 12x52 points, at
+/// alpha 1.0 and invisible — so by the layer rule alone a tiled target reads as
+/// covered for as long as it stays tiled, and the lens never recognises a
+/// character of it. Nothing it draws is content, so its windows are never
+/// covers.
+pub const WINDOW_MANAGER: &str = "WindowManager";
 
 /// The main window of `pid`: the largest on-screen layer-0 window, preferring
 /// the ones that have a title. Front-to-back order alone picks the wrong thing
@@ -178,8 +189,14 @@ pub fn pick_window(records: &[WindowRecord], pid: i32) -> Option<&WindowRecord> 
 /// holds at its rectangle then belongs to something else.
 pub const OFF_SCREEN: &str = "not on screen";
 
+/// Whether a line's box is inside a window of `size` at all. A box with no
+/// area places nothing and is never outside.
+pub fn within(bbox: Rect, size: Rect) -> bool {
+    bbox[2] <= 0.0 || bbox[3] <= 0.0 || intersects(bbox, [0.0, 0.0, size[2], size[3]])
+}
+
 /// Two rectangles that share any area at all.
-fn intersects(a: Rect, b: Rect) -> bool {
+pub fn intersects(a: Rect, b: Rect) -> bool {
     (a[0] + a[2]).min(b[0] + b[2]) > a[0].max(b[0])
         && (a[1] + a[3]).min(b[1] + b[3]) > a[1].max(b[1])
 }
@@ -188,13 +205,14 @@ fn intersects(a: Rect, b: Rect) -> bool {
 /// `None` when the target is the top window there.
 ///
 /// `records` is `CGWindowListCopyWindowInfo`'s own front-to-back order, so
-/// everything ahead of the target's entry is in front of it. Three kinds of
+/// everything ahead of the target's entry is in front of it. Four kinds of
 /// window are deliberately not covers:
 /// - this application's own, which the content filter excludes from every
 ///   frame anyway (research/capture-matrix.md cell i),
 /// - the target application's own: a sheet, a dialog or a second document
 ///   window over the target is exactly what the display filter was chosen to
 ///   see (cells iii, iv, v.b), and it is the target's own content,
+/// - [`WINDOW_MANAGER`]'s, the tiling furniture,
 /// - anything off layer 0.
 ///
 /// That last class is mostly the menu bar, the Dock and notification banners,
@@ -235,6 +253,7 @@ pub fn covering(
                 && record.on_screen
                 && record.pid != pid
                 && record.pid != own_pid
+                && record.owner != WINDOW_MANAGER
                 && intersects(record.bounds, bounds)
         })
         .map(|record| Cover {
@@ -592,6 +611,10 @@ fn window_records() -> Vec<WindowRecord> {
                     .unwrap_or(true),
                 bounds,
                 title: unsafe { entry(dictionary, kCGWindowName) }
+                    .and_then(|value| value.downcast_ref::<CFString>())
+                    .map(CFString::to_string)
+                    .unwrap_or_default(),
+                owner: unsafe { entry(dictionary, kCGWindowOwnerName) }
                     .and_then(|value| value.downcast_ref::<CFString>())
                     .map(CFString::to_string)
                     .unwrap_or_default(),
@@ -1297,6 +1320,7 @@ mod tests {
             on_screen: true,
             bounds: [0.0, 0.0, 800.0, 600.0],
             title: format!("w{id}"),
+            owner: String::new(),
         }
     }
 
@@ -1444,6 +1468,43 @@ mod tests {
             covering(&records, 7286, 42, TARGET, 1).map(|cover| cover.pid),
             Some(999)
         );
+    }
+
+    /// Measured on this Mac: a tiled Claude window has WindowManager's 12x52
+    /// "Tiling Handle Window" in front of it, layer 0, alpha 1.0, for as long as
+    /// it stays tiled. Furniture, not a window over the target.
+    #[test]
+    fn the_tiling_handle_is_furniture_not_a_cover() {
+        let mut records = over_the_target();
+        records.retain(|record| record.pid != 501);
+        records.insert(
+            0,
+            WindowRecord {
+                bounds: [444.0, 578.0, 12.0, 52.0],
+                title: "Tiling Handle Window".into(),
+                owner: WINDOW_MANAGER.into(),
+                ..record(10127, 1168, 0)
+            },
+        );
+        assert_eq!(covering(&records, 7286, 42, TARGET, 999), None);
+        // The same rectangle from any other process is a cover like any other.
+        records[0].owner = "Finder".into();
+        assert_eq!(
+            covering(&records, 7286, 42, TARGET, 999).map(|cover| cover.pid),
+            Some(1168)
+        );
+    }
+
+    #[test]
+    fn within_keeps_what_the_window_holds_and_placeless_boxes() {
+        let size = [-1.0, 40.0, 901.0, 1130.0];
+        assert!(within([8.0, 54.0, 272.0, 26.0], size));
+        assert!(
+            within([880.0, 20.0, 74.0, 11.0], size),
+            "straddling the edge"
+        );
+        assert!(!within([1436.0, 20.0, 74.0, 11.0], size));
+        assert!(within([0.0, 0.0, 0.0, 0.0], size), "no area, no place");
     }
 
     #[test]

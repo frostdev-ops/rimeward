@@ -96,7 +96,7 @@ test('the screen-only tools read a screen lens, and refuse anything else by name
   // one-word condition.
   await assert.rejects(
     () => lensToolRun('lens_crop', { source, ...args }, ctx),
-    /^Error: lens_crop has no such frame: frames are kept for about 15 s .* Read a fresh `ref` from lens_look/s
+    /^Error: lens_crop has no such frame: the newest frame is kept until the next one arrives, older ones for about 15 s .* Read a fresh `ref` from lens_look/s
   );
   await assert.rejects(
     () => lensToolRun('lens_describe', { source, ...args }, ctx),
@@ -600,7 +600,7 @@ test('a look waits for the source to connect, and reports why it cannot read', a
   // no lines and nothing else, which reads exactly like a live, empty page.
   const user = createUser('lens-tools-connect@example.com', 'pw-lens-tools-8');
   const source = 'browser:b1';
-  const REASON = 'Browser is offline; waiting for its session to reconnect.';
+  const REASON = 'Browser is offline: its session is not running. Open the browser ward on the dashboard, or call browser_open with a URL, and the session starts; the lens reconnects on its own.';
   const real = SOURCES.browser;
   SOURCES.browser = (): Source => ({
     async connect(_u: number, _t: string, f: Feed) {
@@ -682,7 +682,7 @@ test('a refused frame and a model that cannot answer are sentences with the way 
   assert.match(refused, /715,480,210,35/, 'the rect it refused');
   assert.match(refused, /window points/, 'the space a rect is in');
   assert.match(refused, /0,0,1800,1130/, 'the bounds that are valid');
-  assert.match(frameTrouble('lens_crop', core, 'frame-evicted'), /frames are kept for about 15 s/);
+  assert.match(frameTrouble('lens_crop', core, 'frame-evicted'), /the newest frame is kept until the next one arrives, older ones for about 15 s/);
   assert.match(frameTrouble('lens_crop', core, 'stale-epoch'), /window the user has since left/);
 
   // A missing model and a model that could not run the call are not the same

@@ -450,6 +450,22 @@ impl Lens {
     /// The target moved or resized, same window: the stream follows it and the
     /// next frame's geometry records the new bounds. No epoch bump.
     pub fn reframe(&self, target: &Target) {
+        // A window that shrank: the OCR lines outside it now describe pixels
+        // the stream no longer captures, no read can claim them back — a region
+        // of interest never reaches past the window — and a snapshot would
+        // restate them as the window's own. (Measured: a Claude window tiled
+        // from the full display to its left half kept 39 lines out to x=1742
+        // in a 901-point window.) AX lines are left alone: the tree is read
+        // against the current bounds, and an element scrolled out of view sits
+        // outside the window on purpose. The consumer prunes its document on
+        // the same `ax-window`; this is the copy a snapshot answers from,
+        // pruned before the stream reconfigures so the gap a snapshot can land
+        // in is short.
+        self.known
+            .write()
+            .unwrap()
+            .ocr
+            .retain(|line| signals::within(line.bbox, target.bounds));
         if let Some(capture) = self.capture.lock().unwrap().as_ref() {
             if let Err(error) = capture.reframe(target) {
                 eprintln!("lens: reframe failed: {error}");

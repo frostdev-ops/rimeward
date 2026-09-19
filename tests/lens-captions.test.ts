@@ -23,7 +23,9 @@ const sig = (seq: number, kind: Body, epoch = 1, at = START): Body => ({ type: '
 const app = (seq: number, epoch = 1): Body =>
   sig(seq, { kind: 'app', bundle: 'com.apple.Safari', name: 'Safari', pid: 123 }, epoch);
 const windowSig = (seq: number, epoch = 1): Body =>
-  sig(seq, { kind: 'window', id: 5375, title: 'noticias', bounds: [195, 92, 656, 422], display: DISPLAY }, epoch);
+  // Tall enough to hold thirteen caption windows 200 points apart: an OCR line
+  // outside the window is dropped on adoption.
+  sig(seq, { kind: 'window', id: 5375, title: 'noticias', bounds: [195, 92, 656, 3000], display: DISPLAY }, epoch);
 const frameSig = (seq: number, epoch = 1): Body =>
   sig(seq, { kind: 'frame', ref: `f-${epoch}-${seq}`, w: 1312, h: 844, ratio: 0.1, dirty: [], geometry: GEOMETRY }, epoch);
 const wire = (text: string, y: number): Body => ({ bbox: [12, y, 300, 18], text });

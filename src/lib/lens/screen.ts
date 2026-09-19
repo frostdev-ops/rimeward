@@ -68,6 +68,23 @@ export function overlaps(line: Rect, area: Rect): boolean {
 
 const claims = (area: Rect) => (line: Line): boolean => (line.bbox ? overlaps(line.bbox, area) : false);
 
+/** A box the window, at `size`, no longer holds. A box with no area places
+ *  nothing and is never outside. */
+const outside = (bbox: Rect, size: Rect): boolean =>
+  bbox[2] > 0 && bbox[3] > 0 && !intersects(bbox, [0, 0, size[2], size[3]]);
+
+/** The drafts an OCR read found inside the window as it stands now. A read
+ *  straddles a resize: its frame was captured under the geometry the window
+ *  had, its lines land after the `ax-window` that shrank it, in the old
+ *  window's points, past the new width — and the prune on `ax-window` has
+ *  already run. So every adoption is checked against the window it joins.
+ *  AX lines are not: the tree is read against the window's current bounds,
+ *  and an element scrolled out of view sits outside the window on purpose. */
+const within = (drafts: Draft[], bounds: unknown): Draft[] => {
+  const size = rect(bounds);
+  return size ? drafts.filter((draft) => draft.bbox === undefined || !outside(draft.bbox, size)) : drafts;
+};
+
 /** Two rectangles that share any area at all (`lens_text {rect}`). */
 const intersects = (a: Rect, b: Rect): boolean =>
   Math.min(a[0] + a[2], b[0] + b[2]) > Math.max(a[0], b[0]) &&
@@ -283,6 +300,13 @@ export function screenSource(deps: ScreenDeps): Source {
         for (const field of headMeta({ kind: 'window', ...lastWindow })) {
           feed.meta(field.key, field.value, seq, field.bounds);
         }
+        // A window that shrank: the lines outside it now describe pixels the
+        // stream no longer captures, and no read can claim them back — a
+        // region of interest never reaches past the window — so they go here.
+        // (Measured: a Claude window tiled from the full display to its left
+        // half kept 39 lines out to x=1742 in a 901-point window.)
+        const size = rect(body.bounds);
+        if (size) feed.replace([], seq, (line) => line.src === 'ocr' && line.bbox !== undefined && outside(line.bbox, size));
         // The retitle rides a header field of its own. `window` forces a
         // keyframe, and a title that ticks — an unread count, a call timer —
         // would then keyframe, deliver and fire a leyline once a second;
@@ -313,7 +337,7 @@ export function screenSource(deps: ScreenDeps): Source {
         // An `axCovered` OCR read a rect the AX tree already owns: its lines are
         // empty by design and it removes nothing.
         if (body.axCovered === true) return;
-        feed.replace(wireDrafts(body.lines, 'ocr'), seq, claims(rect(body.rect) ?? [0, 0, 0, 0]));
+        feed.replace(within(wireDrafts(body.lines, 'ocr'), lastWindow?.bounds), seq, claims(rect(body.rect) ?? [0, 0, 0, 0]));
         return;
       case 'frame': {
         const ref = str(body.ref);
@@ -408,7 +432,9 @@ export function screenSource(deps: ScreenDeps): Source {
       // The boundary: every signal at or below it is already in this reply.
       seq: num(snap.seq),
       meta,
-      lines: [...wireDrafts(snap.axText, 'ax'), ...wireDrafts(snap.ocr, 'ocr')],
+      // The app prunes its own copy after it reconfigures the stream, so a
+      // snapshot taken in that gap carries the new size over the old lines.
+      lines: [...wireDrafts(snap.axText, 'ax'), ...within(wireDrafts(snap.ocr, 'ocr'), (snap.window as { bounds?: unknown } | null)?.bounds)],
       live: Array.isArray(snap.live) ? (snap.live as Rect[]) : [],
       ref: frame && str(frame.ref) ? str(frame.ref) : null,
     };

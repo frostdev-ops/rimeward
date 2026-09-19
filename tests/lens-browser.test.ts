@@ -180,7 +180,7 @@ test('the browser source: one line per block, a navigation is an epoch, one seq 
   const last = lensCore.status().seq;
 
   // The session goes away, then comes back: offline, then live again.
-  page.fail('Browser is offline; waiting for its session to reconnect.');
+  page.fail('Browser is offline: its session is not running. Open the browser ward on the dashboard, or call browser_open with a URL, and the session starts; the lens reconnects on its own.');
   await poll(clock);
   assert.equal(lensCore.status().state, 'offline');
   assert.match(lensCore.status().error ?? '', /Browser is offline/);
@@ -362,7 +362,7 @@ test('a browser monitor without a consumer still takes the legacy branch', async
       () => {},
       () => {}
     ),
-    /Browser is offline; waiting for its session to reconnect\./
+    /Browser is offline: its session is not running\./
   );
 });
 

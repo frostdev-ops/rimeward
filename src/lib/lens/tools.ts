@@ -332,7 +332,7 @@ export function frameTrouble(name: string, core: LensCore, error: string, area?:
   const bounds = captured ? box(captured) : window ? `0,0,${Math.round(window[2])},${Math.round(window[3])}` : null;
   switch (error) {
     case 'frame-evicted':
-      return `${name} has no such frame: frames are kept for about 15 s of change, 60 s at the most, and that one is gone. Read a fresh \`ref\` from lens_look or the newest delivery — lens_crop and lens_describe take the newest frame when you pass neither \`ref\` nor \`v\`.`;
+      return `${name} has no such frame: the newest frame is kept until the next one arrives, older ones for about 15 s of change and 60 s at the most, and that one is gone. Read a fresh \`ref\` from lens_look or the newest delivery — lens_crop and lens_describe take the newest frame when you pass neither \`ref\` nor \`v\`.`;
     case 'stale-epoch':
       return `${name} refused that frame: it is from a window the user has since left. Read lens_look for the window on screen now and use a \`ref\` from it.`;
     case 'bad-rect':
@@ -565,8 +565,8 @@ const TOOLS: Record<LensToolName, LensTool> = {
       'newest frame is used. The receipt is `{ref, epoch, seq, v, expires}` — quote `ref` to crop the ' +
       'same pixels again; its `w`/`h` are the returned JPEG’s pixels, not the space a rect is in. ' +
       'A rect is window points from the window’s top-left — the same space as the boxes on ' +
-      'lens_look’s `=` lines. Frames are evicted after about 15 s of change (60 s at the most), and a ' +
-      'refusal says which of those went wrong and what to ask for instead. ' +
+      'lens_look’s `=` lines. The newest frame is kept until the next one; older frames are evicted after ' +
+      'about 15 s of change (60 s at the most), and a refusal says which of those went wrong and what to ask for instead. ' +
       'Pixels leave the device only when you ask for them here.',
     inputSchema: schema({ source, ref: str('Frame ref from a delivery or receipt'), v: { type: 'integer' }, rect, max_px: { type: 'integer', minimum: 64, maximum: 1024 } }, ['rect']),
     call: async (core, _consumer, args, opts) => {
@@ -729,8 +729,13 @@ const TOOLS: Record<LensToolName, LensTool> = {
           ...(typeof args.from === 'string' ? { from: args.from } : {}),
           ...(typeof args.to === 'string' ? { to: args.to } : {}),
         });
-        // The pair is what the user has to install, so say where to get it.
-        return json({ ...state, ...(state.error?.startsWith('not-installed') === true ? { hint: TRANSLATE_HINT } : {}) });
+        // The pair is what the user has to install, so say where to get it; a
+        // frame the app refused is one word from the ring, so say what it means.
+        return json({
+          ...state,
+          ...(state.error?.startsWith('not-installed') === true ? { hint: TRANSLATE_HINT } : {}),
+          ...(state.error !== undefined && FRAME_ERRORS.has(state.error) ? { says: frameTrouble('lens_captions', core, state.error) } : {}),
+        });
       } catch (err) {
         return fail(message(err));
       }

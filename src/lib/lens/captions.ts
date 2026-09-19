@@ -192,8 +192,11 @@ export class Captions {
     this.#token += 1;
     this.#queue.length = 0;
     // A missing pack survives a toggle: the next call is how the caller learns
-    // about it, so only a different pair (or a translation that works) clears it.
-    if (pair.from !== this.#from || pair.to !== this.#to) this.#error = null;
+    // about it, so only a different pair (or a translation that works) clears
+    // it. Anything else — a frame the ring had dropped, a helper that was busy
+    // — is a moment's trouble, and turning captions on is the retry.
+    const pack = this.#error !== null && /^(not-installed|unavailable)\b/.test(this.#error);
+    if (pair.from !== this.#from || pair.to !== this.#to || (o.on && !pack)) this.#error = null;
     this.#from = pair.from;
     this.#to = pair.to;
     this.#on = o.on;

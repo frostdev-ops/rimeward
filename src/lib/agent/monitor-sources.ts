@@ -326,7 +326,7 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
   }
   if (s.type === 'browser') {
     const { peek, subscribe } = await import('../browser/session.ts');
-    const session = peek(user,s.target!); if (!session) throw Error('Browser is offline; waiting for its session to reconnect.');
+    const session = peek(user,s.target!); if (!session) throw Error('Browser is offline: its session is not running. Open the browser ward on the dashboard, or call browser_open with a URL, and the session starts; the lens reconnects on its own.');
     const marker = `rimeMonitor${randomUUID().replaceAll('-','')}`;
     let first = true,last = '',closed = false,busy = false;
     const pages = new Set<typeof session.page>();

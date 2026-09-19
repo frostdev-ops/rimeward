@@ -387,6 +387,53 @@ test('describe frames the question as an observation and reports a stale epoch',
   assert.deepEqual(await describe(h.core, { rect: [0, 0, 200, 100] }, h.desktop), { error: 'standalone' });
 });
 
+test('a window that shrinks drops the lines outside it, and a move keeps them', async () => {
+  const h = harness();
+  await primed(h, 'c');
+  // Widened to the full display, then the wide layout: the sidebar's line and
+  // two from a pane past x=656.
+  h.inject(sig(9, { kind: 'ax-window', title: 'main.rs', bounds: [0, 39, 1800, 422] }));
+  h.inject(ocrSig(10, [wire('let x = 1', 34), { bbox: [1052, 20, 108, 13], text: 'Background tasks' }, { bbox: [1436, 20, 74, 11], text: 'New tab +' }], false, 1, [0, 0, 1800, 422]));
+  h.clock.advance(750);
+  await h.tick();
+  assert.equal(ackLast(h, 'c').kind, 'delta');
+  assert.equal(h.core.doc().lines.length, 3);
+
+  // A move alone changes nothing about which lines stand.
+  h.inject(sig(11, { kind: 'ax-window', title: 'main.rs', bounds: [200, 92, 1800, 422] }));
+  h.clock.advance(750);
+  await h.tick();
+  assert.equal(h.core.doc().lines.length, 3, 'a move keeps every line');
+
+  // Tiled to the left half: nothing the stream captures is past x=656 now,
+  // and no read will ever claim those lines, so the shrink removes them.
+  h.inject(sig(12, { kind: 'ax-window', title: 'main.rs', bounds: [-1, 40, 656, 422] }));
+  h.clock.advance(750);
+  await h.tick();
+  const last = ackLast(h, 'c');
+  assert.equal(last.kind, 'delta');
+  assert.match(last.text, /-.*Background tasks/, 'the delta removes the pane line');
+  assert.match(last.text, /-.*New tab \+/);
+  assert.deepEqual(
+    h.core.doc().lines.map((line) => line.text),
+    ['let x = 1'],
+    'only the line inside the window stands'
+  );
+  assert.deepEqual(h.core.doc().meta.window?.bounds, [-1, 40, 656, 422]);
+
+  // A read that straddled the resize: its frame was captured at the old size,
+  // so its lines and its region are in the old window's points. What it found
+  // past the new width is not adopted; what it found inside is.
+  h.inject(ocrSig(13, [wire('let x = 1', 34), { bbox: [12, 60, 120, 14], text: 'let y = 2' }, { bbox: [1052, 20, 108, 13], text: 'Background tasks' }], false, 1, [0, 0, 1800, 422]));
+  h.clock.advance(750);
+  await h.tick();
+  assert.deepEqual(
+    h.core.doc().lines.map((line) => line.text),
+    ['let x = 1', 'let y = 2'],
+    'a straddling read adopts only what the window holds now'
+  );
+});
+
 test('an ax-window move moves the field, and a ticking title delivers nothing on its own', async () => {
   const h = harness();
   await primed(h, 'c');

@@ -141,7 +141,7 @@ async function evaluateRead(user: number, ward: string, force: boolean): Promise
   // browser ward should pay for.
   const { peek } = await import('../browser/session.ts');
   const session = peek(user, ward);
-  if (!session || session.page.isClosed()) throw Error('Browser is offline; waiting for its session to reconnect.');
+  if (!session || session.page.isClosed()) throw Error('Browser is offline: its session is not running. Open the browser ward on the dashboard, or call browser_open with a URL, and the session starts; the lens reconnects on its own.');
   session.lastUsed = Date.now();
   return (await session.page.evaluate(readInPage, { marker: MARKER, force, cap: NODE_CAP, chars: TEXT_CAP })) as PageRead | null;
 }

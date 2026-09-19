@@ -827,6 +827,18 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
     } else {
         recognize(shared, &pixels, &transform, roi, width, height)
     };
+    // A read straddles a resize: this frame was captured under the geometry
+    // the window had, and the window may have shrunk while it was recognised.
+    // Lines past its size NOW would stand until the next resize — nothing
+    // reads outside the window to claim them — so they go here, and the
+    // consumer checks the same on adoption.
+    let lines: Vec<Line> = match lens.target.read().unwrap().as_ref().map(|t| t.bounds) {
+        Some(now) => lines
+            .into_iter()
+            .filter(|line| signals::within(line.bbox, now))
+            .collect(),
+        None => lines,
+    };
     if recognized && !lines.is_empty() {
         lens.known.write().unwrap().ocr = lines.clone();
     }
