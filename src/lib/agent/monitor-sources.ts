@@ -14,9 +14,13 @@ import { isCommsType } from '../comms/types.ts';
 import { TRIGGERS, wardTypes } from '../logic.ts';
 // The CLI chrome grammar lives with the terminal lens source; this branch reads it unchanged.
 import { cliKey, stableKey, terminalContent } from '../lens/terminal.ts';
+import { lens } from '../lens/core.ts';
+import type { Rect, WatchSpec } from '../lens/types.ts';
 
 export interface MonitorSource { type:'terminal'|'file'|'browser'|'agent'|'note'|'notebook'|'http'|'comms'|'event';
-  target?:string; project?:string; path?:string; url?:string; selector?:string; headers?:string[]; fields?:string[]; intervalSeconds?:number; event?:string }
+  target?:string; project?:string; path?:string; url?:string; selector?:string; headers?:string[]; fields?:string[]; intervalSeconds?:number; event?:string;
+  /** Lens sources only: deliveries are held until this watch hits. */
+  watch?:WatchSpec }
 type Emit = (key:string,data:Record<string,unknown>,baseline?:boolean) => void;
 const hash = (v:unknown) => createHash('sha256').update(typeof v === 'string' ? v : JSON.stringify(v)).digest('hex');
 const commonPrefix = (a:string,b:string) => { let n = 0; while (n < a.length && n < b.length && a[n] === b[n]) n++; return n; };
@@ -37,7 +41,38 @@ export function parseMonitorSource(raw:unknown): MonitorSource {
     if (!Array.isArray(values) || values.length > 20 || values.some(x => typeof x !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(x))) throw Error(`Select at most 20 response ${field}.`);
     out[field] = values;
   }
+  if (r.watch !== undefined) out.watch = parseWatch(r.watch);
   return out;
+}
+/** The lens watch a lens-backed source holds its deliveries behind. */
+function parseWatch(raw:unknown): WatchSpec {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('Monitor source watch must be an object.');
+  const r = raw as Record<string,unknown>, watch:WatchSpec = { visual:false,triage:false };
+  for (const field of ['visual','triage'] as const) {
+    if (r[field] === undefined) continue;
+    if (typeof r[field] !== 'boolean') throw Error(`Watch ${field} must be true or false.`);
+    watch[field] = r[field];
+  }
+  for (const field of ['for','regex'] as const) {
+    if (r[field] === undefined) continue;
+    if (typeof r[field] !== 'string' || r[field].length > 500) throw Error(`Invalid watch ${field}.`);
+    watch[field] = r[field];
+  }
+  if (r.filter !== undefined) {
+    const filter = r.filter;
+    if (!filter || typeof filter !== 'object' || Array.isArray(filter) || Object.values(filter).some(v => typeof v !== 'string')) throw Error('Watch filter must be an object of header/text values.');
+    watch.filter = filter as Record<string,unknown>;
+  }
+  if (r.rect !== undefined) {
+    const rect = r.rect;
+    if (!Array.isArray(rect) || rect.length !== 4 || rect.some(n => typeof n !== 'number' || !Number.isFinite(n))) throw Error('Watch rect must be [x,y,w,h].');
+    watch.rect = rect as Rect;
+  }
+  if (r.threshold !== undefined) {
+    if (typeof r.threshold !== 'number' || !(r.threshold >= 0 && r.threshold <= 1)) throw Error('Watch threshold must be 0–1.');
+    watch.threshold = r.threshold;
+  }
+  return watch;
 }
 export function validateMonitorSource(user:number,s:MonitorSource): void {
   const ward = getDashboard(user).find(w => w.i === s.target);
@@ -62,8 +97,27 @@ function poll(fn:() => Promise<void>,ms:number,offline:(error:string) => void): 
   const timer = setInterval(() => void tick(),ms).unref(); void tick();
   return () => { closed = true; clearInterval(timer); };
 }
-export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit,offline:(error:string) => void,readOnlyFetch:typeof vettedFetch = vettedFetch): Promise<() => void> {
+export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit,offline:(error:string) => void,readOnlyFetch:typeof vettedFetch = vettedFetch,consumer?:string): Promise<() => void> {
   validateMonitorSource(user,s);
+  // A source with a lens (terminal today, screen next) delivers through its core:
+  // versioned, settled, ack-gated, one delivery outstanding at a time. Only a caller
+  // that named a consumer takes that door; every other call keeps the branches below.
+  const source = `${s.type}:${s.target ?? ''}`;
+  const core = consumer ? lens(user,source) : null;
+  if (core && consumer) {
+    const held = core.consumer(consumer,'monitor');
+    await core.watch(consumer,{ remove:held.watches.map(w => w.id),...(s.watch ? { add:[s.watch] } : {}),...(s.intervalSeconds === undefined ? {} : { minIntervalS:s.intervalSeconds }) });
+    const off = core.on('delivery',(id,d) => {
+      if (id !== consumer) return;
+      emit(d.delivery,{ eventType:d.kind,text:d.text,v:d.v,epoch:d.epoch,delivery:d.delivery,source },d.kind === 'key');
+    });
+    // A delivery this consumer never acknowledged is still its next one: hand it over
+    // again (the core re-renders it from the unchanged cursor) now that it is listening.
+    if (held.delivered) core.look(consumer,{ fields:[] });
+    // ponytail: stopping is dropping the listener. The core and the consumer row
+    // outlive it on purpose — that is what an unacknowledged delivery survives.
+    return off;
+  }
   if (s.type === 'terminal') {
     const connection = randomUUID();
     const first = readSession(user,s.target!,undefined,false); emit(`baseline:${randomUUID()}`,{ eventType:'baseline',status:first.session.state,exitCode:first.session.exitCode },true);
