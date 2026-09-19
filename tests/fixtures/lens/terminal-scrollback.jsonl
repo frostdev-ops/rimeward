@@ -1,0 +1,19 @@
+{"type": "note", "text": "Rows read back from above the viewport keep their absolute position, and rows that scrolled past the scrollback before they were read are reported once, on the last row nobody read."}
+{"type": "term", "seq": 1, "rows": ["[000] the build wrote an artifact", "[001] the build wrote an artifact", "[002] the build wrote an artifact", "[003] the build wrote an artifact", "[004] the build wrote an artifact", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "consumer", "id": "c"}
+{"type": "tick", "ms": 750}
+{"type": "ack", "consumer": "c"}
+{"type": "note", "text": "Twenty rows scrolled off and were all read: nineteen new rows."}
+{"type": "term", "seq": 10, "rows": ["[000] the build wrote an artifact", "[001] the build wrote an artifact", "[002] the build wrote an artifact", "[003] the build wrote an artifact", "[004] the build wrote an artifact", "[005] the build wrote an artifact", "[006] the build wrote an artifact", "[007] the build wrote an artifact", "[008] the build wrote an artifact", "[009] the build wrote an artifact", "[010] the build wrote an artifact", "[011] the build wrote an artifact", "[012] the build wrote an artifact", "[013] the build wrote an artifact", "[014] the build wrote an artifact", "[015] the build wrote an artifact", "[016] the build wrote an artifact", "[017] the build wrote an artifact", "[018] the build wrote an artifact", "[019] the build wrote an artifact", "[020] the build wrote an artifact", "[021] the build wrote an artifact", "[022] the build wrote an artifact", "[023] the build wrote an artifact"], "scrolled": 20}
+{"type": "tick", "ms": 750}
+{"type": "expect", "expect": "delta", "consumer": "c"}
+{"type": "expect", "expect": "lines", "consumer": "c", "plus": 19, "minus": 0}
+{"type": "ack", "consumer": "c"}
+{"type": "note", "text": "Forty more, five of them past the scrollback: thirty-eight rows and the notice that names the five."}
+{"type": "term", "seq": 20, "rows": ["[025] the build wrote an artifact", "[026] the build wrote an artifact", "[027] the build wrote an artifact", "[028] the build wrote an artifact", "[029] the build wrote an artifact", "[030] the build wrote an artifact", "[031] the build wrote an artifact", "[032] the build wrote an artifact", "[033] the build wrote an artifact", "[034] the build wrote an artifact", "[035] the build wrote an artifact", "[036] the build wrote an artifact", "[037] the build wrote an artifact", "[038] the build wrote an artifact", "[039] the build wrote an artifact", "[040] the build wrote an artifact", "[041] the build wrote an artifact", "[042] the build wrote an artifact", "[043] the build wrote an artifact", "[044] the build wrote an artifact", "[045] the build wrote an artifact", "[046] the build wrote an artifact", "[047] the build wrote an artifact", "[048] the build wrote an artifact", "[049] the build wrote an artifact", "[050] the build wrote an artifact", "[051] the build wrote an artifact", "[052] the build wrote an artifact", "[053] the build wrote an artifact", "[054] the build wrote an artifact", "[055] the build wrote an artifact", "[056] the build wrote an artifact", "[057] the build wrote an artifact", "[058] the build wrote an artifact", "[059] the build wrote an artifact", "[060] the build wrote an artifact", "[061] the build wrote an artifact", "[062] the build wrote an artifact"], "scrolled": 60, "lost": 5}
+{"type": "tick", "ms": 750}
+{"type": "expect", "expect": "delta", "consumer": "c"}
+{"type": "expect", "expect": "lines", "consumer": "c", "plus": 39, "minus": 0}
+{"type": "expect", "expect": "text", "consumer": "c", "contains": ["[lens: 5 rows scrolled out of view before they were read]", "0,24,1,1", "[060] the build wrote an artifact"]}
+{"type": "expect", "expect": "scene.lines", "count": 63}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 3}

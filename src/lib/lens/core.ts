@@ -198,6 +198,9 @@ export class LensCore {
   #queue: { seq: number; run: () => void }[] = [];
   /** Every feed call at or below this is already in the document (snapshot). */
   #boundary: number | null = null;
+  /** An epoch was opened and nothing has published it yet. */
+  #owedFlush = false;
+  #flushQueued = false;
   #lastDescribeAt: number | null = null;
   #embedding: boolean | null = null;
   /** The live rectangles the source named, beside the ones the gate detected. */
@@ -226,9 +229,13 @@ export class LensCore {
   /** The one `Feed` the source writes through. Never throws at the source: a
    *  payload the document cannot apply drops the call, not the lens. */
   readonly feed: Feed = {
-    // The new epoch's header follows in the same turn, and THAT is what
-    // publishes the keyframe: an epoch opened on its own would freeze an empty
-    // document and hand it over before the source had said what it is now.
+    // An epoch does not publish on its own: it would freeze an empty document
+    // and hand it over before the source had said what it now is. It arms a
+    // flush instead, which the writes that follow it in the same turn consume
+    // — a `keyframeOn` header takes it synchronously, and anything else leaves
+    // it to the end of the turn, so an epoch-opening source that writes no
+    // such header still gets its keyframe, and either way one turn is one
+    // version.
     epoch: (epoch, seq) =>
       this.#control(seq, true, () => {
         if (!this.#doc.epoch(epoch, seq)) return;
@@ -236,15 +243,19 @@ export class LensCore {
         this.#frames.length = 0;
         this.#sourceLive = [];
         this.#ref = null;
+        this.#owedFlush = true;
       }),
 
     meta: (key, value, seq, bounds) =>
       this.#control(seq, false, () => {
         const field: MetaField | undefined =
           value === undefined ? undefined : { value, ...(bounds === undefined ? {} : { bounds }) };
-        if (!this.#doc.meta(key, field, seq)) return;
+        if (!this.#doc.meta(key, field, seq)) return this.#armOwedFlush();
         if (this.#keyframeOn(key)) this.#flush();
-        else this.#bump();
+        else {
+          this.#bump();
+          this.#armOwedFlush();
+        }
       }),
 
     replace: (drafts, seq, claims) =>
@@ -254,6 +265,7 @@ export class LensCore {
         else if (result.changed === 'moved' && result.moved.length > 0) {
           for (const fn of this.#listeners.moved) fn(result.moved);
         }
+        this.#armOwedFlush();
       }),
 
     dirty: (d, at) => {
@@ -400,6 +412,7 @@ export class LensCore {
       minLines: settings.minLines,
       seq: this.#doc.lastSeq(),
       ...(this.#deps.source.ruleKeys ? { ruleKeys: this.#deps.source.ruleKeys } : {}),
+      ...(this.#deps.source.removals === false ? { removals: false } : {}),
       ...(decider?.embed ? { embed: decider.embed } : {}),
       ...(decider?.triage ? { triage: decider.triage } : {}),
       ...(decider?.describe ? { describe: decider.describe } : {}),
@@ -407,8 +420,20 @@ export class LensCore {
     });
   }
 
+  /** The end of an epoch's opening turn: whatever the source wrote after the
+   *  epoch is published together, once, however many calls it took. */
+  #armOwedFlush(): void {
+    if (!this.#owedFlush || this.#flushQueued) return;
+    this.#flushQueued = true;
+    queueMicrotask(() => {
+      this.#flushQueued = false;
+      if (this.#owedFlush) this.#flush();
+    });
+  }
+
   /** A keyframe-forcing meta change: deliver now, ignoring `min_interval`. */
   #flush(): void {
+    this.#owedFlush = false;
     this.#clearSettle();
     this.#freeze(this.#gate());
     for (const consumer of [...this.#consumers.values()]) {

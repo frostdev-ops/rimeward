@@ -15,7 +15,7 @@ const FILES = fs
 const BUDGET_MS = 1500;
 
 test('every lens fixture replays with no failures', async (t) => {
-  assert.ok(FILES.length >= 21, `expected the lifted fixtures plus the terminal ones, found ${FILES.length}`);
+  assert.ok(FILES.length >= 23, `expected the lifted fixtures plus the terminal ones, found ${FILES.length}`);
   for (const file of FILES) {
     await t.test(file, async () => {
       const report = await replay(path.join(FIXTURES, file));

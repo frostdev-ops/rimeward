@@ -53,6 +53,10 @@ export interface GateDeps {
    *  (`app`, `window`) still force a keyframe — that is `nextKind`'s job — but
    *  they are not, by themselves, something a consumer asked to hear about. */
   ruleKeys: string[];
+  /** The source's own `removals`. `false` means a removed line is never
+   *  rendered, so it must not be a candidate either: a frame that only cleared
+   *  rows would otherwise open a delta with nothing in it. */
+  removals?: boolean;
   /** The newest `seq` applied, stamped onto the triage query. */
   seq?: number;
 }
@@ -148,7 +152,8 @@ export function gateDefaults(over: Partial<GateDeps> = {}): GateDeps {
 export interface Candidates {
   added: Line[];
   removed: Line[];
-  /** `added` then `removed`, the changed text a watch reads. */
+  /** `added` then `removed`, the changed text a watch reads — `added` alone
+   *  where the source does not render removals. */
   text: Line[];
   /** The meta keys whose value changed, which a watch reads as text too. */
   meta: string[];
@@ -186,14 +191,14 @@ export function liveRegions(
 export function candidates(
   diff: Diff,
   live: Rect[],
-  deps: Pick<GateDeps, 'minLines' | 'visualThreshold' | 'ruleKeys'>
+  deps: Pick<GateDeps, 'minLines' | 'visualThreshold' | 'ruleKeys' | 'removals'>
 ): Candidates {
   const outside = (bbox: Rect | undefined): boolean => outsideLive(live, bbox);
   const added = diff.added.filter((l) => outside(l.bbox));
   const removed = diff.removed.filter((l) => outside(l.bbox));
   // `diff.visual` already excludes dirty rectangles that a text change explains.
   const visual = diff.visual.filter((d) => d.d >= deps.visualThreshold && outside(d.bbox));
-  const text = [...added, ...removed];
+  const text = deps.removals === false ? added : [...added, ...removed];
   return {
     added,
     removed,

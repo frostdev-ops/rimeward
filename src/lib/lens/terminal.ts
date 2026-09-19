@@ -182,9 +182,9 @@ export function terminalSource(deps: TerminalDeps): Source {
     const next = new Map<number, string>();
     if (lost > 0) {
       const text = `[lens: ${lost} rows scrolled out of view before they were read]`;
-      // Half a row above the window, so it keeps reading order and collides with
-      // no row this read or any later one.
-      drafts.push({ text, src: 'lens', key: `lens:lost:${top}`, bbox: [0, top - 0.5, 1, 1] });
+      // On the last row nobody read, which is above every row this read or any
+      // later one carries.
+      drafts.push({ text, src: 'lens', key: `lens:lost:${top}`, bbox: band(top - 1) });
     }
     for (const [index, raw] of lines.entries()) {
       const row = raw.trimEnd();

@@ -1,0 +1,13 @@
+{"type": "note", "text": "A frame that only clears rows: a terminal never renders a `-` line, so the cleared rows are not candidates either — the alternative is a delta with nothing in it."}
+{"type": "term", "seq": 1, "rows": ["$ claude", "a", "b", "c", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "consumer", "id": "c"}
+{"type": "tick", "ms": 750}
+{"type": "expect", "expect": "keyframe", "consumer": "c"}
+{"type": "ack", "consumer": "c"}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 1}
+{"type": "term", "seq": 10, "rows": ["$ claude", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], "scrolled": 0}
+{"type": "tick", "ms": 750}
+{"type": "tick", "ms": 3000}
+{"type": "note", "text": "Nothing: three rows left the screen and none arrived."}
+{"type": "expect", "expect": "deliveries", "consumer": "c", "count": 1}
+{"type": "expect", "expect": "scene.lines", "count": 1}
