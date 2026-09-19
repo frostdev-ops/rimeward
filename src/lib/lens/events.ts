@@ -47,7 +47,9 @@ function metaLines(doc: Doc, only: Fields): string[] {
     if (only !== null && !only.includes(key)) continue;
     const value =
       field.value.length > META_VALUE_CAP ? `${field.value.slice(0, META_VALUE_CAP)}…` : field.value;
-    out.push(`${key}=${value}`);
+    // The cut is the value's; where the field sits is printed after it, in the
+    // same shape a text line's box has.
+    out.push(`${key}=${value}${field.bounds ? ` bounds=${box(field.bounds)}` : ''}`);
   }
   if (doc.incomplete) out.push('incomplete');
   return out;

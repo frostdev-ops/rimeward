@@ -193,6 +193,19 @@ test('a long header value is cut to 120 chars by the render, never by the store'
   assert.equal(s.meta.focus?.value, long, 'the document still holds the whole value');
 });
 
+test('a header field prints where it sits, after the cut value', () => {
+  const long = 'x'.repeat(400);
+  const s = doc({ meta: { focus: { value: long, bounds: [10.4, 32.6, 600.2, 384.5] } } });
+  const meta = renderKeyframe(s, consumer(), { page: 1 }).text.split('\n')[2]!;
+  assert.equal(meta, `focus=${'x'.repeat(120)}… bounds=10,33,600,385`, 'the cut is the value\'s; the bounds always print whole');
+  const placeless = doc({ meta: { focus: { value: 'let x = 1' } } });
+  assert.equal(
+    renderKeyframe(placeless, consumer(), { page: 1 }).text.split('\n')[2],
+    'focus=let x = 1',
+    'a field the source could not place prints no bounds'
+  );
+});
+
 test('an incomplete document carries the incomplete marker', () => {
   const s = doc({ incomplete: true, meta: {} });
   assert.equal(renderKeyframe(s, consumer(), { page: 1 }).text.split('\n')[2], 'incomplete');

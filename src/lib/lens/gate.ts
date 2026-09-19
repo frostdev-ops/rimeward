@@ -314,15 +314,18 @@ async function one(
   if (mode === 'unavailable') return { id, hit: false, mode, evaluation: 'unavailable' };
 
   // 1. Rect selection. Without geometry nothing is inside a rect: a `rect`
-  // watch is a question about a place, and a source with no places answers no.
+  // watch is a question about a place, and a line a source could not place
+  // answers no.
   const rect = spec.rect;
   const inRect = (b: Rect | undefined): boolean =>
     rect === undefined || (b !== undefined && intersects(rect, b));
   const lines = cand.text.filter((l) => inRect(l.bbox));
   const visual = cand.visual.filter((d) => inRect(d.bbox));
-  // A meta field is inside the rect when its own bounds are: a field the source
-  // could not place is outside every rect, exactly as a bounds-less focus was.
-  const meta = cand.meta.filter((key) => inRect(doc.meta[key]?.bounds));
+  // A header field the source could not place counts inside ANY rect: the
+  // alternative is silently dropping the one signal that says where the user
+  // is working.
+  const metaInRect = (b: Rect | undefined): boolean => rect === undefined || b === undefined || intersects(rect, b);
+  const meta = cand.meta.filter((key) => metaInRect(doc.meta[key]?.bounds));
   if (lines.length === 0 && visual.length === 0 && meta.length === 0) return { id, hit: false, mode };
   if (mode === 'rect') return { id, hit: true, mode };
 
@@ -334,8 +337,11 @@ async function one(
     if (visual.length === 0) return { id, hit: false, mode };
     return region ? { id, hit: true, mode } : { id, hit: true, mode, evaluation: 'rect-only' };
   }
+  // Only a rule key's text is something to read: `app`, `window` and `sheet`
+  // say which document this is, not what it now says.
   let texts = lines.map((l) => l.text);
   for (const key of meta) {
+    if (!deps.ruleKeys.includes(key)) continue;
     const field = doc.meta[key];
     if (field !== undefined) texts.push(field.value);
   }

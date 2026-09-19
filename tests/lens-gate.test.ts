@@ -231,14 +231,21 @@ test('a rect watch sees a meta change only where the field sits', async () => {
   assert.equal((await evaluate(at([0, 0, 300, 300]), cand, doc(), d)).deliver, true);
   assert.equal((await evaluate(at([800, 800, 100, 100]), cand, doc(), d)).deliver, false);
 
-  // A field the source could not place is inside no rectangle at all.
+  // A field the source could not place counts inside EVERY rectangle: dropping
+  // it would silently lose the one signal that says where the user is working.
   const unplaced = doc({ meta: { focus: { value: 'editor let x = 1' } } });
-  assert.equal((await evaluate(at([0, 0, 300, 300]), cand, unplaced, d)).deliver, false);
+  assert.equal((await evaluate(at([0, 0, 300, 300]), cand, unplaced, d)).deliver, true);
+  assert.equal((await evaluate(at([800, 800, 100, 100]), cand, unplaced, d)).deliver, true);
   assert.equal(
     (await evaluate(consumer({ watches: [watch({ spec: { regex: 'let x', visual: false, triage: false }, mode: 'regex' })] }), cand, unplaced, d)).deliver,
     true,
     'a watch with no rect still reads it'
   );
+
+  // A LINE without geometry stays outside every rect: a rect watch is a
+  // question about a place, and the line cannot answer it.
+  const placeless = candidates(emptyDiff({ added: [{ id: 'l1', text: 'row', src: 'pty', key: 'row', seq: 3 }] }), [], d);
+  assert.equal((await evaluate(at([0, 0, 300, 300]), placeless, doc({ meta: {} }), d)).deliver, false);
 });
 
 test('the gate reads header values whole, however the render cuts them', async () => {
@@ -405,17 +412,33 @@ test('a text watch with no describe reports unavailable on a visual-only change'
   assert.equal(report.deliver, false);
 });
 
-test('a changed meta value is text a watch can read', async () => {
+test('a changed RULE key is text a watch can read; the others only say which document this is', async () => {
   const d = deps();
-  const c = consumer({
-    watches: [watch({ spec: { regex: 'Save As', visual: false, triage: false }, mode: 'regex' })],
-  });
+  const reads = (pattern: string): Consumer =>
+    consumer({ watches: [watch({ spec: { regex: pattern, visual: false, triage: false }, mode: 'regex' })] });
   const changed = doc({
-    meta: { app: { value: 'Xcode (com.apple.dt.Xcode)' }, sheet: { value: '"Save As"', bounds: [10, 20, 300, 200] } },
+    meta: {
+      app: { value: 'Xcode (com.apple.dt.Xcode)' },
+      sheet: { value: '"Save As"', bounds: [10, 20, 300, 200] },
+      focus: { value: 'AXTextField "search" value="cannot find value"', bounds: [0, 32, 600, 384] },
+    },
   });
-  const cand = candidates(emptyDiff({ metaChanged: ['sheet'] }), [], d);
-  assert.equal((await evaluate(c, cand, changed, d)).deliver, true);
-  assert.equal((await evaluate(c, cand, doc(), d)).deliver, false, 'the key has to be there to be read');
+
+  // `ruleKeys` is ['focus'] by default: that is the field whose text is read.
+  assert.equal((await evaluate(reads('cannot find'), candidates(emptyDiff({ metaChanged: ['focus'] }), [], d), changed, d)).deliver, true);
+  assert.equal((await evaluate(reads('cannot find'), candidates(emptyDiff({ metaChanged: [] }), [], d), changed, d)).deliver, false, 'the key has to have changed to be read');
+
+  // `sheet` and `window` name the document, so a regex never matches on them —
+  // `matchFilter` still reads every key by name (below).
+  assert.equal((await evaluate(reads('Save As'), candidates(emptyDiff({ metaChanged: ['sheet'] }), [], d), changed, d)).deliver, false);
+  const byName = consumer({
+    watches: [watch({ spec: { filter: { sheet: 'Save As' }, visual: false, triage: false }, mode: 'filter' })],
+  });
+  assert.equal(
+    (await evaluate(byName, candidates(emptyDiff({ metaChanged: ['focus'] }), [], d), changed, d)).deliver,
+    true,
+    'a filter names the field it reads'
+  );
 });
 
 test('a visual watch fires on the pixels alone, no model needed', async () => {

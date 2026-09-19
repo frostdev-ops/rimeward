@@ -112,20 +112,16 @@ function headMeta(body: Record<string, unknown>): { key: string; value: string; 
   const url = str(body.url);
   const display = (body.display ?? null) as { id?: unknown; w?: unknown; h?: unknown; scale?: unknown } | null;
   // The display travels with the window (only a window change moves it), so it
-  // rides that one field rather than a second one nothing ever asks about.
+  // rides that one field rather than a second one nothing ever asks about. The
+  // bounds are the field's, which the renderer prints after the value.
   const tail = display ? ` display=${num(display.id)} ${num(display.w)}x${num(display.h)} @${num(display.scale)}` : '';
   return [
-    {
-      key: 'window',
-      value: `${num(body.id)} ${q(str(body.title))} bounds=${box(bounds)}${url ? ` url=${url}` : ''}${tail}`,
-      bounds,
-    },
+    { key: 'window', value: `${num(body.id)} ${q(str(body.title))}${url ? ` url=${url}` : ''}${tail}`, bounds },
   ];
 }
 
-function focusValue(body: { role?: unknown; label?: unknown; value?: unknown; bounds?: unknown }): string {
-  const bounds = rect(body.bounds);
-  return `${str(body.role)} ${q(str(body.label))} value=${q(str(body.value))}${bounds ? ` bounds=${box(bounds)}` : ''}`;
+function focusValue(body: { role?: unknown; label?: unknown; value?: unknown }): string {
+  return `${str(body.role)} ${q(str(body.label))} value=${q(str(body.value))}`;
 }
 
 /** Turns a fixture's wire signal into `Feed` calls, reproducing the epoch and
@@ -168,7 +164,7 @@ function screenSource(replies: Replies, now: () => number): Source & { attach(fe
           feed.meta('focus', focusValue(body), seq, rect(body.bounds));
           return;
         case 'ax-sheet':
-          feed.meta('sheet', `${q(str(body.title))} bounds=${box(rect(body.bounds) ?? [0, 0, 0, 0])}`, seq, rect(body.bounds));
+          feed.meta('sheet', q(str(body.title)), seq, rect(body.bounds));
           return;
         case 'ax-text':
           feed.replace(wireDrafts(body.lines, 'ax'), seq, claims(rect(body.rect) ?? [0, 0, 0, 0]));
@@ -203,11 +199,17 @@ function screenSource(replies: Replies, now: () => number): Source & { attach(fe
       const app = snap.app as Record<string, unknown> | null;
       if (app) meta.app = { value: `${str(app.bundle)} ${q(str(app.name))} pid=${num(app.pid)}` };
       const window = snap.window as Record<string, unknown> | null;
-      if (window) for (const field of headMeta({ kind: 'window', ...window })) meta[field.key] = { value: field.value };
+      if (window) {
+        for (const field of headMeta({ kind: 'window', ...window })) {
+          meta[field.key] = { value: field.value, ...(field.bounds ? { bounds: field.bounds } : {}) };
+        }
+      }
       const focus = snap.focus as Record<string, unknown> | null;
       if (focus) meta.focus = { value: focusValue(focus), ...(rect(focus.bounds) ? { bounds: rect(focus.bounds) as Rect } : {}) };
       const sheet = snap.sheet as Record<string, unknown> | null;
-      if (sheet) meta.sheet = { value: `${q(str(sheet.title))} bounds=${box(rect(sheet.bounds) ?? [0, 0, 0, 0])}` };
+      if (sheet) {
+        meta.sheet = { value: q(str(sheet.title)), ...(rect(sheet.bounds) ? { bounds: rect(sheet.bounds) as Rect } : {}) };
+      }
       const latest = snap.latest as { ref?: unknown } | null;
       epoch = num(snap.epoch);
       return {
