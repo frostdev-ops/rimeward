@@ -5,10 +5,41 @@ use tauri::{AppHandle, Manager};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
-    sync::Mutex,
+    sync::{mpsc, Mutex},
 };
 
 pub struct Runtime(pub Arc<Mutex<Option<Child>>>);
+
+/// Every line that reaches the Node child's stdin — desktop replies, lens
+/// signals and the shutdown request — goes through this one channel, so
+/// ordering is the order things were produced in and nothing interleaves
+/// mid-line. One drain task per child owns the pipe.
+pub struct Stdin {
+    lines: mpsc::UnboundedSender<String>,
+    reader: std::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+}
+
+impl Stdin {
+    pub fn new(
+        lines: mpsc::UnboundedSender<String>,
+        reader: mpsc::UnboundedReceiver<String>,
+    ) -> Stdin {
+        Stdin {
+            lines,
+            reader: std::sync::Mutex::new(Some(reader)),
+        }
+    }
+
+    /// A closed channel is the same failure a closed pipe was: the child is gone.
+    pub fn send(&self, line: String) -> Result<(), mpsc::error::SendError<String>> {
+        self.lines.send(line)
+    }
+
+    /// The receiver is single-consumer: only the first drain task gets it.
+    fn take(&self) -> Option<mpsc::UnboundedReceiver<String>> {
+        self.reader.lock().unwrap().take()
+    }
+}
 #[derive(Default)]
 pub struct Workspace(pub Mutex<Option<(url::Url, String)>>);
 
@@ -289,13 +320,32 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     let mut stdin = child.stdin.take().ok_or("missing runtime stdin")?;
     let stdout = child.stdout.take().ok_or("missing runtime stdout")?;
     let initial = serde_json::json!({"port":port,"key":key,"data":data.join("data"),"documents":app.path().document_dir()?,"browsers":resources.join("browsers"),"version":app.package_info().version.to_string()});
+    // The handshake goes straight to the child, ahead of anything already on
+    // the shared channel. The drain starts after it, so the handshake is the
+    // first line the child ever reads.
     stdin.write_all(format!("{}\n", initial).as_bytes()).await?;
-    // Keep stdin with the child so explicit exit can request graceful shutdown.
-    child.stdin = Some(stdin);
+    let mut reader = app
+        .state::<Stdin>()
+        .take()
+        .ok_or("runtime writer already attached")?;
+    // Keeping the pipe open lets explicit exit request graceful shutdown.
+    tauri::async_runtime::spawn(async move {
+        while let Some(line) = reader.recv().await {
+            if stdin
+                .write_all(format!("{line}\n").as_bytes())
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
     let state = app.state::<Runtime>().0.clone();
     *state.lock().await = Some(child);
     let mut lines = BufReader::new(stdout).lines();
     let desktop_slots = Arc::new(tokio::sync::Semaphore::new(16));
+    // The lens and its helper get their own pool so they cannot starve computer-*.
+    let lens_slots = Arc::new(tokio::sync::Semaphore::new(8));
     while let Some(line) = lines.next_line().await? {
         let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
@@ -370,17 +420,16 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                     Ok(value) => serde_json::json!({"id":message["id"],"value":value}),
                     Err(_) => serde_json::json!({"id":message["id"],"error":true}),
                 };
-                if let Some(child) = state.lock().await.as_mut() {
-                    if let Some(input) = child.stdin.as_mut() {
-                        input.write_all(format!("{}\n", reply).as_bytes()).await?;
-                    }
-                }
+                app.state::<Stdin>().send(reply.to_string())?;
             }
             Some("desktop") => {
                 // Never wait for media, input or a dialog before reading vault/navigation.
-                let slot = desktop_slots.clone().try_acquire_owned();
+                let slot = if message["op"].as_str().is_some_and(lens_op) {
+                    lens_slots.clone().try_acquire_owned()
+                } else {
+                    desktop_slots.clone().try_acquire_owned()
+                };
                 let app = app.clone();
-                let state = state.clone();
                 tauri::async_runtime::spawn(async move {
                     let result = match slot {
                         Ok(_permit) => desktop_request(&app, &message).await,
@@ -390,11 +439,7 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                         Ok(value) => serde_json::json!({"id":message["id"],"value":value}),
                         Err(error) => serde_json::json!({"id":message["id"],"error":error}),
                     };
-                    if let Some(child) = state.lock().await.as_mut() {
-                        if let Some(input) = child.stdin.as_mut() {
-                            let _ = input.write_all(format!("{}\n", reply).as_bytes()).await;
-                        }
-                    }
+                    let _ = app.state::<Stdin>().send(reply.to_string());
                 });
             }
             _ => {}
@@ -439,6 +484,23 @@ fn runtime_diagnostic(file: &std::path::Path, category: &str) {
     }
 }
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+/// An op whose absolute deadline passed while it queued is dropped, never run.
+fn should_drop(now: i64, deadline: Option<i64>) -> bool {
+    matches!(deadline, Some(at) if now >= at)
+}
+/// Every op the lens answers, including the overlay's: the lens owns the pool.
+fn lens_op(op: &str) -> bool {
+    ["lens-", "overlay-", "helper-"]
+        .iter()
+        .any(|prefix| op.starts_with(prefix))
+}
+
 async fn desktop_request(
     app: &AppHandle,
     message: &serde_json::Value,
@@ -447,6 +509,15 @@ async fn desktop_request(
     use tauri_plugin_opener::OpenerExt;
     let value = &message["value"];
     match message["op"].as_str() {
+        // Only the lens reads the caller's absolute deadline; every other op
+        // keeps its own timeout. B1 puts the in-crate lens engine here and the
+        // deadline travels with the op, all the way to the helper.
+        Some(op) if lens_op(op) => {
+            if should_drop(now_ms(), message["deadline"].as_i64()) {
+                return Err("deadline".into());
+            }
+            Err("unavailable".into())
+        }
         Some(op) if op.starts_with("computer-app") => {
             crate::background_apps::request(op, value).await
         }
@@ -526,9 +597,9 @@ pub async fn shutdown(app: &AppHandle) {
     let state = app.state::<Runtime>().0.clone();
     let child = state.lock().await.take();
     if let Some(mut child) = child {
-        if let Some(input) = child.stdin.as_mut() {
-            let _ = input.write_all(b"{\"type\":\"shutdown\"}\n").await;
-        }
+        let _ = app
+            .state::<Stdin>()
+            .send("{\"type\":\"shutdown\"}".to_string());
         if tokio::time::timeout(std::time::Duration::from_secs(40), child.wait())
             .await
             .is_err()
@@ -540,6 +611,35 @@ pub async fn shutdown(app: &AppHandle) {
 
 #[cfg(test)]
 mod diagnostics_tests {
+    #[test]
+    fn only_lens_ops_use_the_lens_pool() {
+        assert!(super::lens_op("lens-frame"));
+        assert!(super::lens_op("overlay-show"));
+        assert!(super::lens_op("helper-triage"));
+        assert!(!super::lens_op("computer-frame"));
+        assert!(!super::lens_op("folder"));
+    }
+
+    #[test]
+    fn an_expired_deadline_drops_the_op() {
+        assert!(super::should_drop(1_000, Some(999)));
+        assert!(super::should_drop(1_000, Some(1_000)));
+        assert!(!super::should_drop(1_000, Some(1_001)));
+        assert!(!super::should_drop(1_000, None));
+    }
+
+    #[test]
+    fn the_stdin_receiver_goes_to_one_drain() {
+        let (lines, reader) = tokio::sync::mpsc::unbounded_channel();
+        let stdin = super::Stdin::new(lines, reader);
+        stdin.send("{}".to_string()).unwrap();
+        let mut reader = stdin.take().expect("first drain takes the receiver");
+        assert!(stdin.take().is_none());
+        assert_eq!(reader.blocking_recv().as_deref(), Some("{}"));
+        drop(reader);
+        assert!(stdin.send("{}".to_string()).is_err());
+    }
+
     #[test]
     fn runtime_metadata_rotates() {
         let dir = std::env::temp_dir().join(format!("rimeward-diagnostics-{}", std::process::id()));

@@ -33,9 +33,9 @@ export interface Pair {
 const bootId = crypto.randomUUID();
 type NativeGlobal = typeof globalThis & {
   __nativeVault?: (op: string, value?: string) => Promise<string>;
-  __nativeDesktop?: (op: string, value?: unknown) => Promise<unknown>;
+  __nativeDesktop?: (op: string, value?: unknown, deadlineMs?: number) => Promise<unknown>;
 };
-export async function nativeDesktop(op: string, value?: unknown) {
+export async function nativeDesktop(op: string, value?: unknown, deadlineMs?: number) {
   requireDesktop();
   const fn = (globalThis as NativeGlobal).__nativeDesktop;
   if (!fn)
@@ -43,7 +43,7 @@ export async function nativeDesktop(op: string, value?: unknown) {
       "Open this page in the desktop app to use the folder picker or browser sign-in.",
       409,
     );
-  return fn(op, value);
+  return fn(op, value, deadlineMs);
 }
 let pairs: Pair[] = [];
 let loaded = false;

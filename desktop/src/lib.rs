@@ -135,6 +135,8 @@ pub fn run() {
             app.manage(runtime::Runtime(std::sync::Arc::new(
                 tokio::sync::Mutex::new(None),
             )));
+            let (lines, reader) = tokio::sync::mpsc::unbounded_channel();
+            app.manage(runtime::Stdin::new(lines, reader));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = runtime::launch(handle.clone()).await {

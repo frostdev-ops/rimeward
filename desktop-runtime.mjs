@@ -22,22 +22,21 @@ process.env.HOST = "127.0.0.1";
 process.env.PORT = String(initial.port ?? 0);
 const pending = new Map();
 let serial = 0;
-const nativeRequest = (type, op, value) =>
+// The deadline goes on the wire as an absolute time (the native side drops an
+// op still queued then) and drives the local timer, so one clock governs both.
+const nativeRequest = (type, op, value, deadlineMs = type === "desktop" ? 120000 : 15000) =>
   new Promise((resolve, reject) => {
     if (pending.size >= 32 || process.stdout.writableLength > 1024 * 1024) {
       reject(new Error("Desktop is busy. Retry after the current operation finishes."));
       return;
     }
     const id = ++serial;
-    const timer = setTimeout(
-      () => {
-        pending.delete(id);
-        reject(new Error("Desktop request timed out"));
-      },
-      type === "desktop" ? 120000 : 15000,
-    );
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error("Desktop request timed out"));
+    }, deadlineMs);
     pending.set(id, { resolve, reject, timer });
-    const message = `${JSON.stringify({ type, id, op, value })}\n`;
+    const message = `${JSON.stringify({ type, id, op, value, deadline: Date.now() + deadlineMs })}\n`;
     if (Buffer.byteLength(message) > (op === 'computer-clipboard' ? 12 : op === 'computer-files' ? 6 : 2) * 1024 * 1024) {
       pending.delete(id);
       clearTimeout(timer);
@@ -47,7 +46,15 @@ const nativeRequest = (type, op, value) =>
     process.stdout.write(message);
   });
 globalThis.__nativeVault = (op, value) => nativeRequest("vault", op, value);
-globalThis.__nativeDesktop = (op, value) => nativeRequest("desktop", op, value);
+globalThis.__nativeDesktop = (op, value, deadlineMs) => nativeRequest("desktop", op, value, deadlineMs);
+// Lens signals are a push, not a reply, and start before the lens runtime is
+// imported: they queue until __lensAttach installs the handler.
+let lensSignal = null;
+const lensQueue = [];
+globalThis.__lensAttach = (fn) => {
+  lensSignal = fn;
+  for (const [line, m] of lensQueue.splice(0)) fn(line, m);
+};
 // Startup may not have installed the graceful shutdown handler yet.
 const stop = () => { if (!process.emit("SIGTERM")) process.exit(0); };
 lines.on("line", (line) => {
@@ -55,6 +62,14 @@ lines.on("line", (line) => {
     const m = JSON.parse(line);
     if (m.type === "shutdown") {
       stop();
+      return;
+    }
+    if (m.type === "lens") {
+      if (lensSignal) lensSignal(line, m);
+      else {
+        if (lensQueue.length >= 4096) lensQueue.shift();
+        lensQueue.push([line, m]);
+      }
       return;
     }
     const p = pending.get(m.id);
