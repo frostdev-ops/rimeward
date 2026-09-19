@@ -4,9 +4,10 @@
 // tools say so (plan D7: consent and pause are runtime state, never layout).
 
 import { LENS_SETTINGS, lens } from './core.ts';
-import type { LensSettings } from './core.ts';
+import type { Decider, LensSettings } from './core.ts';
+import { helperDecider } from './decider.ts';
 // Importing the module is what registers `SOURCES.screen` on a desktop.
-import { pushSignal } from './screen.ts';
+import { onHelperSignal, pushSignal } from './screen.ts';
 import { lensSetting, setLensSettings } from './settings.ts';
 import { localOwner } from '../dev/native.ts';
 import { nativeDesktop } from '../dev/remote.ts';
@@ -71,9 +72,33 @@ export function ensureLens(): void {
     // Built here and nowhere else, so the ward's knobs reach it: `lens()` keeps
     // one core per (user, source), and whoever reads it next gets this one.
     lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()));
+    // The helper comes up on its own schedule, and may go down and come back;
+    // each state change is a reason to ask what it can answer now.
+    onHelperSignal(() => void syncDecider());
   }
   void startLens();
 }
+
+/** Installs the helper as the screen's decider once the app says the on-device
+ *  text tower is loadable, and takes it away again when it is not. Swapped on
+ *  the LIVE core — the helper coming up is no more a reason to rebuild it than
+ *  a consent toggle is, and a rebuild would drop every cursor — so the stored
+ *  watches are re-embedded and re-scored in place.
+ *  (Track D adds the local and cloud deciders through the same call.) */
+async function syncDecider(status?: unknown): Promise<void> {
+  const reply = (status ?? (await nativeDesktop('lens-status').catch(() => null))) as Record<
+    string,
+    unknown
+  > | null;
+  const capabilities = (reply?.capabilities ?? {}) as { embed?: unknown };
+  const core = lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()));
+  // One instance, so a helper state change that says nothing new (a recovery,
+  // a rate-limit window) is identity-equal and re-embeds nothing.
+  if (capabilities.embed === true) helper ??= helperDecider(nativeDesktop);
+  await core?.setDecider(capabilities.embed === true ? helper : undefined);
+}
+
+let helper: Decider | undefined;
 
 /** Tells Rust what the user answered. Returns the refusal, if any: `permission`
  *  is Screen Recording, which the setup page points at. */
@@ -81,8 +106,11 @@ export async function startLens(): Promise<string | null> {
   if (!isDesktop()) return null;
   const consented = lensSetting('consented');
   try {
-    await nativeDesktop('lens-start', { consented });
+    // `lens-start` answers with the whole status, so the decider is synced from
+    // that reply rather than a second round trip.
+    const status = await nativeDesktop('lens-start', { consented });
     if (consented && lensPaused(localOwner())) await nativeDesktop('lens-pause');
+    await syncDecider(status);
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);

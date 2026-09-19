@@ -145,7 +145,10 @@ pub fn run() {
             // there with everything else.
             #[cfg(target_os = "macos")]
             {
-                let lens = lens::Lens::init(&app.path().app_data_dir()?, lines.clone());
+                // No layout (or no helper binary at it) means no helper: the
+                // model stages answer `unavailable` rather than hanging.
+                let layout = runtime::lens_layout(app.handle()).ok();
+                let lens = lens::Lens::init(&app.path().app_data_dir()?, lines.clone(), layout);
                 app.manage(lens.clone());
                 tauri::async_runtime::spawn(lens.bridge.clone().run_writer());
             }

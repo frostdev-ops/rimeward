@@ -109,7 +109,19 @@ const handlers = new Set<(signal: Record<string, unknown>) => void>();
 /** One `type:"lens"` line from the desktop runtime (`__lensAttach`). */
 export function pushSignal(signal: unknown): void {
   if (!signal || typeof signal !== 'object') return;
-  for (const fn of [...handlers]) fn(signal as Record<string, unknown>);
+  const body = signal as Record<string, unknown>;
+  // A helper signal carries no epoch and belongs to no document, so it is read
+  // here rather than in a source's handler: it has to land whether or not a
+  // core is connected.
+  if (str(body.kind) === 'helper') {
+    helperState = {
+      state: str(body.state, 'down'),
+      outstanding: num(body.outstanding),
+      ...(typeof body.resetAt === 'number' ? { resetAt: body.resetAt } : {}),
+    };
+    for (const fn of [...onHelper]) fn();
+  }
+  for (const fn of [...handlers]) fn(body);
 }
 
 const subscribeSignals = (fn: (signal: Record<string, unknown>) => void): (() => void) => {
@@ -124,6 +136,26 @@ const subscribeSignals = (fn: (signal: Record<string, unknown>) => void): (() =>
 /** The newest captured frame: a live pointer, so a read asks for it rather than
  *  for whatever version it happens to hold. One screen per process. */
 let latest: { ref: string; geometry: FrameGeometry | undefined; expires: number } | null = null;
+
+/** The state of the last `helper` signal. Not part of the document — the helper
+ *  is what judges a change, not something that changed — so it is kept here and
+ *  read by the ward and by `ensureLens`, which installs the helper decider once
+ *  the capabilities it reports arrive. */
+export interface HelperState {
+  state: string;
+  outstanding: number;
+  resetAt?: number;
+}
+
+let helperState: HelperState | null = null;
+const onHelper = new Set<() => void>();
+
+export const lensHelper = (): HelperState | null => helperState;
+
+/** Run `fn` whenever a helper signal lands (`ensureLens` re-checks there). */
+export function onHelperSignal(fn: () => void): void {
+  onHelper.add(fn);
+}
 
 export function screenSource(deps: ScreenDeps): Source {
   const now = deps.now ?? Date.now;
@@ -207,7 +239,6 @@ export function screenSource(deps: ScreenDeps): Source {
         // is started again. When it is, the stream moved on without us, so the
         // lens comes back live and re-reads what is on screen now — on the SAME
         // core, with every consumer, listener and cursor still bound to it.
-        // (`helper` lands with the helper itself, in B3.)
         if (str(body.state) === 'stopped') {
           stopped = true;
           feed.offline(str(body.reason, 'stopped'));

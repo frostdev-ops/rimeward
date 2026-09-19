@@ -45,7 +45,14 @@ jobs:
       fail-fast: false
       matrix:
         platform: ${{ fromJSON(inputs.validation_only && inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-latest","ubuntu-24.04","windows-latest"]') }}
-    runs-on: ${{ matrix.platform }}
+    # The matrix value stays `macos-latest` so every `matrix.platform` condition
+    # below reads the same, but the macOS job runs on the `xcode-27` preview
+    # image: the only hosted runner with the macOS 27 SDK and Swift 6.x that
+    # desktop/lens-helper needs. If that label queues forever or disappears,
+    # drop the mapping (back to `matrix.platform`) and set RIMEWARD_SKIP_LENS=1
+    # on this job — the app then ships without the lens helper and its models,
+    # and every `helper-*` op answers `unavailable`.
+    runs-on: ${{ matrix.platform == 'macos-latest' && 'xcode-27' || matrix.platform }}
     # A hung notarization or download fails the job instead of holding a runner for six hours.
     timeout-minutes: 150
     env:
@@ -56,6 +63,9 @@ jobs:
       # The GStreamer SDK (media-runtime.mjs): restored from the cache below, so
       # a warm run skips the downloads and, on Linux, the from-source build.
       RIMEWARD_MEDIA_CACHE: ${{ github.workspace }}/.cache/media-sdk
+      # The lens helper's MobileCLIP-S0 text tower (desktop/models.mjs): 85 MB
+      # fetched once and restored from the cache below.
+      RIMEWARD_MODELS_CACHE: ${{ github.workspace }}/.cache/lens-models
     permissions:
       contents: write
     steps:
@@ -95,6 +105,13 @@ jobs:
         with:
           path: ${{ env.RIMEWARD_MEDIA_CACHE }}/sdk
           key: media-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/media-runtime.mjs') }}
+
+      - name: Cache the lens models
+        if: startsWith(matrix.platform, 'macos-')
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.RIMEWARD_MODELS_CACHE }}
+          key: lens-models-${{ hashFiles('desktop/models.mjs') }}
 
       - name: Linux build deps
         if: matrix.platform == 'ubuntu-24.04'

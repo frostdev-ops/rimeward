@@ -189,6 +189,61 @@ fn encryption_key(service: &str) -> Result<String, Box<dyn std::error::Error + S
         Err(e) => Err(e.into()),
     }
 }
+/// Where the Swift lens helper and the on-device model files live. Resolved
+/// once at startup and handed to `Lens::init`, which spawns the helper only
+/// when `helper` is a file.
+#[cfg(target_os = "macos")]
+pub struct Layout {
+    pub helper: std::path::PathBuf,
+    /// The directory that holds `mobileclip-s0/`, handed to the helper as
+    /// `--models`. The fetcher's cache in a dev build, a staged bundle
+    /// resource in a release one.
+    pub models: std::path::PathBuf,
+}
+
+/// `tauri dev` runs the checkout with whatever Swift build is there; a release
+/// build reads what `prebuild.mjs` staged beside the app.
+#[cfg(target_os = "macos")]
+pub fn lens_layout(app: &AppHandle) -> tauri::Result<Layout> {
+    if cfg!(debug_assertions) {
+        return Ok(debug_layout());
+    }
+    let runtime = resources(app)?;
+    Ok(Layout {
+        helper: runtime.join("helper/blackice-helper"),
+        models: runtime.join("models"),
+    })
+}
+
+/// The checkout's own build, release first: `prebuild.mjs` builds release, and
+/// `swift build` alone builds debug, so whichever is newer to hand wins.
+#[cfg(target_os = "macos")]
+pub fn debug_layout() -> Layout {
+    let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lens-helper");
+    let built = |profile: &str| package.join(format!(".build/{profile}/blackice-helper"));
+    Layout {
+        helper: if built("release").is_file() {
+            built("release")
+        } else {
+            built("debug")
+        },
+        models: models_cache(),
+    }
+}
+
+/// `npm run models:fetch` fills this; the helper reads it. Never in the tree.
+/// `RIMEWARD_MODELS_CACHE` moves it, for `desktop/models.mjs` and this alike.
+#[cfg(target_os = "macos")]
+fn models_cache() -> std::path::PathBuf {
+    std::env::var_os("RIMEWARD_MODELS_CACHE")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join("Library/Caches/rimeward-models")
+        })
+}
+
 pub fn resources(app: &AppHandle) -> tauri::Result<std::path::PathBuf> {
     // Keep private Node/Chromium/media libraries outside linuxdeploy's usr/lib scan.
     #[cfg(target_os = "linux")]
@@ -601,19 +656,41 @@ async fn desktop_request(
     }
 }
 pub async fn shutdown(app: &AppHandle) {
+    // Stop capturing before asking the core to wind down: the final `status`
+    // signal goes out on the same channel, ahead of the shutdown line, so Node
+    // sees `stopped` rather than losing the lens with the pipe. The helper's
+    // own shutdown line and grace period run alongside the core's wait.
+    #[cfg(target_os = "macos")]
+    let helper = app.try_state::<Arc<crate::lens::Lens>>().and_then(|lens| {
+        lens.stop(None);
+        lens.helper()
+    });
     let state = app.state::<Runtime>().0.clone();
     let child = state.lock().await.take();
-    if let Some(mut child) = child {
-        let _ = app
-            .state::<Stdin>()
-            .send("{\"type\":\"shutdown\"}".to_string());
-        if tokio::time::timeout(std::time::Duration::from_secs(40), child.wait())
-            .await
-            .is_err()
-        {
-            let _ = child.kill().await;
+    let core = async {
+        if let Some(mut child) = child {
+            let _ = app
+                .state::<Stdin>()
+                .send("{\"type\":\"shutdown\"}".to_string());
+            if tokio::time::timeout(std::time::Duration::from_secs(40), child.wait())
+                .await
+                .is_err()
+            {
+                let _ = child.kill().await;
+            }
         }
-    }
+    };
+    #[cfg(target_os = "macos")]
+    tokio::join!(
+        async {
+            if let Some(helper) = helper {
+                helper.shutdown().await;
+            }
+        },
+        core
+    );
+    #[cfg(not(target_os = "macos"))]
+    core.await;
 }
 
 #[cfg(test)]

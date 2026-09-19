@@ -228,6 +228,20 @@ export class LensCore {
     for (const consumer of deps.store.loadConsumers()) this.#consumers.set(consumer.id, consumer);
   }
 
+  /** Swap what judges a change, on the live core. The helper coming up (or
+   *  going down) is no reason to rebuild a core and lose every cursor, so the
+   *  stored watches are re-embedded and re-scored here instead: a `for` watch
+   *  registered while nothing could embed it stops reading `unavailable` the
+   *  moment something can. */
+  async setDecider(decider?: Decider): Promise<void> {
+    if (this.#deps.decider === decider) return;
+    if (decider) this.#deps.decider = decider;
+    else delete this.#deps.decider;
+    for (const consumer of [...this.#consumers.values()]) {
+      if (consumer.watches.length > 0) await this.watch(consumer.id);
+    }
+  }
+
   // ------------------------------------------------------------------- feed
 
   /** The one `Feed` the source writes through. Never throws at the source: a

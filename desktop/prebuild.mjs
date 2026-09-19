@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { rustNotices } from './rust-notices.mjs';
+import { NAME as LENS_MODEL, ensureModels } from './models.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url)),
   root = path.dirname(here);
 const version = "22.22.0",
@@ -168,13 +169,42 @@ try {
     catch (error) { if (attempt === 2) throw error; console.warn('Media SDK acquisition failed; retrying once'); }
   }
   run(process.execPath, [path.join(here, 'cua-runtime.mjs')]);
+  // The screen lens's Swift helper and the MobileCLIP-S0 text tower it embeds
+  // with: macOS only (the helper needs the macOS 27 SDK), and RIMEWARD_SKIP_LENS=1
+  // leaves both out, which is what a build on an older Xcode image does.
+  const lens = platform === "darwin" && process.env.RIMEWARD_SKIP_LENS !== "1";
+  if (lens) {
+    // `swift build` is incremental, so this costs nothing when it is current.
+    run("swift", ["build", "-c", "release", "--package-path", path.join(here, "lens-helper")]);
+    fs.mkdirSync(path.join(runtime, "helper"), { recursive: true });
+    fs.copyFileSync(
+      path.join(here, "lens-helper/.build/release/blackice-helper"),
+      path.join(runtime, "helper/blackice-helper"),
+    );
+    fs.chmodSync(path.join(runtime, "helper/blackice-helper"), 0o755);
+    // Attribution for the ported CLIP tokenizer travels with the binary.
+    fs.copyFileSync(
+      path.join(here, "lens-helper/Sources/blackice-helper/Tokenizer/NOTICE"),
+      path.join(runtime, "helper/NOTICE"),
+    );
+    const models = await ensureModels();
+    fs.cpSync(path.join(models, LENS_MODEL), path.join(runtime, "models", LENS_MODEL), {
+      recursive: true,
+    });
+  }
   rustNotices(path.join(here, 'Cargo.toml'), path.join(runtime, 'rust-licenses'), target);
   fs.writeFileSync(
     path.join(runtime, "runtime.json"),
-    JSON.stringify({ node: version, target, protocol: 1 }),
+    JSON.stringify({
+      node: version,
+      target,
+      protocol: 1,
+      helper: lens ? "helper/blackice-helper" : null,
+      models: lens ? [LENS_MODEL] : [],
+    }),
   );
   console.log(
-    `Bundled Node ${version}, native dependencies, application, and Chromium for ${platform}/${arch}.`,
+    `Bundled Node ${version}, native dependencies, application, and Chromium for ${platform}/${arch}${lens ? `, with the lens helper and ${LENS_MODEL}` : ""}.`,
   );
 } finally {
   fs.rmSync(temporary, { recursive: true, force: true });

@@ -76,6 +76,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSGeometry",
     "NSNotification",
     "NSOperation",
+    "NSProcessInfo",
     "NSRange",
     "NSString",
     "NSThread",

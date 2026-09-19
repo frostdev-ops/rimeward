@@ -8,12 +8,15 @@
 
 pub mod bridge;
 pub mod capture;
+pub mod embed;
+pub mod helper;
 pub mod ocr;
 pub mod ring;
 pub mod signals;
 
 use bridge::{Bridge, DisplayInfo, Kind, Line, Rect};
 use capture::{Capture, Filter};
+use helper::Helper;
 use ring::Ring;
 use serde_json::{json, Value};
 use signals::Signals;
@@ -27,6 +30,8 @@ use tokio::sync::mpsc;
 pub const FRAME_CAP: usize = 2 * 1024 * 1024;
 /// `lens-frame` default long edge.
 pub const DEFAULT_MAX_PX: u32 = 1024;
+/// A `desktop` op that arrives without a deadline still gets one.
+pub const DEFAULT_DEADLINE_MS: i64 = 30_000;
 
 /// The frontmost window the lens is pointed at.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -190,22 +195,47 @@ pub struct Lens {
     pub counters: Counters,
     /// Excluded from its own capture. A test proves it.
     pub own_pid: i32,
+    /// The Swift helper, when its binary exists. Absent means every `helper-*`
+    /// op answers `unavailable`.
+    pub helper: Mutex<Option<Arc<Helper>>>,
     capture: Mutex<Option<Capture>>,
     signals: Mutex<Option<Signals>>,
 }
 
 impl Lens {
-    /// Reads `<data>/lens.json` and warms Vision. Starts no capture: that
-    /// waits for consent, which arrives as `lens-start`, and for the Screen
-    /// Recording grant.
-    pub fn init(data_dir: &Path, writer: mpsc::UnboundedSender<String>) -> Arc<Lens> {
+    /// Reads `<data>/lens.json`, warms Vision and starts the helper when its
+    /// binary is where `layout` says and this Mac is new enough to run it.
+    /// Starts no capture: that waits for consent, which arrives as
+    /// `lens-start`, and for the Screen Recording grant. No layout, no binary
+    /// at it, or an older macOS means every `helper-*` op and `lens-embed`
+    /// answer `unavailable` rather than waiting on a child that cannot exist.
+    pub fn init(
+        data_dir: &Path,
+        writer: mpsc::UnboundedSender<String>,
+        layout: Option<crate::runtime::Layout>,
+    ) -> Arc<Lens> {
         let lens = Lens::new(read_config(data_dir), writer);
         // The first Vision request in a process loads the recognition assets:
         // 23 to 34 s once during the research, 130 ms on the M1 build.
         std::thread::spawn(|| {
             ocr::warm();
         });
+        // Embeddings are the helper's: it warms the Core ML text tower on its
+        // own launch task, so this process has nothing to warm.
+        if let Some(layout) = layout.filter(|layout| layout.helper.is_file() && helper::supported())
+        {
+            let helper = Helper::spawn(lens.clone(), layout.helper, layout.models, false);
+            *lens.helper.lock().unwrap() = Some(helper);
+        }
         lens
+    }
+
+    pub fn helper(&self) -> Option<Arc<Helper>> {
+        self.helper.lock().unwrap().clone()
+    }
+
+    fn need_helper(&self) -> Result<Arc<Helper>, String> {
+        self.helper().ok_or_else(|| "unavailable".to_owned())
     }
 
     pub fn new(config: Config, writer: mpsc::UnboundedSender<String>) -> Arc<Lens> {
@@ -227,6 +257,7 @@ impl Lens {
             slow_ocr: AtomicBool::new(false),
             counters: Counters::default(),
             own_pid: std::process::id() as i32,
+            helper: Mutex::new(None),
             capture: Mutex::new(None),
             signals: Mutex::new(None),
         })
@@ -395,6 +426,14 @@ impl Lens {
         let state = self.state.lock().unwrap().clone();
         let stats = self.ring.stats();
         let target = self.target.read().unwrap().clone();
+        let helper = self.helper();
+        // What the helper answered its last handshake with, so every model
+        // stage below is this Mac's own answer rather than a promise.
+        let caps = helper
+            .as_deref()
+            .map(Helper::capabilities)
+            .unwrap_or_default();
+        let model = &caps["model"];
         json!({
             "state": state.run.name(),
             "epoch": self.bridge.epoch(),
@@ -402,19 +441,22 @@ impl Lens {
             "target": target,
             "ring": { "n": stats.n, "bytes": stats.bytes, "oldestAt": stats.oldest_at },
             "permissions": { "screen": state.screen, "ax": state.ax },
-            // What this build can actually answer. The model stages are the
-            // Swift helper's and the overlay is its own pool; neither is in
-            // the app yet, so both read false rather than being promised.
+            // What this build can actually answer. The model stages come
+            // from the helper's `capabilities`; the overlay is its own pool,
+            // which is not in the app yet, so it reads false.
             "capabilities": {
                 "capture": state.screen,
                 "ax": state.ax,
                 "ocr": true,
-                "embed": false,
-                "triage": false,
-                "describe": false,
-                "translate": false,
+                "embed": helper.as_deref().is_some_and(Helper::embedding),
+                "triage": model["available"] == true,
+                "describe": model["available"] == true && model["vision"] == true,
+                "translate": caps["translation"]
+                    .as_array()
+                    .is_some_and(|pairs| !pairs.is_empty()),
                 "overlay": false,
             },
+            "helper": helper_status(helper.as_deref()),
             "filter": self.filter,
             "consented": self.consented.load(Ordering::Acquire),
         })
@@ -450,13 +492,13 @@ impl Lens {
     }
 
     /// `deadline` is the absolute epoch-millisecond deadline the op arrived
-    /// with. Nothing here spends it yet: the ops that will are the helper's,
-    /// and the helper is not in the app.
+    /// with; it is passed to the helper unchanged, so one clock governs the
+    /// whole chain.
     pub async fn desktop_request(
         &self,
         op: &str,
         value: &Value,
-        _deadline: Option<i64>,
+        deadline: Option<i64>,
     ) -> Result<Value, String> {
         match op {
             "lens-status" => Ok(self.status()),
@@ -471,22 +513,97 @@ impl Lens {
                 self.resume();
                 Ok(Value::Bool(true))
             }
-            // The Swift helper answers these, and the overlay pool those; both
-            // land in later phases, and until then a consumer hears that the
-            // capability is missing rather than waiting on a child that will
-            // never exist.
-            "lens-embed"
-            | "helper-capabilities"
-            | "helper-triage"
-            | "helper-translate"
-            | "helper-describe"
-            | "helper-document"
-            | "helper-restart"
-            | "overlay-show"
-            | "overlay-clear"
-            | "overlay-interactive" => Err("unavailable".into()),
+            "lens-embed" => self.embed(value, deadline).await,
+            // Straight through, with the op's own epoch: the helper's reply is
+            // dropped if that epoch ends while the model is thinking.
+            "helper-capabilities" | "helper-triage" | "helper-translate" => {
+                let epoch = value["epoch"].as_u64();
+                self.need_helper()?
+                    .call(&op["helper-".len()..], value.clone(), by(deadline), epoch)
+                    .await
+            }
+            "helper-describe" | "helper-document" => self.helper_frame(op, value, deadline).await,
+            "helper-restart" => {
+                self.need_helper()?.restart().await;
+                Ok(Value::Bool(true))
+            }
+            // The overlay pool is its own phase; until it lands a consumer
+            // hears that the capability is missing rather than waiting on a
+            // window that will never exist.
+            "overlay-show" | "overlay-clear" | "overlay-interactive" => Err("unavailable".into()),
             _ => Err("unknown-op".into()),
         }
+    }
+
+    /// `{dims, vectors}` for a batch of texts, from the helper's Core ML text
+    /// tower. The caps are checked here, before a model call is spent on a
+    /// batch that would be refused anyway. No helper, or a helper with no model
+    /// directory, is `assets-missing`: Node reads any error as "no vectors", so
+    /// the string is for the log.
+    async fn embed(&self, value: &Value, deadline: Option<i64>) -> Result<Value, String> {
+        let texts: Vec<String> = value["texts"]
+            .as_array()
+            .ok_or("bad-request")?
+            .iter()
+            .map(|text| text.as_str().map(str::to_owned).ok_or("bad-request"))
+            .collect::<Result<_, _>>()?;
+        embed::check(&texts)?;
+        let call = match self.helper() {
+            Some(helper) => {
+                helper
+                    .call("embed", json!({ "texts": texts }), by(deadline), None)
+                    .await
+            }
+            None => Err("unavailable".to_owned()),
+        };
+        call.map_err(|error| match error.as_str() {
+            "unavailable" => "assets-missing".to_owned(),
+            _ => error,
+        })
+    }
+
+    /// The crop path: pixels come from the immutable frame named by `ref` and
+    /// never from whatever is on screen now, and the reply carries that
+    /// frame's stamp so the caller can tell what was looked at.
+    async fn helper_frame(
+        &self,
+        op: &str,
+        value: &Value,
+        deadline: Option<i64>,
+    ) -> Result<Value, String> {
+        use base64::Engine as _;
+        let helper = self.need_helper()?;
+        let frame_ref = value["ref"].as_str().ok_or("frame-evicted")?;
+        let rect = match &value["rect"] {
+            Value::Null => None,
+            other => Some(rect(other).ok_or("bad-rect")?),
+        };
+        let out = self.ring.crop(frame_ref, rect, helper::MAX_PX)?;
+        let mut payload = json!({
+            "epoch": out.frame.epoch,
+            "seq": out.frame.seq,
+            "ref": out.frame.frame_ref,
+            "jpeg": base64::engine::general_purpose::STANDARD.encode(&out.jpeg),
+        });
+        for field in ["prompt", "schema"] {
+            if !value[field].is_null() {
+                payload[field] = value[field].clone();
+            }
+        }
+        let answer = helper
+            .call(
+                &op["helper-".len()..],
+                payload,
+                by(deadline),
+                Some(out.frame.epoch),
+            )
+            .await?;
+        Ok(json!({
+            "epoch": out.frame.epoch,
+            "seq": out.frame.seq,
+            "ref": out.frame.frame_ref,
+            "value": answer,
+        }))
     }
 
     fn frame(&self, value: &Value) -> Result<Value, String> {
@@ -608,6 +725,18 @@ pub async fn desktop_request(
     }
 }
 
+/// `{state, outstanding}` for `lens-status`. No helper at all is `down`.
+fn helper_status(helper: Option<&Helper>) -> Value {
+    let (state, outstanding) =
+        helper.map_or_else(|| ("down".to_owned(), 0), |helper| helper.state());
+    json!({ "state": state, "outstanding": outstanding })
+}
+
+/// The absolute deadline an op carried, or the default when it carried none.
+fn by(deadline: Option<i64>) -> i64 {
+    deadline.unwrap_or_else(|| bridge::now_ms() + DEFAULT_DEADLINE_MS)
+}
+
 fn rect(value: &Value) -> Option<Rect> {
     let values = value.as_array()?;
     let [x, y, w, h] = values.as_slice() else {
@@ -666,12 +795,16 @@ mod tests {
             status["ring"],
             json!({ "n": 0, "bytes": 0, "oldestAt": null })
         );
-        // OCR is in this process; every model stage is the helper's and the
-        // overlay is its own pool, neither of which this build has.
+        // OCR is in this process; every model stage is the helper's, and a
+        // unit test has no helper, so they read false rather than promised.
         assert_eq!(status["capabilities"]["ocr"], true);
         for stage in ["embed", "triage", "describe", "translate", "overlay"] {
             assert_eq!(status["capabilities"][stage], false, "{stage}");
         }
+        assert_eq!(
+            status["helper"],
+            json!({ "state": "down", "outstanding": 0 })
+        );
         assert_eq!(
             status["capabilities"]["capture"],
             status["permissions"]["screen"]
@@ -758,14 +891,45 @@ mod tests {
         );
     }
 
-    /// The model stages and the overlay pool are later phases. Until they
-    /// land every op that needs one says so rather than hanging on a child or
-    /// a window that does not exist.
+    /// The batch caps are answered before the helper is reached, so a host
+    /// that sends a corpus hears `bad-request` whether or not this Mac has the
+    /// model files. Without a helper a legal batch is `assets-missing`, never
+    /// a hang.
+    #[tokio::test]
+    async fn lens_embed_refuses_a_batch_that_breaks_the_caps() {
+        let (lens, _rx) = lens();
+        for value in [
+            json!({}),
+            json!({ "texts": "not an array" }),
+            json!({ "texts": [1, 2] }),
+            json!({ "texts": vec![""; embed::MAX_TEXTS + 1] }),
+            json!({ "texts": ["x".repeat(embed::MAX_CHARS + 1)] }),
+        ] {
+            assert_eq!(
+                lens.desktop_request("lens-embed", &value, None)
+                    .await
+                    .err()
+                    .as_deref(),
+                Some("bad-request"),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            lens.desktop_request("lens-embed", &json!({ "texts": ["a line"] }), None)
+                .await
+                .err()
+                .as_deref(),
+            Some("assets-missing")
+        );
+    }
+
+    /// Without a helper binary there is no helper, and the overlay pool is a
+    /// later phase. Every op that needs one says so rather than hanging on a
+    /// child or a window that does not exist.
     #[tokio::test]
     async fn the_helper_and_overlay_ops_are_unavailable_in_this_build() {
         let (lens, _rx) = lens();
         for op in [
-            "lens-embed",
             "helper-capabilities",
             "helper-triage",
             "helper-translate",
@@ -786,6 +950,10 @@ mod tests {
             );
         }
         assert_eq!(lens.status()["capabilities"]["overlay"], false);
+        assert_eq!(
+            lens.status()["helper"],
+            json!({ "state": "down", "outstanding": 0 })
+        );
     }
 
     /// A frame that would not fit is refused rather than truncated: a cut
