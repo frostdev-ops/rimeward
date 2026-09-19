@@ -104,7 +104,7 @@ async function until(what: string, fn: () => boolean, ms = 4000): Promise<void> 
 
 /** A user, a real session (only so `validateMonitorSource` finds one), the fake dev deps
  *  the lens actually reads, and one monitor row on it. */
-async function setup(t: TestContext, email: string, monitor: string, filter: unknown) {
+async function setup(t: TestContext, email: string, monitor: string, filter: unknown, watch?: unknown) {
   const user = createUser(email, 'pw-lens-monitor-1');
   saveDashboard(user, validateLayout([{ i: 'ag1', type: 'agent', size: '2x2', config: { provider: 'codex' } }])!);
   const root = fs.mkdtempSync(os.tmpdir() + '/fdlens-');
@@ -145,7 +145,7 @@ async function setup(t: TestContext, email: string, monitor: string, filter: unk
       conversation.id,
       monitorRuntime(),
       'observations',
-      JSON.stringify({ type: 'terminal', target: session.id }),
+      JSON.stringify({ type: 'terminal', target: session.id, ...(watch === undefined ? {} : { watch }) }),
       JSON.stringify(parseMonitorFilter(filter)),
       'watching',
       1,
@@ -267,7 +267,7 @@ test('every keyframe after the first is an observation, not a baseline', async (
   assert.ok(payload.text.includes('session=exited exit=0'), payload.text.slice(0, 200));
 });
 
-test('a keyframe forced by an evicted cursor is a baseline, not a wake', async (t) => {
+test('a keyframe forced by an evicted cursor is an observation, not a swallowed baseline', async (t) => {
   const monitor = 'monitor:bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
   const { user, sourceId, consumer, terminal } = await setup(t, 'lens-evicted@example.com', monitor, {
     field: 'text',
@@ -277,8 +277,8 @@ test('a keyframe forced by an evicted cursor is a baseline, not a wake', async (
 
   // A consumer restored from the store whose acknowledged version is no longer in
   // the ring: a restart, or 32 settles it never answered. What comes back is a
-  // keyframe of the whole document, and nothing in it is news — it is where this
-  // monitor's baseline comes from, exactly like its first keyframe.
+  // keyframe of the whole document — and the connect baseline below has already
+  // seeded the cursor, so that keyframe is news like any other.
   db()
     .prepare(
       'INSERT INTO lens_consumers(user_id,source,id,kind,cursor,baseline_v,baseline_complete,next_delivery,seen_at) VALUES(?,?,?,?,?,?,?,?,?)'
@@ -290,15 +290,36 @@ test('a keyframe forced by an evicted cursor is a baseline, not a wake', async (
 
   terminal.paint(['$ npm run build', 'error: build failed']);
   await tickMonitors();
-  await until('the evicted keyframe to be acknowledged', () => {
-    const row = consumerRow(user, sourceId, consumer);
-    return !!row && row.delivered_id === null && row.cursor > 0 && row.cursor !== 999;
-  });
-  assert.deepEqual(pending(monitor), [], 'a keyframe with nothing to be a delta from is not an observation');
+  await until('the evicted keyframe to be recorded', () => pending(monitor).length === 1);
+  const payload = JSON.parse(pending(monitor)[0]!.payload) as { eventType: string; text: string };
+  assert.equal(payload.eventType, 'key');
+  assert.ok(payload.text.includes('error: build failed'), payload.text.slice(0, 200));
+});
 
-  // The same text arriving as a change IS an observation.
-  terminal.paint(['$ npm run build', 'error: build failed', 'error: build failed again']);
-  await until('the delta to be recorded', () => pending(monitor).length === 1);
-  const payload = JSON.parse(pending(monitor)[0]!.payload) as { eventType: string };
-  assert.equal(payload.eventType, 'delta');
+test("a watch's first hit wakes the ward even though it arrives as a keyframe", async (t) => {
+  const monitor = 'monitor:cccccccc-dddd-eeee-ffff-000000000000';
+  // `regex` needs no embedder, so the gate can evaluate it on any machine.
+  const { user, sourceId, consumer, terminal } = await setup(
+    t,
+    'lens-watch-first@example.com',
+    monitor,
+    { field: 'text', op: 'contains', value: 'build failed' },
+    { visual: false, triage: false, regex: 'build failed' }
+  );
+
+  terminal.paint(['$ npm run build']);
+  await tickMonitors();
+  await until('the consumer to be attached', () => consumerRow(user, sourceId, consumer) !== undefined);
+  // A change the watch does not want delivers nothing at all.
+  terminal.paint(['$ npm run build', 'compiling…']);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(pending(monitor), []);
+
+  // The first thing this consumer is ever handed is a keyframe (it has
+  // acknowledged nothing), and it is the hit itself.
+  terminal.paint(['$ npm run build', 'compiling…', 'error: build failed']);
+  await until('the first hit to be recorded', () => pending(monitor).length === 1);
+  const payload = JSON.parse(pending(monitor)[0]!.payload) as { eventType: string; text: string };
+  assert.equal(payload.eventType, 'key');
+  assert.ok(payload.text.includes('error: build failed'), payload.text.slice(0, 200));
 });

@@ -98,9 +98,11 @@ test('the screen-only tools read a screen lens, and refuse anything else by name
   await assert.rejects(() => lensToolRun('lens_crop', { source, ...args }, ctx), /^Error: frame-evicted$/);
   await assert.rejects(() => lensToolRun('lens_describe', { source, ...args }, ctx), /^Error: frame-evicted$/);
   const read = await lensToolRun('lens_text', { source }, ctx) as Record<string, unknown>;
-  assert.deepEqual(read.lines, []);
+  // The receipt is counts and ids; the body is in `text`, once.
+  assert.equal(read.lines, 0);
   assert.equal(read.ref, null);
   assert.match(String(read.text), /^\[lens observation: /, 'observed text always carries the banner');
+  assert.deepEqual((JSON.parse(String(read.text).split('\n')[1]!) as { lines: unknown[] }).lines, []);
 
   // A source it could never read, screen lens or not, is refused by name.
   const realTerminal = SOURCES.terminal;
@@ -168,7 +170,9 @@ test('lens_look, lens_wait and lens_history acknowledge one delivery at a time',
   // lens_history acknowledges the outstanding one in the same call, and lists
   // every delivery already rendered for this consumer.
   const history = await run('lens_history', { ack: again.delivery, limit: 10 });
-  assert.deepEqual(history.events.map((e: Record<string, unknown>) => e.delivery), [key.delivery, again.delivery]);
+  assert.equal(history.events, 2, 'the receipt counts, the body lists');
+  const listed = (JSON.parse(String(history.text)) as { events: { delivery: string }[] }).events;
+  assert.deepEqual(listed.map((e) => e.delivery), [key.delivery, again.delivery]);
   assert.equal(core.status().consumers[0]?.delivered, null);
   assert.equal(core.status().consumers[0]?.cursor, key.v);
 
@@ -201,7 +205,10 @@ test('an image result becomes a conversation-local file through the device tool 
   LENS_TOOLS.lens_crop.call = () => ({
     text: '{"ref":"f-1-2"}',
     receipt: { ref: 'f-1-2', v: 3 },
-    image: { data: Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08]).toString('base64'), mime: 'image/jpeg' },
+    // A frame-sized JPEG: ~40 KB of base64, far over the tool output cap. The
+    // bytes are swapped for a file id before the model sees them, so they are
+    // never what the result is measured as.
+    image: { data: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xdb]), Buffer.alloc(30_000, 0x7f)]).toString('base64'), mime: 'image/jpeg' },
   });
   t.after(() => {
     LENS_TOOLS.lens_crop.call = realCall;
@@ -215,6 +222,7 @@ test('an image result becomes a conversation-local file through the device tool 
   ) as Record<string, unknown>;
   assert.equal(out.ref, 'f-1-2');
   assert.equal(typeof out.file_id, 'number');
+  assert.equal(out.image_sha256 !== undefined, true);
   assert.ok(!('image' in out), 'the bytes never reach the model as base64');
   assert.equal(out.device, 'local');
 });
@@ -228,7 +236,8 @@ test('a full document fits the agent output cap, page by page, and never liveloc
   const fixture = terminalFixture(() => Date.now());
   const real = SOURCES.terminal;
   SOURCES.terminal = (): Source => terminalSource(fixture.deps);
-  const source = 'terminal:big';
+  // The fixture announces output for its own session id, so the source must name it.
+  const source = 'terminal:s1';
   t.after(() => {
     releaseLens(user, source);
     SOURCES.terminal = real;
@@ -295,4 +304,39 @@ test('a full document fits the agent output cap, page by page, and never liveloc
     ack = String(page.delivery);
   }
   assert.deepEqual(seen, rows, 'every row arrives exactly once, in order, across the pages');
+
+  // The same page read two ways carries the same rows: a delivery re-offered
+  // inside lens_look is handed over verbatim, never re-cut against the look's
+  // own header.
+  const rowsOf = (out: Record<string, any>): string[] => {
+    const found: string[] = [];
+    for (const line of String(out.text).split('\n')) {
+      const row = /^[=+] [\d,]+ pty "(.*)"$/.exec(line);
+      if (row) found.push(JSON.parse(`"${row[1]}"`) as string);
+    }
+    return found;
+  };
+  assert.deepEqual(rowsOf(pending), rowsOf(page1), 'the look re-offer carries page 1 whole');
+
+  // A history of pages this size fits too: the JSON body is the result once,
+  // and the receipt beside it is a count, not the same events again.
+  const listed = await lensToolRun('lens_history', { source, limit: 50 }, ctx) as Record<string, any>;
+  assert.ok(serialized(listed) <= 12_000, `lens_history serialised to ${serialized(listed)}`);
+  assert.equal(typeof listed.events, 'number');
+  assert.ok(listed.events >= 1);
+
+  // A delta big enough to need cutting is budgeted the same way, and the wait
+  // after it proceeds instead of throwing the same result over and over.
+  const more = Array.from({ length: 200 }, (_, i) => `n${i} "${'"'.repeat(30)}" fresh "${i}"`);
+  const waiting = run('lens_wait', { ack, timeout_s: 5 });
+  setTimeout(() => fixture.inject({ rows: [...rows, ...more], seq: 2 }), 10);
+  const delta = await waiting;
+  assert.equal(delta.kind, 'delta');
+  assert.equal(delta.truncated, true, 'a delta this size is cut');
+  assert.ok(serialized(delta) <= 12_000, `the truncated delta serialised to ${serialized(delta)}`);
+  // Acknowledging it moves on: the next delivery is a fresh keyframe, not the
+  // same delta refused again.
+  const after = await run('lens_wait', { ack: delta.delivery, timeout_s: 5 });
+  assert.ok(serialized(after) <= 12_000, `the delivery after it serialised to ${serialized(after)}`);
+  assert.notEqual(after.delivery, delta.delivery);
 });

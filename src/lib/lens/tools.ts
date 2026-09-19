@@ -118,43 +118,90 @@ const clamp = (value: unknown, lo: number, hi: number, fallback: number): number
   return Math.min(hi, Math.max(lo, n));
 };
 
-/** Text over the cap loses whole lines from the tail plus a receipt saying so.
+/** A look's result, in three parts with three priorities. An unacknowledged
+ *  delivery goes over VERBATIM: it was budgeted against this consumer's cap
+ *  when it was claimed, and cutting it here would lose lines the moment the
+ *  caller acknowledged it — a page read through lens_look must carry the same
+ *  rows as the same page read through lens_wait. The look's own head (the
+ *  version line and the header fields) and the document lines are charged
+ *  against what is left up to the result cap, head first; if even the head
+ *  cannot fit, the delivery goes alone and the omission line says so.
  *  The receipt does NOT carry `text`: the door that needs both in one object
  *  (Claude Code reads `structuredContent` as the whole result) merges them. */
-function lines(body: string[], receipt: Record<string, unknown>, hint: string, o: { cap?: number; escaped?: boolean } = {}): LensResult {
-  const cap = o.cap ?? RESULT_CAP;
+function lookResult(
+  out: LookResult,
+  receipt: Record<string, unknown>,
+  o: { cap?: number; escaped?: boolean } = {}
+): LensResult {
   const charge = (line: string): number => (o.escaped ? escapedLength(line) : line.length);
-  const tail = (n: number): string => `… ${n} lines omitted; ${hint}`;
-  // The widest possible receipt and tail, so the real ones always fit.
-  const reserve = JSON.stringify({ ...receipt, truncated: true }).length + charge(tail(body.length)) + 1;
-  const kept: string[] = [];
-  let used = 0;
-  for (const line of body) {
-    if (used + charge(line) + 1 + reserve > cap) break;
-    kept.push(line);
-    used += charge(line) + 1;
+  const tail = (n: number): string => `… ${n} lines omitted; read them with lens_wait or lens_text {rect}`;
+  const head: string[] = [`v=${out.v} epoch=${out.epoch}${out.incomplete ? ' incomplete' : ''}`];
+  for (const [key, field] of Object.entries(out.meta ?? {})) {
+    const f = field as MetaField;
+    head.push(`${key}=${f.value}${f.bounds ? ` bounds=${box(f.bounds)}` : ''}`);
   }
-  const omitted = body.length - kept.length;
-  if (omitted > 0) kept.push(tail(omitted));
-  const text = kept.join('\n');
+  // The delivery brings its own banner as its first line; this result has one.
+  const delivery = out.delivery ? out.delivery.text.split('\n').slice(1) : [];
+  // A pending keyframe of this same version already lists every line; printing
+  // the document after it would hand the caller the whole thing twice.
+  const whole = out.delivery?.kind === 'key' && out.delivery.v === out.v;
+  const scene = whole
+    ? []
+    : [
+        ...(out.lines ?? []).map((l: Line) => `= ${l.bbox ? `${box(l.bbox)} ` : ''}${l.src} ${q(l.text)}`),
+        ...(out.regions ?? []).map((r: Region) => `~ ${box(r.bbox)} ${q(r.interpreted)} (ref ${r.ref})`),
+        ...(out.live ?? []).map((r) => `live ${box(r)}`),
+      ];
+
+  const reserve = JSON.stringify({ ...receipt, truncated: true }).length + charge(tail(head.length + scene.length)) + 1;
+  const fixed = [OBSERVATION_BANNER, ...delivery];
+  // With a delivery in hand the budget is the whole result cap: the delivery
+  // already fits its own, and the head is extra rather than taken from it.
+  let room = (delivery.length > 0 ? RESULT_CAP : (o.cap ?? RESULT_CAP)) - reserve
+    - fixed.reduce((n, l) => n + 1 + charge(l), 0);
+  const keep = (candidates: string[]): string[] => {
+    const kept: string[] = [];
+    for (const line of candidates) {
+      if (1 + charge(line) > room) break;
+      kept.push(line);
+      room -= 1 + charge(line);
+    }
+    return kept;
+  };
+  const keptHead = keep(head);
+  const keptScene = keep(scene);
+  const omitted = head.length - keptHead.length + (scene.length - keptScene.length);
+  const text = [OBSERVATION_BANNER, ...keptHead, ...delivery, ...keptScene, ...(omitted > 0 ? [tail(omitted)] : [])].join('\n');
   return { text, receipt: omitted > 0 ? { ...receipt, truncated: true } : receipt };
 }
 
-/** A JSON result: the same object is the text and the receipt. Over the cap it
- *  drops whole entries of `list` and says how many: from the front (oldest
- *  first, so the newest survive) or, with `fromTail`, from the end (so the
- *  first survive and the caller narrows its rect downward). `banner` puts the
- *  observation banner ahead of the JSON, for a result that carries source text. */
+/** A JSON result: the object is the body, rendered once into `text`. Over the
+ *  cap it drops whole entries of `list` and says how many: from the front
+ *  (oldest first, so the newest survive) or, with `fromTail`, from the end (so
+ *  the first survive and the caller narrows its rect downward). `banner` puts
+ *  the observation banner ahead of the JSON, for a result that carries source
+ *  text. `summary` is what the receipt becomes: counts and ids, never the body
+ *  again — a door that merges receipt and text would otherwise send both. */
 function json(
   value: Record<string, unknown>,
-  o: { list?: string; fromTail?: boolean; banner?: boolean; cap?: number } = {}
+  o: {
+    list?: string;
+    fromTail?: boolean;
+    banner?: boolean;
+    cap?: number;
+    escaped?: boolean;
+    summary?: (out: Record<string, unknown>) => Record<string, unknown>;
+  } = {}
 ): LensResult {
   const out = { ...value };
   const head = o.banner ? `${OBSERVATION_BANNER}\n` : '';
+  const charge = (body: string): number => (o.escaped ? escapedLength(body) : body.length);
+  const receipt = (): Record<string, unknown> => (o.summary ? o.summary(out) : out);
+  const size = (): number => charge(head + JSON.stringify(out)) + JSON.stringify(receipt()).length;
   const list = o.list === undefined ? null : (out[o.list] as unknown[] | undefined);
   if (Array.isArray(list)) {
     let omitted = 0;
-    while (list.length > 0 && head.length + JSON.stringify(out).length > (o.cap ?? RESULT_CAP)) {
+    while (list.length > 0 && size() > (o.cap ?? RESULT_CAP)) {
       if (o.fromTail) list.pop();
       else list.shift();
       omitted += 1;
@@ -162,7 +209,7 @@ function json(
       out.truncated = true;
     }
   }
-  return { text: head + JSON.stringify(out), receipt: out };
+  return { text: head + JSON.stringify(out), receipt: receipt() };
 }
 
 const fail = (text: string, receipt: Record<string, unknown> = {}): LensResult => ({
@@ -178,6 +225,7 @@ const receiptOf = (d: Delivery): Record<string, unknown> => ({
   epoch: d.epoch,
   ref: d.ref,
   kind: d.kind,
+  ...(d.reason === undefined ? {} : { reason: d.reason }),
   ...(d.page === undefined ? {} : { page: d.page }),
   ...(d.truncated === true ? { truncated: true } : {}),
 });
@@ -252,7 +300,7 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
           }
         }
       }
-      const result = lines(lookLines(out), receipt, 'acknowledge it and read the rest with lens_wait',
+      const result = lookResult(out, receipt,
         { ...(opts?.cap === undefined ? {} : { cap: opts.cap }), ...(opts?.escaped ? { escaped: true } : {}) });
       return image ? { ...result, image } : result;
     },
@@ -386,7 +434,15 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
           ref: out.ref,
           lines: out.lines.map((l) => ({ bbox: l.bbox, text: l.text, src: l.src, conf: l.conf })),
         },
-        { list: 'lines', fromTail: true, banner: true, ...(opts?.cap === undefined ? {} : { cap: opts.cap }) }
+        {
+          list: 'lines',
+          fromTail: true,
+          banner: true,
+          ...(opts?.cap === undefined ? {} : { cap: opts.cap }),
+          ...(opts?.escaped ? { escaped: true } : {}),
+          summary: (o2) => ({ v: o2.v, epoch: o2.epoch, ref: o2.ref, lines: (o2.lines as unknown[]).length,
+            ...(o2.omitted === undefined ? {} : { omitted: o2.omitted }), ...(o2.truncated === true ? { truncated: true } : {}) }),
+        }
       );
     },
   },
@@ -437,11 +493,24 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
     inputSchema: schema({ source, ack, since: { type: 'integer', description: 'Only deliveries after this document version' }, limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Default 10' } }),
     call: (core, consumer, args, opts) => {
       const rows = core.history(consumer, {
-        ...(typeof args.ack === 'string' ? { ack: args.ack } : {}),
         ...(typeof args.since === 'number' ? { since: args.since } : {}),
         limit: clamp(args.limit, 1, 50, 10),
       });
-      return json({ events: rows.map((d) => ({ ...receiptOf(d), text: d.text })) }, { list: 'events', ...(opts?.cap === undefined ? {} : { cap: opts.cap }) });
+      const result = json(
+        { events: rows.map((d) => ({ ...receiptOf(d), text: d.text })) },
+        {
+          list: 'events',
+          ...(opts?.cap === undefined ? {} : { cap: opts.cap }),
+          ...(opts?.escaped ? { escaped: true } : {}),
+          summary: (o2) => ({ events: (o2.events as unknown[]).length,
+            ...(o2.omitted === undefined ? {} : { omitted: o2.omitted }), ...(o2.truncated === true ? { truncated: true } : {}) }),
+        }
+      );
+      // The ack is applied only once the result is built: acknowledging a delivery
+      // the caller then never receives is exactly how an observation is lost.
+      // `offer: false` keeps it from claiming the next one as a side effect.
+      if (typeof args.ack === 'string') core.look(consumer, { ack: args.ack, fields: [], offer: false });
+      return result;
     },
   },
 
@@ -493,25 +562,3 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
     call: screenOnly('overlay_clear'),
   },
 };
-
-/** The keyframe body without its banner: the header fields, then the observed
- *  text, then the interpretations and the live rectangles. An unacknowledged
- *  delivery goes first, so a cap cut takes document lines rather than the
- *  delivery. */
-function lookLines(out: LookResult): string[] {
-  const head = [OBSERVATION_BANNER, `v=${out.v} epoch=${out.epoch}${out.incomplete ? ' incomplete' : ''}`];
-  for (const [key, field] of Object.entries(out.meta ?? {})) {
-    const f = field as MetaField;
-    head.push(`${key}=${f.value}${f.bounds ? ` bounds=${box(f.bounds)}` : ''}`);
-  }
-  if (out.delivery) head.push(...out.delivery.text.split('\n').slice(1));
-  // A pending keyframe of this same version already lists every line; printing
-  // the document after it would hand the host the whole thing twice.
-  if (out.delivery?.kind === 'key' && out.delivery.v === out.v) return head;
-  return [
-    ...head,
-    ...(out.lines ?? []).map((l: Line) => `= ${l.bbox ? `${box(l.bbox)} ` : ''}${l.src} ${q(l.text)}`),
-    ...(out.regions ?? []).map((r: Region) => `~ ${box(r.bbox)} ${q(r.interpreted)} (ref ${r.ref})`),
-    ...(out.live ?? []).map((r) => `live ${box(r)}`),
-  ];
-}

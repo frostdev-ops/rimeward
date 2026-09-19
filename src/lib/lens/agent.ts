@@ -67,14 +67,23 @@ export async function lensToolRun(name: LensToolName, args: Record<string, any>,
   });
 }
 
+/** What `storeImage` leaves in place of the bytes: a file id, its sha256 and
+ *  the device it came from. The bytes themselves never reach the model. */
+const IMAGE_RECEIPT = 160;
+
 /** Everything that renders for this door is budgeted in ESCAPED characters —
  *  the delivery inside the core (`deliveryCap`/`cost`), the surrounding result
  *  in lens/tools.ts — so nothing should ever reach core.ts's cap. If something
  *  does, the delivery has already been claimed and cutting it here would lose
  *  observed lines the moment the model acknowledged it: fail loudly instead,
- *  which leaves the delivery outstanding and hands it over again. */
+ *  which leaves the delivery outstanding and hands it over again.
+ *
+ *  A JPEG is megabytes of base64 and is measured as what replaces it: it is
+ *  swapped for a file id one layer out (dev/tool-routing.ts storeImage) and is
+ *  never part of what core.ts caps. */
 function assertFits(name: LensToolName, value: Record<string, unknown>): Record<string, unknown> {
-  const size = JSON.stringify(value).length;
+  const { image, ...measured } = value;
+  const size = JSON.stringify(measured).length + (image === undefined ? 0 : IMAGE_RECEIPT);
   if (size <= OUTPUT_CAP) return value;
   const message = `lens ${name}: ${size} serialised chars over the ${OUTPUT_CAP} tool output cap after budgeting`;
   console.error(message);

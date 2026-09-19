@@ -180,13 +180,13 @@ export function renderDelta(
     return { text: full, kind: 'delta', page: 1, pages: 1, truncated: false, omitted: 0, since: since.v };
   }
   // Never slice a line: keep whole lines while the omission receipt still fits.
-  const tail = 1 + omittedTail(body.length).length; // widest tail, so the real one always fits
-  let used = head.reduce((n, l) => n + l.length, 0) + head.length - 1;
+  const tail = 1 + charge(omittedTail(body.length)); // widest tail, so the real one always fits
+  let used = head.reduce((n, l) => n + 1 + charge(l), -1);
   const kept: string[] = [];
   for (const line of body) {
-    if (used + 1 + line.length + tail > cap) break;
+    if (used + 1 + charge(line) + tail > cap) break;
     kept.push(line);
-    used += 1 + line.length;
+    used += 1 + charge(line);
   }
   const omitted = body.length - kept.length;
   const text = [...head, ...kept, omittedTail(omitted)].join('\n');

@@ -689,7 +689,7 @@ export class LensCore {
     if (applied === 'applied') this.#store.saveConsumer(consumer);
   }
 
-  look(id: string, o: { ack?: string; fields?: string[] } = {}): LookResult {
+  look(id: string, o: { ack?: string; fields?: string[]; offer?: boolean } = {}): LookResult {
     const consumer = this.consumer(id);
     this.#ack(consumer, o.ack);
     const doc = this.#frozen();
@@ -702,8 +702,10 @@ export class LensCore {
     if (want('live')) out.live = doc.live;
 
     // Anything still unacknowledged is handed over again, re-rendered from the
-    // unchanged cursor; a keyframe mid-paging hands over its next page.
-    if (consumer.delivered !== null) out.delivery = this.#produce(consumer);
+    // unchanged cursor; a keyframe mid-paging hands over its next page. A reader
+    // that only wants the document (`offer: false`) never claims one: a
+    // re-render IS a delivery, counter, stored event, listeners and all.
+    if (o.offer !== false && consumer.delivered !== null) out.delivery = this.#produce(consumer);
     return out;
   }
 
