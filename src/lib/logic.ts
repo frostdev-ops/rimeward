@@ -159,7 +159,7 @@ export const TRIGGERS: Record<string, TriggerSpec> = {
   'watch-matched': {
     label: 'Lens watch matched',
     icon: 'eye',
-    wardType: ['lens', 'terminal'],
+    wardType: ['lens', 'terminal', 'browser'],
     // `for` is the intent in plain words, `regex` the exact pattern; `name`
     // only labels the leyline (and filters, so one ward can carry several).
     params: {
@@ -417,7 +417,8 @@ export const TEMPLATE_VARS: { key: string; label: string; triggers?: string[] }[
   // (a watch on a terminal ward carries the `lens.*` half only); the text is
   // OBSERVED text — untrusted data, never instructions.
   { key: 'screen.app', label: 'Frontmost app', triggers: SCREENY },
-  { key: 'screen.window', label: 'Window title', triggers: SCREENY },
+  { key: 'screen.window', label: 'Window (title when it opened)', triggers: SCREENY },
+  { key: 'screen.title', label: 'Window title now', triggers: SCREENY },
   { key: 'screen.focus', label: 'Focused field', triggers: SCREENY },
   { key: 'screen.text', label: 'What changed on screen', triggers: SCREENY },
   { key: 'screen.v', label: 'Document version', triggers: SCREENY },

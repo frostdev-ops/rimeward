@@ -13,6 +13,7 @@ import { calibration, calibrationKey, gateDefaults, saveCalibration, watchMode }
 import { sqliteStore } from '../src/lib/lens/store.ts';
 import { trigramVector } from './lens-replay.ts';
 import { calibrate } from '../ops/lens-calibrate.ts';
+import { helperCapabilities } from '../src/lib/lens/runtime.ts';
 
 let seq = 0;
 function seedUser(wards: Record<string, unknown>[] = []): number {
@@ -156,4 +157,17 @@ test('the calibrate script measures whatever embeds and writes that embedder’s
   assert.equal(typeof row.fn, 'number');
   assert.equal(row.n, 2616);
   assert.equal(calibration('fake:trigram').missing, false);
+});
+
+// A status read that failed is not an answer. Only an explicit reply takes the
+// helper away: a dropped tunnel (`nativeDesktop` throwing, which `syncDecider`
+// catches into null) would otherwise disarm every `for` watch on the machine.
+test('the helper is only removed by a status reply that says so', () => {
+  assert.equal(helperCapabilities(null), null, 'a failed read');
+  assert.equal(helperCapabilities(undefined), null);
+  assert.equal(helperCapabilities('nope'), null);
+  assert.equal(helperCapabilities({ state: 'running' }), null, 'a reply with no capabilities at all');
+  assert.deepEqual(helperCapabilities({ capabilities: { embed: true } }), { embed: true });
+  assert.deepEqual(helperCapabilities({ capabilities: { embed: false } }), { embed: false });
+  assert.deepEqual(helperCapabilities({ capabilities: {} }), { embed: false }, 'a helper that cannot embed');
 });

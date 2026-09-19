@@ -99,19 +99,28 @@ export function ensureLens(): void {
  *  watches are re-embedded and re-scored in place.
  *  (Track D adds the local and cloud deciders through the same call.) */
 async function syncDecider(status?: unknown): Promise<void> {
-  const reply = (status ?? (await nativeDesktop('lens-status').catch(() => null))) as Record<
-    string,
-    unknown
-  > | null;
-  const capabilities = (reply?.capabilities ?? {}) as { embed?: unknown };
+  const reply = status ?? (await nativeDesktop('lens-status').catch(() => null));
+  const capabilities = helperCapabilities(reply);
+  // A read that failed says nothing about the helper. Only an explicit answer
+  // takes it away: a dropped tunnel would otherwise disarm every `for` watch.
+  if (!capabilities) return;
   const core = lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()));
   // One instance, so a helper state change that says nothing new (a recovery,
   // a rate-limit window) is identity-equal and re-embeds nothing.
-  if (capabilities.embed === true) helper ??= helperDecider(nativeDesktop);
+  if (capabilities.embed) helper ??= helperDecider(nativeDesktop);
   // `deciderFor` composes the rest per capability (local embeddings, cloud
   // triage behind the ward switch) and hands back the same instance while the
   // parts are unchanged.
-  await core?.setDecider(deciderFor(localOwner(), capabilities.embed === true ? helper : undefined));
+  await core?.setDecider(deciderFor(localOwner(), capabilities.embed ? helper : undefined));
+}
+
+/** What a `lens-status` reply says the helper can do, or null when it is not a
+ *  reply at all (the read threw, the app is gone). */
+export function helperCapabilities(reply: unknown): { embed: boolean } | null {
+  if (!reply || typeof reply !== 'object') return null;
+  const capabilities = (reply as { capabilities?: unknown }).capabilities;
+  if (!capabilities || typeof capabilities !== 'object') return null;
+  return { embed: (capabilities as { embed?: unknown }).embed === true };
 }
 
 let helper: Decider | undefined;

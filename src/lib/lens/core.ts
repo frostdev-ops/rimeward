@@ -209,6 +209,8 @@ export class LensCore {
   #flushQueued = false;
   #lastDescribeAt: number | null = null;
   #embedding: boolean | null = null;
+  /** Which embedder produced the vectors the stored watches carry. */
+  #embedderId: string | undefined;
   /** The live rectangles the source named, beside the ones the gate detected. */
   #sourceLive: Rect[] = [];
   #ref: string | null = null;
@@ -239,8 +241,19 @@ export class LensCore {
     if (this.#deps.decider === decider) return;
     if (decider) this.#deps.decider = decider;
     else delete this.#deps.decider;
+    // A vector belongs to the embedder that made it: two embedders are two
+    // spaces, and a similarity between them is a number without a meaning.
+    // Dropping the vector is what makes `watch()` embed it again. The id is the
+    // one that LAST embedded, not the one currently installed: the helper going
+    // down and a local embedder taking over is still a change of space, and the
+    // helper coming back to find its own vectors is not.
+    const next = decider?.embedderId;
+    const reembed = next !== undefined && this.#embedderId !== undefined && next !== this.#embedderId;
+    if (next !== undefined) this.#embedderId = next;
     for (const consumer of [...this.#consumers.values()]) {
-      if (consumer.watches.length > 0) await this.watch(consumer.id);
+      if (consumer.watches.length === 0) continue;
+      if (reembed) for (const watch of consumer.watches) delete watch.vector;
+      await this.watch(consumer.id);
     }
   }
 
@@ -845,6 +858,8 @@ export class LensCore {
       try {
         const vectors = await embed(pending.map((w) => watchText(w.spec.for ?? '', cal.score)));
         this.#embedding = vectors !== null;
+        // Whose space the stored vectors are in, for the next decider swap.
+        if (vectors) this.#embedderId = this.#deps.decider?.embedderId ?? this.#embedderId;
         if (vectors) {
           for (const [index, watch] of pending.entries()) {
             const vector = vectors[index];

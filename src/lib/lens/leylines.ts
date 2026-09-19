@@ -78,6 +78,7 @@ function screenVars(core: LensCore, d: Delivery): Record<string, string> {
   return {
     'screen.app': meta('app'),
     'screen.window': meta('window'),
+    'screen.title': meta('title'),
     'screen.focus': meta('focus'),
     'screen.text': d.text.slice(0, TEXT_MAX),
     'screen.v': String(d.v),
@@ -169,6 +170,8 @@ function terminalSession(user: number, ward: string): string | null {
 function sourceOf(user: number, ward: WardInstance | undefined): string | null {
   if (!ward) return null;
   if (ward.type === 'lens') return 'screen:local';
+  // One page per ward, so the ward id IS the target.
+  if (ward.type === 'browser') return `browser:${ward.i}`;
   if (ward.type !== 'terminal') return null;
   const session = terminalSession(user, ward.i);
   return session ? `terminal:${session}` : null;

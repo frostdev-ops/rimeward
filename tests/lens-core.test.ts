@@ -38,6 +38,63 @@ test('an epoch with no keyframeOn header still publishes one keyframe', async ()
   core.close();
 });
 
+/** A core with no source of its own: the decider is what these tests move. */
+function bare(email: string, decider?: Parameters<LensCore['setDecider']>[0]) {
+  const user = createUser(email, 'pw-bare-123456');
+  const clock = new FakeClock(1_000_000);
+  const source: Source = { async connect(_u, _t, _f) { return () => {}; } };
+  return new LensCore({
+    user, target: 'x', source, clock,
+    store: { ...sqliteStore(user, `bare:${user}`, () => clock.now()), loadConsumers: () => [] },
+    settings: () => ({ settleMs: 750, minLines: 1 }),
+    ...(decider ? { decider } : {}),
+  });
+}
+
+test('a change of embedder re-embeds every stored watch; the same one never does', async () => {
+  const counted = (embedderId: string, dims: number) => {
+    const calls: string[][] = [];
+    return {
+      calls,
+      decider: {
+        embedderId,
+        embed: async (texts: string[]) => {
+          calls.push(texts);
+          return texts.map(() => new Array<number>(dims).fill(0).map((_, i) => (i === 0 ? 1 : 0)));
+        },
+        triage: async () => ({ yes: true }),
+      },
+    };
+  };
+  const helper = counted('helper-clip', 3);
+  const local = counted('local-qwen', 4);
+
+  const core = bare('f4@example.com', helper.decider);
+  await core.watch('c', { add: [{ for: 'a failing build', visual: false, triage: true }] });
+  assert.equal(helper.calls.length, 1, 'the helper embedded it');
+
+  // The helper goes down. Nothing re-embeds: its vectors are still its own.
+  await core.setDecider();
+  assert.equal(helper.calls.length, 1);
+
+  // A different embedder takes over: a vector from another space means nothing,
+  // so every stored watch is embedded again.
+  await core.setDecider(local.decider);
+  assert.equal(local.calls.length, 1, 'the new embedder embedded the stored watch');
+  assert.deepEqual(local.calls[0], helper.calls[0], 'the same watch text');
+
+  // Another instance of the SAME embedder is not a change of space.
+  const again = counted('local-qwen', 4);
+  await core.setDecider(again.decider);
+  assert.equal(again.calls.length, 0, 'the stored vectors are still this embedder\'s');
+
+  // And back to the helper: its own vectors are gone, so it embeds again.
+  await core.setDecider(helper.decider);
+  assert.equal(helper.calls.length, 2);
+  assert.equal(core.status().consumers[0]?.watches, 1, 'through all of it, one watch and one cursor');
+  core.close();
+});
+
 // A helper arriving (or going down) must not cost a core its cursors, so the
 // decider is swapped on the live core and the stored watches are re-scored.
 test('setDecider re-scores stored watches, in both directions, once per change', async () => {

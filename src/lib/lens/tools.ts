@@ -100,7 +100,7 @@ const rect = { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 
 const watch = schema({
   for: str('An intent in plain words, embedded then confirmed by the on-device model'),
   regex: str('A literal pattern tested against the changed text'),
-  filter: { type: 'object', description: 'A literal field test over the changed text and header', additionalProperties: true },
+  filter: { type: 'object', description: 'A literal field test over the changed text and header; on a screen `window` is the title the window was switched to and `title` is the live one', additionalProperties: true },
   rect,
   visual: { type: 'boolean', description: 'Fire on a changed rectangle with no text change (default false)' },
   threshold: { type: 'number', minimum: -1, maximum: 1 },

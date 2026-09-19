@@ -282,7 +282,13 @@ export function screenSource(deps: ScreenDeps): Source {
     if (app) meta.app = { value: `${str(app.bundle)} ${q(str(app.name))} pid=${num(app.pid)}` };
     const window = snap.window as Record<string, unknown> | null;
     if (window) {
-      for (const field of headMeta({ kind: 'window', ...window })) {
+      // The snapshot reports the CURRENT title inside `window`, where the stream
+      // keeps the title the window was switched to there and the live one in
+      // `title`. Taking the snapshot's window as the one an `ax-window` restates
+      // from is what keeps the two consistent: after a recovery the next retitle
+      // still changes `title` alone, and never keyframes through `window`.
+      lastWindow = { kind: 'window', ...window };
+      for (const field of headMeta(lastWindow)) {
         meta[field.key] = { value: field.value, ...(field.bounds ? { bounds: field.bounds } : {}) };
       }
     }
@@ -326,6 +332,10 @@ export function screenSource(deps: ScreenDeps): Source {
     // The header last: `app` and `window` are what force the keyframe, so
     // writing them after the lines is what makes that keyframe carry them.
     for (const [key, field] of Object.entries(snap.meta)) feed.meta(key, field.value, snap.seq, field.bounds);
+    // `window` carries the live title now, so a `title` from before this reply
+    // would only restate it. (The core's own gap recovery replaces the whole
+    // header, which drops it there.)
+    feed.meta('title', undefined, snap.seq);
   };
 
   return {

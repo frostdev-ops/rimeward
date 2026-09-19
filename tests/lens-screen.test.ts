@@ -456,6 +456,44 @@ test('a snapshot that lands after the window changed is discarded whole', async 
   assert.notEqual((h.calls.at(-1)?.value as { ref?: string } | undefined)?.ref, 'f-4-79');
 });
 
+test('a recovery keeps the window header consistent, so the next retitle is still a delta', async () => {
+  const h = harness();
+  await primed(h, 'c');
+  h.inject(sig(10, { kind: 'ax-window', title: '(1) Inbox', bounds: [195, 92, 656, 422] }));
+  h.clock.advance(750);
+  await h.tick();
+  assert.equal(h.core.doc().meta.title?.value, '"(1) Inbox"');
+
+  // Rust reports the CURRENT title inside `window`, not the one the window was
+  // switched to: the snapshot is what the header restates from afterwards.
+  h.reply('lens-snapshot', {
+    epoch: 1,
+    seq: 50,
+    app: { bundle: 'com.apple.dt.Xcode', name: 'Xcode', pid: 123 },
+    window: { id: 5375, title: '(1) Inbox', bounds: [195, 92, 656, 422], url: null, display: DISPLAY },
+    focus: null,
+    sheet: null,
+    axText: [wire('let x = 1', 34)],
+    ocr: [],
+    latest: null,
+    live: [],
+  });
+  h.inject(sig(51, { kind: 'gap', from: 11, to: 50 }));
+  await h.tick();
+  assert.equal(h.core.doc().meta.window?.value, '5375 "(1) Inbox" display=1 1800x1169 @2');
+  assert.equal(h.core.doc().meta.title, undefined, 'the recovered header states the title once');
+  const recovered = h.sent('c').at(-1) as Delivery;
+  h.core.look('c', { ack: recovered.delivery });
+
+  // The tick after the recovery: a title change, not a keyframe.
+  h.inject(sig(60, { kind: 'ax-window', title: '(2) Inbox', bounds: [195, 92, 656, 422] }));
+  h.clock.advance(750);
+  await h.tick();
+  assert.equal(h.sent('c').at(-1)?.delivery, recovered.delivery, 'a ticking title still delivers nothing');
+  assert.equal(h.core.doc().meta.window?.value, '5375 "(1) Inbox" display=1 1800x1169 @2');
+  assert.equal(h.core.doc().meta.title?.value, '"(2) Inbox"');
+});
+
 test('a lens started again comes live on the same core and re-reads the screen', async () => {
   const h = harness();
   await primed(h, 'c');
