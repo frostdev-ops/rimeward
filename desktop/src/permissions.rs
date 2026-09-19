@@ -30,6 +30,16 @@ fn valid_path(path: &str) -> bool {
             .all(|(key, _)| matches!(key.as_ref(), "setup" | "workspace"))
 }
 
+/// `(screen recording, accessibility)`, read-only: neither call opens an OS
+/// prompt. The lens reads both on every status change, so a grant made in
+/// System Settings shows up without a relaunch.
+pub fn preflight() -> (bool, bool) {
+    (
+        crate::computer::screen_permission(),
+        crate::computer::input_permission(),
+    )
+}
+
 pub fn checkpoint(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
     static WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _write = WRITE

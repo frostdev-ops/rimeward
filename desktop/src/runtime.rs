@@ -424,16 +424,22 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
             }
             Some("desktop") => {
                 // Never wait for media, input or a dialog before reading vault/navigation.
-                let slot = if message["op"].as_str().is_some_and(lens_op) {
-                    lens_slots.clone().try_acquire_owned()
-                } else {
-                    desktop_slots.clone().try_acquire_owned()
-                };
+                let lens = message["op"].as_str().is_some_and(lens_op);
+                let slot = (!lens).then(|| desktop_slots.clone().try_acquire_owned().ok());
+                let lens_slots = lens_slots.clone();
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let result = match slot {
-                        Ok(_permit) => desktop_request(&app, &message).await,
-                        Err(_) => Err("Desktop is busy; operation was not started".into()),
+                    // A lens op queues for one of the lens's own slots rather
+                    // than being refused on the spot: it carries an absolute
+                    // deadline, so the wait is bounded by the caller's clock,
+                    // and an op whose deadline passed meanwhile is dropped.
+                    let permit = match slot {
+                        Some(slot) => slot,
+                        None => lens_slots.acquire_owned().await.ok(),
+                    };
+                    let result = match permit {
+                        Some(_permit) => desktop_request(&app, &message).await,
+                        None => Err("Desktop is busy; operation was not started".into()),
                     };
                     let reply = match result {
                         Ok(value) => serde_json::json!({"id":message["id"],"value":value}),
@@ -510,13 +516,14 @@ async fn desktop_request(
     let value = &message["value"];
     match message["op"].as_str() {
         // Only the lens reads the caller's absolute deadline; every other op
-        // keeps its own timeout. B1 puts the in-crate lens engine here and the
-        // deadline travels with the op, all the way to the helper.
+        // keeps its own timeout. It travels with the op from here, so one
+        // clock governs the whole chain.
         Some(op) if lens_op(op) => {
-            if should_drop(now_ms(), message["deadline"].as_i64()) {
+            let deadline = message["deadline"].as_i64();
+            if should_drop(now_ms(), deadline) {
                 return Err("deadline".into());
             }
-            Err("unavailable".into())
+            crate::lens::desktop_request(app, op, value, deadline).await
         }
         Some(op) if op.starts_with("computer-app") => {
             crate::background_apps::request(op, value).await

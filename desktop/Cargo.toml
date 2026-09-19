@@ -2,7 +2,7 @@
 name = "rimeward"
 version = "1.0.15"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.98"
 description = "Rimeward — standalone development workspaces with live remote access"
 
 # The lib/bin split is what the mobile targets (later) build against.
@@ -55,10 +55,74 @@ sha2 = "=0.10.9"
 cua-driver-sdk = { git = "https://github.com/trycua/cua", rev = "6c0348b059595e63d1df96e6df2047ca7dbbbf1c" }
 platform-macos = { git = "https://github.com/trycua/cua", rev = "6c0348b059595e63d1df96e6df2047ca7dbbbf1c" }
 # Already pinned by Cua; the host owns the system sharing menu's lifecycle.
-screencapturekit = "=6.1.0"
+# macos_14_2 is the lens's floor: `with_source_rect` and the dirty-rect
+# attachments. The crate gates nothing above what either caller uses.
+screencapturekit = { version = "=6.1.0", features = ["macos_14_2"] }
 libc = "0.2"
 objc2-core-graphics = "0.3"
 objc2-core-foundation = "0.3"
+
+# The lens (src/lens). Every objc2 crate is default-features = false with
+# exactly the headers it names, because the defaults pull a whole framework;
+# all of them are already in Cargo.lock under Tauri's own objc2 stack.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSDictionary",
+    "NSEnumerator",
+    "NSError",
+    "NSGeometry",
+    "NSNotification",
+    "NSOperation",
+    "NSRange",
+    "NSString",
+    "NSThread",
+    "NSValue",
+    "block2",
+] }
+# The NSWorkspace activation observer is a block, and installing it from a
+# command thread hops the main dispatch queue.
+block2 = { version = "0.6", default-features = false, features = ["std"] }
+dispatch2 = { version = "0.3", default-features = false, features = ["std"] }
+# CVPixelBuffer: the sample buffer's image buffer feeds VNImageRequestHandler.
+objc2-core-video = { version = "0.3", default-features = false, features = [
+    "std",
+    "CVBuffer",
+    "CVImageBuffer",
+    "CVPixelBuffer",
+    "CVReturn",
+    "objc2",
+] }
+# VNRecognizeTextRequest + VNImageRequestHandler (OCR),
+# VNGenerateImageFeaturePrintRequest + VNFeaturePrintObservation (change score).
+objc2-vision = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "VNRequest",
+    "VNRequestHandler",
+    "VNObservation",
+    "VNTypes",
+    "VNRecognizeTextRequest",
+    "VNGenerateImageFeaturePrintRequest",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "objc2-core-video",
+] }
+# NSWorkspace activation notifications, NSRunningApplication (bundle, pid),
+# NSScreen (display scale).
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    # `libc` is what exposes NSRunningApplication's pid_t accessors.
+    "libc",
+    "NSApplication",
+    "NSGraphics",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSWindow",
+    "NSWorkspace",
+] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "=0.61.3", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_StationsAndDesktops"] }

@@ -10,6 +10,10 @@ mod chromium;
 mod commands;
 mod computer;
 mod input_guardian;
+// Off macOS the lens is a stub that answers `unavailable`; the capture,
+// accessibility and OCR stages are platform work of their own.
+#[cfg_attr(not(target_os = "macos"), path = "lens/unsupported.rs")]
+mod lens;
 #[cfg(target_os = "macos")]
 mod permissions;
 mod remote_control;
@@ -136,6 +140,15 @@ pub fn run() {
                 tokio::sync::Mutex::new(None),
             )));
             let (lines, reader) = tokio::sync::mpsc::unbounded_channel();
+            // The lens exists before the child does and pushes its signals
+            // down the same channel; whatever it emits in the meantime waits
+            // there with everything else.
+            #[cfg(target_os = "macos")]
+            {
+                let lens = lens::Lens::init(&app.path().app_data_dir()?, lines.clone());
+                app.manage(lens.clone());
+                tauri::async_runtime::spawn(lens.bridge.clone().run_writer());
+            }
             app.manage(runtime::Stdin::new(lines, reader));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
