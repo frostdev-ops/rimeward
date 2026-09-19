@@ -11,6 +11,7 @@ pub mod capture;
 pub mod embed;
 pub mod helper;
 pub mod ocr;
+pub mod overlay;
 pub mod ring;
 pub mod signals;
 
@@ -198,6 +199,9 @@ pub struct Lens {
     /// The Swift helper, when its binary exists. Absent means every `helper-*`
     /// op answers `unavailable`.
     pub helper: Mutex<Option<Arc<Helper>>>,
+    /// The overlay pool, once `lib.rs` has built its windows. Absent in every
+    /// test, where the `overlay-*` ops answer `unavailable`.
+    overlay: Mutex<Option<Arc<overlay::Overlay>>>,
     capture: Mutex<Option<Capture>>,
     signals: Mutex<Option<Signals>>,
 }
@@ -238,6 +242,28 @@ impl Lens {
         self.helper().ok_or_else(|| "unavailable".to_owned())
     }
 
+    /// Attached by `lib.rs` once the pool's windows exist.
+    pub fn set_overlay(&self, overlay: Arc<overlay::Overlay>) {
+        *self.overlay.lock().unwrap() = Some(overlay);
+    }
+
+    pub fn overlay(&self) -> Option<Arc<overlay::Overlay>> {
+        self.overlay.lock().unwrap().clone()
+    }
+
+    fn need_overlay(&self) -> Result<Arc<overlay::Overlay>, String> {
+        self.overlay().ok_or_else(|| "unavailable".to_owned())
+    }
+
+    /// The target window and its display, both in screen points: what an
+    /// overlay anchor is resolved against.
+    fn place(&self, target: &Target) -> overlay::Place {
+        overlay::Place {
+            window: target.bounds,
+            display: overlay::display_bounds(target.display.id),
+        }
+    }
+
     pub fn new(config: Config, writer: mpsc::UnboundedSender<String>) -> Arc<Lens> {
         let (screen, ax) = crate::permissions::preflight();
         Arc::new(Lens {
@@ -258,6 +284,7 @@ impl Lens {
             counters: Counters::default(),
             own_pid: std::process::id() as i32,
             helper: Mutex::new(None),
+            overlay: Mutex::new(None),
             capture: Mutex::new(None),
             signals: Mutex::new(None),
         })
@@ -385,6 +412,11 @@ impl Lens {
                 display: target.display,
             });
         }
+        // Everything the old epoch drew described a window that is no longer
+        // in front, sticky corner cards excepted.
+        if let Some(overlay) = self.overlay() {
+            overlay.retarget();
+        }
         if !self.state.lock().unwrap().run.live() {
             return;
         }
@@ -408,6 +440,10 @@ impl Lens {
             if let Err(error) = capture.reframe(target) {
                 eprintln!("lens: reframe failed: {error}");
             }
+        }
+        // Every anchor is relative to the target, so the slots follow it.
+        if let Some(overlay) = self.overlay() {
+            overlay.reposition(self.place(target));
         }
     }
 
@@ -443,7 +479,7 @@ impl Lens {
             "permissions": { "screen": state.screen, "ax": state.ax },
             // What this build can actually answer. The model stages come
             // from the helper's `capabilities`; the overlay is its own pool,
-            // which is not in the app yet, so it reads false.
+            // which `lib.rs` builds, so it reads false until it exists.
             "capabilities": {
                 "capture": state.screen,
                 "ax": state.ax,
@@ -454,8 +490,12 @@ impl Lens {
                 "translate": caps["translation"]
                     .as_array()
                     .is_some_and(|pairs| !pairs.is_empty()),
-                "overlay": false,
+                "overlay": self.overlay().is_some(),
             },
+            "overlay": self.overlay().map_or_else(
+                || json!({ "shown": 0, "interactive": false }),
+                |overlay| overlay.status(),
+            ),
             "helper": helper_status(helper.as_deref()),
             "filter": self.filter,
             "consented": self.consented.load(Ordering::Acquire),
@@ -527,10 +567,17 @@ impl Lens {
                 self.need_helper()?.restart().await;
                 Ok(Value::Bool(true))
             }
-            // The overlay pool is its own phase; until it lands a consumer
-            // hears that the capability is missing rather than waiting on a
-            // window that will never exist.
-            "overlay-show" | "overlay-clear" | "overlay-interactive" => Err("unavailable".into()),
+            // Without a pool a consumer hears that the capability is missing
+            // rather than waiting on a window that will never exist.
+            "overlay-show" => self.overlay_show(value),
+            "overlay-clear" => {
+                self.need_overlay()?.clear(value["id"].as_str());
+                Ok(Value::Bool(true))
+            }
+            "overlay-interactive" => {
+                self.need_overlay()?.set_interactive(value["on"] == true);
+                Ok(Value::Bool(true))
+            }
             _ => Err("unknown-op".into()),
         }
     }
@@ -560,6 +607,24 @@ impl Lens {
             "unavailable" => "assets-missing".to_owned(),
             _ => error,
         })
+    }
+
+    /// A host draws on the overlay. The `ref` on a rect anchor is only checked
+    /// against the ring: placement uses the *current* target bounds, because
+    /// the window may have moved since that frame was captured.
+    fn overlay_show(&self, value: &Value) -> Result<Value, String> {
+        let overlay = self.need_overlay()?;
+        let request = overlay::ShowReq::parse(value)?;
+        if request.epoch != self.bridge.epoch() {
+            return Err("stale-epoch".into());
+        }
+        if let overlay::Anchor::Rect { frame_ref, .. } = &request.anchor {
+            if self.ring.get(frame_ref).is_none() {
+                return Err("frame-evicted".into());
+            }
+        }
+        let target = self.target.read().unwrap().clone().ok_or("no-target")?;
+        overlay.show(request, self.place(&target))
     }
 
     /// The crop path: pixels come from the immutable frame named by `ref` and
@@ -923,8 +988,8 @@ mod tests {
         );
     }
 
-    /// Without a helper binary there is no helper, and the overlay pool is a
-    /// later phase. Every op that needs one says so rather than hanging on a
+    /// Without a helper binary there is no helper, and a unit test builds no
+    /// overlay pool. Every op that needs one says so rather than hanging on a
     /// child or a window that does not exist.
     #[tokio::test]
     async fn the_helper_and_overlay_ops_are_unavailable_in_this_build() {
@@ -950,6 +1015,11 @@ mod tests {
             );
         }
         assert_eq!(lens.status()["capabilities"]["overlay"], false);
+        assert_eq!(
+            lens.status()["overlay"],
+            json!({ "shown": 0, "interactive": false }),
+            "what a consumer reads before any window has been built"
+        );
         assert_eq!(
             lens.status()["helper"],
             json!({ "state": "down", "outstanding": 0 })

@@ -1,0 +1,92 @@
+/* Transparent window: the page paints only the card, caption boxes or highlight frame. */
+:root { color-scheme: dark; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+#root {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+}
+
+/* card: a dark rounded panel, at most six lines, the overflow faded out. */
+#root.card {
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 12px;
+  background: rgba(18, 22, 28, .90);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+  color: #eef2f7;
+}
+
+.card-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  overflow: hidden;
+  font-size: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.card-text.truncated {
+  -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 72%, transparent 100%);
+}
+
+/* caption: one box per line at its own rect, or one centred box for plain text. */
+.caption-item,
+.caption-single {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(8, 11, 16, .82);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.25;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .85);
+  overflow-wrap: anywhere;
+}
+
+.caption-item {
+  display: flex;
+  align-items: center;
+}
+
+.caption-single {
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 16px);
+  padding: 4px 10px;
+  border-radius: 7px;
+  text-align: center;
+}
+
+/* highlight: a frame with a soft glow, no fill. */
+#root.highlight {
+  border: 2px solid #4cc2ff;
+  border-radius: 6px;
+  box-shadow: 0 0 10px 2px rgba(76, 194, 255, .45);
+}
+
+/* interactive mode: the window takes the cursor, so show its edge. */
+body.interactive #root {
+  outline: 1px dashed rgba(255, 255, 255, .75);
+  outline-offset: -1px;
+}

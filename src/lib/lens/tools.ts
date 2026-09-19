@@ -13,9 +13,11 @@
 //
 // Every tool takes an optional `source` (`<type>:<target>`, default
 // `screen:local`); the caller resolves it to a core before calling. The
-// screen-only reads live in lens/screen.ts (a terminal document has no pixels);
-// the overlay and the captions cannot draw anything yet.
+// screen-only reads live in lens/screen.ts (a terminal document has no pixels)
+// and the overlay and the captions in lens/captions.ts, which is the one module
+// that draws.
 
+import { TRANSLATE_HINT, captionsFor } from './captions.ts';
 import type { LensCore, LookResult } from './core.ts';
 import { crop, describe, lookFrame, text } from './screen.ts';
 import type { Delivery, Line, MetaField, Rect, Region } from './types.ts';
@@ -26,8 +28,6 @@ import { getDashboard } from '../dashboard.ts';
 
 /** CLAUDE.md: tool results are capped at 12,000 serialised chars. */
 export const RESULT_CAP = 12_000;
-/** The overlay window and the translation captions are not built yet. */
-const SCREEN_PENDING = 'not available on this computer yet';
 
 export const LENS_TOOL_NAMES = [
   'lens_look',
@@ -245,18 +245,27 @@ const notScreen = (name: string, opts?: LensToolOpts): LensResult | null =>
     ? fail(`${name} reads a screen lens; ${opts.source} is not a screen source`)
     : null;
 
-/** The body the overlay and caption tools have until they can draw. */
-const screenOnly = (name: string): LensTool['call'] =>
-  (_core, _consumer, _args, opts) => notScreen(name, opts) ?? fail(`${name} is ${SCREEN_PENDING}`);
-
-/** The Screen lens ward's `pixels` knob: off, and no frame ever leaves the
- *  device through a tool. No lens ward at all leaves the default, which is on. */
-function pixelsAllowed(user: number | undefined): boolean {
+/** The Screen lens ward's knobs: `pixels` off and no frame ever leaves the
+ *  device through a tool; `overlay` off and nothing is ever drawn on screen.
+ *  No lens ward at all leaves the defaults, which are on. */
+function wardKnob(user: number | undefined, knob: 'pixels' | 'overlay'): boolean {
   if (user === undefined) return true;
   const ward = getDashboard(user).find((w) => w.type === 'lens');
-  return (ward?.config as { pixels?: unknown } | undefined)?.pixels !== false;
+  return (ward?.config as Record<string, unknown> | undefined)?.[knob] !== false;
 }
+const pixelsAllowed = (user: number | undefined): boolean => wardKnob(user, 'pixels');
 const PIXELS_OFF = 'the Screen lens ward has pixels turned off';
+const OVERLAY_OFF = 'the Screen lens ward has the overlay turned off';
+
+/** `f-<epoch>-<seq>`: the epoch is readable without asking the app, so a caller
+ *  anchoring on a frame from a window the user has left is refused here. */
+function refEpoch(ref: string): number | null {
+  const parts = ref.split('-');
+  const epoch = Number.parseInt(parts[1] ?? '', 10);
+  return parts[0] === 'f' && parts.length === 3 && Number.isFinite(epoch) ? epoch : null;
+}
+
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 const asRect = (value: unknown): Rect | undefined => {
   const v = Array.isArray(value) ? value : [];
@@ -535,7 +544,24 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
       'reply is `{on, from, to, state}`: `unavailable` with an `error` means the pair is missing and ' +
       'nothing is drawn.',
     inputSchema: schema({ source, on: { type: 'boolean' }, from: str('Language code to translate from'), to: str('Language code to translate into') }, ['on']),
-    call: screenOnly('lens_captions'),
+    call: async (core, _consumer, args, opts) => {
+      const refused = notScreen('lens_captions', opts);
+      if (refused) return refused;
+      const on = args.on === true;
+      // Captions are drawn on the overlay, so the same knob governs them.
+      if (on && !wardKnob(opts?.user, 'overlay')) return fail(`lens_captions is off: ${OVERLAY_OFF}`);
+      try {
+        const state = await captionsFor(core).set({
+          on,
+          ...(typeof args.from === 'string' ? { from: args.from } : {}),
+          ...(typeof args.to === 'string' ? { to: args.to } : {}),
+        });
+        // The pair is what the user has to install, so say where to get it.
+        return json({ ...state, ...(state.error?.startsWith('not-installed') === true ? { hint: TRANSLATE_HINT } : {}) });
+      } catch (err) {
+        return fail(message(err));
+      }
+    },
   },
 
   // ------------------------------------------------------------ overlay_show
@@ -556,7 +582,36 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
       anchor: { type: 'object', description: 'Either {rect, ref} of a captured frame or {corner: tl|tr|bl|br}', additionalProperties: true },
       ttl_s: { type: 'integer', minimum: 1, maximum: 600, description: 'Default 20' },
     }, ['id', 'kind', 'anchor']),
-    call: screenOnly('overlay_show'),
+    call: async (core, _consumer, args, opts) => {
+      const refused = notScreen('overlay_show', opts);
+      if (refused) return refused;
+      if (!wardKnob(opts?.user, 'overlay')) return fail(`overlay_show is off: ${OVERLAY_OFF}`);
+      const id = typeof args.id === 'string' ? args.id : '';
+      if (!/^[a-z0-9-]{1,32}$/.test(id)) return fail('overlay_show needs an id of 1 to 32 lower-case letters, digits or hyphens.');
+      const kind = args.kind;
+      if (kind !== 'card' && kind !== 'caption' && kind !== 'highlight') return fail('overlay_show kind must be card, caption or highlight.');
+      const anchor = (args.anchor ?? {}) as { ref?: unknown };
+      // A frame from a window the user has left describes a screen nobody is
+      // looking at; the epoch is in the ref, so it is answered without a round trip.
+      if (typeof anchor.ref === 'string') {
+        const epoch = refEpoch(anchor.ref);
+        if (epoch === null) return fail('frame-evicted');
+        if (epoch !== core.doc().epoch) return fail('stale-epoch');
+      }
+      const ttlS = clamp(args.ttl_s, 1, 600, 20);
+      try {
+        const receipt = (await captionsFor(core).show({
+          id,
+          kind,
+          ...(typeof args.text === 'string' ? { text: args.text } : {}),
+          anchor: args.anchor,
+          ttlS,
+        })) as Record<string, unknown> | null;
+        return json({ id, ttl_s: ttlS, ...(receipt ?? {}) });
+      } catch (err) {
+        return fail(message(err));
+      }
+    },
   },
 
   // ----------------------------------------------------------- overlay_clear
@@ -568,6 +623,18 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = {
       'no id is given. Overlay windows also hide themselves when their `ttl_s` runs out, so this is ' +
       'for taking something down early.',
     inputSchema: schema({ source, id: str('The id it was shown with; omit to clear every window') }),
-    call: screenOnly('overlay_clear'),
+    // No `overlay` knob check: taking something down is never what the knob is
+    // for, and a ward turned off mid-draw still has to be able to clear it.
+    call: async (core, _consumer, args, opts) => {
+      const refused = notScreen('overlay_clear', opts);
+      if (refused) return refused;
+      const id = typeof args.id === 'string' && args.id !== '' ? args.id : undefined;
+      try {
+        await captionsFor(core).clear(id);
+        return json({ cleared: id ?? 'all' });
+      } catch (err) {
+        return fail(message(err));
+      }
+    },
   },
 };

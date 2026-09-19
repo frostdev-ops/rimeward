@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "The overlay slot windows: they listen for overlay:show and answer overlay:ready.",
+  "windows": ["ov-*"],
+  "permissions": ["core:event:default"]
+}

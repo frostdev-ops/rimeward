@@ -65,6 +65,9 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init());
+    // The overlay pool's interactive hotkey. macOS only, because the pool is.
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
     let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -151,6 +154,16 @@ pub fn run() {
                 let lens = lens::Lens::init(&app.path().app_data_dir()?, lines.clone(), layout);
                 app.manage(lens.clone());
                 tauri::async_runtime::spawn(lens.bridge.clone().run_writer());
+                // Hidden windows, built once and reused. A pool that fails to
+                // build is not fatal: the lens still reads, and the
+                // `overlay-*` ops answer `unavailable`.
+                match lens::overlay::Overlay::build(app.handle(), &lens) {
+                    Ok(overlay) => {
+                        lens.set_overlay(overlay.clone());
+                        app.manage(overlay);
+                    }
+                    Err(error) => eprintln!("overlay: pool unavailable: {error}"),
+                }
             }
             app.manage(runtime::Stdin::new(lines, reader));
             let handle = app.handle().clone();

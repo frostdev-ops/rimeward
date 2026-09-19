@@ -366,6 +366,13 @@ export class LensCore {
     };
   }
 
+  /** Start reading without becoming a consumer. Captions watch the document
+   *  and acknowledge nothing, so a caption window is not something a cursor
+   *  should be kept for — but it still needs the source to be running. */
+  connect(): void {
+    this.#connect();
+  }
+
   doc(): Doc {
     return this.#doc.current();
   }

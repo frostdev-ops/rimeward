@@ -27,6 +27,8 @@ interface Status {
   paused: boolean;
   dots: { screen: boolean; ax: boolean; helper: boolean };
   head: { app: string; window: string; focus: string };
+  overlay: string[];
+  captions: { on: boolean; from: string; to: string; state: 'off' | 'on' | 'unavailable'; error?: string };
   recent: { delivery: string; v: number; kind: 'key' | 'delta'; line: string }[];
 }
 
@@ -103,16 +105,20 @@ async function renderLens(w: WardInstance): Promise<void> {
     s.paused
       ? button('Resume', 'play', () => void act(w, { action: 'resume' }))
       : button('Pause', 'pause', () => void act(w, { action: 'pause' })),
-    button('Clear overlay', 'eraser', () => void act(w, { action: 'overlay-clear' }))
+    button(s.overlay.length ? `Clear overlay (${s.overlay.length})` : 'Clear overlay', 'eraser', () =>
+      void act(w, { action: 'overlay-clear' })
+    )
   );
   b.append(bar);
 
   // Captions: the language pair rides with the switch, so one line does both.
   const caps = el('form', 'mt-1 flex items-center gap-1');
   const from = el('input', 'input text-xs w-14 min-w-0');
+  from.value = s.captions.on ? s.captions.from : '';
   from.placeholder = 'from';
   from.setAttribute('aria-label', 'Translate captions from');
   const to = el('input', 'input text-xs w-14 min-w-0');
+  to.value = s.captions.on ? s.captions.to : '';
   to.placeholder = 'to';
   to.setAttribute('aria-label', 'Translate captions into');
   const on = button('Captions on', 'note', () => void act(w, { action: 'captions', on: true, from: from.value.trim(), to: to.value.trim() }));
@@ -120,6 +126,16 @@ async function renderLens(w: WardInstance): Promise<void> {
   caps.append(from, to, on, off);
   caps.addEventListener('submit', (e) => e.preventDefault());
   b.append(caps);
+  // `unavailable` is the language pair the machine has not got; the error names it.
+  if (s.captions.state !== 'off') {
+    b.append(
+      el(
+        'p',
+        `text-[10px] ${s.captions.state === 'unavailable' ? 'text-err' : 'text-ink-faint'}`,
+        s.captions.error ?? `captions ${s.captions.from} → ${s.captions.to}`
+      )
+    );
+  }
 }
 
 RENDERERS.lens = { intervalMs: 60_000, render: renderLens };

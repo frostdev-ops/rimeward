@@ -121,6 +121,10 @@ export function pushSignal(signal: unknown): void {
     };
     for (const fn of [...onHelper]) fn();
   }
+  // Which overlay windows are on screen right now. Also not part of the
+  // document — the overlay is what the app drew, not what it read — so it is
+  // kept here and read by the ward card.
+  if (str(body.kind) === 'overlay') overlayIds = arr(body.ids).filter((id): id is string => typeof id === 'string');
   for (const fn of [...handlers]) fn(body);
 }
 
@@ -151,6 +155,11 @@ let helperState: HelperState | null = null;
 const onHelper = new Set<() => void>();
 
 export const lensHelper = (): HelperState | null => helperState;
+
+let overlayIds: string[] = [];
+
+/** The overlay windows the app says are on screen, newest answer wins. */
+export const lensOverlay = (): string[] => overlayIds;
 
 /** Run `fn` whenever a helper signal lands (`ensureLens` re-checks there). */
 export function onHelperSignal(fn: () => void): void {

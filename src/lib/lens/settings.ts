@@ -1,9 +1,9 @@
 // The lens' own settings, lifted from BlackIce src/settings.ts onto Rimeward's
 // settings table: one `lens:<key>` row per value, JSON text, same defaults.
 // `consented` is the user's answer to the Screen lens switch (plan D7) — the one
-// thing that lets the desktop app capture anything at all, and for now the only
-// key here: the gate knobs are the ward's (lens/runtime.ts) and the caption pair
-// lands with the captions themselves (B4).
+// thing that lets the desktop app capture anything at all; the gate knobs are
+// the ward's (lens/runtime.ts) and `caption_from`/`caption_to` are the pair the
+// last `lens_captions` call settled on, so turning captions on again reuses it.
 //
 // This is a network boundary: an unknown key, or a known key with the wrong
 // type, is ignored rather than stored.
@@ -12,9 +12,15 @@ import { getSetting, setSetting } from '../settings.ts';
 
 export interface LensSettings {
   consented: boolean;
+  caption_from: string | null;
+  caption_to: string | null;
 }
 
-export const LENS_SETTINGS_DEFAULTS: LensSettings = { consented: false };
+export const LENS_SETTINGS_DEFAULTS: LensSettings = {
+  consented: false,
+  caption_from: null,
+  caption_to: null,
+};
 
 const KEYS = Object.keys(LENS_SETTINGS_DEFAULTS) as (keyof LensSettings)[];
 const row = (key: keyof LensSettings): string => `lens:${key}`;

@@ -19,7 +19,8 @@ harness = false
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = ["tray-icon"] }
+# macos-private-api: what the overlay pool's transparent slot windows need.
+tauri = { version = "2.11", features = ["tray-icon", "macos-private-api"] }
 # Reuse Tauri's platform key mapping for browser physical key codes.
 tao = { version = "=0.35.3", default-features = false, features = ["serde"] }
 tauri-plugin-autostart = "2.5"
@@ -52,7 +53,10 @@ cap-std = "=4.0.3"
 sha2 = "=0.10.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-cua-driver-sdk = { git = "https://github.com/trycua/cua", rev = "6c0348b059595e63d1df96e6df2047ca7dbbbf1c" }
+# The overlay's interactive hotkey (Cmd+Shift+L, and Esc while interactive).
+# Registered from Rust only, so no capability grants its commands to a page.
+tauri-plugin-global-shortcut = "2"
+cua-driver-sdk = { git ="https://github.com/trycua/cua", rev = "6c0348b059595e63d1df96e6df2047ca7dbbbf1c" }
 platform-macos = { git = "https://github.com/trycua/cua", rev = "6c0348b059595e63d1df96e6df2047ca7dbbbf1c" }
 # Already pinned by Cua; the host owns the system sharing menu's lifecycle.
 # macos_14_2 is the lens's floor: `with_source_rect` and the dirty-rect
@@ -117,6 +121,8 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     # `libc` is what exposes NSRunningApplication's pid_t accessors.
     "libc",
     "NSApplication",
+    # NSColor: an overlay slot window is cleared to transparent.
+    "NSColor",
     "NSGraphics",
     "NSResponder",
     "NSRunningApplication",

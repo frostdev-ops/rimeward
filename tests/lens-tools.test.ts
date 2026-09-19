@@ -13,7 +13,8 @@ import { activeConversation } from '../src/lib/agent/conversations.ts';
 import { LOCAL_DEV_TOOLS, DEV_TOOLS } from '../src/lib/dev/tools.ts';
 import { LENS_TOOLS, LENS_TOOL_NAMES } from '../src/lib/lens/tools.ts';
 import { consumerOf, lensToolRun } from '../src/lib/lens/agent.ts';
-import { SOURCES, lens, releaseLens } from '../src/lib/lens/core.ts';
+import { captionsFor } from '../src/lib/lens/captions.ts';
+import { SOURCES, lens, releaseLens, systemClock } from '../src/lib/lens/core.ts';
 import type { Feed, LensSettings, Source } from '../src/lib/lens/core.ts';
 import { terminalSource } from '../src/lib/lens/terminal.ts';
 import { OBSERVATION_BANNER } from '../src/lib/lens/types.ts';
@@ -85,14 +86,6 @@ test('the screen-only tools read a screen lens, and refuse anything else by name
 
   const ctx = { userId: user, ward: 'agent:ag1', conv: 5 } as ToolCtx;
   const args = { rect: [0, 0, 10, 10], id: 'x', kind: 'card', anchor: { corner: 'tl' }, on: true };
-  // The overlay and the captions have no body until B4.
-  for (const name of ['lens_captions', 'overlay_show', 'overlay_clear'] as const) {
-    await assert.rejects(
-      () => lensToolRun(name, { source, ...args }, ctx),
-      new RegExp(`^Error: ${name} is not available on this computer yet$`),
-      name
-    );
-  }
   // The three reads are live: with no frame ever captured there is nothing to
   // crop or describe, and the empty document has no text to page.
   await assert.rejects(() => lensToolRun('lens_crop', { source, ...args }, ctx), /^Error: frame-evicted$/);
@@ -118,6 +111,88 @@ test('the screen-only tools read a screen lens, and refuse anything else by name
       name
     );
   }
+});
+
+test('the overlay and caption tools draw through the native side, and the ward knob turns them off', async (t) => {
+  const user = createUser('lens-tools-overlay@example.com', 'pw-lens-tools-5');
+  const source = 'screen:local';
+  const real = SOURCES.screen;
+  SOURCES.screen = (): Source => ({ async connect(_u: number, _t: string, _f: Feed) { return () => {}; } });
+  t.after(() => {
+    releaseLens(user, source);
+    if (real) SOURCES.screen = real; else delete SOURCES.screen;
+  });
+
+  const calls: { op: string; value: Record<string, unknown> }[] = [];
+  const refuse = new Map<string, string>();
+  const core = lens(user, source)!;
+  captionsFor(core, {
+    clock: systemClock,
+    settings: () => ({ caption_from: 'en', caption_to: 'es' }),
+    desktop: async (op, value) => {
+      calls.push({ op, value: (value ?? {}) as Record<string, unknown> });
+      const refused = refuse.get(op);
+      if (refused !== undefined) throw new Error(refused);
+      return op === 'overlay-show' ? { id: (value as { id: string }).id } : true;
+    },
+  });
+  const ctx = { userId: user, ward: 'agent:ag1', conv: 7 } as ToolCtx;
+  const of = (op: string): Record<string, unknown>[] => calls.filter((c) => c.op === op).map((c) => c.value);
+  const epoch = core.doc().epoch;
+
+  const shown = await lensToolRun('overlay_show', { source, id: 'card-1', kind: 'card', text: 'hi', anchor: { corner: 'tl' } }, ctx);
+  assert.deepEqual(shown, { id: 'card-1', ttl_s: 20, text: JSON.stringify({ id: 'card-1', ttl_s: 20 }) });
+  assert.equal(of('overlay-show')[0]?.ttlMs, 20_000, 'ttl_s crosses as ttlMs');
+  assert.equal(of('overlay-show')[0]?.epoch, epoch);
+
+  // A frame from a window the user has left, and one that was never a frame
+  // ref at all, are both refused before anything is drawn.
+  await assert.rejects(
+    () => lensToolRun('overlay_show', { source, id: 'card-1', kind: 'card', anchor: { rect: [0, 0, 10, 10], ref: `f-${epoch + 9}-3` } }, ctx),
+    /^Error: stale-epoch$/
+  );
+  await assert.rejects(
+    () => lensToolRun('overlay_show', { source, id: 'card-1', kind: 'card', anchor: { rect: [0, 0, 10, 10], ref: 'nope' } }, ctx),
+    /^Error: frame-evicted$/
+  );
+  await assert.rejects(() => lensToolRun('overlay_show', { source, id: 'CARD', kind: 'card', anchor: { corner: 'tl' } }, ctx), /id of 1 to 32/);
+  await assert.rejects(() => lensToolRun('overlay_show', { source, id: 'c', kind: 'toast', anchor: { corner: 'tl' } }, ctx), /card, caption or highlight/);
+  assert.equal(of('overlay-show').length, 1, 'nothing malformed reached the app');
+
+  const cleared = await lensToolRun('overlay_clear', { source, id: 'card-1' }, ctx) as Record<string, unknown>;
+  assert.equal(cleared.cleared, 'card-1');
+  assert.deepEqual(of('overlay-clear').at(-1), { id: 'card-1' });
+  await lensToolRun('overlay_clear', { source }, ctx);
+  assert.deepEqual(of('overlay-clear').at(-1), {}, 'no id clears every window');
+
+  const on = await lensToolRun('lens_captions', { source, on: true }, ctx) as Record<string, unknown>;
+  assert.equal(on.on, true);
+  assert.equal(on.from, 'en');
+  assert.equal(on.to, 'es');
+  assert.equal(on.state, 'on');
+
+  // A refusal from the native side reaches the tool as an error.
+  refuse.set('overlay-show', 'frame-evicted');
+  await assert.rejects(
+    () => lensToolRun('overlay_show', { source, id: 'card-2', kind: 'card', anchor: { corner: 'tl' } }, ctx),
+    /^Error: frame-evicted$/
+  );
+  refuse.clear();
+
+  // The ward's `overlay` knob: nothing is drawn, and captions are drawn on the
+  // overlay too — but taking something down early is always allowed.
+  saveDashboard(user, validateLayout([{ i: 'ln1', type: 'lens', size: '3x2', config: { overlay: false } }])!);
+  await assert.rejects(
+    () => lensToolRun('overlay_show', { source, id: 'card-3', kind: 'card', anchor: { corner: 'tl' } }, ctx),
+    /overlay_show is off: the Screen lens ward has the overlay turned off/
+  );
+  await assert.rejects(
+    () => lensToolRun('lens_captions', { source, on: true }, ctx),
+    /lens_captions is off: the Screen lens ward has the overlay turned off/
+  );
+  const off = await lensToolRun('lens_captions', { source, on: false }, ctx) as Record<string, unknown>;
+  assert.equal(off.on, false, 'turning captions off is never refused by the knob');
+  assert.equal((await lensToolRun('overlay_clear', { source }, ctx) as Record<string, unknown>).cleared, 'all');
 });
 
 test('lens_look, lens_wait and lens_history acknowledge one delivery at a time', async (t) => {
