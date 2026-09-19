@@ -660,6 +660,11 @@ const groups = (Object.keys(CATEGORIES) as Category[])
         </div>
       </fieldset>
       <label class="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" id="aw-ag-lens-cloud" name="ag-lens-cloud" /> Cloud triage for lens watches <span class="text-ink-faint">— sends the changed text and your watch to your model provider; off = on-device only</span></label>
+      <fieldset class="flex flex-col gap-2 rounded border border-line p-2">
+        <legend class="label px-1">Lens watches</legend>
+        <p class="text-[10px] text-ink-faint">Watches are added from chat (<code>lens_watch</code>), a monitor or a leyline; remove one here.</p>
+        <div data-ag-watches class="flex flex-col gap-1 text-sm"></div>
+      </fieldset>
       <p class="mt-1 text-[10px] text-ink-faint">Credentials live in Account → Agent. Changing the provider starts a fresh conversation.</p>
     </div>
 

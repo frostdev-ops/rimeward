@@ -257,3 +257,48 @@ function parseSpec(json: string): WatchSpec | null {
     return null;
   }
 }
+
+/** One stored watch, as the Lens watches list draws it: the source and consumer
+ *  are the (user, source, consumer) it was added under, never inferrable from
+ *  the id alone once the consumer that made it is gone. */
+export interface StoredWatch {
+  source: string;
+  consumer: string;
+  id: string;
+  spec: WatchSpec;
+  mode: WatchMode;
+  createdAt: number;
+}
+
+/** Every watch this user has, across every source — what `/api/lens/watches`
+ *  lists. Read straight from the table: building a core per source to ask it
+ *  would connect each source behind the question. */
+export function allWatches(userId: number): StoredWatch[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM lens_watches WHERE user_id = ? ORDER BY source, created_at, id')
+    .all(userId) as (WatchRow & { source: string })[];
+  const out: StoredWatch[] = [];
+  for (const row of rows) {
+    const spec = parseSpec(row.spec_json);
+    if (!spec) continue; // a hand-edited row shows as nothing, never as a crash
+    out.push({
+      source: row.source,
+      consumer: row.consumer_id,
+      id: row.id,
+      spec,
+      mode: row.mode as WatchMode,
+      createdAt: row.created_at,
+    });
+  }
+  return out;
+}
+
+/** Removes one watch when no core is live to remove it in memory (the usual
+ *  case for a consumer whose source has not been read since a restart).
+ *  False = no such row. */
+export function deleteWatch(userId: number, source: string, consumerId: string, id: string): boolean {
+  const done = getDb()
+    .prepare('DELETE FROM lens_watches WHERE user_id = ? AND source = ? AND consumer_id = ? AND id = ?')
+    .run(userId, source, consumerId, id);
+  return done.changes > 0;
+}

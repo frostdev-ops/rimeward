@@ -1689,6 +1689,7 @@ function showCfgSection(dialog: HTMLDialogElement, type: string): void {
     agentProvider.value = 'default';
   } else if (type === 'note' || type === 'notebook') agentProvider?.querySelector('[value="default"]')?.remove();
   if (type === 'agent' || type === 'note' || type === 'notebook') void loadAgentModels(dialog);
+  if (type === 'agent') void loadLensWatches(dialog);
   if (type === 'note') {
     const picker = q<HTMLSelectElement>('#aw-nt-note', dialog);
     if (picker) {
@@ -1747,6 +1748,74 @@ async function loadNoteDocs(dialog: HTMLDialogElement): Promise<void> {
 }
 
 // ------------------------------------------------------------- agent ward
+
+interface LensWatch {
+  source: string;
+  consumer: string;
+  id: string;
+  spec: { for?: string; regex?: string; rect?: number[]; visual?: boolean };
+  mode: string;
+  evaluation?: string;
+}
+
+/** What a consumer id says about who added the watch (lens core D4): `conv-`,
+ *  `cli-`, `mon-`, `edge-`, and the one `leylines` reader. */
+function watchedBy(consumer: string): string {
+  if (consumer === 'leylines') return 'leylines';
+  const kind = consumer.slice(0, consumer.indexOf('-'));
+  return { conv: 'chat', cli: 'CLI', mon: 'monitor', edge: 'leyline' }[kind] ?? consumer;
+}
+
+/** The spec in one line, the way it was asked for. */
+function watchSpec(spec: LensWatch['spec']): string {
+  const parts: string[] = [];
+  if (spec.for) parts.push(`for:"${spec.for}"`);
+  if (spec.regex) parts.push(`regex:/${spec.regex}/`);
+  if (spec.rect) parts.push('rect');
+  if (spec.visual) parts.push('visual');
+  return parts.join(' ') || 'everything';
+}
+
+/** Every lens watch this account has, with the one control that takes one off.
+ *  Read-only otherwise: watches are added from chat, a monitor or a leyline. */
+async function loadLensWatches(dialog: HTMLDialogElement): Promise<void> {
+  const host = q('[data-ag-watches]', dialog);
+  if (!host) return;
+  host.replaceChildren(el('p', 'text-[10px] text-ink-faint', 'Loading…'));
+  const { status, data } = await getJson('/api/lens/watches');
+  if (status !== 200) {
+    host.replaceChildren(el('p', 'text-[10px] text-ink-faint', 'Watches are unavailable on this computer.'));
+    return;
+  }
+  const watches = (data as { watches?: LensWatch[] } | null)?.watches ?? [];
+  if (watches.length === 0) {
+    host.replaceChildren(el('p', 'text-[10px] text-ink-faint', 'No watches.'));
+    return;
+  }
+  host.replaceChildren(...watches.map((w) => {
+    const row = el('div', 'flex items-center gap-2');
+    row.append(el('span', 'shrink-0 text-ink-faint', w.source), el('span', 'shrink-0 text-ink-faint', watchedBy(w.consumer)));
+    row.append(el('span', 'min-w-0 flex-1 truncate', watchSpec(w.spec)));
+    // `unavailable` (nothing can evaluate it) and `weak` (the prefilter alone)
+    // are the two a person has to see, so they do not read as a working watch.
+    const weak = w.evaluation === 'unavailable' || w.mode === 'unavailable' || w.evaluation === 'weak';
+    const chip = el('span', `shrink-0 rounded px-1.5 py-0.5 text-[10px] ${weak ? 'bg-surface-2 text-warn' : 'bg-surface-2 text-ink-faint'}`,
+      w.evaluation ?? w.mode);
+    row.append(chip);
+    const rm = el('button', 'shrink-0 text-ink-faint hover:text-err');
+    rm.type = 'button';
+    rm.title = 'Remove';
+    rm.setAttribute('aria-label', `Remove watch ${watchSpec(w.spec)}`);
+    rm.append(icon('close'));
+    rm.addEventListener('click', () => void (async () => {
+      const res = await postJson('/api/lens/watches', { source: w.source, consumer: w.consumer, id: w.id }, 'DELETE');
+      if (!res.ok) toast(res.data?.error ?? 'Could not remove that watch.', undefined, true);
+      await loadLensWatches(dialog);
+    })());
+    row.append(rm);
+    return row;
+  }));
+}
 
 const agentModels = new Map<string, { id: string; name?: string }[]>();
 
