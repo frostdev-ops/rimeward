@@ -208,6 +208,13 @@ let overlayIds: string[] = [];
 /** The overlay windows the app says are on screen, newest answer wins. */
 export const lensOverlay = (): string[] => overlayIds;
 
+/** The window-point area the newest frame actually holds — the whole window
+ *  while it is on screen, and only its on-screen part while it hangs off an
+ *  edge. This, not the window header's size, is what a crop rect is checked
+ *  against: the app maps the rect through the named frame's own geometry
+ *  (`Transform::window_to_pixels`) before it bounds-checks it. */
+export const lensCaptured = (): Rect | null => latest?.geometry?.captured ?? null;
+
 /** Run `fn` whenever a helper signal lands (`ensureLens` re-checks there). */
 export function onHelperSignal(fn: () => void): void {
   onHelper.add(fn);
@@ -222,6 +229,9 @@ export function screenSource(deps: ScreenDeps): Source {
   /** The last `window` signal, so an `ax-window` can restate the header it
    *  belongs to (the id, the url and the display are that signal's). */
   let lastWindow: Record<string, unknown> | null = null;
+  /** Another window is over the target. The app stops recognising text while
+   *  it holds, and this is what stops the rest of a frame counting too. */
+  let covered = false;
 
   const apply = (body: Record<string, unknown>): void => {
     if (!feed) return;
@@ -236,6 +246,7 @@ export function screenSource(deps: ScreenDeps): Source {
       if (e > epoch) {
         epoch = e;
         lastWindow = null;
+        covered = false;
         feed.epoch(e, seq);
       }
       if (kind === 'window') {
@@ -291,6 +302,7 @@ export function screenSource(deps: ScreenDeps): Source {
         // a keyframe key: being told what is on top matters more than the
         // settle window.
         const field = coveredValue(body.over);
+        covered = field !== null;
         feed.meta('covered', field?.value, seq, field?.bounds);
         return;
       }
@@ -307,6 +319,13 @@ export function screenSource(deps: ScreenDeps): Source {
         const ref = str(body.ref);
         if (ref) latest = { ref, geometry: body.geometry as FrameGeometry | undefined, expires: at + FRAME_TTL_MS };
         feed.ref(ref || null);
+        // While another window is over the target these rectangles are ITS
+        // repaints. Feeding them would let a `visual` watch fire on the
+        // covering window and send its pixels to the model, and the answer
+        // would land as an interpreted region inside this window's document —
+        // the same misattribution the app stopped reading text to avoid. It
+        // also keeps the covering window's churn out of the live regions.
+        if (covered) return;
         for (const raw of arr(body.dirty)) {
           const d = (raw ?? {}) as { bbox?: unknown; d?: unknown };
           const bbox = rect(d.bbox);
@@ -371,8 +390,12 @@ export function screenSource(deps: ScreenDeps): Source {
     if (focus) meta.focus = { value: focusValue(focus), ...(rect(focus.bounds) ? { bounds: rect(focus.bounds) as Rect } : {}) };
     const sheet = snap.sheet as Record<string, unknown> | null;
     if (sheet) meta.sheet = { value: q(str(sheet.title)), ...(rect(sheet.bounds) ? { bounds: rect(sheet.bounds) as Rect } : {}) };
-    const covered = coveredValue(snap.covered);
-    if (covered) meta.covered = { value: covered.value, ...(covered.bounds ? { bounds: covered.bounds } : {}) };
+    const over = coveredValue(snap.covered);
+    if (over) meta.covered = { value: over.value, ...(over.bounds ? { bounds: over.bounds } : {}) };
+    // The same currency test `lastWindow` and `latest` make: a reply that
+    // arrived after the window changed says nothing about what is over the
+    // window on screen now.
+    if (num(snap.epoch) >= epoch) covered = over !== null;
     const frame = snap.latest as { ref?: unknown; geometry?: unknown } | null;
     // A reply that arrived after the window changed describes a window nobody is
     // looking at: its frame must not become the one a crop reads.
@@ -418,17 +441,17 @@ export function screenSource(deps: ScreenDeps): Source {
   /** What the lens is doing right now, asked for rather than waited for. A read
    *  that failed says nothing about the lens, so the snapshot below is its own
    *  retry; only an answer that says the lens is down takes the feed offline. */
-  const check = async (): Promise<void> => {
+  const check = async (): Promise<boolean> => {
     const reply = await desk(deps.desktop, 'lens-status', {}, SNAPSHOT_DEADLINE_MS);
     const native = 'error' in reply ? null : nativeState(reply.value);
     if (native && native.offline !== null) {
       setOffline(native.offline);
-      return;
+      return false;
     }
     // A core seeded offline before anything connected (runtime.ts `startLens`)
     // comes back live here, whether or not this source ever saw the stop.
     if (native) feed?.online();
-    await resync();
+    return true;
   };
 
   return {
@@ -440,7 +463,11 @@ export function screenSource(deps: ScreenDeps): Source {
       // One screen per process: a second connect only re-points the feed.
       if (detach) return () => {};
       detach = deps.attach(apply);
-      void check();
+      // The status read is what says the lens is not reading, so `ready()` has
+      // to wait for it: a look that answered first would describe a document
+      // nothing has written to, which reads exactly like a live, empty screen.
+      // The snapshot after it is a repaint and can land on its own.
+      if (await check()) void resync();
       return () => {
         detach?.();
         detach = null;

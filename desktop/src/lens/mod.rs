@@ -393,12 +393,22 @@ impl Lens {
 
     /// App switch, or a window switch inside the same app. Everything the old
     /// epoch produced is void: the frames describe a window that is no longer
-    /// in front, and the text describes content nobody is looking at.
+    /// in front, and the text describes content nobody is looking at. A target
+    /// that is not a different thing to look at is not a switch, and answers
+    /// nothing.
     pub fn retarget(self: &Arc<Self>, target: Target) {
         {
             // Held across the bump and the announcements, so a snapshot taken
             // meanwhile sees either the old epoch whole or the new one whole.
             let mut current = self.target.write().unwrap();
+            // Two activations can describe one switch — the NSWorkspace
+            // notification and the frontmost poll in signals.rs — and each
+            // caller decides outside this lock. Deciding again under it is
+            // what keeps one switch to one epoch: a second epoch would clear
+            // the ring and the known text for nothing.
+            if !signals::needs_retarget(current.as_ref(), &target) {
+                return;
+            }
             self.bridge.bump_epoch();
             self.ring.clear();
             *self.known.write().unwrap() = Known::default();
@@ -950,6 +960,7 @@ mod tests {
         lens.known.write().unwrap().covered = Some(Cover {
             by: "Google Chrome".into(),
             pid: 501,
+            id: 902,
             bounds: Some([0.0, 0.0, 800.0, 600.0]),
         });
         assert_eq!(lens.status()["covered"], true);
@@ -977,6 +988,13 @@ mod tests {
         };
         assert!(switch(&lens, second.clone()));
         assert_eq!(lens.bridge.epoch(), 4);
+
+        // One switch seen twice — the activation notification and the
+        // frontmost poll both reach `retarget` — is still one epoch. The
+        // callers decide outside the lock, so `retarget` decides again inside
+        // it.
+        lens.retarget(second.clone());
+        assert_eq!(lens.bridge.epoch(), 4, "the second activation is not news");
 
         // A move and a retitle of the same window are not: they reach the
         // consumer as `ax-window` inside the epoch they belong to.

@@ -786,15 +786,17 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
             .then(|| signals::cover_now(window_id, target_pid, bounds, lens.own_pid))
             .flatten()
     });
-    // Edge-triggered, and only while the frame's own epoch still stands: a
-    // cover read for the old target must not be filed against the new one.
+    // Edge-triggered on the covering window's IDENTITY, and only while the
+    // frame's own epoch still stands: a cover read for the old target must not
+    // be filed against the new one. The stored cover is refreshed either way,
+    // so `lens-snapshot` reports where the window is now; what is not worth a
+    // signal — and a header a consumer is told about — is the same window
+    // twice a second as somebody drags it across the target.
     let changed = lens.bridge.epoch() == stamp.epoch && {
         let mut known = lens.known.write().unwrap();
-        let changed = known.covered != cover;
-        if changed {
-            known.covered.clone_from(&cover);
-        }
-        changed
+        let news = !super::bridge::Cover::same(known.covered.as_ref(), cover.as_ref());
+        known.covered.clone_from(&cover);
+        news
     };
     if changed {
         if let Some(at) = lens.bridge.stamp_in(stamp.epoch) {

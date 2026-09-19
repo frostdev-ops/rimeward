@@ -86,10 +86,22 @@ pub struct Cover {
     pub by: String,
     /// Its process, `0` when the target window is simply not on screen.
     pub pid: i32,
+    /// Its window number, `0` when the target window is not on screen.
+    pub id: u32,
     /// Window points: where it sits over the target. Absent when the target
     /// window is not on screen and there is nothing to place.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounds: Option<Rect>,
+}
+
+impl Cover {
+    /// Whether two readings are the same window over the target. Geometry is
+    /// deliberately not part of it: a window dragged across the target moves
+    /// twice a second, and that is the same cover in a new place rather than
+    /// news a consumer needs a fresh header for.
+    pub fn same(a: Option<&Cover>, b: Option<&Cover>) -> bool {
+        a.map(|cover| (cover.pid, cover.id)) == b.map(|cover| (cover.pid, cover.id))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -461,6 +473,38 @@ mod tests {
         assert!(bridge.take_next().is_none());
     }
 
+    /// A window dragged across the target is the same cover in a new place.
+    /// Emitting on its geometry would put a new header in front of a consumer
+    /// twice a second for as long as the drag lasts.
+    #[test]
+    fn a_cover_is_the_same_cover_wherever_it_has_been_dragged_to() {
+        let at = |x: f64| {
+            Some(Cover {
+                by: "Google Chrome".into(),
+                pid: 501,
+                id: 902,
+                bounds: Some([x, 0.0, 800.0, 600.0]),
+            })
+        };
+        assert!(Cover::same(at(0.0).as_ref(), at(240.0).as_ref()));
+        assert!(Cover::same(None, None));
+        // A different window of the same application is news, and so is the
+        // cover appearing or leaving.
+        let other = Cover {
+            id: 903,
+            ..at(0.0).unwrap()
+        };
+        assert!(!Cover::same(at(0.0).as_ref(), Some(&other)));
+        assert!(!Cover::same(at(0.0).as_ref(), None));
+        assert!(!Cover::same(None, at(0.0).as_ref()));
+        // And so is the same window number in another process.
+        let elsewhere = Cover {
+            pid: 777,
+            ..at(0.0).unwrap()
+        };
+        assert!(!Cover::same(at(0.0).as_ref(), Some(&elsewhere)));
+    }
+
     #[test]
     fn an_epoch_bump_resets_seq_and_drops_both_buffers() {
         let (bridge, _rx) = bridge();
@@ -616,11 +660,12 @@ mod tests {
                 over: Some(Cover {
                     by: "Google Chrome".into(),
                     pid: 501,
+                    id: 902,
                     bounds: Some([0.0, -26.0, 1800.0, 1130.0])
                 })
             }),
             format!(
-                r#"{head}"kind":"covered","over":{{"by":"Google Chrome","pid":501,"bounds":[0.0,-26.0,1800.0,1130.0]}}}}"#
+                r#"{head}"kind":"covered","over":{{"by":"Google Chrome","pid":501,"id":902,"bounds":[0.0,-26.0,1800.0,1130.0]}}}}"#
             )
         );
         // The target window is not on screen at all: nothing to place, and no
@@ -630,10 +675,11 @@ mod tests {
                 over: Some(Cover {
                     by: "not on screen".into(),
                     pid: 0,
+                    id: 0,
                     bounds: None
                 })
             }),
-            format!(r#"{head}"kind":"covered","over":{{"by":"not on screen","pid":0}}}}"#)
+            format!(r#"{head}"kind":"covered","over":{{"by":"not on screen","pid":0,"id":0}}}}"#)
         );
         // Clear again: an explicit null, which is what drops the field.
         assert_eq!(

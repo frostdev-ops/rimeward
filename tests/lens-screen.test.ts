@@ -3,8 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeClock } from './fake-clock.ts';
 import { LensCore } from '../src/lib/lens/core.ts';
-import type { LensSettings } from '../src/lib/lens/core.ts';
+import type { Decider, LensSettings } from '../src/lib/lens/core.ts';
 import { crop, describe, nativeState, screenSource, text } from '../src/lib/lens/screen.ts';
+import { frameTrouble } from '../src/lib/lens/tools.ts';
 import { screenOffline } from '../src/lib/lens/types.ts';
 import { sqliteStore } from '../src/lib/lens/store.ts';
 import type { Delivery, Rect } from '../src/lib/lens/types.ts';
@@ -46,7 +47,7 @@ interface Harness {
   tick(): Promise<void>;
 }
 
-function harness(): Harness {
+function harness(decider?: Decider): Harness {
   const clock = new FakeClock(100_000);
   const calls: { op: string; value: unknown; deadlineMs: number | undefined }[] = [];
   const replies = new Map<string, unknown[]>();
@@ -80,6 +81,7 @@ function harness(): Harness {
     clock,
     store: { ...sqliteStore(user, 'screen:local', () => clock.now()), loadConsumers: () => [] },
     settings: (): LensSettings => ({ settleMs: 750, minLines: 1 }),
+    ...(decider ? { decider } : {}),
   });
   core.on('delivery', (id, delivery) => {
     const list = sent.get(id);
@@ -698,4 +700,101 @@ test('a window over the target is a header field, not text: covered delivers, cl
   h.inject(app(1, 'com.google.Chrome', 2));
   await h.tick();
   assert.equal(h.core.doc().meta.covered, undefined);
+});
+
+test('a covered window contributes no visual candidate and no describe round', async () => {
+  const asked: { ref: string; rect: Rect }[] = [];
+  const h = harness({
+    describe: async (q) => {
+      asked.push({ ref: q.ref, rect: q.rect });
+      return { json: { text: 'a Microsoft account picker' } };
+    },
+  });
+  await primed(h, 'c');
+  // `visual` alone: a watch this machine can actually run with a describe and
+  // nothing else (gate.ts `watchMode`).
+  await h.core.watch('c', { add: [{ visual: true, triage: false }] });
+  const dirty = { bbox: [0, 200, 400, 300] as Rect, d: 0.42 };
+
+  // Uncovered, the repaint is the target's own: a visual candidate, a describe
+  // round, and the description lands as an interpreted region.
+  h.inject(frameSig(10, [dirty], h.clock.now()));
+  assert.deepEqual(h.core.doc().dirty, [dirty]);
+  h.clock.advance(750);
+  await h.tick();
+  assert.equal(asked.length, 1, 'the target got its describe round');
+  assert.match((h.sent('c').at(-1) as Delivery).text, /~ 0,200,400,300/);
+  ackLast(h, 'c');
+
+  // Covered: the same rectangles are the COVERING window repainting. None of
+  // it may reach the document — a visual watch firing here would send another
+  // window's pixels to the model and file the answer under this window's name.
+  h.inject(sig(11, { kind: 'covered', over: { by: 'Google Chrome', pid: 501, id: 902, bounds: [0, 0, 1800, 1130] } }));
+  ackLast(h, 'c'); // the cover keyframes; start the next round from a clean cursor
+  const settled = h.sent('c').length;
+  h.inject(frameSig(12, [{ bbox: [0, 200, 400, 300] as Rect, d: 0.9 }], h.clock.now()));
+  assert.deepEqual(h.core.doc().dirty, [], 'the covering window\'s repaints are not this document\'s');
+  h.clock.advance(750);
+  await h.tick();
+  assert.equal(asked.length, 1, 'no describe round over a covered window');
+  assert.equal(h.sent('c').length, settled, 'and nothing visual to deliver');
+
+  // The cover leaves: the target's own repaints count again. A fresh
+  // rectangle, because the same one twice inside the frame history is churn
+  // and the gate keeps a live region out of the candidates either way.
+  h.inject(sig(13, { kind: 'covered', over: null }));
+  ackLast(h, 'c'); // clearing the field keyframes too
+  h.inject(frameSig(14, [{ bbox: [600, 200, 400, 300] as Rect, d: 0.9 }], h.clock.now()));
+  assert.equal(h.core.doc().dirty.length, 1);
+  h.clock.advance(750);
+  await h.tick();
+  assert.equal(asked.length, 2, 'reading resumes with the cover gone');
+});
+
+test('a refused rect is bounded by the frame it names, not by the window header', async () => {
+  const h = harness();
+  await primed(h, 'c');
+  // The header says the window is 656x422. The frame holds less than that: 270
+  // of those points are off the right edge of the display, so the app's bounds
+  // check — which maps the rect through THIS frame's geometry — stops at 386.
+  h.inject(
+    sig(10, {
+      kind: 'frame',
+      ref: 'f-1-10',
+      w: 772,
+      h: 844,
+      ratio: 0.1,
+      dirty: [],
+      geometry: { ...GEOMETRY, captured: [0, 0, 386, 422] },
+    })
+  );
+  const refused = frameTrouble('lens_crop', h.core, 'bad-rect', [400, 10, 200, 30]);
+  assert.match(refused, /400,10,200,30/, 'the rect it refused');
+  assert.match(refused, /0,0,386,422/, 'what that frame actually holds');
+  assert.doesNotMatch(refused, /656/, 'not the window header, which is bigger than the capture');
+  assert.match(refused, /window points/, 'the space a rect is in');
+});
+
+test('ready() waits for the screen lens status read, so a look never answers a lens that is off', async () => {
+  const h = harness();
+  let release: () => void = () => {};
+  const held = new Promise<unknown>((resolve) => {
+    release = (): void => resolve({ state: 'stopped', permissions: { screen: true, ax: true }, consented: false });
+  });
+  h.reply('lens-status', held);
+
+  let ready: boolean | null = null;
+  const settling = h.core.ready(10_000).then((value) => {
+    ready = value;
+  });
+  await h.tick();
+  assert.equal(ready, null, 'the connect has not settled while the status read is in flight');
+
+  release();
+  await settling;
+  assert.equal(ready, true);
+  // The point of waiting: what a read sees first is the lens being off, not a
+  // live, empty document.
+  assert.equal(h.core.status().state, 'offline');
+  assert.equal(h.core.status().error, screenOffline('not-consented'));
 });

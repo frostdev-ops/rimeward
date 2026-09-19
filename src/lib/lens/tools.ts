@@ -19,7 +19,7 @@
 
 import { TRANSLATE_HINT, captionsFor } from './captions.ts';
 import type { LensCore, LookResult } from './core.ts';
-import { crop, describe, lookFrame, text } from './screen.ts';
+import { crop, describe, lensCaptured, lookFrame, text } from './screen.ts';
 import type { Delivery, Line, MetaField, Rect, Region } from './types.ts';
 import { OBSERVATION_BANNER } from './types.ts';
 import { parseWatchSpec } from './gate.ts';
@@ -317,13 +317,19 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
  *
  *  `bad-rect` is the app's bounds check AFTER it maps the rect from window
  *  points into the captured frame's own pixels: the rect is passed through
- *  untouched, so the refusal means the rect is outside the window that was
- *  captured, and the only size a caller has ever been shown — `w`/`h` on a
- *  frame receipt — is the returned JPEG's pixels, a different grid. So the
- *  sentence states the space and the bounds, from the window header. */
+ *  untouched, so the refusal means the rect is outside what that FRAME holds,
+ *  and the only size a caller has ever been shown — `w`/`h` on a frame receipt
+ *  — is the returned JPEG's pixels, a different grid. So the sentence states
+ *  the space and the bounds.
+ *
+ *  The bounds are the newest frame's `captured` area, not the window header's
+ *  size: the app checks a rect against the geometry of the frame the `ref`
+ *  names, and a window hanging off a display edge is captured only as far as
+ *  the edge. The header is the fallback for a core that has no frame yet. */
 export function frameTrouble(name: string, core: LensCore, error: string, area?: Rect): string {
+  const captured = lensCaptured();
   const window = core.doc().meta.window?.bounds;
-  const bounds = window ? `0,0,${Math.round(window[2])},${Math.round(window[3])}` : null;
+  const bounds = captured ? box(captured) : window ? `0,0,${Math.round(window[2])},${Math.round(window[3])}` : null;
   switch (error) {
     case 'frame-evicted':
       return `${name} has no such frame: frames are kept for about 15 s of change, 60 s at the most, and that one is gone. Read a fresh \`ref\` from lens_look or the newest delivery — lens_crop and lens_describe take the newest frame when you pass neither \`ref\` nor \`v\`.`;
@@ -332,7 +338,8 @@ export function frameTrouble(name: string, core: LensCore, error: string, area?:
     case 'bad-rect':
       return (
         `${name} refused the rect ${area ? box(area) : '(x,y,w,h)'}: it falls outside the captured frame. ` +
-        `A rect is window points from the window's top-left${bounds ? `, and this window is ${bounds}` : ''} — the same space as the boxes on lens_look's \`=\` lines, which are NOT the \`w\`/\`h\` of a frame receipt. Narrow the rect and ask again.`
+        `A rect is window points from the window's top-left — the same space as the boxes on lens_look's \`=\` lines, which are NOT the \`w\`/\`h\` of a frame receipt. ` +
+        `It is checked against what the frame you named actually holds${bounds ? `, which is ${bounds}` : ''}: a window hanging off a display edge is captured only as far as the edge, and an older \`ref\` holds the window at the size it was then. Narrow the rect and ask again.`
       );
     case 'too-large':
       return `${name} could not send that frame: the image is over the transfer cap. Ask for a smaller rect or a smaller \`max_px\`.`;

@@ -195,9 +195,18 @@ fn intersects(a: Rect, b: Rect) -> bool {
 /// - the target application's own: a sheet, a dialog or a second document
 ///   window over the target is exactly what the display filter was chosen to
 ///   see (cells iii, iv, v.b), and it is the target's own content,
-/// - anything off layer 0 — the menu bar, the Dock and notification banners
-///   sit above every window and are not what "another window is over this one"
-///   means.
+/// - anything off layer 0.
+///
+/// That last class is mostly the menu bar, the Dock and notification banners,
+/// which sit above every window and are not what "another window is over this
+/// one" means. It is not only those, and the residual is real: an opaque
+/// floating panel of another application does cover the target and this rule
+/// will not report it. The line is drawn at layer 0 because counting anything
+/// above it false-positives permanently — on this very Mac a layer-3 ChatGPT
+/// window spans the whole display at alpha 1.0, so a wider rule would report a
+/// cover that never clears and the lens would stop reading altogether. A
+/// foreign floating window is therefore still read as the target, and that is
+/// the one case this guard does not catch.
 ///
 /// An empty list is a failed read, which says nothing rather than something
 /// false.
@@ -215,6 +224,7 @@ pub fn covering(
         return Some(Cover {
             by: OFF_SCREEN.into(),
             pid: 0,
+            id: 0,
             bounds: None,
         });
     };
@@ -230,6 +240,7 @@ pub fn covering(
         .map(|record| Cover {
             by: record.title.clone(),
             pid: record.pid,
+            id: record.id,
             bounds: Some(screen_to_window(record.bounds, bounds)),
         })
 }
