@@ -161,6 +161,12 @@ pub const WINDOW_MANAGER: &str = "WindowManager";
 /// — TextEdit keeps a 66x20 accessory window titled "Window" in front of its
 /// document — and `CGWindowListCopyWindowInfo` returns front to back, so on a
 /// tie the frontmost still wins.
+///
+/// Rimeward is an application like any other here: `main` and a `ward-*`
+/// popout are targets, and a popout that is hidden is not on screen. The
+/// overlay pool never is — every slot sits at
+/// [`super::overlay::slot_level`], which the window server reports as its
+/// layer, so the layer-0 rule alone keeps a card out of the targets.
 pub fn pick_window(records: &[WindowRecord], pid: i32) -> Option<&WindowRecord> {
     records
         .iter()
@@ -205,10 +211,8 @@ pub fn intersects(a: Rect, b: Rect) -> bool {
 /// `None` when the target is the top window there.
 ///
 /// `records` is `CGWindowListCopyWindowInfo`'s own front-to-back order, so
-/// everything ahead of the target's entry is in front of it. Four kinds of
+/// everything ahead of the target's entry is in front of it. Three kinds of
 /// window are deliberately not covers:
-/// - this application's own, which the content filter excludes from every
-///   frame anyway (research/capture-matrix.md cell i),
 /// - the target application's own: a sheet, a dialog or a second document
 ///   window over the target is exactly what the display filter was chosen to
 ///   see (cells iii, iv, v.b), and it is the target's own content,
@@ -226,15 +230,16 @@ pub fn intersects(a: Rect, b: Rect) -> bool {
 /// foreign floating window is therefore still read as the target, and that is
 /// the one case this guard does not catch.
 ///
+/// Rimeward's own windows are covers like anybody else's now that they are
+/// targets themselves: `main` or a `ward-*` popout over another application's
+/// window really is in the frame, so reading through it would file Rimeward's
+/// pixels as that application's text. The overlay pool is the one thing the
+/// content filter keeps out of every frame, and it never reaches this rule
+/// either — a slot sits at [`super::overlay::slot_level`], off layer 0.
+///
 /// An empty list is a failed read, which says nothing rather than something
 /// false.
-pub fn covering(
-    records: &[WindowRecord],
-    window_id: u32,
-    pid: i32,
-    bounds: Rect,
-    own_pid: i32,
-) -> Option<Cover> {
+pub fn covering(records: &[WindowRecord], window_id: u32, pid: i32, bounds: Rect) -> Option<Cover> {
     if records.is_empty() {
         return None;
     }
@@ -252,7 +257,6 @@ pub fn covering(
             record.layer == 0
                 && record.on_screen
                 && record.pid != pid
-                && record.pid != own_pid
                 && record.owner != WINDOW_MANAGER
                 && intersects(record.bounds, bounds)
         })
@@ -267,8 +271,8 @@ pub fn covering(
 /// [`covering`] against the window server as it stands, named by the covering
 /// application rather than by its window. One `CGWindowListCopyWindowInfo`
 /// read; capture calls it once per frame, which is twice a second.
-pub fn cover_now(window_id: u32, pid: i32, bounds: Rect, own_pid: i32) -> Option<Cover> {
-    let mut cover = covering(&window_records(), window_id, pid, bounds, own_pid)?;
+pub fn cover_now(window_id: u32, pid: i32, bounds: Rect) -> Option<Cover> {
+    let mut cover = covering(&window_records(), window_id, pid, bounds)?;
     if cover.pid != 0 {
         // The application's name beats the window's title: it is what a person
         // recognises, and a foreign window's title is somebody else's content.
@@ -737,10 +741,12 @@ impl Shared {
         ))
     }
 
-    /// An application came forward. Our own is never a target, which is also
-    /// what keeps the probe's overlay window out of the lens.
+    /// An application came forward. Rimeward's own windows are targets like
+    /// any other application's — a `ward-*` popout is what a person points the
+    /// lens at as readily as a browser — and [`pick_window`] is what keeps the
+    /// overlay pool out of them: a slot is never on layer 0.
     fn activate(&self, pid: i32) {
-        if self.stop.load(Ordering::Acquire) || pid <= 0 || pid == self.lens.own_pid {
+        if self.stop.load(Ordering::Acquire) || pid <= 0 {
             return;
         }
         self.want_pid.store(pid, Ordering::Release);
@@ -1409,6 +1415,36 @@ mod tests {
         );
     }
 
+    /// Rimeward is a target like any other application now, so its own pid
+    /// reaches `pick_window` too. The overlay pool never comes out of it — a
+    /// slot sits at `overlay::slot_level`, which the window server reports as
+    /// its layer — and neither does a `ward-*` popout that is hidden.
+    #[test]
+    fn the_overlay_pool_and_a_hidden_popout_are_never_our_target() {
+        let records = vec![
+            WindowRecord {
+                bounds: [1500.0, 100.0, 280.0, 120.0],
+                title: "Rimeward overlay".into(),
+                ..record(1, OURS, OVERLAY_LAYER)
+            },
+            WindowRecord {
+                on_screen: false,
+                bounds: [0.0, 0.0, 1800.0, 1130.0],
+                title: "Inbox — Rimeward".into(),
+                ..record(2, OURS, 0)
+            },
+            WindowRecord {
+                bounds: [100.0, 60.0, 900.0, 700.0],
+                title: "Rimeward".into(),
+                ..record(3, OURS, 0)
+            },
+        ];
+        assert_eq!(pick_window(&records, OURS).map(|r| r.id), Some(3));
+        // With the main window gone there is nothing of ours left to point at,
+        // rather than a card or a hidden popout.
+        assert_eq!(pick_window(&records[..2], OURS), None);
+    }
+
     /// The Claude-for-Desktop delivery that started this: the app, the window
     /// and the focus were Claude's, every OCR line was a browser's, because a
     /// display filter captures whatever is drawn at the target's rectangle.
@@ -1421,11 +1457,12 @@ mod tests {
                 title: String::new(),
                 ..record(1, 300, 25)
             },
-            // Ours: the content filter already keeps it out of every frame.
+            // Our own overlay: off layer 0, and the content filter keeps it
+            // out of every frame besides.
             WindowRecord {
                 bounds: [1500.0, 100.0, 280.0, 120.0],
-                title: "captions".into(),
-                ..record(2, 999, 0)
+                title: "Rimeward overlay".into(),
+                ..record(2, OURS, OVERLAY_LAYER)
             },
             // The browser the operator switched to, maximised over Claude.
             WindowRecord {
@@ -1455,10 +1492,16 @@ mod tests {
     }
 
     const TARGET: Rect = [0.0, 39.0, 1800.0, 1130.0];
+    /// This process, in the fixtures below.
+    const OURS: i32 = 999;
+    /// What the window server reports for a slot of the overlay pool:
+    /// `NSFloatingWindowLevel + 1`, which `overlay::slot_level` sets and an
+    /// `overlay` test pins.
+    const OVERLAY_LAYER: i32 = 4;
 
     #[test]
     fn another_applications_window_over_the_target_is_a_cover() {
-        let cover = covering(&over_the_target(), 7286, 42, TARGET, 999).expect("covered");
+        let cover = covering(&over_the_target(), 7286, 42, TARGET).expect("covered");
         assert_eq!(cover.pid, 501);
         assert_eq!(
             cover.by, "Pick an account",
@@ -1476,21 +1519,39 @@ mod tests {
     fn the_targets_own_sheets_dialogs_and_second_windows_are_never_covers() {
         let mut records = over_the_target();
         records.retain(|record| record.pid != 501);
-        assert_eq!(covering(&records, 7286, 42, TARGET, 999), None);
+        assert_eq!(covering(&records, 7286, 42, TARGET), None);
     }
 
     #[test]
-    fn the_menu_bar_the_dock_and_our_own_windows_are_never_covers() {
+    fn the_menu_bar_and_the_overlay_pool_are_never_covers() {
         let mut records = over_the_target();
         records.retain(|record| record.pid != 501 && record.pid != 42 || record.id == 7286);
         // What is left in front of the target is the menu bar (layer 25) and
-        // this application's own overlay.
-        assert_eq!(covering(&records, 7286, 42, TARGET, 999), None);
-        // Ours only stops being ours when it belongs to somebody else.
-        assert_eq!(
-            covering(&records, 7286, 42, TARGET, 1).map(|cover| cover.pid),
-            Some(999)
+        // this application's own overlay (layer 4). Neither is on layer 0.
+        assert_eq!(covering(&records, 7286, 42, TARGET), None);
+    }
+
+    /// Rimeward is an ordinary application in the frame now: only the overlay
+    /// pool is excluded, so a `ward-*` popout over another application's
+    /// window really is in those pixels and reading through it would file
+    /// Rimeward's own text as that application's.
+    #[test]
+    fn our_own_ordinary_window_over_another_apps_target_is_a_cover() {
+        let mut records = over_the_target();
+        records.retain(|record| record.pid != 501);
+        // Behind the menu bar and our own overlay card, both of which the
+        // scan has to walk past to reach it.
+        records.insert(
+            2,
+            WindowRecord {
+                bounds: [200.0, 100.0, 900.0, 700.0],
+                title: "Inbox — Rimeward".into(),
+                ..record(4242, OURS, 0)
+            },
         );
+        let cover = covering(&records, 7286, 42, TARGET).expect("covered");
+        assert_eq!(cover.pid, OURS);
+        assert_eq!(cover.id, 4242, "the popout, not the card in front of it");
     }
 
     /// Measured on this Mac: a tiled Claude window has WindowManager's 12x52
@@ -1509,11 +1570,11 @@ mod tests {
                 ..record(10127, 1168, 0)
             },
         );
-        assert_eq!(covering(&records, 7286, 42, TARGET, 999), None);
+        assert_eq!(covering(&records, 7286, 42, TARGET), None);
         // The same rectangle from any other process is a cover like any other.
         records[0].owner = "Finder".into();
         assert_eq!(
-            covering(&records, 7286, 42, TARGET, 999).map(|cover| cover.pid),
+            covering(&records, 7286, 42, TARGET).map(|cover| cover.pid),
             Some(1168)
         );
     }
@@ -1535,10 +1596,10 @@ mod tests {
         let mut records = over_the_target();
         // Starting exactly on the target's right edge: touching, not covering.
         records[2].bounds = [1800.0, 39.0, 400.0, 300.0];
-        assert_eq!(covering(&records, 7286, 42, TARGET, 999), None);
+        assert_eq!(covering(&records, 7286, 42, TARGET), None);
         records[2].bounds = [1400.0, 39.0, 400.0, 300.0];
         assert_eq!(
-            covering(&records, 7286, 42, TARGET, 999).map(|cover| cover.pid),
+            covering(&records, 7286, 42, TARGET).map(|cover| cover.pid),
             Some(501),
             "one point of overlap is still a cover"
         );
@@ -1550,12 +1611,12 @@ mod tests {
     #[test]
     fn a_target_that_is_not_on_screen_is_reported_rather_than_read() {
         let records = over_the_target();
-        let gone = covering(&records, 9999, 42, TARGET, 999).expect("not on screen");
+        let gone = covering(&records, 9999, 42, TARGET).expect("not on screen");
         assert_eq!(gone.by, OFF_SCREEN);
         assert_eq!(gone.pid, 0);
         assert_eq!(gone.bounds, None);
         // A failed window-server read says nothing rather than something false.
-        assert_eq!(covering(&[], 7286, 42, TARGET, 999), None);
+        assert_eq!(covering(&[], 7286, 42, TARGET), None);
     }
 
     fn screens() -> Vec<Screen> {

@@ -1,12 +1,12 @@
 //! The ScreenCaptureKit stream and the two filter shapes it can take.
 //!
-//! The crate cannot combine a window filter with application exclusion, so
-//! there are two candidates and M1 measures both:
+//! A window filter takes no exclusion list of any kind, so there are two
+//! candidates and M1 measures both:
 //! - [`Filter::Window`] — only the target window. Misses sheets, menus and
 //!   popovers that are their own windows.
-//! - [`Filter::Display`] — the display, excluding this app, cropped to the
-//!   window's bounds. Catches everything in that rectangle, including other
-//!   applications' floating windows.
+//! - [`Filter::Display`] — the display, excluding the overlay pool, cropped to
+//!   the window's bounds. Catches everything in that rectangle, including
+//!   other applications' floating windows.
 //!
 //! [`Filter::Display`] is the default, because it is the only one that sees a
 //! sheet, a dialog or a second window of the target's own application
@@ -354,7 +354,8 @@ struct Shared {
     /// crop maps through the window the frame came from.
     placement: Mutex<Placement>,
     filter: Filter,
-    /// Whether the content filter in force names this app as an exclusion.
+    /// Whether the content filter in force keeps the overlay pool out of every
+    /// frame it produces.
     excluded: AtomicBool,
     paused: AtomicBool,
     /// The previous frame's FeaturePrint per merged dirty-rectangle index.
@@ -378,19 +379,14 @@ pub struct Capture {
     stream: SCStream,
     shared: Arc<Shared>,
     display_id: u32,
-    own_pid: i32,
     stopped: AtomicBool,
 }
 
 impl Capture {
-    pub fn start(
-        lens: Arc<Lens>,
-        target: &Target,
-        filter: Filter,
-        own_pid: i32,
-    ) -> Result<Capture, String> {
+    pub fn start(lens: Arc<Lens>, target: &Target, filter: Filter) -> Result<Capture, String> {
         let content = SCShareableContent::get().map_err(|error| error.to_string())?;
-        let (content_filter, excluded) = content_filter(&content, target, filter, own_pid)?;
+        let (content_filter, excluded) =
+            content_filter(&content, target, filter, &lens.overlay_windows())?;
         let display = display_frame(&content, target)?;
         let configuration = configuration(target, filter, display);
         let shared = Arc::new(Shared {
@@ -431,7 +427,6 @@ impl Capture {
             stream,
             shared,
             display_id: target.display.id,
-            own_pid,
             stopped: AtomicBool::new(false),
         })
     }
@@ -445,7 +440,12 @@ impl Capture {
         }
         let content = SCShareableContent::get().map_err(|error| error.to_string())?;
         let filter = self.shared.filter;
-        let (content_filter, excluded) = content_filter(&content, target, filter, self.own_pid)?;
+        let (content_filter, excluded) = content_filter(
+            &content,
+            target,
+            filter,
+            &self.shared.lens.overlay_windows(),
+        )?;
         self.shared.excluded.store(excluded, Ordering::Release);
         let display = display_frame(&content, target)?;
         self.stream
@@ -543,17 +543,53 @@ impl Drop for Capture {
     }
 }
 
-/// The filter, and whether it names this app as an exclusion or has nothing it
-/// could name (a window filter, or the test flag that asks for no exclusion).
-/// `false` means the process owned no window at all when the filter was built.
-/// The app never does: its hidden `main` window and the overlay pool exist
-/// before any capture, and `SCShareableContent::get` lists off-screen windows,
-/// so the app's filter names it from the first frame (measured 2026-09-18).
+/// The pool's windows among the shareable content's, and whether all of them
+/// were there. Pure, so which windows the filter names is provable without a
+/// screen; the other half — that ScreenCaptureKit really keeps an excluded
+/// window out of the pixels — needs a display, the Screen Recording grant and
+/// a revealed card, so it stays a manual smoke (BlackIce proved it from
+/// `--probe`, which this app did not lift).
+fn overlay_exclusions(available: &[u32], pool: &[u32]) -> (Vec<u32>, bool) {
+    let found: Vec<u32> = available
+        .iter()
+        .copied()
+        .filter(|id| pool.contains(id))
+        .collect();
+    let all = found.len() == pool.len();
+    (found, all)
+}
+
+/// The filter, and whether the overlay pool can appear in the frames it
+/// produces. `false` means a slot window the pool owns was not in the
+/// shareable content, so the filter could not name it and a revealed card
+/// could reach a frame.
+///
+/// Only the overlay is excluded. Rimeward's ordinary windows — `main` and the
+/// `ward-*` popouts — are screen-lens targets like any other application's,
+/// so a capture of another app's window that has one of them over it holds
+/// their pixels on purpose (`signals::covering` reports that the way it
+/// reports any other application's). The pool is the exception because its
+/// cards and captions are drawn OVER the target: a frame that held them would
+/// hand a consumer its own writing back as the target's text.
+///
+/// The pool's windows are hidden between shows, and they are still in the
+/// list: `SCShareableContent::get` asks for `onScreenWindowsOnly: false`, and
+/// Tauri builds each `NSWindow` with `defer: NO`, so the window device — and
+/// the `CGWindowID` the pool handed over — exists before the window is ever
+/// shown. The 2026-09-18 measurement behind this is cell i.b of
+/// research/capture-matrix.md, from when the rule was per-application: a
+/// process with no window at all is not in the shareable content, and the
+/// filter it built excluded nothing.
+///
+/// ponytail: an id the list did not hold is logged and left unexcluded rather
+/// than retried. The next app switch rebuilds the filter and would pick it up;
+/// a rebuild driven from the reveal itself is the upgrade, and it is worth
+/// building only if that log is ever seen.
 fn content_filter(
     content: &SCShareableContent,
     target: &Target,
     filter: Filter,
-    own_pid: i32,
+    overlay_windows: &[u32],
 ) -> Result<(SCContentFilter, bool), String> {
     match filter {
         Filter::Window => {
@@ -566,43 +602,45 @@ fn content_filter(
                 .with_window(&window)
                 .try_build()
                 .map_err(|error| error.to_string())?;
-            // A window filter shows one window that is never ours, so there is
-            // nothing left to exclude and nothing to rebuild for.
+            // A window filter composites one window, which is never a slot of
+            // the pool, so there is nothing left to exclude.
             Ok((built, true))
         }
         Filter::Display => {
             let display = display(content, target)?;
-            // The app is always excluded from its own capture. The one
-            // exception is the inverse half of the `overlay_excluded` test,
-            // which has to be able to see the overlay to prove the test works.
-            let ours: Vec<SCRunningApplication> = if no_exclude() {
-                Vec::new()
-            } else {
-                content
-                    .applications()
-                    .into_iter()
-                    .filter(|application| application.process_id() == own_pid)
-                    .collect()
-            };
-            if ours.is_empty() && !no_exclude() {
-                // Only a process with no window reaches this: `--probe
-                // capture` (research/capture-matrix.md, cell i.b). It has
-                // nothing of its own to capture, so the hard rule holds.
-                eprintln!("lens: own application is not in the shareable content; exclusion empty");
+            // `RIMEWARD_TEST_NO_EXCLUDE=1` asks for no exclusion at all: the
+            // inverse half of the manual exclusion smoke has to be able to see
+            // a card in a frame, or the first half proves nothing. Deliberate,
+            // so not the alarm below.
+            let pool: &[u32] = if no_exclude() { &[] } else { overlay_windows };
+            let windows = content.windows();
+            let available: Vec<u32> = windows.iter().map(SCWindow::window_id).collect();
+            let (ids, excluded) = overlay_exclusions(&available, pool);
+            if !excluded {
+                eprintln!(
+                    "lens: {} of {} overlay windows are in the shareable content; \
+                     a card could reach a frame",
+                    ids.len(),
+                    pool.len()
+                );
             }
+            let slots: Vec<SCWindow> = windows
+                .into_iter()
+                .filter(|window| ids.contains(&window.window_id()))
+                .collect();
             let built = SCContentFilter::create()
                 .with_display(&display)
-                .with_excluding_applications(&ours.iter().collect::<Vec<_>>(), &[])
+                .with_excluding_windows(&slots.iter().collect::<Vec<_>>())
                 .try_build()
                 .map_err(|error| error.to_string())?;
-            Ok((built, !ours.is_empty() || no_exclude()))
+            Ok((built, excluded))
         }
     }
 }
 
-/// `RIMEWARD_TEST_NO_EXCLUDE=1`: build the display filter without the
-/// self-exclusion. Test-only, and the only way the exclusion test can prove it
-/// is looking at a frame the overlay would have shown up in.
+/// `RIMEWARD_TEST_NO_EXCLUDE=1`: build the display filter without the overlay
+/// exclusion. Test-only, and the only way the exclusion smoke can prove it is
+/// looking at a frame a card would have shown up in.
 fn no_exclude() -> bool {
     std::env::var("RIMEWARD_TEST_NO_EXCLUDE").as_deref() == Ok("1")
 }
@@ -790,8 +828,9 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
     };
 
     // Whose pixels these are. A display filter is scoped to the target's
-    // RECTANGLE, not to its window, so a window of another application drawn
-    // over that rectangle is captured under the target's name — the trade-off
+    // RECTANGLE, not to its window, so a window of another application — one
+    // of Rimeward's own included — drawn over that rectangle is captured under
+    // the target's name; only the overlay pool is excluded. The trade-off
     // recorded when the filter was chosen (research/capture-matrix.md §4, cell
     // ii). The pixels are real, so the frame still goes to the ring and the
     // consumer; recognition does not run, because reading them would file
@@ -807,7 +846,7 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
         // A window filter composites the target's own window, so nothing drawn
         // on top of it is in the frame to begin with.
         (shared.filter == Filter::Display)
-            .then(|| signals::cover_now(window_id, target_pid, bounds, lens.own_pid))
+            .then(|| signals::cover_now(window_id, target_pid, bounds))
             .flatten()
     });
     // Edge-triggered on the covering window's IDENTITY, and only while the
@@ -1353,8 +1392,8 @@ mod tests {
         });
         let target = display_target();
         *lens.target.write().unwrap() = Some(target.clone());
-        let capture = Capture::start(lens.clone(), &target, Filter::Display, lens.own_pid)
-            .expect("the stream starts");
+        let capture =
+            Capture::start(lens.clone(), &target, Filter::Display).expect("the stream starts");
         std::thread::sleep(Duration::from_millis(1500));
         // Reconfigure in place: same display, same filter mode.
         let mut moved = target.clone();
@@ -1459,8 +1498,8 @@ mod tests {
         lens.slow_ocr.store(true, Ordering::Release);
         let target = display_target();
         *lens.target.write().unwrap() = Some(target.clone());
-        let capture = Capture::start(lens.clone(), &target, Filter::Display, lens.own_pid)
-            .expect("the stream starts");
+        let capture =
+            Capture::start(lens.clone(), &target, Filter::Display).expect("the stream starts");
         // Long enough for a frame to be inside its two-second delay.
         std::thread::sleep(Duration::from_millis(1200));
         let mut moved = target.clone();
@@ -1500,8 +1539,8 @@ mod tests {
         let mut target = display_target();
         target.bounds = [target.display.w - 630.0, 100.0, 900.0, 600.0];
         *lens.target.write().unwrap() = Some(target.clone());
-        let capture = Capture::start(lens.clone(), &target, Filter::Display, lens.own_pid)
-            .expect("the stream starts");
+        let capture =
+            Capture::start(lens.clone(), &target, Filter::Display).expect("the stream starts");
         std::thread::sleep(Duration::from_millis(1500));
         capture.stop();
         std::thread::sleep(Duration::from_millis(500));
@@ -1525,6 +1564,31 @@ mod tests {
             (scale - planned).abs() < 0.02,
             "transform {scale} px/pt against the planned {planned}"
         );
+    }
+
+    /// The one thing a frame may never hold. Rimeward's ordinary windows are
+    /// deliberately not in this list: they are targets and covers like any
+    /// other application's.
+    #[test]
+    fn only_the_overlay_pool_is_excluded_from_a_display_filter() {
+        // `main`, a `ward-*` popout, somebody else's window, then the pool.
+        let available = [7286, 4242, 501, 90, 91, 92];
+        let pool = [90, 91, 92];
+        assert_eq!(
+            overlay_exclusions(&available, &pool),
+            (vec![90, 91, 92], true),
+            "every slot of the pool, and nothing else"
+        );
+        // A pool window the shareable content did not list is the alarm: the
+        // filter cannot name it, so a revealed card could reach a frame.
+        assert_eq!(
+            overlay_exclusions(&[7286, 90, 92], &pool),
+            (vec![90, 92], false)
+        );
+        // No pool — it failed to build, or has not been built yet — means
+        // nothing to exclude and nothing that could appear.
+        assert_eq!(overlay_exclusions(&available, &[]), (Vec::new(), true));
+        assert_eq!(overlay_exclusions(&[], &pool), (Vec::new(), false));
     }
 
     #[test]

@@ -198,8 +198,14 @@ pub struct Lens {
     /// can overtake it and prove the stale stamp is dropped.
     pub slow_ocr: AtomicBool,
     pub counters: Counters,
-    /// Excluded from its own capture. A test proves it.
-    pub own_pid: i32,
+    /// The overlay pool's windows, by `CGWindowID`: the only thing the capture
+    /// filter excludes, because a card or a caption drawn over the target
+    /// would otherwise be recognized and handed back as the target's own text.
+    /// Rimeward's ordinary windows — `main` and the `ward-*` popouts — are
+    /// targets and covers like any other application's. Empty until
+    /// [`overlay::Overlay::build`] has its windows, and empty for good when
+    /// the pool failed to build.
+    overlay_windows: Mutex<Vec<u32>>,
     /// The Swift helper, when its binary exists. Absent means every `helper-*`
     /// op answers `unavailable`.
     pub helper: Mutex<Option<Arc<Helper>>>,
@@ -279,6 +285,26 @@ impl Lens {
         self.overlay().ok_or_else(|| "unavailable".to_owned())
     }
 
+    /// The pool's `CGWindowID`s, handed over by [`overlay::Overlay::build`].
+    /// A capture built before the pool existed holds a filter that names none
+    /// of them, so it is rebuilt here through the same path a retarget takes:
+    /// the filter changes, the epoch does not.
+    pub fn set_overlay_windows(&self, windows: Vec<u32>) {
+        *self.overlay_windows.lock().unwrap() = windows;
+        let Some(target) = self.target.read().unwrap().clone() else {
+            return;
+        };
+        if let Some(capture) = self.capture.lock().unwrap().as_ref() {
+            if let Err(error) = capture.retarget(&target) {
+                self.diag("lens-overlay-filter", &error);
+            }
+        }
+    }
+
+    pub fn overlay_windows(&self) -> Vec<u32> {
+        self.overlay_windows.lock().unwrap().clone()
+    }
+
     /// The target window and its display, both in screen points: what an
     /// overlay anchor is resolved against.
     fn place(&self, target: &Target) -> overlay::Place {
@@ -306,7 +332,7 @@ impl Lens {
             consented: AtomicBool::new(false),
             slow_ocr: AtomicBool::new(false),
             counters: Counters::default(),
-            own_pid: std::process::id() as i32,
+            overlay_windows: Mutex::new(Vec::new()),
             helper: Mutex::new(None),
             overlay: Mutex::new(None),
             capture: Mutex::new(None),
@@ -468,7 +494,7 @@ impl Lens {
     }
 
     fn build_capture(self: &Arc<Self>, target: &Target) -> Result<(), String> {
-        let capture = Capture::start(self.clone(), target, self.filter, self.own_pid)?;
+        let capture = Capture::start(self.clone(), target, self.filter)?;
         *self.capture.lock().unwrap() = Some(capture);
         Ok(())
     }

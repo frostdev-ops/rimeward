@@ -223,9 +223,14 @@ impl Overlay {
             interactive: AtomicBool::new(false),
             ready: Mutex::new(HashSet::new()),
         });
+        // The capture filter excludes the pool by window id, so the ids are
+        // collected as the windows are made and handed to the lens before any
+        // stream could be built on them.
+        let mut windows = Vec::with_capacity(SLOTS);
         for label in LABELS {
-            slot_window(app, label).map_err(|error| error.to_string())?;
+            windows.extend(slot_window(app, label).map_err(|error| error.to_string())?);
         }
+        lens.set_overlay_windows(windows);
         let acked = overlay.clone();
         app.listen("overlay:ready", move |event| {
             let Some(id) = serde_json::from_str::<Value>(event.payload())
@@ -349,9 +354,9 @@ impl Overlay {
     /// One short-lived thread per show: the acknowledgement wait sleeps, and
     /// must not hold the caller's async worker.
     ///
-    /// Nothing here touches the capture filter: it excludes this process by
-    /// pid (`Capture::start(.., own_pid)`), so every slot window is out of
-    /// every frame however it is revealed.
+    /// Nothing here touches the capture filter: it excludes the pool's windows
+    /// by id (`Lens::set_overlay_windows`, named at build), so every slot is
+    /// out of every frame however it is revealed.
     fn reveal(self: &Arc<Self>, window: WebviewWindow, id: String) {
         let overlay = self.clone();
         std::thread::spawn(move || {
@@ -612,8 +617,11 @@ pub fn display_bounds(display_id: u32) -> Rect {
     ]
 }
 
-/// One hidden slot window. Transparency needs `macOSPrivateApi`, which is on.
-fn slot_window(app: &AppHandle, label: &'static str) -> tauri::Result<WebviewWindow> {
+/// One hidden slot window, and its `CGWindowID` — what the capture filter
+/// excludes it by. Transparency needs `macOSPrivateApi`, which is on. `None`
+/// means AppKit gave no window back, so that slot cannot be named in the
+/// filter.
+fn slot_window(app: &AppHandle, label: &'static str) -> tauri::Result<Option<u32>> {
     let window =
         WebviewWindowBuilder::new(app, label, WebviewUrl::App("overlay/index.html".into()))
             .title("Rimeward overlay")
@@ -631,17 +639,28 @@ fn slot_window(app: &AppHandle, label: &'static str) -> tauri::Result<WebviewWin
             .position(0.0, 0.0)
             .build()?;
     window.set_ignore_cursor_events(true)?;
-    native(&window);
-    Ok(window)
+    Ok(native(&window))
+}
+
+/// The level every slot sits at. Above every ordinary window, and — because
+/// `CGWindowListCopyWindowInfo` reports a window's level as its layer — never
+/// layer 0, which is what keeps a slot out of `signals::pick_window`'s targets
+/// and out of `signals::covering`'s covers now that Rimeward's own ordinary
+/// windows are both.
+pub fn slot_level() -> isize {
+    objc2_app_kit::NSFloatingWindowLevel + 1
 }
 
 /// What the builder cannot say: join every space, float over a full-screen
 /// app, stay out of the window cycle, and sit one level above the floating
-/// windows so a host's card is not covered by another utility panel.
-fn native(window: &WebviewWindow) {
-    use objc2_app_kit::{NSFloatingWindowLevel, NSWindow, NSWindowCollectionBehavior};
+/// windows so a host's card is not covered by another utility panel. Answers
+/// the slot's `CGWindowID`: Tauri builds its `NSWindow` with `defer: NO`, so
+/// the window device — and with it the number — exists before the window is
+/// ever shown, which is what lets the filter name a hidden slot.
+fn native(window: &WebviewWindow) -> Option<u32> {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
     let Ok(pointer) = window.ns_window() else {
-        return;
+        return None;
     };
     // Tauri made this `NSWindow` on the thread that is building the pool, and
     // the pool is built in `setup`, which is the main thread.
@@ -652,10 +671,11 @@ fn native(window: &WebviewWindow) {
             | NSWindowCollectionBehavior::Stationary
             | NSWindowCollectionBehavior::IgnoresCycle,
     );
-    ns.setLevel(NSFloatingWindowLevel + 1);
+    ns.setLevel(slot_level());
     ns.setHasShadow(false);
     ns.setOpaque(false);
     ns.setBackgroundColor(Some(&objc2_app_kit::NSColor::clearColor()));
+    u32::try_from(ns.windowNumber()).ok().filter(|id| *id > 0)
 }
 
 #[cfg(test)]
@@ -664,6 +684,15 @@ mod tests {
 
     const WINDOW: Rect = [100.0, 200.0, 800.0, 600.0];
     const DISPLAY: Rect = [0.0, 0.0, 1512.0, 982.0];
+
+    /// Rimeward's own ordinary windows are lens targets and covers now, and
+    /// the layer-0 rule in signals.rs is the whole reason a card is neither.
+    /// `NSFloatingWindowLevel` is 3, `CGWindowListCopyWindowInfo` reports a
+    /// window's level as `kCGWindowLayer`, and signals.rs pins the same 4.
+    #[test]
+    fn a_slot_sits_off_layer_zero_so_it_is_never_a_target_or_a_cover() {
+        assert_eq!(slot_level(), 4);
+    }
 
     fn place() -> Place {
         Place {
