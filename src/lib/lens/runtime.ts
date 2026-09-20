@@ -68,15 +68,21 @@ export { lensPaused };
 /** Pause stops the capture itself: no frames, no signals, so no deliveries. */
 export function setLensPaused(user: number, paused: boolean): void {
   setLensPausedRow(user, paused);
-  if (isDesktop()) void nativeDesktop(paused ? 'lens-pause' : 'lens-resume').catch(() => {});
+  if (isDesktop()) void startLens();
 }
 
 let attached = false;
+let readers = 0;
+let syncing: Promise<string | null> = Promise.resolve(null);
 
-/** Installs the signal channel and hands Rust the stored consent. Idempotent,
- *  and every later call is the retry the ungranted case needs: with consent
- *  stored but Screen Recording not granted, `lens-start` answers `permission`
- *  and the setting stands — the next call starts the capture for real. */
+/** Only live subscriptions and in-flight readers count; saved consumers do not. */
+export async function screenDemand(active: boolean): Promise<void> {
+  readers += active ? 1 : -1;
+  await startLens();
+}
+
+/** Installs the signal channel and stored consent. Capture stays stopped until
+ *  a live reader needs it; retries never turn an idle lens on. */
 export function ensureLens(): void {
   if (!isDesktop()) return;
   if (!attached) {
@@ -127,15 +133,19 @@ let helper: Decider | undefined;
 
 /** Tells Rust what the user answered. Returns the refusal, if any: `permission`
  *  is Screen Recording, which the setup page points at. */
-export async function startLens(): Promise<string | null> {
+export function startLens(): Promise<string | null> {
+  syncing = syncing.then(syncCapture, syncCapture);
+  return syncing;
+}
+
+async function syncCapture(): Promise<string | null> {
   if (!isDesktop()) return null;
   const consented = lensSetting('consented');
   const core = lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()));
   try {
     // `lens-start` answers with the whole status, so the decider is synced from
     // that reply rather than a second round trip.
-    const status = await nativeDesktop('lens-start', { consented });
-    if (consented && lensPaused(localOwner())) await nativeDesktop('lens-pause');
+    const status = await nativeDesktop('lens-start', { consented, active: readers > 0, paused: lensPaused(localOwner()) });
     await syncDecider(status);
     // The same reply says whether anything is capturing at all. The source only
     // ever learns it went down from a `status stopped` TRANSITION, and there is
@@ -181,8 +191,8 @@ export async function lensNativeStatus(): Promise<{ state: string; screen: boole
   return nativeState(await nativeDesktop('lens-status').catch(() => null));
 }
 
-/** What the setup page's Screen lens switch draws. Reading it is also the retry:
- *  a lens consented to before Screen Recording was granted starts here. */
+/** What the setup page's Screen lens switch draws. Retrying a grant only
+ *  starts capture when a live reader is still waiting for it. */
 export async function lensConsentStatus(error: string | null = null): Promise<LensConsentStatus> {
   const consented = lensSetting('consented');
   if (!isDesktop()) {

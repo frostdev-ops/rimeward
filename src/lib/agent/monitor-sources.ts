@@ -95,6 +95,9 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
   const source = lensSourceId(s);
   const core = consumer ? lens(user,source) : null;
   if (core && consumer) {
+    const { ready, release } = core.acquire();
+    try {
+    await ready;
     // A source that is not reading has no baseline to give and no change to wait for.
     // Its reason is the monitor's, and the caller's retry is what brings it back when
     // consent, a grant or a capture returns.
@@ -103,7 +106,7 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
       return st.state === 'offline' ? st.error ?? 'the lens is not reading this source' : null;
     };
     const already = notReading();
-    if (already !== null) { offline(already); return () => {}; }
+    if (already !== null) { release(); offline(already); return () => {}; }
     const held = core.consumer(consumer,'monitor');
     await core.watch(consumer,{ remove:held.watches.map(w => w.id),...(s.watch ? { add:[s.watch] } : {}),...(s.intervalSeconds === undefined ? {} : { minIntervalS:s.intervalSeconds }) });
     // One baseline per connect, and it is the ONLY baseline: taken before anything can
@@ -139,7 +142,11 @@ export async function connectMonitorSource(user:number,s:MonitorSource,emit:Emit
     if (held.delivered) core.look(consumer,{ fields:[] });
     // ponytail: stopping is dropping the listeners. The core and the consumer row
     // outlive it on purpose — that is what an unacknowledged delivery survives.
-    return () => { off(); offStatus(); };
+    return () => { off(); offStatus(); release(); };
+    } catch (error) {
+      release();
+      throw error;
+    }
   }
   if (s.type === 'terminal') {
     const connection = randomUUID();

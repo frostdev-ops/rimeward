@@ -50,6 +50,8 @@ export async function lensToolRun(name: LensToolName, args: Record<string, any>,
       `No lens for source "${source}" on this computer. ${known ? `Available: ${known}.` : 'No lens source is available here.'}`
     );
   }
+  if (source.startsWith('screen:') && tool.kind === 'read' && name !== 'lens_history' && ctx.lensReaders && !ctx.lensReaders.has(core))
+    ctx.lensReaders.set(core, core.acquire().release);
   const r = await tool.call(core, CONSUMERLESS.has(name) ? 'overlay' : consumerOf(ctx), args, {
     source,
     user: ctx.userId,

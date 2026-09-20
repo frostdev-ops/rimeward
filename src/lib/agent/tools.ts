@@ -100,6 +100,8 @@ export type ToolKind = 'read' | 'write' | 'confirm';
 export const AGENT_HELP_TOPICS = ['general', 'computer', 'browser', 'sandbox', 'wards', 'leylines', 'memory', 'delegation', 'all'] as const;
 
 export interface ToolCtx {
+  /** Native screen readers acquired lazily and released when this turn ends. */
+  lensReaders?: Map<object, () => void>;
   /** Immutable run scope, supplied by the harness, never by tool arguments. */
   workspace?: WorkspaceBinding;
   /** Current run policy, including its original ceiling; never a model argument. */

@@ -187,13 +187,14 @@ function syncScreenChanged(user: number, edges: ScreenEdge[]): void {
   }
   const core = lens(user, 'screen:local');
   if (!core) return; // no screen source on this runtime (the server)
+  const { release } = core.acquire();
   // The listener goes on FIRST: `consumer()` is what connects the source, and a
   // source that writes its header synchronously delivers inside that call.
   const off = core.on('delivery', (id, d) => {
     const held = bound.get(key);
     if (id === 'leylines' && held) fireScreen(user, core, held, d);
   });
-  const held: Bound = { source: 'screen:local', off, screen: edges };
+  const held: Bound = { source: 'screen:local', off: () => { off(); release(); }, screen: edges };
   bound.set(key, held);
   core.consumer('leylines', 'edge');
   clearStale(core, 'leylines', true);
@@ -221,11 +222,12 @@ function syncWatch(user: number, consumer: string, edge: LogicEdge, source: stri
   const key = `${user}:${consumer}`;
   let entry = bound.get(key);
   if (!entry) {
+    const { release } = core.acquire();
     const off = core.on('delivery', (id, d) => {
       const held = bound.get(key);
       if (id === consumer && held) fireWatch(user, core, consumer, held, d);
     });
-    entry = { source, off };
+    entry = { source, off: () => { off(); release(); } };
     bound.set(key, entry);
   }
   entry.edge = edge;

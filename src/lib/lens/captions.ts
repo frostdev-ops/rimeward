@@ -141,6 +141,7 @@ export class Captions {
   #batches = 0;
   #samples: number[] = [];
   #off: (() => void)[] = [];
+  #release: (() => void) | undefined;
 
   constructor(deps: CaptionsDeps) {
     this.#deps = deps;
@@ -157,6 +158,8 @@ export class Captions {
 
   /** Drops the subscriptions. Anything in flight still discards on reply. */
   close(): void {
+    this.#release?.();
+    this.#release = undefined;
     for (const off of this.#off) off();
     this.#off = [];
     this.#on = false;
@@ -203,10 +206,15 @@ export class Captions {
     this.#seen = new Set();
     const drawn = [...this.#drawn.keys()];
     this.#drawn.clear();
-    if (!o.on) for (const id of drawn) this.#fire('overlay-clear', { id });
+    if (!o.on) {
+      this.#release?.();
+      this.#release = undefined;
+      for (const id of drawn) this.#fire('overlay-clear', { id });
+    }
     else {
       // Nothing reads the screen for its own sake, so captions are the reason
       // the source runs while they are on.
+      this.#release ??= this.#core.acquire().release;
       this.#core.connect();
       // Build the pair's session now, with room, so the first batches do not
       // all run into the deadline while the helper is still loading it.

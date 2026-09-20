@@ -997,6 +997,7 @@ async function loop(
   let limits = await cfg.provider.context?.(ctx.userId, model).catch(() => undefined);
   const usage = () => contextUsage(cfg.conv.id, cfg.provider.id, model, items, instructions, tools, limits);
 
+  ctx.lensReaders = new Map();
   try {
   for (let round = 0; cap === 0 || round < cap; round++) {
     // One controller per round, armed before anything awaits: a Stop that lands
@@ -1328,6 +1329,7 @@ async function loop(
   emit?.({ type: 'reply', text: reply, id: randomUUID() });
   return done({ reply, steps });
   } finally {
+    for (const release of ctx.lensReaders.values()) release();
     aborts.delete(key);
     runningRoutes.delete(runKey);
     // A failed or paused turn must close its receipts, never leave them for

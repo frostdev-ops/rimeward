@@ -740,7 +740,7 @@ impl Shared {
     /// An application came forward. Our own is never a target, which is also
     /// what keeps the probe's overlay window out of the lens.
     fn activate(&self, pid: i32) {
-        if pid <= 0 || pid == self.lens.own_pid {
+        if self.stop.load(Ordering::Acquire) || pid <= 0 || pid == self.lens.own_pid {
             return;
         }
         self.want_pid.store(pid, Ordering::Release);
@@ -758,6 +758,14 @@ impl Shared {
 /// The activation observer and the AX thread.
 pub struct Signals {
     stop: Arc<AtomicBool>,
+}
+
+// Observer tokens stay on the main thread, where they are installed and removed.
+type ActivationObserver =
+    objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_foundation::NSObjectProtocol>>;
+thread_local! {
+    static ACTIVATION_OBSERVERS: RefCell<std::collections::HashMap<usize, ActivationObserver>> =
+        RefCell::new(std::collections::HashMap::new());
 }
 
 impl Signals {
@@ -817,6 +825,18 @@ impl Signals {
 
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Release);
+        let id = Arc::as_ptr(&self.stop) as usize;
+        on_main(move || {
+            ACTIVATION_OBSERVERS.with(|observers| {
+                if let Some(observer) = observers.borrow_mut().remove(&id) {
+                    unsafe {
+                        objc2_app_kit::NSWorkspace::sharedWorkspace()
+                            .notificationCenter()
+                            .removeObserver((*observer).as_ref());
+                    }
+                }
+            });
+        });
     }
 }
 
@@ -836,6 +856,9 @@ fn install_observer(shared: Arc<Shared>) {
     };
     use objc2_foundation::{MainThreadMarker, NSNotification};
 
+    if shared.stop.load(Ordering::Acquire) {
+        return;
+    }
     if let Some(mtm) = MainThreadMarker::new() {
         shared.refresh_screens(mtm);
     }
@@ -857,12 +880,7 @@ fn install_observer(shared: Arc<Shared>) {
             observed.activate(pid);
         }
     });
-    // ponytail: the observer token is dropped rather than removed on stop; the
-    // block returns immediately once `stop` is set. One inert block per
-    // start/stop cycle, and those are driven by consent and permission
-    // changes. Keep the token and remove it on the main thread if the lens
-    // ever starts and stops on a timer.
-    unsafe {
+    let observer = unsafe {
         NSWorkspace::sharedWorkspace()
             .notificationCenter()
             .addObserverForName_object_queue_usingBlock(
@@ -870,8 +888,13 @@ fn install_observer(shared: Arc<Shared>) {
                 None,
                 None,
                 &block,
-            );
-    }
+            )
+    };
+    ACTIVATION_OBSERVERS.with(|observers| {
+        observers
+            .borrow_mut()
+            .insert(Arc::as_ptr(&shared.stop) as usize, observer);
+    });
     if let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() {
         shared.activate(app.processIdentifier());
     }

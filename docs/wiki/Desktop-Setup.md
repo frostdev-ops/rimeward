@@ -1,5 +1,13 @@
 **Section 1 · Desktop only** · [Wiki home](https://github.com/frostdev-ops/rimeward/wiki/Home) · Next: [Make your workspace](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Workspace)
 
+The **Screen lens** switch allows screen observation on this Mac. Capture starts
+when an agent reads the screen, a screen monitor or Leyline is watching, or live
+captions are on. An agent that reads the screen keeps capture for its current
+turn; standalone tool calls keep it only while they run. When the last reader
+finishes, Rimeward stops the native screen-sharing stream. Saved conversations,
+watches and an open lens card do not keep it running. Pausing also stops the
+stream; resuming starts it only if something still needs it.
+
 Use this path to run Rimeward entirely as a desktop application. You do not need a Rimeward account on a server, a domain, Docker, a reverse proxy, or an externally reachable port. The installed app bundles its backend, Node runtime, Chromium, and editor tools, and creates its local owner on first launch.
 
 ## Requirements
