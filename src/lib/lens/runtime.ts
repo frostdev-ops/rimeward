@@ -138,14 +138,26 @@ export function startLens(): Promise<string | null> {
   return syncing;
 }
 
+/** What the last `lens-start` said about demand: the app writes one
+ *  `lens-demand` diagnostics line per crossing of zero. Tracked here rather
+ *  than in `screenDemand` because this is where `active` is actually sent, so
+ *  the line can never disagree with the op it rode on. */
+let lastDemand: boolean | null = null;
+
 async function syncCapture(): Promise<string | null> {
   if (!isDesktop()) return null;
   const consented = lensSetting('consented');
   const core = lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()));
+  const active = readers > 0;
+  // Node cannot append to the app's diagnostics file, so the transition rides
+  // the op the app already answers. One line, only when demand crossed zero:
+  // a capture running with no reader on record could not otherwise be explained.
+  const why = lastDemand === active ? undefined : `${active ? 'on' : 'off'} readers=${readers}`;
+  lastDemand = active;
   try {
     // `lens-start` answers with the whole status, so the decider is synced from
     // that reply rather than a second round trip.
-    const status = await nativeDesktop('lens-start', { consented, active: readers > 0, paused: lensPaused(localOwner()) });
+    const status = await nativeDesktop('lens-start', { consented, active, paused: lensPaused(localOwner()), ...(why ? { why } : {}) });
     await syncDecider(status);
     // The same reply says whether anything is capturing at all. The source only
     // ever learns it went down from a `status stopped` TRANSITION, and there is

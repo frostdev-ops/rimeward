@@ -537,11 +537,14 @@ pub(crate) fn runtime_diagnostic(file: &std::path::Path, category: &str) {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let _ = writeln!(
-            log,
-            "{}",
-            serde_json::json!({"at": at, "category": category})
-        );
+        // Formatted whole, then written ONCE. `writeln!` on an unbuffered
+        // append handle turns a `Display` into a write syscall per fragment,
+        // and two threads writing at the same second interleaved character by
+        // character — the field file reads `{{""atat""::` and nothing in it
+        // parses (2026-09-20). One `write_all` of one line is atomic enough
+        // for an append handle this small.
+        let line = format!("{}\n", serde_json::json!({"at": at, "category": category}));
+        let _ = log.write_all(line.as_bytes());
     }
 }
 
@@ -750,6 +753,43 @@ mod diagnostics_tests {
         assert!(std::fs::read_to_string(&file)
             .unwrap()
             .contains("runtime-disconnected"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Two threads writing at once used to interleave character by character —
+    /// the field file read `{{""atat""::` and not one line of it parsed
+    /// (2026-09-20). Every line is formatted whole and written once, so every
+    /// line comes back out whole.
+    #[test]
+    fn concurrent_diagnostics_stay_one_line_each() {
+        let dir = std::env::temp_dir().join(format!(
+            "rimeward-diagnostics-concurrent-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("runtime.jsonl");
+        std::thread::scope(|scope| {
+            for category in ["lens-stream-lost", "lens-restarted"] {
+                let file = &file;
+                scope.spawn(move || {
+                    for _ in 0..200 {
+                        super::runtime_diagnostic(file, category);
+                    }
+                });
+            }
+        });
+        let body = std::fs::read_to_string(&file).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 400);
+        for line in lines {
+            let value: serde_json::Value =
+                serde_json::from_str(line).unwrap_or_else(|_| panic!("unparseable line: {line}"));
+            assert!(value["at"].is_number());
+            assert!(matches!(
+                value["category"].as_str(),
+                Some("lens-stream-lost" | "lens-restarted")
+            ));
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

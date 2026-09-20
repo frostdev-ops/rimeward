@@ -222,6 +222,10 @@ pub struct Lens {
     /// Restarts attempted since the last complete frame: what [`Lens::stream_lost`]
     /// backs off on.
     retry: AtomicU32,
+    /// A restart is already sleeping on the backoff. Cleared by that thread
+    /// when it wakes, so a second report of the SAME loss neither writes a
+    /// second `lens-stream-lost` line nor schedules a second restart.
+    retry_pending: AtomicBool,
 }
 
 /// How long [`Lens::stream_lost`] waits before restart attempt `attempt`
@@ -339,17 +343,20 @@ impl Lens {
             signals: Mutex::new(None),
             diagnostics: None,
             retry: AtomicU32::new(0),
+            retry_pending: AtomicBool::new(false),
         })
     }
 
     /// One line in the app's diagnostics file: a category, never content.
     /// The detail is cut to one short line so a system error's prose cannot
-    /// carry anything past it.
+    /// carry anything past it. Long enough for a macOS error AND the target it
+    /// was refused on: "Failed due to an invalid parameter" alone named neither
+    /// the window nor the display it could not start on (field, 2026-09-20).
     pub fn diag(&self, category: &str, detail: &str) {
         let detail: String = detail
             .chars()
             .filter(|c| !c.is_control())
-            .take(120)
+            .take(200)
             .collect();
         let line = if detail.is_empty() {
             category.to_owned()
@@ -369,12 +376,30 @@ impl Lens {
     /// leaving marks it `idle`, the user `not-consented` or `paused`; those
     /// are not retried, the next `lens-start` is theirs).
     pub fn stream_lost(self: &Arc<Self>, detail: &str) {
+        // One loss can be reported more than once — two delegate callbacks for
+        // one stop, or a `start` that fails while the backoff is already
+        // sleeping. A restart is already on its way, so it gets no second line
+        // and no second thread. The stop itself still has to land when the lens
+        // is live: a `lens-start` can have brought it back during the wait, and
+        // a state that reads `running` with nothing capturing is dark for good.
+        // The sleeping thread finds it stopped for `stream` and restarts it.
+        if self.retry_pending.swap(true, Ordering::AcqRel) {
+            // Bound the guard to this statement: `stop` takes the same lock.
+            let live = self.state.lock().unwrap().run.live();
+            if live {
+                self.stop(Some("stream"));
+            }
+            return;
+        }
         self.diag("lens-stream-lost", detail);
         self.stop(Some("stream"));
         let attempt = self.retry.fetch_add(1, Ordering::AcqRel);
         let lens = self.clone();
         std::thread::spawn(move || {
             std::thread::sleep(retry_delay(attempt));
+            // Cleared before the attempt, so a `start` that fails inside it can
+            // schedule the next one.
+            lens.retry_pending.store(false, Ordering::Release);
             let still = {
                 let state = lens.state.lock().unwrap();
                 state.run == Run::Stopped && state.reason.as_deref() == Some("stream")
@@ -494,7 +519,13 @@ impl Lens {
     }
 
     fn build_capture(self: &Arc<Self>, target: &Target) -> Result<(), String> {
-        let capture = Capture::start(self.clone(), target, self.filter)?;
+        // The target rides in the error, because every caller hands it to
+        // `stream_lost` and the diagnostics line is all the field ever sees:
+        // "Failed to start capture: … Failed due to an invalid parameter" named
+        // neither the window it was refused on nor the display it sits on
+        // (field, 2026-09-20), and that failure cannot be read without them.
+        let capture = Capture::start(self.clone(), target, self.filter)
+            .map_err(|error| format!("{error} on {}", describe_target(target)))?;
         *self.capture.lock().unwrap() = Some(capture);
         Ok(())
     }
@@ -934,6 +965,14 @@ pub async fn desktop_request(
         .ok_or("unavailable")?;
     match op {
         "lens-start" => {
+            // Node's own note about why it is asking, written only when demand
+            // crossed zero. Node has no way to append to the app's diagnostics
+            // file, and without this a capture that started with no reader on
+            // record — which is what the field showed on 2026-09-20 — cannot
+            // be told from one a reader asked for.
+            if let Some(why) = value["why"].as_str() {
+                lens.diag("lens-demand", why);
+            }
             let consented = value["consented"] == true;
             lens.consented.store(consented, Ordering::Release);
             if consented && value["active"] != false && value["paused"] != true {
@@ -976,6 +1015,17 @@ fn helper_status(helper: Option<&Helper>) -> Value {
     let (state, outstanding) =
         helper.map_or_else(|| ("down".to_owned(), 0), |helper| helper.state());
     json!({ "state": state, "outstanding": outstanding })
+}
+
+/// Which window, whose process, where it was and on which display: the four
+/// things a capture failure has to name to be diagnosable at all. Screen
+/// points, rounded — a fraction of a point explains nothing.
+fn describe_target(target: &Target) -> String {
+    let [x, y, w, h] = target.bounds;
+    format!(
+        "window={} pid={} bounds={x:.0},{y:.0},{w:.0},{h:.0} display={}",
+        target.window_id, target.pid, target.display.id
+    )
 }
 
 /// The absolute deadline an op carried, or the default when it carried none.
@@ -1378,6 +1428,78 @@ mod tests {
         assert_eq!(value["kind"], "status");
         assert_eq!(value["state"], "stopped");
         assert_eq!(value["reason"], "stream");
+    }
+
+    /// One stop reaches the delegate twice (field, 2026-09-20), and each
+    /// callback reported it: two `lens-stream-lost` lines and two restart
+    /// threads racing on the same backoff. The second report says nothing and
+    /// schedules nothing while the first restart is still sleeping.
+    #[tokio::test]
+    async fn one_loss_reported_twice_schedules_one_restart() {
+        let (lens, mut rx) = lens();
+        tokio::spawn(lens.bridge.clone().run_writer());
+        lens.stream_lost("The user stopped the stream");
+        lens.stream_lost("SCStream error: the same stop, the other callback");
+        assert_eq!(lens.retry.load(Ordering::Acquire), 1);
+        let first: Value =
+            serde_json::from_str(&rx.recv().await.expect("a status signal")).unwrap();
+        assert_eq!(first["reason"], "stream");
+        // Nothing followed it: no second stop, no second status.
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// A `lens-start` can bring the lens back while the backoff is still
+    /// sleeping, and that fresh stream can die too. Swallowing THAT report
+    /// whole would leave the state reading `running` with nothing capturing —
+    /// dark for good, because every later `lens-start` sees a live lens and
+    /// returns early. It is stopped for `stream`, which is what the sleeping
+    /// thread restarts; it still gets no second thread of its own.
+    #[tokio::test]
+    async fn a_second_loss_during_the_backoff_still_stops_the_lens() {
+        let (lens, mut rx) = lens();
+        tokio::spawn(lens.bridge.clone().run_writer());
+        lens.stream_lost("the first loss");
+        rx.recv().await.expect("the first status");
+        // What a `lens-start` during the wait leaves behind.
+        lens.set_state(Run::Running, None);
+        rx.recv().await.expect("the running status");
+        lens.stream_lost("the rebuilt stream died too");
+        let state = lens.state.lock().unwrap().clone();
+        assert_eq!(state.run, Run::Stopped);
+        assert_eq!(state.reason.as_deref(), Some("stream"));
+        // Still one restart on the way, not two.
+        assert_eq!(lens.retry.load(Ordering::Acquire), 1);
+    }
+
+    /// The failure that could not be read in the field: the macOS words say
+    /// what went wrong, the target says what it went wrong on.
+    #[test]
+    fn a_capture_failure_names_the_window_it_was_refused_on() {
+        let target = Target {
+            pid: 61234,
+            bundle: "com.apple.Safari".into(),
+            name: "Safari".into(),
+            window_id: 4327,
+            title: "Docs".into(),
+            bounds: [0.0, 25.0, 1512.4, 919.6],
+            url: None,
+            display: DisplayInfo {
+                id: 7,
+                w: 1512.0,
+                h: 982.0,
+                scale: 2.0,
+            },
+        };
+        assert_eq!(
+            describe_target(&target),
+            "window=4327 pid=61234 bounds=0,25,1512,920 display=7"
+        );
+        // Both halves survive the cut `diag` puts on a detail.
+        let detail = format!(
+            "Failed to start capture: Stream error: Failed due to an invalid parameter on {}",
+            describe_target(&target)
+        );
+        assert!(detail.chars().count() <= 200);
     }
 
     /// Whatever the file says, a fresh lens has not been consented to: that

@@ -369,7 +369,12 @@ struct Shared {
     in_flight: AtomicUsize,
     /// Our own `stop()`, so the delegate does not try to recover from it.
     intentional: AtomicBool,
-    retried: AtomicBool,
+    /// One stop reaches the delegate twice — `did_stop_with_error` and
+    /// `stream_did_stop`, in the same second (field, 2026-09-20: two
+    /// `lens-stream-lost` lines and two restart threads for one click). The
+    /// first callback through owns the recovery; a dead stream never recovers
+    /// twice, and a rebuild brings a fresh `Shared` with a fresh flag.
+    recovered: AtomicBool,
 }
 
 /// One `SCStream` on one target.
@@ -402,7 +407,7 @@ impl Capture {
             recognizing: AtomicBool::new(false),
             in_flight: AtomicUsize::new(0),
             intentional: AtomicBool::new(false),
-            retried: AtomicBool::new(false),
+            recovered: AtomicBool::new(false),
         });
         let (on_stop, on_error) = (shared.clone(), shared.clone());
         let delegate = StreamCallbacks::new()
@@ -692,10 +697,15 @@ fn configuration(target: &Target, filter: Filter, display: Rect) -> SCStreamConf
     configuration
 }
 
-/// The stream stopped without us asking. A revoked Screen Recording grant is
-/// terminal; anything else is worth exactly one rebuild.
+/// The stream stopped without us asking. A revoked Screen Recording grant and
+/// a user stop are terminal; anything else is worth exactly one rebuild.
 fn recover(shared: &Arc<Shared>, reason: Option<String>) {
     if shared.intentional.load(Ordering::Acquire) {
+        return;
+    }
+    // Both delegate callbacks describe the same stop. Dedupe here, before the
+    // thread, or one stop schedules two restarts.
+    if shared.recovered.swap(true, Ordering::AcqRel) {
         return;
     }
     let shared = shared.clone();
@@ -708,7 +718,17 @@ fn recover(shared: &Arc<Shared>, reason: Option<String>) {
             return;
         }
         let reason = reason.unwrap_or_default();
-        if shared.retried.swap(true, Ordering::AcqRel) || !rebuild_allowed() {
+        // The user clicked stop in the macOS screen-sharing indicator. That is
+        // not a loss: rebuilding on the spot would put the indicator straight
+        // back, and a backoff restart would do it a few seconds later. Neither
+        // happens — the next `lens-start` from a NEW reader is what starts
+        // capture again, and a reader still waiting is told the source is off.
+        if user_stopped(&reason) {
+            shared.lens.diag("lens-stream-stopped", "user-stopped");
+            shared.lens.stop(Some("user-stopped"));
+            return;
+        }
+        if !rebuild_allowed() {
             // Not on the spot, then: `stream_lost` comes back on a backoff.
             shared
                 .lens
@@ -728,6 +748,20 @@ fn recover(shared: &Arc<Shared>, reason: Option<String>) {
                 .stream_lost(error.as_deref().unwrap_or("no target to rebuild on")),
         }
     });
+}
+
+/// The stop macOS reports when the user clicks stop in the screen-sharing
+/// indicator. Neither delegate callback hands `recover` the code itself —
+/// `stream_did_stop` passes the `NSError`'s description ("The user stopped the
+/// stream") and `did_stop_with_error` an `SCError` whose `Display` carries
+/// `SCStreamErrorCode::UserStopped` ("User stopped the stream") — so the phrase
+/// both spell is what names it. `SystemStoppedStream` reads "System stopped the
+/// stream" and is deliberately NOT this: the system taking the stream away is a
+/// loss worth restarting.
+fn user_stopped(reason: &str) -> bool {
+    reason
+        .to_ascii_lowercase()
+        .contains("user stopped the stream")
 }
 
 // ponytail: one process runs one stream, so one clock bounds the rebuild loop.
@@ -1110,6 +1144,24 @@ mod tests {
                 scale,
             },
         }
+    }
+
+    /// Both delegate callbacks word the same click differently, and one of
+    /// them never hands over the code at all, so the phrase is what names it.
+    /// The system taking the stream away is a loss and must NOT match.
+    #[test]
+    fn a_user_stop_is_recognised_in_either_delegates_words() {
+        // `stream_did_stop`: the NSError's own description.
+        assert!(user_stopped("The user stopped the stream"));
+        // `did_stop_with_error`: `SCError`'s Display over `UserStopped`.
+        assert!(user_stopped(
+            "SCStream error (User stopped the stream): The user stopped the stream"
+        ));
+        assert!(!user_stopped("System stopped the stream"));
+        assert!(!user_stopped(
+            "Failed to start capture: Stream error: Failed due to an invalid parameter"
+        ));
+        assert!(!user_stopped(""));
     }
 
     #[test]

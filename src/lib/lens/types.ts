@@ -186,6 +186,11 @@ export function screenOffline(reason: string): string {
     case 'stream':
     case 'display-changed':
       return 'the screen lens lost its capture of this Mac’s screen and is bringing it back on its own: ask again in a few seconds, and if it stays off, turn the Screen lens off and on in the Mac permissions dialog';
+    // Stop in the macOS screen-sharing indicator. Deliberately NOT restarted —
+    // the app would put the indicator straight back over the user's decision
+    // (lens/capture.rs `user_stopped`) — so the next read is what brings it up.
+    case 'user-stopped':
+      return 'the user stopped screen capture from the macOS sharing indicator: the next read starts it again';
     // Stopped with nothing said, which is also what an absent reason means.
     case '':
     case 'stopped':

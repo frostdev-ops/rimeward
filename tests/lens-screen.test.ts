@@ -708,6 +708,16 @@ test('the native reasons are one vocabulary, read off the reply the app already 
   // The capture stream went down (lens/capture.rs), or its display changed.
   assert.match(screenOffline('stream'), /^the screen lens lost its capture of this Mac’s screen and is bringing it back on its own: ask again/);
   assert.equal(screenOffline('display-changed'), screenOffline('stream'));
+  // Stop in the macOS sharing indicator: never restarted (lens/capture.rs
+  // `user_stopped`), so the sentence says what does bring it back.
+  assert.equal(
+    screenOffline('user-stopped'),
+    'the user stopped screen capture from the macOS sharing indicator: the next read starts it again'
+  );
+  assert.equal(
+    nativeState({ state: 'stopped', reason: 'user-stopped', permissions: { screen: true, ax: true }, consented: true })?.offline,
+    screenOffline('user-stopped')
+  );
   assert.equal(screenOffline(''), 'the screen lens is not running on this computer');
   // A macOS error string `build_capture` handed to `stop()`: its own words, but
   // never bare — every reason the user sees is a sentence.
