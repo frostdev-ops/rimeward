@@ -19,12 +19,15 @@ import { screenOffline } from './types.ts';
 import type { Line, MetaField, Rect } from './types.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { nativeDesktop } from '../dev/remote.ts';
+import { screenDemand } from './runtime.ts';
 
 /** How long a captured frame stays addressable by `ref` (BlackIce scene.ts). */
 export const FRAME_TTL_MS = 60_000;
 const SNAPSHOT_DEADLINE_MS = 2_000;
 const FRAME_DEADLINE_MS = 5_000;
-const OCR_DEADLINE_MS = 8_000;
+/** An accurate re-read of a whole 2x window measured 26 s on macOS 27 (Vision
+ *  fast: 50 ms), so the caller who asked for accuracy waits for it. */
+const OCR_DEADLINE_MS = 30_000;
 const DESCRIBE_DEADLINE_MS = 8_000;
 /** `lens_look {frame: true}` returns the window, not a crop of it. */
 const LOOK_MAX_PX = 1024;
@@ -33,6 +36,7 @@ type Desktop = (op: string, value?: unknown, deadlineMs?: number) => Promise<unk
 
 export interface ScreenDeps {
   desktop: Desktop;
+  demand?(active: boolean): Promise<void>;
   /** Install a handler for the pushed signals; the return detaches it. */
   attach(fn: (signal: Record<string, unknown>) => void): () => void;
   now?: () => number;
@@ -150,7 +154,7 @@ export function nativeState(
   const state = str(body.state, 'stopped');
   const screen = permissions.screen === true;
   const reason =
-    state !== 'stopped'
+    state !== 'stopped' || body.reason === 'idle'
       ? null
       : str(body.reason) || (body.consented === false ? 'not-consented' : screen ? 'stopped' : 'permission');
   return { state, screen, ax: permissions.ax === true, offline: reason === null ? null : screenOffline(reason) };
@@ -278,7 +282,7 @@ export function screenSource(deps: ScreenDeps): Source {
       // document, so it is read ahead of the guard below: a lens that stopped
       // (or came back) while its last signal belonged to another window would
       // otherwise be filtered out and the core would report the opposite.
-      setOffline(str(body.state) === 'stopped' ? screenOffline(str(body.reason, 'stopped')) : null);
+      setOffline(str(body.state) === 'stopped' && body.reason !== 'idle' ? screenOffline(str(body.reason, 'stopped')) : null);
       return;
     }
     // Everything else from another epoch describes a window nobody is looking at.
@@ -481,6 +485,25 @@ export function screenSource(deps: ScreenDeps): Source {
   };
 
   return {
+    ...(deps.demand ? { demand: async (active: boolean): Promise<void> => {
+      if (!active) return deps.demand!(false);
+      // Starting ScreenCaptureKit precedes its first frame. Subscribe before
+      // starting so a quick reader cannot mistake yesterday's text for now.
+      let finish!: () => void;
+      const frame = new Promise<void>((resolve) => { finish = resolve; });
+      const off = deps.attach((signal) => { if (signal.kind === 'frame') finish(); });
+      const timer = setTimeout(finish, SNAPSHOT_DEADLINE_MS);
+      try {
+        await deps.demand!(true);
+        if (await check()) {
+          await frame;
+          if (feed) await resync();
+        }
+      } finally {
+        clearTimeout(timer);
+        off();
+      }
+    } } : {}),
     keyframeOn: ['app', 'window', 'sheet', 'covered'],
     ruleKeys: ['focus'],
 
@@ -492,8 +515,8 @@ export function screenSource(deps: ScreenDeps): Source {
       // The status read is what says the lens is not reading, so `ready()` has
       // to wait for it: a look that answered first would describe a document
       // nothing has written to, which reads exactly like a live, empty screen.
-      // The snapshot after it is a repaint and can land on its own.
-      if (await check()) void resync();
+      // Its snapshot is the repaint a newly started reader needs too.
+      if (await check()) await resync();
       return () => {
         detach?.();
         detach = null;
@@ -673,5 +696,5 @@ export async function describe(
 // lens tools say "open this in the desktop app" rather than answer from a core
 // that can never read anything.
 if (isDesktop()) {
-  SOURCES.screen = (): Source => screenSource({ desktop: native, attach: subscribeSignals });
+  SOURCES.screen = (): Source => screenSource({ desktop: native, attach: subscribeSignals, demand: screenDemand });
 }

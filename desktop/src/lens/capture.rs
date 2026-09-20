@@ -498,15 +498,35 @@ impl Capture {
             // The last reference to the stream frees the handler closure. A
             // sample handler that is still running lives *inside* that
             // closure, so dropping here without waiting segfaults on
-            // ScreenCaptureKit's own queue (measured: every run of M1's probe).
-            for _ in 0..200 {
+            // ScreenCaptureKit's own queue (measured: every run of M1's probe,
+            // and once in the field, 2026-09-19: SIGSEGV on
+            // com.screencapturekit.output.0 inside the handler after a
+            // two-second grace ran out). A handler can be held up for longer
+            // than that — Vision serialises behind a 26 s accurate read — so
+            // the wait is long, and a handler still running past it means the
+            // stream is leaked rather than freed under it. One leaked stream
+            // is a few megabytes; the alternative is the whole app.
+            for _ in 0..3000 {
                 if shared.in_flight.load(Ordering::Acquire) == 0 {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            std::thread::sleep(Duration::from_millis(100));
-            drop(stream);
+            // A sample can still be delivered after `stop_capture` has
+            // returned, and the counter above lives inside the closure that
+            // delivery runs — it cannot guard against a late one. The field
+            // crash symbolised to a channel send inside the output callback,
+            // with the two-second grace long over. Five seconds is past
+            // anything the capture queue has been seen to hold back.
+            std::thread::sleep(Duration::from_secs(5));
+            if shared.in_flight.load(Ordering::Acquire) == 0 {
+                drop(stream);
+            } else {
+                shared
+                    .lens
+                    .diag("lens-stream-leaked", "handler still running after 30 s");
+                std::mem::forget(stream);
+            }
         });
     }
 

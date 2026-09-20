@@ -363,7 +363,7 @@ test('text reads the document by source and rect, and the accurate path re-runs 
     op: 'lens-ocr',
     // The captured region of the newest frame, when the caller names none.
     value: { ref: 'f-1-10', rect: [0, 0, 656, 422], accurate: true },
-    deadlineMs: 8_000,
+    deadlineMs: 30_000,
   });
 });
 
