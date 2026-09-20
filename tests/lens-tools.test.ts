@@ -13,7 +13,7 @@ import { activeConversation } from '../src/lib/agent/conversations.ts';
 import { LOCAL_DEV_TOOLS, DEV_TOOLS } from '../src/lib/dev/tools.ts';
 import { LENS_TOOLS, LENS_TOOL_NAMES, describeTrouble, frameTrouble } from '../src/lib/lens/tools.ts';
 import { consumerOf, lensToolRun } from '../src/lib/lens/agent.ts';
-import { captionsFor } from '../src/lib/lens/captions.ts';
+import { captionsFor, screenCaptionSinks } from '../src/lib/lens/captions.ts';
 import { SOURCES, lens, releaseLens, systemClock } from '../src/lib/lens/core.ts';
 import type { Feed, LensSettings, Source } from '../src/lib/lens/core.ts';
 import { terminalSource } from '../src/lib/lens/terminal.ts';
@@ -77,7 +77,7 @@ test('an unknown source type is refused before any core is made', async () => {
   );
 });
 
-test('the screen-only tools read a screen lens, and refuse anything else by name', async (t) => {
+test('the pixel tools read a screen or a browser lens, and refuse anything else by name', async (t) => {
   const user = createUser('lens-tools-screen@example.com', 'pw-lens-tools-2');
   const source = 'screen:local';
   // A screen source that never feeds: enough for `lens()` to build a core.
@@ -89,7 +89,7 @@ test('the screen-only tools read a screen lens, and refuse anything else by name
   });
 
   const ctx = { userId: user, ward: 'agent:ag1', conv: 5 } as ToolCtx;
-  const args = { rect: [0, 0, 10, 10], id: 'x', kind: 'card', anchor: { corner: 'tl' }, on: true };
+  const args = { rect: [0, 0, 10, 10], id: 'x', kind: 'card', anchor: { corner: 'tl' }, on: false };
   // The three reads are live: with no frame ever captured there is nothing to
   // crop or describe, and the empty document has no text to page. The refusal is
   // a sentence that says what happened and what to do instead, never the app's
@@ -109,19 +109,41 @@ test('the screen-only tools read a screen lens, and refuse anything else by name
   assert.match(String(read.text), /^\[lens observation: /, 'observed text always carries the banner');
   assert.deepEqual((JSON.parse(String(read.text).split('\n')[1]!) as { lines: unknown[] }).lines, []);
 
-  // A source it could never read, screen lens or not, is refused by name.
+  // A source that has no pixels and never will is refused by name — and the
+  // refusal is the SOURCE's, not the tool's: a browser ward has pixels, so the
+  // same six tools reach it (tests/lens-browser.test.ts drives them there).
   const realTerminal = SOURCES.terminal;
+  const realBrowser = SOURCES.browser;
   SOURCES.terminal = (): Source => ({ async connect(_u: number, _t: string, _f: Feed) { return () => {}; } });
+  SOURCES.browser = (): Source => ({ async connect(_u: number, _t: string, _f: Feed) { return () => {}; } });
   t.after(() => {
     releaseLens(user, 'terminal:s1');
+    releaseLens(user, 'browser:b2');
     SOURCES.terminal = realTerminal;
+    if (realBrowser) SOURCES.browser = realBrowser; else delete SOURCES.browser;
   });
-  for (const name of ['lens_crop', 'lens_text', 'lens_describe', 'lens_captions', 'overlay_show', 'overlay_clear'] as const) {
+  const PIXEL_TOOLS = ['lens_crop', 'lens_text', 'lens_describe', 'lens_captions', 'overlay_show', 'overlay_clear'] as const;
+  for (const name of PIXEL_TOOLS) {
     await assert.rejects(
       () => lensToolRun(name, { source: 'terminal:s1', ...args }, ctx),
-      new RegExp(`^Error: ${name} reads a screen lens; terminal:s1 is not a screen source$`),
+      new RegExp(`^Error: ${name} reads a screen or browser lens; terminal:s1 is not a screen or browser source$`),
       name
     );
+    // Whatever a browser ward answers, it is never that refusal.
+    const said = await lensToolRun(name, { source: 'browser:b2', ...args }, ctx).then(
+      () => '',
+      (err: unknown) => String(err)
+    );
+    assert.doesNotMatch(said, /is not a screen or browser source/, name);
+  }
+  // Every other tool takes any source at all. (`lens_wait` parks by design, so
+  // it is read through its own test rather than made to time out here.)
+  for (const name of LENS_TOOL_NAMES.filter((n) => n !== 'lens_wait' && !PIXEL_TOOLS.includes(n as (typeof PIXEL_TOOLS)[number]))) {
+    const said = await lensToolRun(name, { source: 'terminal:s1', ...args }, ctx).then(
+      () => '',
+      (err: unknown) => String(err)
+    );
+    assert.doesNotMatch(said, /is not a screen or browser source/, name);
   }
 });
 
@@ -141,12 +163,12 @@ test('the overlay and caption tools draw through the native side, and the ward k
   captionsFor(core, {
     clock: systemClock,
     settings: () => ({ caption_from: 'en', caption_to: 'es' }),
-    desktop: async (op, value) => {
+    ...screenCaptionSinks(async (op, value) => {
       calls.push({ op, value: (value ?? {}) as Record<string, unknown> });
       const refused = refuse.get(op);
       if (refused !== undefined) throw new Error(refused);
       return op === 'overlay-show' ? { id: (value as { id: string }).id } : true;
-    },
+    }),
   });
   const ctx = { userId: user, ward: 'agent:ag1', conv: 7 } as ToolCtx;
   const of = (op: string): Record<string, unknown>[] => calls.filter((c) => c.op === op).map((c) => c.value);
@@ -533,7 +555,7 @@ test('an offline screen source answers every tool with the reason, never the sym
   // overlay_clear is the exception: stopping the lens leaves the overlay pool
   // alone, so a card drawn before consent was withdrawn is still on screen and
   // refusing here would strand it there for its whole ttl.
-  captionsFor(core, { clock: systemClock, settings: () => ({ caption_from: null, caption_to: null }), desktop: async () => true });
+  captionsFor(core, { clock: systemClock, settings: () => ({ caption_from: null, caption_to: null }), ...screenCaptionSinks(async () => true) });
   assert.equal((await run('overlay_clear')).cleared, 'all');
   // A refused `lens_captions {on:true}` stores nothing: the pair would otherwise
   // outlive a call that never drew anything.

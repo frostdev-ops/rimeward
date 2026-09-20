@@ -1,17 +1,24 @@
 // Live translation captions: the Node half of the overlay. It watches the
-// document for added text lines, batches them, asks the helper to translate each
-// batch and draws the result over the lines it came from. Lifted from BlackIce
-// `src/lens/captions.ts` with `Scene` read as a `Doc` (`scene.text` is
+// document for added text lines, batches them, asks for each batch to be
+// translated and draws the result over the lines it came from. Lifted from
+// BlackIce `src/lens/captions.ts` with `Scene` read as a `Doc` (`scene.text` is
 // `doc.lines`, `scene.latest.ref` is `doc.ref`) and the settings pair read from
 // the lens settings rows.
 //
 // Three rules shape everything here. It never blocks the gate: the `scene` and
-// `moved` listeners do their grouping synchronously and fire the native calls
-// off to the side, so a slow helper delays a caption and nothing else. It never
-// paints something the user is no longer looking at: a reply is discarded when
-// the epoch changed, the line was removed, the language pair changed or
+// `moved` listeners do their grouping synchronously and fire the side effects
+// off to the side, so a slow translator delays a caption and nothing else. It
+// never paints something the user is no longer looking at: a reply is discarded
+// when the epoch changed, the line was removed, the language pair changed or
 // captions were turned off. And it never queues work: one batch is in flight
 // and one is pending per caption window, latest wins.
+//
+// WHERE those three things happen is the deps' business, not this module's:
+// `draw`, `clear` and `translate` are functions, so the screen lens draws on
+// the native overlay above the user's screen and translates on the bundled
+// helper (`screenCaptionSinks`, below — the same three desktop ops this module
+// used to call itself), while a browser ward draws into its own page and
+// translates through whatever that machine has (lens/browser.ts).
 //
 // It also owns the two overlay ops for lens/tools.ts (`show`, `clear`): this is
 // the only Node module that draws, so the ops live in one place.
@@ -74,15 +81,48 @@ export interface CaptionPair {
   caption_to: string | null;
 }
 
+/** One thing to draw, wherever this source draws. `text` is either plain text
+ *  or the per-line JSON `{items:[{rect,text}]}` a caption batch renders as. */
+export interface DrawReq {
+  id: string;
+  kind: 'card' | 'caption' | 'highlight';
+  text: string;
+  anchor: unknown;
+  ttlMs: number;
+  epoch: number;
+}
+
+/** One batch to translate. `epoch`/`seq` are the document's, which the helper
+ *  uses to drop a reply whose window has ended; a translator with no notion of
+ *  the screen ignores them. */
+export interface TranslateReq {
+  texts: string[];
+  from: string;
+  to: string;
+  epoch: number;
+  seq: number;
+  /** The first call of a pair, which builds its session: slower, discarded. */
+  warm?: true;
+}
+
 export interface CaptionsDeps {
   core: LensCore;
-  desktop: Desktop;
+  /** The three side effects, one function each. */
+  draw(req: DrawReq): Promise<unknown>;
+  clear(id?: string): Promise<unknown>;
+  translate(req: TranslateReq): Promise<{ texts: string[] } | { error: string }>;
+  /** The language pairs this machine has installed, when it can say; absent
+   *  (or null) leaves the pair to the stored one, then English into the system
+   *  language. */
+  pairs?(): Promise<string[][] | null>;
   clock: Clock;
   settings: () => CaptionPair;
   /** Stores the pair so the next toggle reuses it. Absent in tests. */
   saveSettings?: (patch: CaptionPair) => void;
   log?: (message: string) => void;
 }
+
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 interface Ref {
   id: string;
@@ -209,7 +249,7 @@ export class Captions {
     if (!o.on) {
       this.#release?.();
       this.#release = undefined;
-      for (const id of drawn) this.#fire('overlay-clear', { id });
+      for (const id of drawn) this.#fire('clear', this.#deps.clear(id));
     }
     else {
       // Nothing reads the screen for its own sake, so captions are the reason
@@ -218,12 +258,8 @@ export class Captions {
       this.#core.connect();
       // Build the pair's session now, with room, so the first batches do not
       // all run into the deadline while the helper is still loading it.
-      this.#deps
-        .desktop(
-          'helper-translate',
-          { epoch: this.#core.doc().epoch, seq: 0, source: pair.from, target: pair.to, texts: ['ok'] },
-          WARM_DEADLINE_MS
-        )
+      void this.#deps
+        .translate({ texts: ['ok'], from: pair.from, to: pair.to, epoch: this.#core.doc().epoch, seq: 0, warm: true })
         .catch(() => {
           // The first real batch reports whatever this was.
         });
@@ -234,7 +270,8 @@ export class Captions {
 
   // ------------------------------------------------------------- overlay ops
 
-  /** `overlay_show`: the receipt is Rust's (`{id, evicted?}`). */
+  /** `overlay_show`: the receipt is the sink's (Rust's `{id, evicted?}` on a
+   *  screen, the page layer's on a browser ward). */
   async show(req: {
     id: string;
     kind: 'card' | 'caption' | 'highlight';
@@ -242,24 +279,20 @@ export class Captions {
     anchor: unknown;
     ttlS: number;
   }): Promise<unknown> {
-    return this.#deps.desktop(
-      'overlay-show',
-      {
-        id: req.id,
-        kind: req.kind,
-        text: req.text ?? '',
-        anchor: req.anchor,
-        ttlMs: req.ttlS * 1000,
-        epoch: this.#core.doc().epoch,
-      },
-      OVERLAY_DEADLINE_MS
-    );
+    return this.#deps.draw({
+      id: req.id,
+      kind: req.kind,
+      text: req.text ?? '',
+      anchor: req.anchor,
+      ttlMs: req.ttlS * 1000,
+      epoch: this.#core.doc().epoch,
+    });
   }
 
   async clear(id?: string): Promise<unknown> {
     if (id !== undefined) this.#drawn.delete(id);
     else this.#drawn.clear();
-    return this.#deps.desktop('overlay-clear', id === undefined ? {} : { id }, OVERLAY_DEADLINE_MS);
+    return this.#deps.clear(id);
   }
 
   // ----------------------------------------------------------------- batching
@@ -372,12 +405,18 @@ export class Captions {
     const wanted = job.lines.map((line) => line.key);
     const missing = [...new Set(wanted)].filter((key) => this.#get(this.#key(key, job)) === undefined);
     if (missing.length > 0) {
-      const reply = (await this.#deps.desktop(
-        'helper-translate',
-        { epoch: job.epoch, seq: job.seq, source: job.from, target: job.to, texts: missing },
-        TRANSLATE_DEADLINE_MS
-      )) as { texts?: unknown } | null;
-      const out = reply?.texts;
+      // A refusal comes back as a value rather than a throw, so every
+      // translator reports the same way; from here on it is the throw `#fail`
+      // reads, exactly as the helper's rejection always was.
+      const reply = await this.#deps.translate({
+        texts: missing,
+        from: job.from,
+        to: job.to,
+        epoch: job.epoch,
+        seq: job.seq,
+      });
+      if ('error' in reply) throw new Error(reply.error);
+      const out = reply.texts;
       if (!Array.isArray(out)) throw new Error('bad-reply');
       for (const [index, key] of missing.entries()) {
         const text = out[index];
@@ -407,18 +446,14 @@ export class Captions {
       kept.push(text);
     }
     if (items.length === 0) return;
-    await this.#deps.desktop(
-      'overlay-show',
-      {
-        id: job.id,
-        kind: 'caption',
-        anchor: { rect: union(items.map((item) => item.rect)), ref },
-        text: JSON.stringify({ items }),
-        ttlMs: CAPTION_TTL_S * 1000,
-        epoch: job.epoch,
-      },
-      OVERLAY_DEADLINE_MS
-    );
+    await this.#deps.draw({
+      id: job.id,
+      kind: 'caption',
+      anchor: { rect: union(items.map((item) => item.rect)), ref },
+      text: JSON.stringify({ items }),
+      ttlMs: CAPTION_TTL_S * 1000,
+      epoch: job.epoch,
+    });
     this.#drawn.set(job.id, { epoch: job.epoch, from: job.from, to: job.to, lines, texts: kept });
     if (job.texts !== undefined) return; // a redraw is not a batch
     this.#batches += 1;
@@ -430,28 +465,25 @@ export class Captions {
   }
 
   #fail(err: unknown, job: Job): void {
-    const message = err instanceof Error ? err.message : String(err);
+    const said = message(err);
     const attempt = job.attempt ?? 0;
-    if (TRANSIENT.has(message) && attempt < RETRY_MAX && !this.#stale(job)) {
-      this.#deps.log?.(`captions: ${message}, retry ${attempt + 1} of ${RETRY_MAX}`);
+    if (TRANSIENT.has(said) && attempt < RETRY_MAX && !this.#stale(job)) {
+      this.#deps.log?.(`captions: ${said}, retry ${attempt + 1} of ${RETRY_MAX}`);
       this.#clock.setTimeout(() => {
         if (!this.#stale(job)) this.#submit({ ...job, attempt: attempt + 1 });
       }, RETRY_MS * 2 ** attempt);
       return;
     }
     // The pair is what the user has to install, so it belongs in the message.
-    this.#error =
-      message === 'not-installed' || message === 'unavailable'
-        ? `${message} ${job.from}->${job.to}`
-        : message;
+    this.#error = said === 'not-installed' || said === 'unavailable' ? `${said} ${job.from}->${job.to}` : said;
     this.#deps.log?.(`captions: ${this.#error}`);
   }
 
-  /** An op whose reply nobody waits for. A rejection is logged, never thrown:
-   *  an unhandled one would take the runtime down. */
-  #fire(op: string, value: unknown): void {
-    this.#deps.desktop(op, value, OVERLAY_DEADLINE_MS).catch((err: unknown) => {
-      this.#deps.log?.(`captions: ${op} failed: ${err instanceof Error ? err.message : String(err)}`);
+  /** A side effect whose reply nobody waits for. A rejection is logged, never
+   *  thrown: an unhandled one would take the runtime down. */
+  #fire(what: string, run: Promise<unknown>): void {
+    run.catch((err: unknown) => {
+      this.#deps.log?.(`captions: ${what} failed: ${message(err)}`);
     });
   }
 
@@ -475,13 +507,9 @@ export class Captions {
     if (!this.#asked) {
       this.#asked = true;
       try {
-        const reply = (await this.#deps.desktop('helper-capabilities', {}, TRANSLATE_DEADLINE_MS)) as {
-          translation?: unknown;
-        } | null;
-        const pairs = reply?.translation;
-        if (Array.isArray(pairs)) this.#pairs = pairs.filter((p): p is string[] => Array.isArray(p));
+        this.#pairs = (await this.#deps.pairs?.()) ?? null;
       } catch {
-        this.#pairs = null; // no helper: the defaults answer
+        this.#pairs = null; // nothing to ask: the defaults answer
       }
     }
     const first = this.#pairs?.[0];
@@ -570,10 +598,42 @@ export function systemLanguage(): string {
   }
 }
 
+// ---------------------------------------------------------- the screen sinks
+
+/** The screen lens's three side effects: the desktop ops this module used to
+ *  call itself, byte for byte. `desktop` is a seam for the tests alone. */
+export function screenCaptionSinks(
+  desktop: Desktop = (op, value, deadlineMs) => nativeDesktop(op, value, deadlineMs)
+): Pick<CaptionsDeps, 'draw' | 'clear' | 'translate' | 'pairs'> {
+  return {
+    draw: (req) => desktop('overlay-show', req, OVERLAY_DEADLINE_MS),
+    clear: (id) => desktop('overlay-clear', id === undefined ? {} : { id }, OVERLAY_DEADLINE_MS),
+    translate: async (req) => {
+      try {
+        const reply = (await desktop(
+          'helper-translate',
+          { epoch: req.epoch, seq: req.seq, source: req.from, target: req.to, texts: req.texts },
+          req.warm === true ? WARM_DEADLINE_MS : TRANSLATE_DEADLINE_MS
+        )) as { texts?: unknown } | null;
+        return Array.isArray(reply?.texts) ? { texts: reply.texts as string[] } : { error: 'bad-reply' };
+      } catch (err) {
+        return { error: message(err) };
+      }
+    },
+    pairs: async () => {
+      const reply = (await desktop('helper-capabilities', {}, TRANSLATE_DEADLINE_MS)) as { translation?: unknown } | null;
+      const pairs = reply?.translation;
+      return Array.isArray(pairs) ? pairs.filter((p): p is string[] => Array.isArray(p)) : null;
+    },
+  };
+}
+
 // ------------------------------------------------------------- the instance
 
-/** One `Captions` per core — one screen per process (plan D5), so this holds
- *  nothing about a turn. Tests seed the map by passing their own deps first. */
+/** One `Captions` per core — a core is one source, so the sinks a caller passes
+ *  are that source's. Whoever gets here first builds it: the screen's ward
+ *  route and the tools pass none and get the screen sinks; lens/tools.ts passes
+ *  a browser ward's. Tests seed the map by passing their own deps first. */
 const INSTANCES = new WeakMap<LensCore, Captions>();
 
 export function captionsFor(core: LensCore, deps?: Partial<CaptionsDeps>): Captions {
@@ -581,7 +641,7 @@ export function captionsFor(core: LensCore, deps?: Partial<CaptionsDeps>): Capti
   if (!captions) {
     captions = new Captions({
       core,
-      desktop: (op, value, deadlineMs) => nativeDesktop(op, value, deadlineMs),
+      ...screenCaptionSinks(),
       clock: systemClock,
       settings: lensSettings,
       saveSettings: (patch) => void setLensSettings({ ...patch }),

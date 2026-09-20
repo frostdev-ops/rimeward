@@ -2,7 +2,10 @@ import './_setup.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeClock } from './fake-clock.ts';
-import { Captions, RETRY_MS, captionsFor, systemLanguage } from '../src/lib/lens/captions.ts';
+import { Captions, RETRY_MS, captionsFor, screenCaptionSinks, systemLanguage } from '../src/lib/lens/captions.ts';
+import type { DrawReq, TranslateReq } from '../src/lib/lens/captions.ts';
+import { browserSource } from '../src/lib/lens/browser.ts';
+import type { PageRead } from '../src/lib/lens/browser.ts';
 import { LensCore } from '../src/lib/lens/core.ts';
 import type { LensSettings } from '../src/lib/lens/core.ts';
 import { screenSource } from '../src/lib/lens/screen.ts';
@@ -102,8 +105,10 @@ function harness(
     store: { ...sqliteStore(user, 'screen:local', () => clock.now()), loadConsumers: () => [] },
     settings: (): LensSettings => ({ settleMs: 750, minLines: 1 }),
   });
+  // The deps boundary: the screen's three sinks are the three desktop ops, so
+  // this fake desktop is still what every assertion below reads.
   const captions = captionsFor(core, {
-    desktop,
+    ...screenCaptionSinks(desktop),
     clock,
     settings: () => ({ caption_from: null, caption_to: null, ...over.settings }),
   });
@@ -444,4 +449,115 @@ test('stats report the batches and how long each one took to be drawn', async ()
   await h.tick();
 
   assert.deepEqual(h.captions.stats(), { batches: 2, p50Ms: 0, p95Ms: 300 });
+});
+
+// ----------------------------------------------------------- another source
+
+/** The same `Captions` over a browser ward: the class knows nothing about a
+ *  desktop op any more, so a page draws and translates through plain functions
+ *  and every rule above (batching, discarding, the reported error) still holds. */
+function browserHarness(over: { answer?: () => { texts: string[] } | { error: string } } = {}): {
+  captions: Captions;
+  clock: FakeClock;
+  drawn: DrawReq[];
+  cleared: (string | undefined)[];
+  asked: TranslateReq[];
+  show(nodes: [string, number][]): void;
+  tick(): Promise<void>;
+} {
+  const clock = new FakeClock(START);
+  const drawn: DrawReq[] = [];
+  const cleared: (string | undefined)[] = [];
+  const asked: TranslateReq[] = [];
+  let nodes: PageRead['nodes'] = [];
+  let fresh = true;
+  let dirty = true;
+  const user = createUser(`lens-captions-browser-${++users}@example.com`, 'pw-lens-captions-1');
+  const core = new LensCore({
+    user,
+    target: 'br1',
+    source: browserSource({
+      clock,
+      every: 250,
+      read: async (): Promise<PageRead | null> => {
+        if (!fresh && !dirty) return null;
+        const read: PageRead = { url: 'https://pages.test/one', title: 'One', fresh, nodes: [...nodes], changed: [] };
+        fresh = false;
+        dirty = false;
+        return read;
+      },
+    }),
+    clock,
+    store: { ...sqliteStore(user, 'browser:br1', () => clock.now()), loadConsumers: () => [] },
+    settings: (): LensSettings => ({ settleMs: 750, minLines: 1 }),
+  });
+  const captions = captionsFor(core, {
+    clock,
+    settings: () => ({ caption_from: 'en', caption_to: 'es' }),
+    draw: async (req) => {
+      drawn.push(req);
+      return { id: req.id };
+    },
+    clear: async (id) => {
+      cleared.push(id);
+      return true;
+    },
+    translate: async (req) => {
+      asked.push(req);
+      return over.answer ? over.answer() : { texts: req.texts.map((t) => `->${t}`) };
+    },
+  });
+  return {
+    captions,
+    clock,
+    drawn,
+    cleared,
+    asked,
+    show(next): void {
+      nodes = next.map(([text, y]) => ({ text, rect: [0, y, 600, 24] }));
+      dirty = true;
+    },
+    async tick(): Promise<void> {
+      clock.advance(250);
+      for (let n = 0; n < 4; n++) await new Promise((resolve) => setImmediate(resolve));
+    },
+  };
+}
+
+test('a browser ward captions through its own sinks, and nothing here is a desktop op', async () => {
+  const h = browserHarness();
+  h.show([['hola', 40], ['adios', 64]]);
+  assert.deepEqual(await h.captions.set({ on: true }), { on: true, from: 'en', to: 'es', state: 'on' });
+  assert.equal(h.asked[0]?.warm, true, 'the pair is warmed first, whatever translates it');
+  await h.tick();
+
+  assert.deepEqual(h.asked[1]?.texts, ['hola', 'adios']);
+  assert.equal(h.asked[1]?.from, 'en');
+  assert.equal(h.drawn.length, 1);
+  assert.equal(h.drawn[0]?.kind, 'caption');
+  assert.equal(h.drawn[0]?.id, 'cap-0');
+  assert.deepEqual(h.drawn[0]?.anchor, { rect: [0, 40, 600, 48], ref: 'https://pages.test/one#1' }, 'the union of the lines, pinned to the read they came from');
+  assert.deepEqual(JSON.parse(String(h.drawn[0]?.text)).items, [
+    { rect: [0, 40, 600, 24], text: '->hola' },
+    { rect: [0, 64, 600, 24], text: '->adios' },
+  ]);
+
+  // Turning them off takes down what was drawn, through the same sink.
+  await h.captions.set({ on: false });
+  assert.deepEqual(h.cleared, ['cap-0']);
+});
+
+test('a translator that refuses answers with a value, and the state says what it said', async () => {
+  const h = browserHarness({ answer: () => ({ error: 'not-installed' }) });
+  h.show([['hola', 40]]);
+  await h.captions.set({ on: true });
+  await h.tick();
+  assert.deepEqual(h.drawn, [], 'nothing is drawn from a refusal');
+  assert.deepEqual(h.captions.state(), {
+    on: true,
+    from: 'en',
+    to: 'es',
+    state: 'unavailable',
+    error: 'not-installed en->es',
+  });
 });

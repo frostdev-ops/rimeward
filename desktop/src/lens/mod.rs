@@ -781,6 +781,25 @@ impl Lens {
     ) -> Result<Value, String> {
         use base64::Engine as _;
         let helper = self.need_helper()?;
+        // A caller whose pixels the app never captured — a browser lens, whose
+        // page is not this Mac's screen — hands them over instead of a `ref`.
+        // Nothing of the screen is involved, so no frame is cropped and no
+        // epoch governs the reply: the receipt is the answer alone.
+        if let Some(jpeg) = value["jpeg"].as_str() {
+            if jpeg.len() > FRAME_CAP {
+                return Err("too-large".into());
+            }
+            let mut payload = json!({ "jpeg": jpeg });
+            for field in ["prompt", "schema"] {
+                if !value[field].is_null() {
+                    payload[field] = value[field].clone();
+                }
+            }
+            let answer = helper
+                .call(&op["helper-".len()..], payload, by(deadline), None)
+                .await?;
+            return Ok(json!({ "value": answer }));
+        }
         let frame_ref = value["ref"].as_str().ok_or("frame-evicted")?;
         let rect = match &value["rect"] {
             Value::Null => None,

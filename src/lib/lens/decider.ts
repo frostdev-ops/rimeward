@@ -144,9 +144,12 @@ export function cloudDecider(user: number, ward: AgentWardConfig): Decider {
 }
 
 /** The agent ward whose owner turned cloud triage on, if any. Any such ward
- *  speaks for the user: the switch is consent to send screen text to that
- *  ward's provider, and the first one that has it is the one asked. */
-function cloudWard(user: number): AgentWardConfig | null {
+ *  speaks for the user: the switch is consent to send observed text to that
+ *  ward's provider, and the first one that has it is the one asked. It is the
+ *  same consent wherever a lens needs a model off the device — the browser
+ *  lens's translation (lens/browser.ts) reads it too, rather than inventing a
+ *  second switch for the same sentence leaving the machine. */
+export function cloudWard(user: number): AgentWardConfig | null {
   try {
     for (const ward of getDashboard(user)) {
       if (ward.type !== 'agent' || (ward.config as { lensCloudTriage?: unknown })?.lensCloudTriage !== true) continue;

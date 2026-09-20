@@ -1123,6 +1123,31 @@ mod tests {
         helper.shutdown().await;
     }
 
+    /// The other input `helper-describe` takes: a caller's own pixels, with no
+    /// frame of the screen anywhere in it.
+    #[tokio::test]
+    async fn describe_takes_a_jpeg_in_place_of_a_frame_ref() {
+        let Some((lens, helper, _rx)) = ready(quick()).await else {
+            return;
+        };
+        *lens.helper.lock().unwrap() = Some(helper.clone());
+        let reply = lens
+            .desktop_request(
+                "helper-describe",
+                &json!({ "jpeg": "AAAA", "prompt": "what is this" }),
+                Some(deadline(5_000)),
+            )
+            .await
+            .unwrap();
+        // The fake echoes the payload back, so this is what crossed.
+        let sent = &reply["value"];
+        assert_eq!(sent["jpeg"], "AAAA");
+        assert_eq!(sent["prompt"], "what is this");
+        assert!(sent["ref"].is_null(), "no frame was named");
+        assert!(reply["ref"].is_null(), "and none is reported");
+        helper.shutdown().await;
+    }
+
     #[test]
     fn the_respawn_rules_are_a_table() {
         let limits = Thresholds::default();
