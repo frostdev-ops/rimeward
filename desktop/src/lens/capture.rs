@@ -645,20 +645,29 @@ fn recover(shared: &Arc<Shared>, reason: Option<String>) {
     // stream, which is what is calling us.
     std::thread::spawn(move || {
         if !crate::permissions::preflight().0 {
+            shared.lens.diag("lens-stream-stopped", "permission");
             shared.lens.stop(Some("permission"));
             return;
         }
+        let reason = reason.unwrap_or_default();
         if shared.retried.swap(true, Ordering::AcqRel) || !rebuild_allowed() {
-            eprintln!("lens: stream stopped ({reason:?}), not rebuilding");
-            shared.lens.stop(Some("stream"));
+            // Not on the spot, then: `stream_lost` comes back on a backoff.
+            shared
+                .lens
+                .stream_lost(&format!("{reason} (not rebuilt on the spot)"));
             return;
         }
+        shared.lens.diag("lens-stream-stopped", &reason);
         let target = shared.lens.target.read().unwrap().clone();
-        let rebuilt = target
-            .as_ref()
-            .is_some_and(|target| shared.lens.build_capture(target).is_ok());
-        if !rebuilt {
-            shared.lens.stop(Some("stream"));
+        let rebuilt = match target.as_ref() {
+            Some(target) => shared.lens.build_capture(target).map_err(Some),
+            None => Err(None),
+        };
+        match rebuilt {
+            Ok(()) => shared.lens.diag("lens-stream-rebuilt", ""),
+            Err(error) => shared
+                .lens
+                .stream_lost(error.as_deref().unwrap_or("no target to rebuild on")),
         }
     });
 }
@@ -697,6 +706,8 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
         return;
     };
     counters.complete.fetch_add(1, Ordering::Relaxed);
+    // A frame is proof the capture works: the restart backoff starts over.
+    lens.retry.store(0, Ordering::Relaxed);
     // The stamp is taken before any recognition, so everything this frame
     // produces carries the epoch the frame was captured in.
     let stamp = lens.bridge.stamp();

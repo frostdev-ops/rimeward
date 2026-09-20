@@ -629,8 +629,8 @@ test('the native reasons are one vocabulary, read off the reply the app already 
   // A runtime with no lens to ask at all answers the same way.
   assert.equal(screenOffline('unavailable'), 'this computer’s lens cannot run here');
   // The capture stream went down (lens/capture.rs), or its display changed.
-  assert.equal(screenOffline('stream'), 'the screen lens lost its capture of this Mac’s screen');
-  assert.equal(screenOffline('display-changed'), 'the screen lens lost its capture of this Mac’s screen');
+  assert.match(screenOffline('stream'), /^the screen lens lost its capture of this Mac’s screen and is bringing it back on its own: ask again/);
+  assert.equal(screenOffline('display-changed'), screenOffline('stream'));
   assert.equal(screenOffline(''), 'the screen lens is not running on this computer');
   // A macOS error string `build_capture` handed to `stop()`: its own words, but
   // never bare — every reason the user sees is a sentence.

@@ -516,7 +516,7 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     }
 }
 // Only fixed categories reach this rotating owner-only file; never raw stderr.
-fn runtime_diagnostic(file: &std::path::Path, category: &str) {
+pub(crate) fn runtime_diagnostic(file: &std::path::Path, category: &str) {
     use std::io::Write;
     if std::fs::metadata(file).is_ok_and(|m| m.len() > 65536) {
         let previous = file.with_extension("previous.jsonl");

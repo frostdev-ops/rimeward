@@ -171,6 +171,8 @@ export function screenOffline(reason: string): string {
   switch (reason) {
     case 'not-consented':
       return 'the Screen lens is turned off for this Mac';
+    case 'paused':
+      return 'the Screen lens is paused on this Mac';
     case 'permission':
       return 'macOS has not granted Screen Recording to Rimeward';
     // `unsupported` is the off-macOS stub; `unavailable` is a runtime with no
@@ -178,11 +180,12 @@ export function screenOffline(reason: string): string {
     case 'unsupported':
     case 'unavailable':
       return 'this computer’s lens cannot run here';
-    // The capture stream went down and could not be rebuilt (lens/capture.rs),
-    // or the display it was running on changed under it.
+    // The capture stream went down and could not be rebuilt on the spot
+    // (lens/capture.rs), or the display it was running on changed under it.
+    // The app restarts it on a backoff for as long as consent stands.
     case 'stream':
     case 'display-changed':
-      return 'the screen lens lost its capture of this Mac’s screen';
+      return 'the screen lens lost its capture of this Mac’s screen and is bringing it back on its own: ask again in a few seconds, and if it stays off, turn the Screen lens off and on in the Mac permissions dialog';
     // Stopped with nothing said, which is also what an absent reason means.
     case '':
     case 'stopped':

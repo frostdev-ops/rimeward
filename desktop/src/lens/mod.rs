@@ -22,7 +22,7 @@ use ring::Ring;
 use serde_json::{json, Value};
 use signals::Signals;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::mpsc;
 
@@ -208,6 +208,23 @@ pub struct Lens {
     overlay: Mutex<Option<Arc<overlay::Overlay>>>,
     capture: Mutex<Option<Capture>>,
     signals: Mutex<Option<Signals>>,
+    /// `<data>/runtime-diagnostics.jsonl`, the file the app already keeps for
+    /// its own start-up trouble. The lens writes its stream events there —
+    /// categories only, never content — because a GUI app's stderr reaches
+    /// nobody, and the first stream loss in the field could not be explained.
+    diagnostics: Option<std::path::PathBuf>,
+    /// Restarts attempted since the last complete frame: what [`Lens::stream_lost`]
+    /// backs off on.
+    retry: AtomicU32,
+}
+
+/// How long [`Lens::stream_lost`] waits before restart attempt `attempt`
+/// (0-based): 5 s doubling to a minute, then every minute for as long as the
+/// user's consent stands. A display that sleeps, a lock screen, a display
+/// change or a wedged capture daemon all pass; a lens that gave up after one
+/// rebuild stayed dark for hours (2026-09-19).
+pub fn retry_delay(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_secs((5u64 << attempt.min(4)).min(60))
 }
 
 impl Lens {
@@ -222,7 +239,10 @@ impl Lens {
         writer: mpsc::UnboundedSender<String>,
         layout: Option<crate::runtime::Layout>,
     ) -> Arc<Lens> {
-        let lens = Lens::new(read_config(data_dir), writer);
+        let mut lens = Lens::new(read_config(data_dir), writer);
+        if let Some(inner) = Arc::get_mut(&mut lens) {
+            inner.diagnostics = Some(data_dir.join("runtime-diagnostics.jsonl"));
+        }
         // The first Vision request in a process loads the recognition assets:
         // 23 to 34 s once during the research, 130 ms on the M1 build.
         std::thread::spawn(|| {
@@ -291,7 +311,59 @@ impl Lens {
             overlay: Mutex::new(None),
             capture: Mutex::new(None),
             signals: Mutex::new(None),
+            diagnostics: None,
+            retry: AtomicU32::new(0),
         })
+    }
+
+    /// One line in the app's diagnostics file: a category, never content.
+    /// The detail is cut to one short line so a system error's prose cannot
+    /// carry anything past it.
+    pub fn diag(&self, category: &str, detail: &str) {
+        let detail: String = detail
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(120)
+            .collect();
+        let line = if detail.is_empty() {
+            category.to_owned()
+        } else {
+            format!("{category}:{detail}")
+        };
+        eprintln!("lens: {line}");
+        if let Some(file) = &self.diagnostics {
+            crate::runtime::runtime_diagnostic(file, &line);
+        }
+    }
+
+    /// The capture went away without the user asking — the stream stopped and
+    /// could not be rebuilt on the spot, or a build failed outright. Stops
+    /// with reason `stream` and schedules a restart on a backoff, for as long
+    /// as consent stands and nothing else has claimed the lens since (a reader
+    /// leaving marks it `idle`, the user `not-consented` or `paused`; those
+    /// are not retried, the next `lens-start` is theirs).
+    pub fn stream_lost(self: &Arc<Self>, detail: &str) {
+        self.diag("lens-stream-lost", detail);
+        self.stop(Some("stream"));
+        let attempt = self.retry.fetch_add(1, Ordering::AcqRel);
+        let lens = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(retry_delay(attempt));
+            let still = {
+                let state = lens.state.lock().unwrap();
+                state.run == Run::Stopped && state.reason.as_deref() == Some("stream")
+            };
+            if !still || !lens.consented.load(Ordering::Acquire) {
+                return;
+            }
+            match lens.start() {
+                Ok(()) => lens.diag("lens-restarted", &format!("attempt {}", attempt + 1)),
+                // A capture failure inside `start` has already scheduled the
+                // next attempt; anything else is a grant, which `lens-start`
+                // and `status_changed` own.
+                Err(error) => lens.diag("lens-restart-failed", &error),
+            }
+        });
     }
 
     fn set_state(&self, run: Run, reason: Option<&str>) {
@@ -342,7 +414,13 @@ impl Lens {
         let target = self.target.read().unwrap().clone();
         if self.capture.lock().unwrap().is_none() {
             if let Some(target) = target {
-                self.build_capture(&target)?;
+                if let Err(error) = self.build_capture(&target) {
+                    // Left as it was, the state read `running` with nothing
+                    // capturing, and every later `lens-start` saw a live lens
+                    // and returned early: dark for good.
+                    self.stream_lost(&error);
+                    return Err("stream".into());
+                }
             }
         }
         Ok(())
@@ -360,6 +438,7 @@ impl Lens {
     }
 
     pub fn stop(&self, reason: Option<&str>) {
+        self.set_state(Run::Stopped, reason);
         if let Some(capture) = self.capture.lock().unwrap().take() {
             capture.stop();
         }
@@ -367,7 +446,10 @@ impl Lens {
             signals.stop();
         }
         self.ring.clear();
-        self.set_state(Run::Stopped, reason);
+        // A later reader must start a fresh epoch, even in the same window:
+        // its contents may have changed while nobody was observing it.
+        *self.target.write().unwrap() = None;
+        *self.known.write().unwrap() = Known::default();
     }
 
     /// The stream stays built; frames are dropped. Resuming costs nothing.
@@ -442,7 +524,7 @@ impl Lens {
             .is_some_and(|capture| capture.retarget(&target).is_ok());
         if !reconfigured {
             if let Err(error) = self.build_capture(&target) {
-                self.stop(Some(&error));
+                self.stream_lost(&error);
             }
         }
     }
@@ -502,6 +584,7 @@ impl Lens {
         let model = &caps["model"];
         json!({
             "state": state.run.name(),
+            "reason": state.reason,
             "epoch": self.bridge.epoch(),
             "seq": self.bridge.last_seq(),
             "target": target,
@@ -802,12 +885,25 @@ pub async fn desktop_request(
         "lens-start" => {
             let consented = value["consented"] == true;
             lens.consented.store(consented, Ordering::Release);
-            if consented {
+            if consented && value["active"] != false && value["paused"] != true {
                 lens.start()?;
             } else {
-                // Consent withdrawn: the stream goes down with it, rather
-                // than waiting for the app to quit.
-                lens.stop(Some("not-consented"));
+                // Tear down ScreenCaptureKit itself, including its macOS
+                // sharing indicator. Dropping frames leaves that stream open.
+                let reason = if !consented {
+                    "not-consented"
+                } else if value["paused"] == true {
+                    "paused"
+                } else {
+                    "idle"
+                };
+                let stopped = {
+                    let state = lens.state.lock().unwrap();
+                    state.run == Run::Stopped && state.reason.as_deref() == Some(reason)
+                };
+                if !stopped {
+                    lens.stop(Some(reason));
+                }
             }
             Ok(lens.status())
         }
@@ -1205,6 +1301,32 @@ mod tests {
             json!(true)
         );
         assert_eq!(lens.state.lock().unwrap().run, Run::Running);
+    }
+
+    #[test]
+    fn retry_delay_doubles_from_five_seconds_to_a_minute_and_holds() {
+        let secs: Vec<u64> = (0..7).map(|n| retry_delay(n).as_secs()).collect();
+        assert_eq!(secs, [5, 10, 20, 40, 60, 60, 60]);
+    }
+
+    /// A lost stream is a stop with reason `stream` — what the consumer reads
+    /// as "lost its capture" — and one status signal saying so. The restart
+    /// it schedules never runs here: nothing has consented.
+    #[tokio::test]
+    async fn a_lost_stream_stops_with_its_reason_and_says_so() {
+        let (lens, mut rx) = lens();
+        // The wire needs its drain, which lib.rs spawns in the app.
+        tokio::spawn(lens.bridge.clone().run_writer());
+        lens.stream_lost("SCStreamErrorUserStopped");
+        let state = lens.state.lock().unwrap().clone();
+        assert_eq!(state.run, Run::Stopped);
+        assert_eq!(state.reason.as_deref(), Some("stream"));
+        assert_eq!(lens.retry.load(Ordering::Acquire), 1);
+        let status = rx.recv().await.expect("a status signal");
+        let value: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(value["kind"], "status");
+        assert_eq!(value["state"], "stopped");
+        assert_eq!(value["reason"], "stream");
     }
 
     /// Whatever the file says, a fresh lens has not been consented to: that
