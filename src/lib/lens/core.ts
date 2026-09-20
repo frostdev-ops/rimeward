@@ -58,8 +58,12 @@ const LIVE_WHOLE = 0.9;
  *  window that just came to the front has a header and nothing else for about
  *  a second (the frame, then recognition or the tree, then the settle window),
  *  and a look answered inside that gap handed over a keyframe every smoke run
- *  took for an empty window. */
-const FIRST_LINES_MS = 2500;
+ *  took for an empty window. A window that repaints every frame (Rimeward's own
+ *  animated background, a video) only publishes at the settle CAP, so the bound
+ *  sits past it with room for the recognition that follows (2026-09-20: the
+ *  first look at Rimeward's own window answered v=18 with no lines at 2.5 s;
+ *  the next read had 185). */
+const FIRST_LINES_MS = SETTLE_CAP_MS + 1500;
 /** How long `ready()` waits for a source's first connect before answering that
  *  it is still connecting. ponytail: one number for every source — a connect
  *  slower than this is a source with its own trouble to report. */

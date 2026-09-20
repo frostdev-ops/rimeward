@@ -453,7 +453,9 @@ test('a look waits for a fresh epoch\'s first lines, bounded, and not for an old
   h.inject(sig(11, { kind: 'window', id: 77, title: 'Desktop', bounds: [0, 0, 800, 600], display: DISPLAY }, 2));
   let bounded = false;
   const waiting2 = h.core.firstLines().then(() => { bounded = true; });
-  h.clock.advance(2499);
+  // The bound sits past the 3 s settle cap: a window that repaints every
+  // frame only publishes there.
+  h.clock.advance(4499);
   await h.tick();
   assert.equal(bounded, false);
   h.clock.advance(1);
