@@ -54,11 +54,12 @@ const FRAME_HISTORY_MS = 3000;
  *  typed sentence never arrived. The settle window and the rate limit are what
  *  bound a window that repaints; the live detector is for the spinner in it. */
 const LIVE_WHOLE = 0.9;
-/** How long a look waits for a fresh epoch's first lines. A window that just
- *  came to the front has a header and nothing else for about a second (the
- *  frame, then recognition or the tree), and a look answered inside that gap
- *  handed over a keyframe every smoke run took for an empty window. */
-const FIRST_LINES_MS = 1500;
+/** How long a look waits for a fresh epoch's first lines to be PUBLISHED. A
+ *  window that just came to the front has a header and nothing else for about
+ *  a second (the frame, then recognition or the tree, then the settle window),
+ *  and a look answered inside that gap handed over a keyframe every smoke run
+ *  took for an empty window. */
+const FIRST_LINES_MS = 2500;
 /** How long `ready()` waits for a source's first connect before answering that
  *  it is still connecting. ponytail: one number for every source — a connect
  *  slower than this is a source with its own trouble to report. */
@@ -333,7 +334,6 @@ export class LensCore {
         else if (result.changed === 'moved' && result.moved.length > 0) {
           for (const fn of this.#listeners.moved) fn(result.moved);
         }
-        if (result.added.length > 0) for (const wake of this.#linesWaiters.splice(0)) wake();
         this.#armOwedFlush();
       }),
 
@@ -640,11 +640,12 @@ export class LensCore {
   }
 
   /** Waits, bounded by FIRST_LINES_MS from the epoch's opening, for a fresh
-   *  epoch's first lines. Answers at once when the document has lines, when
-   *  the source is offline, or when the epoch is old enough that empty means
-   *  empty. */
+   *  epoch's first lines to be published. Answers at once when the newest
+   *  version has lines, when the source is offline, or when the epoch is old
+   *  enough that empty means empty. */
   async firstLines(): Promise<void> {
-    if (this.#doc.current().lines.length > 0 || this.#offline !== null) return;
+    const published = this.#doc.version(this.#doc.current().v);
+    if ((published?.lines.length ?? 0) > 0 || this.#offline !== null) return;
     const left = FIRST_LINES_MS - (this.#clock.now() - this.#epochAt);
     if (left <= 0) return;
     await new Promise<void>((resolve) => {
@@ -664,6 +665,10 @@ export class LensCore {
     const current = this.#doc.current();
     current.live = this.#liveNow(gate ?? this.#gate());
     const frozen = this.#doc.freeze(this.#ref);
+    // A version with lines is what `firstLines` waits for: a look reads
+    // published versions, so lines landing in the working copy are not yet
+    // anything it could show.
+    if (frozen.lines.length > 0) for (const wake of this.#linesWaiters.splice(0)) wake();
     for (const fn of this.#listeners.scene) fn(frozen.v);
     return frozen;
   }

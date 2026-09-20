@@ -477,14 +477,26 @@ test('nextKind table', () => {
   );
 });
 
-test('redeliver and nextKind re-offer an unacknowledged keyframe page unchanged', () => {
+test('redeliver and nextKind re-offer an unacknowledged keyframe: page 1 at the newest version, a later page pinned', () => {
   const s = bigDoc();
   const c = consumer();
   claimDelivery(c, renderKeyframe(s, c, { page: 1 }), s.v, s.epoch, s.ref);
   assert.equal(redeliver(c), true);
+  // A whole keyframe offered again renders what the source shows now: the
+  // header-only version a window change froze must not stand in for the lines
+  // that landed after it.
   assert.deepEqual(nextKind(c, doc({ v: 1999 }), () => true, { epoch: true, key: true }, true), {
     kind: 'key',
     page: 1,
+    v: 1999,
+  });
+  // Mid-paging the frozen version is the only one the pages agree on.
+  const paging = consumer();
+  claimDelivery(paging, renderKeyframe(s, paging, { page: 1 }), s.v, s.epoch, s.ref);
+  paging.delivered!.pendingPage = 2;
+  assert.deepEqual(nextKind(paging, doc({ v: 1999 }), () => true, { epoch: true, key: true }, true), {
+    kind: 'key',
+    page: 2,
     v: 1842,
   });
   assert.equal(redeliver(consumer()), false, 'nothing delivered means nothing to re-deliver');

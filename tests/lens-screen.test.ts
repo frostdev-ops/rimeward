@@ -406,18 +406,44 @@ test('a window that repaints whole is never a live region, so a typed line still
   assert.doesNotMatch(last.text, /^live 0,0,656,422$/m, 'the window itself is not a live region');
 });
 
+test('the first look after firstLines hands over one keyframe of the version it shows', async () => {
+  const h = harness();
+  h.core.consumer('c');
+  h.inject(app(1));
+  h.inject(windowSig(2));
+  const waiting = h.core.firstLines();
+  h.inject(axText(3, [wire('let x = 1', 34)]));
+  h.clock.advance(750); // the settle window publishes them
+  await waiting;
+  const out = h.core.look('c', { claim: true });
+  await h.tick();
+  // The window header froze a version of its own before the lines landed and
+  // offered it; the look offers the whole keyframe again at the version it
+  // shows, lines included, and nothing else follows.
+  const sent = h.sent('c');
+  assert.equal(out.delivery?.v, out.v, 'the delivery is the version the look shows');
+  assert.equal(out.delivery?.kind, 'key');
+  assert.match(out.delivery?.text ?? '', /let x = 1/, 'the keyframe the look hands over has the lines');
+  assert.equal(sent.at(-1)?.delivery, out.delivery?.delivery, 'nothing was produced after the look');
+  assert.ok(out.lines && out.lines.length === 1, 'the look shows the published line');
+});
+
 test('a look waits for a fresh epoch\'s first lines, bounded, and not for an old empty one', async () => {
   const h = harness();
   h.core.consumer('c');
   h.inject(app(1));
   h.inject(windowSig(2));
-  // Lines land 400 ms after the epoch opened: the wait ends with them.
+  // Lines land 400 ms after the epoch opened and publish 750 ms later: the
+  // wait ends with the version that shows them, not with the raw lines.
   let done = false;
   const waiting = h.core.firstLines().then(() => { done = true; });
   h.clock.advance(400);
   await h.tick();
   assert.equal(done, false, 'still waiting');
   h.inject(axText(3, [wire('let x = 1', 34)]));
+  await h.tick();
+  assert.equal(done, false, 'lines in the working copy are not published yet');
+  h.clock.advance(750);
   await waiting;
   assert.equal(done, true);
   assert.equal(h.core.doc().lines.length, 1);
@@ -427,7 +453,7 @@ test('a look waits for a fresh epoch\'s first lines, bounded, and not for an old
   h.inject(sig(11, { kind: 'window', id: 77, title: 'Desktop', bounds: [0, 0, 800, 600], display: DISPLAY }, 2));
   let bounded = false;
   const waiting2 = h.core.firstLines().then(() => { bounded = true; });
-  h.clock.advance(1499);
+  h.clock.advance(2499);
   await h.tick();
   assert.equal(bounded, false);
   h.clock.advance(1);

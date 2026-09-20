@@ -266,8 +266,15 @@ export function nextKind(
   forceKey: boolean
 ): { kind: 'key'; page: number; v: number; reason?: KeyReason } | { kind: 'delta'; since: number } {
   const d = consumer.delivered;
-  // Paging runs to the end on its own frozen version, newer versions or not.
-  if (d && d.kind === 'key') return { kind: 'key', page: d.pendingPage ?? d.page, v: d.v, ...(d.reason ? { reason: d.reason } : {}) };
+  // Paging runs to the end on its own frozen version, newer versions or not. A
+  // whole keyframe offered again (page 1, nothing pending) is offered at the
+  // newest version: the cursor it renders from is unchanged, and the reader is
+  // owed what the source shows now, not the header-only version a window
+  // change froze before its lines had landed.
+  if (d && d.kind === 'key') {
+    const page = d.pendingPage ?? d.page;
+    return { kind: 'key', page, v: page > 1 ? d.v : doc.v, ...(d.reason ? { reason: d.reason } : {}) };
+  }
   // In cause order: the first read of all, then what the ring no longer holds,
   // then the changes that are themselves the observation.
   if (consumer.cursor === null || consumer.baseline === null) return { kind: 'key', page: 1, v: doc.v, reason: 'first' };
