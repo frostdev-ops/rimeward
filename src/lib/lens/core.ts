@@ -46,6 +46,19 @@ import type {
 
 /** How much frame history the live-region detector needs. */
 const FRAME_HISTORY_MS = 3000;
+/** A live rectangle covering this much of the window is the window repainting,
+ *  not a region of it. ScreenCaptureKit marks the whole cropped frame dirty on
+ *  every frame for some applications (measured 2026-09-19: TextEdit, while an
+ *  Electron window reports a 3x20 caret), so under any sustained change the
+ *  whole window read as live and every text change inside it was dropped — a
+ *  typed sentence never arrived. The settle window and the rate limit are what
+ *  bound a window that repaints; the live detector is for the spinner in it. */
+const LIVE_WHOLE = 0.9;
+/** How long a look waits for a fresh epoch's first lines. A window that just
+ *  came to the front has a header and nothing else for about a second (the
+ *  frame, then recognition or the tree), and a look answered inside that gap
+ *  handed over a keyframe every smoke run took for an empty window. */
+const FIRST_LINES_MS = 1500;
 /** How long `ready()` waits for a source's first connect before answering that
  *  it is still connecting. ponytail: one number for every source — a connect
  *  slower than this is a source with its own trouble to report. */
@@ -120,6 +133,9 @@ export interface SourceSnapshot {
 }
 
 export interface Source {
+  /** Live readers, separate from saved cursors. Optional for sources that do
+   *  not own a native capture session. */
+  demand?(active: boolean): Promise<void>;
   /** Start reading; the returned function stops. */
   connect(user: number, target: string, feed: Feed): Promise<() => void>;
   /** Meta keys a change to which forces a keyframe (`app`, `session`). */
@@ -217,6 +233,10 @@ export class LensCore {
   #embedderId: string | undefined;
   /** The live rectangles the source named, beside the ones the gate detected. */
   #sourceLive: Rect[] = [];
+  /** When the current epoch opened, for `firstLines`. */
+  #epochAt = 0;
+  /** Reads waiting on a fresh epoch's first lines. */
+  #linesWaiters: (() => void)[] = [];
   #ref: string | null = null;
   #offline: string | null = null;
   #stop: (() => void) | null = null;
@@ -229,6 +249,8 @@ export class LensCore {
   /** A reader that is not a consumer asked for the source (captions): it keeps
    *  running even with nothing to deliver to. */
   #pinned = false;
+  #readers = new Set<object>();
+  #demand: Promise<void> = Promise.resolve();
   #listeners: { [K in keyof CoreEvents]: Set<CoreEvents[K]> } = {
     delivery: new Set(),
     scene: new Set(),
@@ -289,6 +311,7 @@ export class LensCore {
         this.#sourceLive = [];
         this.#ref = null;
         this.#owedFlush = true;
+        this.#epochAt = this.#clock.now();
       }),
 
     meta: (key, value, seq, bounds) =>
@@ -310,6 +333,7 @@ export class LensCore {
         else if (result.changed === 'moved' && result.moved.length > 0) {
           for (const fn of this.#listeners.moved) fn(result.moved);
         }
+        if (result.added.length > 0) for (const wake of this.#linesWaiters.splice(0)) wake();
         this.#armOwedFlush();
       }),
 
@@ -397,6 +421,28 @@ export class LensCore {
   connect(): void {
     this.#pinned = true;
     this.#connect();
+  }
+
+  /** Hold native capture only while a tool, monitor or captions need it.
+   *  Releasing keeps consumer cursors and watches intact. */
+  acquire(): { ready: Promise<void>; release: () => void } {
+    const demand = this.#deps.source.demand;
+    if (!demand) return { ready: Promise.resolve(), release: () => {} };
+    const reader = {};
+    if (this.#readers.size === 0) this.#setDemand(true);
+    this.#readers.add(reader);
+    return {
+      ready: this.#demand,
+      release: () => {
+        if (this.#readers.delete(reader) && this.#readers.size === 0) this.#setDemand(false);
+      },
+    };
+  }
+
+  #setDemand(active: boolean): void {
+    this.#demand = this.#demand.then(() => this.#deps.source.demand?.(active)).catch((err: unknown) => {
+      this.feed.offline(err instanceof Error ? err.message : String(err));
+    });
   }
 
   doc(): Doc {
@@ -586,7 +632,32 @@ export class LensCore {
   #liveNow(gate: GateDeps): Rect[] {
     const cutoff = this.#clock.now() - FRAME_HISTORY_MS;
     while (this.#frames.length > 0 && (this.#frames[0] as { at: number }).at < cutoff) this.#frames.shift();
-    return [...liveRegions(this.#frames, gate, this.#clock.now()), ...this.#sourceLive];
+    // A region of the window, never the window (LIVE_WHOLE). A source with no
+    // window header (a terminal, a browser) has no whole to measure against.
+    const window = this.#doc.current().meta.window?.bounds;
+    const whole = window ? window[2] * window[3] * LIVE_WHOLE : Infinity;
+    return [...liveRegions(this.#frames, gate, this.#clock.now()).filter((r) => r[2] * r[3] < whole), ...this.#sourceLive];
+  }
+
+  /** Waits, bounded by FIRST_LINES_MS from the epoch's opening, for a fresh
+   *  epoch's first lines. Answers at once when the document has lines, when
+   *  the source is offline, or when the epoch is old enough that empty means
+   *  empty. */
+  async firstLines(): Promise<void> {
+    if (this.#doc.current().lines.length > 0 || this.#offline !== null) return;
+    const left = FIRST_LINES_MS - (this.#clock.now() - this.#epochAt);
+    if (left <= 0) return;
+    await new Promise<void>((resolve) => {
+      let timer: unknown = null;
+      const finish = (): void => {
+        this.#clock.clearTimeout(timer);
+        const at = this.#linesWaiters.indexOf(finish);
+        if (at >= 0) this.#linesWaiters.splice(at, 1);
+        resolve();
+      };
+      timer = this.#hold(this.#clock.setTimeout(finish, left));
+      this.#linesWaiters.push(finish);
+    });
   }
 
   #freeze(gate?: GateDeps): Doc {
@@ -773,9 +844,11 @@ export class LensCore {
    *  before then describes a document nothing has written to yet — which is
    *  indistinguishable from a live, empty one. */
   async ready(ms = CONNECT_SETTLE_MS): Promise<boolean> {
-    this.#connect();
-    const connecting = this.#connecting;
-    if (!connecting) return true;
+    const token = this.#connectToken;
+    const connecting = this.#demand.then(() => {
+      if (token === this.#connectToken) this.#connect();
+      return this.#connecting;
+    });
     let timer: unknown = null;
     const settled = await Promise.race([
       connecting.then(() => true),
@@ -891,6 +964,12 @@ export class LensCore {
 
   /** Shutdown plus the source: what `releaseLens` calls. */
   close(): void {
+    // Invalidate a ready() still waiting for native startup before it connects.
+    this.#connectToken += 1;
+    if (this.#readers.size > 0) {
+      this.#readers.clear();
+      this.#setDemand(false);
+    }
     this.settle();
     this.#disconnect();
   }

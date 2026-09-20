@@ -387,6 +387,57 @@ test('describe frames the question as an observation and reports a stale epoch',
   assert.deepEqual(await describe(h.core, { rect: [0, 0, 200, 100] }, h.desktop), { error: 'standalone' });
 });
 
+test('a window that repaints whole is never a live region, so a typed line still arrives', async () => {
+  const h = harness();
+  await primed(h, 'c');
+  const sent = h.sent('c').length;
+  // ScreenCaptureKit's whole-frame dirty rectangle, five frames running with a
+  // real change in each: by the detector alone the entire window is live.
+  for (let n = 0; n < 5; n++) {
+    h.inject(frameSig(10 + n, [{ bbox: [0, 0, 656, 422], d: 0.6 }], 1000 + n * 500));
+    h.clock.advance(500);
+  }
+  h.inject(ocrSig(20, [wire('let x = 1', 34), wire('The quick brown fox', 60)]));
+  h.clock.advance(750);
+  await h.tick();
+  assert.ok(h.sent('c').length > sent, 'the typed line delivers');
+  const last = h.sent('c').at(-1) as Delivery;
+  assert.match(last.text, /\+ .*The quick brown fox/, 'the added line is in the delta');
+  assert.doesNotMatch(last.text, /^live 0,0,656,422$/m, 'the window itself is not a live region');
+});
+
+test('a look waits for a fresh epoch\'s first lines, bounded, and not for an old empty one', async () => {
+  const h = harness();
+  h.core.consumer('c');
+  h.inject(app(1));
+  h.inject(windowSig(2));
+  // Lines land 400 ms after the epoch opened: the wait ends with them.
+  let done = false;
+  const waiting = h.core.firstLines().then(() => { done = true; });
+  h.clock.advance(400);
+  await h.tick();
+  assert.equal(done, false, 'still waiting');
+  h.inject(axText(3, [wire('let x = 1', 34)]));
+  await waiting;
+  assert.equal(done, true);
+  assert.equal(h.core.doc().lines.length, 1);
+
+  // A new epoch that stays empty: the wait ends at the bound, not before.
+  h.inject(app(10, 'com.apple.finder', 2));
+  h.inject(sig(11, { kind: 'window', id: 77, title: 'Desktop', bounds: [0, 0, 800, 600], display: DISPLAY }, 2));
+  let bounded = false;
+  const waiting2 = h.core.firstLines().then(() => { bounded = true; });
+  h.clock.advance(1499);
+  await h.tick();
+  assert.equal(bounded, false);
+  h.clock.advance(1);
+  await waiting2;
+  assert.equal(bounded, true);
+  // Old and empty answers at once.
+  h.clock.advance(5000);
+  await h.core.firstLines();
+});
+
 test('a window that shrinks drops the lines outside it, and a move keeps them', async () => {
   const h = harness();
   await primed(h, 'c');

@@ -254,6 +254,19 @@ pub fn ax_covers(roi: Rect, ax: &[Rect]) -> bool {
     ax.len() >= AX_MIN_LINES && covered(roi, ax) >= AX_COVERED
 }
 
+/// The boxes that count towards [`ax_covers`]: one per line the tree actually
+/// reads line by line. A single record spanning many lines — TextEdit's whole
+/// document is one multi-line `AXTextArea` value — is not that reading, and
+/// taking its box as coverage skipped OCR for good: the consumer then had the
+/// text as one blob with one box and no line geometry at all (2026-09-19).
+pub fn ax_coverage(lines: &[super::bridge::Line]) -> Vec<Rect> {
+    lines
+        .iter()
+        .filter(|line| !line.text.contains('\n'))
+        .map(|line| line.bbox)
+        .collect()
+}
+
 /// A Vision image FeaturePrint. Distances between prints score how much a
 /// region changed without hashing pixels.
 #[derive(Debug)]
@@ -768,6 +781,26 @@ mod tests {
         // Outside the region contributes nothing.
         assert_eq!(covered(roi, &[[90.0, 0.0, 100.0, 100.0]]), 0.1);
         assert_eq!(covered(roi, &[[200.0, 200.0, 10.0, 10.0]]), 0.0);
+    }
+
+    #[test]
+    fn a_multi_line_record_never_counts_as_coverage() {
+        use super::super::bridge::Line;
+        let line = |bbox: Rect, text: &str| Line {
+            bbox,
+            text: text.into(),
+            conf: None,
+        };
+        let lines = [
+            line([0.0, 0.0, 100.0, 10.0], "lens-fixture.txt"),
+            line([0.0, 10.0, 100.0, 90.0], "line 01\nline 02\nline 03"),
+            line([0.0, 90.0, 50.0, 10.0], "Regular"),
+        ];
+        assert_eq!(
+            ax_coverage(&lines),
+            [[0.0, 0.0, 100.0, 10.0], [0.0, 90.0, 50.0, 10.0]]
+        );
+        assert!(!ax_covers([0.0, 0.0, 100.0, 100.0], &ax_coverage(&lines)));
     }
 
     #[test]

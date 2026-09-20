@@ -759,14 +759,7 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
         .collect();
     let full = [0.0, 0.0, bounds[2], bounds[3]];
     let known = lens.known_rects();
-    let ax: Vec<Rect> = lens
-        .known
-        .read()
-        .unwrap()
-        .ax
-        .iter()
-        .map(|line| line.bbox)
-        .collect();
+    let ax: Vec<Rect> = ocr::ax_coverage(&lens.known.read().unwrap().ax);
     let Decision::Process {
         merged,
         roi,

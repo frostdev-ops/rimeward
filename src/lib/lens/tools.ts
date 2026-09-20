@@ -439,6 +439,9 @@ const TOOLS: Record<LensToolName, LensTool> = {
       fields: { type: 'array', items: { type: 'string', enum: ['meta', 'text', 'regions', 'live'] }, description: 'Parts of the document to return; default all' },
     }),
     call: async (core, consumer, args, opts) => {
+      // A window that just came to the front has a header and nothing else for
+      // about a second; a look answered inside that gap reads as an empty window.
+      await core.firstLines();
       const out = core.look(consumer, {
         ...(typeof args.ack === 'string' ? { ack: args.ack } : {}),
         ...(Array.isArray(args.fields) ? { fields: args.fields as string[] } : {}),
@@ -837,7 +840,15 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = Object.fromEntries(
         // page from the moment it connects) for a call that is about to fail.
         const refused = SCREEN_ONLY.has(name as LensToolName) ? notScreen(name, opts) : null;
         if (refused) return refused;
-        return tool.call(core, consumer, args, (await core.ready()) ? opts : { ...opts, connecting: true });
+        // Clearing an overlay or turning captions off must not start capture.
+        if (name === 'lens_history' || name === 'overlay_clear' || (name === 'lens_captions' && args.on === false))
+          return tool.call(core, consumer, args, opts);
+        const { release } = core.acquire();
+        try {
+          return await tool.call(core, consumer, args, (await core.ready()) ? opts : { ...opts, connecting: true });
+        } finally {
+          release();
+        }
       },
     },
   ])
