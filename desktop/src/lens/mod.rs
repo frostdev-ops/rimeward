@@ -852,7 +852,9 @@ impl Lens {
             .latest()
             .filter(|frame| frame.frame_ref == frame_ref && frame.pixels.is_some())
             .ok_or("frame-evicted")?;
-        let roi = ocr::expand_roi(rect, &self.known_rects());
+        let size = frame.geometry.window;
+        let full = [0.0, 0.0, size[2], size[3]];
+        let roi = ocr::expand_roi(rect, &self.known_rects(), full);
         let ax: Vec<Rect> = self
             .known
             .read()
@@ -863,7 +865,8 @@ impl Lens {
             .collect();
         let pixels = frame.pixels.clone().ok_or("frame-evicted")?;
         let transform = ocr::Transform::new(&frame.geometry);
-        let roi_px = transform.window_to_pixels(roi);
+        // Read with the margin, answer with the region the reading covers.
+        let roi_px = transform.window_to_pixels(ocr::read_roi(roi, full));
         let (raw, _ms) = ocr::recognize_bgra(
             &pixels,
             frame.w,
@@ -878,6 +881,9 @@ impl Lens {
                 text,
                 conf: Some(confidence),
             })
+            // What the margin cut is not part of this reading, only of the
+            // band it was read from.
+            .filter(|line| ocr::claims(line.bbox, roi))
             .collect();
         Ok(json!({
             "epoch": frame.epoch,

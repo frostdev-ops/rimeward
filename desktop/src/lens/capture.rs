@@ -175,7 +175,7 @@ pub fn decide(
             ]
         })
         .unwrap_or(full);
-    let roi = ocr::expand_roi(union, known);
+    let roi = ocr::expand_roi(union, known, full);
     Decision::Process {
         merged,
         ax_covered: ocr::ax_covers(roi, ax),
@@ -888,7 +888,22 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
     } else if ax_covered {
         (Vec::new(), 0, true)
     } else {
-        recognize(shared, &pixels, &transform, roi, width, height)
+        // Read with the margin, report what the reading covers: a line only
+        // the margin reaches is cut, so it is not this reading's to report —
+        // and the consumer adopts every line it is handed.
+        let (lines, ms, ran) = recognize(
+            shared,
+            &pixels,
+            &transform,
+            ocr::read_roi(roi, full),
+            width,
+            height,
+        );
+        let kept = lines
+            .into_iter()
+            .filter(|line| ocr::claims(line.bbox, roi))
+            .collect();
+        (kept, ms, ran)
     };
     // A read straddles a resize: this frame was captured under the geometry
     // the window had, and the window may have shrunk while it was recognised.
@@ -1178,7 +1193,11 @@ mod tests {
             panic!("a complete frame is processed");
         };
         assert_eq!(merged, vec![[150.0, 102.0, 30.0, 8.0]]);
-        assert_eq!(roi, [10.0, 102.0, 180.0, 8.0], "widened to the whole line");
+        assert_eq!(
+            roi,
+            [10.0, 100.0, 180.0, 14.0],
+            "the whole line, not the band the edit dirtied"
+        );
         assert!(!ax_covered, "no Accessibility text at all");
     }
 

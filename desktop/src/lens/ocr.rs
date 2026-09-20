@@ -180,19 +180,104 @@ pub fn merge_dirty(rects: &[Rect]) -> Vec<Rect> {
     out
 }
 
-/// An edit at the end of a long line dirties only the tail, so recognizing the
-/// tail alone would replace a whole line with a fragment. Widen the region to
-/// the full horizontal extent of every known line it overlaps.
-pub fn expand_roi(roi: Rect, known: &[Rect]) -> Rect {
-    let mut left = roi[0];
-    let mut right = roi[0] + roi[2];
+/// Margin, window points, past every edge of the region handed to Vision
+/// ([`read_roi`]).
+///
+/// Vision reads the band it is given, not the page around it, and a band that
+/// cuts a glyph's top or tail comes back as fragments rather than words.
+/// Measured 2026-09-20 on macOS 27, Helvetica 11/12/13/15/18 pt drawn at 2x
+/// into a 1802x2260 buffer, recognized at Fast with `minimumTextHeight` 0:
+/// handing Vision back its OWN line box for "Sphinx of black quartz, judge my
+/// vow." reads "Inxo" in four pieces, one pixel of margin reads "S hinx of
+/// black", and two pixels reads the line whole at every size. Eight pixels of
+/// margin at 11 pt starts pulling in the halves of the lines above and below
+/// and misreads a character of this one, so the margin is small on purpose:
+/// what a neighbouring line needs is to be pulled in WHOLE, which is what
+/// widening to the known lines does.
+///
+/// Three points is six pixels on a 2x display and three on a 1x one — both
+/// measured clean.
+pub const ROI_PAD: f64 = 3.0;
+
+/// The smallest band worth handing Vision, window points. A caret-sized dirty
+/// rectangle over text nothing has read yet overlaps no known line, and a
+/// 3x20 pt sliver reads nothing at all. It is a floor on what is READ, never
+/// on what a reading claims: a region that claimed more than the lines it took
+/// in would drop the ones past them unread.
+pub const ROI_MIN: f64 = 24.0;
+
+/// Grown about its own centre to at least `min` on each axis, then held inside
+/// `full`.
+fn grow(rect: Rect, min: f64, full: Rect) -> Rect {
+    let width = rect[2].max(min);
+    let height = rect[3].max(min);
+    let x = rect[0] + rect[2] / 2.0 - width / 2.0;
+    let y = rect[1] + rect[3] / 2.0 - height / 2.0;
+    let left = x.max(full[0]);
+    let top = y.max(full[1]);
+    let right = (x + width).min(full[0] + full[2]);
+    let bottom = (y + height).min(full[1] + full[3]);
+    [left, top, (right - left).max(0.0), (bottom - top).max(0.0)]
+}
+
+/// What one recognition of `roi` COVERS — the region whose stored text it is
+/// entitled to replace, which is what rides the `ocr` signal.
+///
+/// An edit at the end of a long line dirties only the tail, and an edit in the
+/// middle of one dirties a caret-sized sliver. Reading that alone replaces a
+/// whole line with a fragment, so the region takes in every known line it
+/// overlaps WHOLE — both axes, because a band the height of the dirty
+/// rectangle cuts the glyphs (see [`ROI_PAD`]). Nothing else: every line in
+/// here is one [`read_roi`] takes in whole, so the reading really can speak
+/// for all of them.
+pub fn expand_roi(roi: Rect, known: &[Rect], full: Rect) -> Rect {
+    // The overlap test stays on the region as it arrived: growing into a line
+    // and then testing the growth would chain line by line to the whole page.
+    let mut out = roi;
     for line in known {
         if intersect(roi, *line).is_some() {
-            left = left.min(line[0]);
-            right = right.max(line[0] + line[2]);
+            out = union(out, *line);
         }
     }
-    [left, roi[1], right - left, roi[3]]
+    grow(out, 0.0, full)
+}
+
+/// The region to hand Vision for a reading of [`expand_roi`]'s region: the
+/// same, with [`ROI_PAD`] of margin on every side and [`ROI_MIN`] underneath.
+///
+/// The two are deliberately not the same rectangle. The margin is there so the
+/// glyphs at the region's own edges are whole; a line that only the MARGIN
+/// reaches is cut, and Vision either drops it or returns a fragment of it — so
+/// it is not in what the reading claims, and the text already stored for it
+/// stands.
+pub fn read_roi(roi: Rect, full: Rect) -> Rect {
+    grow(
+        [
+            roi[0] - ROI_PAD,
+            roi[1] - ROI_PAD,
+            roi[2] + 2.0 * ROI_PAD,
+            roi[3] + 2.0 * ROI_PAD,
+        ],
+        ROI_MIN,
+        full,
+    )
+}
+
+/// Whether a reading of `roi` ([`expand_roi`]'s region) speaks for this line:
+/// any horizontal touch, and at least half the line's height. The same rule
+/// the consumer applies to decide which stored lines a reading replaces
+/// (`overlaps` in src/lib/lens/doc.ts), and it has to be, because recognition
+/// runs over the larger [`read_roi`] band and comes back with whatever the
+/// MARGIN clipped as well.
+///
+/// The consumer adopts every line it is handed and scopes only the removal
+/// side by the region, so a line the margin cut would land beside the intact
+/// one it was cut from — a garbled duplicate, which is the whole symptom.
+/// Both regions are in hand here, so this is where the extras go.
+pub fn claims(bbox: Rect, roi: Rect) -> bool {
+    let x = (bbox[0] + bbox[2]).min(roi[0] + roi[2]) - bbox[0].max(roi[0]);
+    let y = (bbox[1] + bbox[3]).min(roi[1] + roi[3]) - bbox[1].max(roi[1]);
+    x > 0.0 && y >= bbox[3] / 2.0
 }
 
 /// The fraction of `roi` the union of `rects` covers, 0.0 to 1.0. Exact:
@@ -743,28 +828,103 @@ mod tests {
         assert_eq!(hull, [0.0, 0.0, 954.0, 954.0]);
     }
 
+    /// Vision's rule, which is the only thing a region is for: the line is
+    /// inside the region, whole, with the margin its glyphs need.
+    fn holds(roi: Rect, line: Rect) -> bool {
+        roi[0] <= line[0] - ROI_PAD
+            && roi[1] <= line[1] - ROI_PAD
+            && roi[0] + roi[2] >= line[0] + line[2] + ROI_PAD
+            && roi[1] + roi[3] >= line[1] + line[3] + ROI_PAD
+    }
+
     #[test]
     fn expand_roi_widens_to_the_lines_it_overlaps() {
+        let window = [0.0, 0.0, 901.0, 1130.0];
         let lines = [
             [10.0, 100.0, 500.0, 14.0],
             [10.0, 120.0, 300.0, 14.0],
             [10.0, 400.0, 900.0, 14.0],
         ];
-        // An edit at the tail of the first line pulls in the whole line.
+        // An edit at the tail of the first line pulls in the whole line —
+        // sideways, as it always did, and now its full height too — and the
+        // band read for it clears the glyphs top and bottom.
+        let covered = expand_roi([480.0, 102.0, 20.0, 8.0], &lines, window);
+        assert_eq!(covered, [10.0, 100.0, 500.0, 14.0]);
+        assert_eq!(read_roi(covered, window), [7.0, 95.0, 506.0, 24.0]);
+        // Overlapping two lines reaches the far edge of the wider one, and
+        // the bottom of the lower one.
         assert_eq!(
-            expand_roi([480.0, 102.0, 20.0, 8.0], &lines),
-            [10.0, 102.0, 500.0, 8.0]
+            expand_roi([200.0, 105.0, 20.0, 30.0], &lines, window),
+            [10.0, 100.0, 500.0, 35.0]
         );
-        // Overlapping two lines reaches the far edge of the wider one.
-        assert_eq!(
-            expand_roi([200.0, 105.0, 20.0, 30.0], &lines),
-            [10.0, 105.0, 500.0, 30.0]
+        // Overlapping none is the dirty rectangle itself; the floor is on what
+        // is read, never on what the reading claims.
+        let covered = expand_roi([600.0, 200.0, 20.0, 20.0], &lines, window);
+        assert_eq!(covered, [600.0, 200.0, 20.0, 20.0]);
+        assert_eq!(read_roi(covered, window), [597.0, 197.0, 26.0, 26.0]);
+        // Neither region ever leaves the window, so what a reading claims is
+        // somewhere the reading looked.
+        let covered = expand_roi([0.0, 0.0, 4.0, 4.0], &[], window);
+        assert_eq!(covered, [0.0, 0.0, 4.0, 4.0]);
+        assert_eq!(read_roi(covered, window), [0.0, 0.0, 14.0, 14.0]);
+        let covered = expand_roi([895.0, 1126.0, 6.0, 4.0], &[], window);
+        assert_eq!(covered, [895.0, 1126.0, 6.0, 4.0]);
+        assert_eq!(read_roi(covered, window), [886.0, 1116.0, 15.0, 14.0]);
+    }
+
+    /// The bug OCR-GARBLE: a caret-sized dirty rectangle inside a line used to
+    /// widen only sideways, so Vision was handed a band the height of the
+    /// caret — or, once the line's own tight OCR box was `known`, the height of
+    /// the glyphs exactly. Both cut the glyphs, and a cut band reads as
+    /// fragments ("Inxo" for "Sphinx of black quartz, judge my vow.",
+    /// measured 2026-09-20).
+    #[test]
+    fn a_caret_inside_a_line_never_reads_that_line_clipped() {
+        let window = [0.0, 0.0, 901.0, 1130.0];
+        // What the lens knows: Vision's own boxes, tight around the glyphs.
+        let line = [40.5, 51.5, 199.0, 11.0];
+        let known = [line, [40.5, 67.5, 210.0, 11.0]];
+        // A caret mid-line, 3x20 pt, and the line's own box handed back.
+        for dirty in [[120.0, 50.0, 3.0, 20.0], line] {
+            let covered = expand_roi(dirty, &known, window);
+            let read = read_roi(covered, window);
+            assert!(holds(read, line), "{dirty:?} -> {read:?} clips {line:?}");
+        }
+        // A caret on a line nothing has read yet still gets a band to read.
+        let read = read_roi(expand_roi([120.0, 50.0, 3.0, 20.0], &[], window), window);
+        assert!(read[2] >= ROI_MIN && read[3] >= ROI_MIN, "{read:?}");
+    }
+
+    /// A line only the MARGIN reaches is read clipped, so the reading neither
+    /// claims it nor reports it: the stored text for it stands until something
+    /// reads it whole. Reporting it would be worse than dropping it — the
+    /// consumer adopts every line it is handed and scopes only the removal by
+    /// the region, so the clipped copy would land BESIDE the intact one.
+    #[test]
+    fn a_reading_never_claims_a_line_only_its_margin_reaches() {
+        let window = [0.0, 0.0, 901.0, 1130.0];
+        let line = [40.5, 51.5, 199.0, 11.0];
+        // The next line down, close enough that the margin runs into it.
+        let next = [40.5, 64.0, 210.0, 11.0];
+        let covered = expand_roi(line, &[line, next], window);
+        let read = read_roi(covered, window);
+        assert!(
+            intersect(read, next).is_some(),
+            "the margin reaches {next:?}: {read:?}"
         );
-        // Overlapping none is unchanged.
-        assert_eq!(
-            expand_roi([600.0, 200.0, 20.0, 20.0], &lines),
-            [600.0, 200.0, 20.0, 20.0]
+        assert!(
+            intersect(covered, next).is_none(),
+            "but the reading claims it: {covered:?}"
         );
+        // So what Vision returns from the margin is dropped, and what the
+        // reading covers is kept.
+        assert!(claims(line, covered), "the line the reading covers");
+        assert!(!claims(next, covered), "the line only the margin reached");
+        // Half the line's height inside is in; a hair less is out. A line off
+        // the region's side is out however much of its height lines up.
+        assert!(claims([40.5, 57.0, 100.0, 11.0], covered));
+        assert!(!claims([40.5, 57.5, 100.0, 11.0], covered));
+        assert!(!claims([300.0, 51.5, 100.0, 11.0], covered));
     }
 
     #[test]
@@ -835,6 +995,57 @@ mod tests {
             recognize_bgra(&[0u8; 16], 0, 2, None, false),
             (Vec::new(), 0)
         );
+    }
+
+    /// Needs Vision, so it is ignored by default: the measurement behind
+    /// [`ROI_PAD`]. Recognize a frame whole, hand Vision one line's own box
+    /// straight back, and hand it [`expand_roi`]'s widening of that same box.
+    /// The tight box loses glyphs; the widened one reads what the whole frame
+    /// read.
+    #[test]
+    #[ignore]
+    fn a_line_read_in_its_own_box_needs_the_margin() {
+        let (width, height) = (1802u32, 2260u32);
+        let bgra = text_frame("LENS OCR", 6, width, height);
+        let window = [0.0, 0.0, f64::from(width), f64::from(height)];
+        let (whole, _) = recognize_bgra(&bgra, width, height, None, false);
+        let Some((box_, expected, _)) = whole.first().cloned() else {
+            panic!("the whole frame read nothing at all");
+        };
+        // Vision's normalized bottom-left box over the whole buffer, back into
+        // the pixel rect the lens stores as a known line.
+        let line = [
+            box_[0] * f64::from(width),
+            (1.0 - box_[1] - box_[3]) * f64::from(height),
+            box_[2] * f64::from(width),
+            box_[3] * f64::from(height),
+        ];
+        let read = |roi: Rect| {
+            let px = [
+                roi[0].max(0.0).round() as u32,
+                roi[1].max(0.0).round() as u32,
+                roi[2].round() as u32,
+                roi[3].round() as u32,
+            ];
+            let (lines, _) = recognize_bgra(
+                &bgra,
+                width,
+                height,
+                Some(pixels_to_norm(px, width, height)),
+                false,
+            );
+            lines
+                .into_iter()
+                .map(|line| line.1)
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let tight = read(line);
+        let widened = read(read_roi(expand_roi(line, &[line], window), window));
+        eprintln!(
+            "whole {expected:?}\n  tight box {line:?} -> {tight:?}\n  widened -> {widened:?}"
+        );
+        assert_eq!(widened, expected, "the widened region reads the whole line");
     }
 
     /// Needs Vision, so it is ignored by default: proof that the ring's BGRA
