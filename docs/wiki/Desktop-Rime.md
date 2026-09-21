@@ -84,6 +84,21 @@ request could reproduce, and otherwise is re-read through the ward's session, ca
 and usually its cache; the answer says which of the two it was. Nothing here evaluates script in the
 page — these read what already happened.
 
+**Live voice sessions.** In an available main Rime chat, choose **Start voice session** or
+**Conversation → Live**, allow the microphone, and wait for **Listening**. Speak naturally; Live
+keeps one call open instead of requiring Finish & Send for every request. Conversation stays in the
+voice session; delegated requests appear in ordinary Rime chat and keep its tool and approval rules.
+Confirmations and questions still require the on-screen controls. **End voice session** stops voice,
+not work already sent to Rime. A persistent banner provides End and Mute while changing dashboard
+pages; switching conversations or leaving the workspace ends the session. The microphone button
+mutes during Live. **Speaker-safe** pauses it during playback without replacing the call.
+
+Live requires a ChatGPT connection and an updated credential-owning runtime/server. An API key alone
+provides clip dictation, not Live. Read responses is disabled during Live to avoid duplicate playback.
+The current development implementation still requires its real-provider and signed-Mac acoustic
+acceptance checks; source/unit-test success does not establish those results. See the voice plan's
+validation boundary before treating the development build as an accepted voice release.
+
 **Dictation without a ChatGPT login.** The composer's microphone works on any connection that can
 turn speech into text: with ChatGPT it opens the live voice route as before, and with an OpenAI key,
 an OpenAI-compatible endpoint on the ward, or OpenRouter it records a clip and sends it to be

@@ -1,4 +1,4 @@
-import { chainRelease, claimOwner, ownsAudio, releaseOwner, releasePending, resetRelease, signal, type SignalReply } from './agent-voice-lease.ts';
+import { chainRelease, claimOwner, ownsAudio, releaseOwner, releasePending, resetRelease, signal, speechChunks, type SignalReply } from './agent-voice-lease.ts';
 
 export type ConversationVoiceMode = 'off' | 'finish-send';
 export interface VoiceState {
@@ -50,44 +50,14 @@ const wireLog = (() => { try { return localStorage.getItem('fd-voice-wire') === 
 
 const normalized = (text: string) => text.trim().replace(/\s+/g, ' ');
 
-// The experimental speakable wire accepts at most 500 UTF-8 bytes per append.
-function speechChunks(text: string): string[] {
-  const chunks: string[] = [], encoder = new TextEncoder();
-  const sentences = new Intl.Segmenter(undefined, { granularity: 'sentence' });
-  let rest = text.trim();
-  while (rest) {
-    let bytes = 0, end = 0, boundary = 0;
-    for (const point of rest) {
-      const size = encoder.encode(point).length;
-      if (bytes + size > 500) break;
-      bytes += size; end += point.length;
-      if (/\s/.test(point)) boundary = end;
-    }
-    if (end < rest.length) {
-      let sentence = 0;
-      for (const part of sentences.segment(rest)) {
-        const finish = part.index + part.segment.trimEnd().length;
-        if (finish > end) break;
-        sentence = finish;
-      }
-      end = sentence || boundary || end;
-    }
-    chunks.push(rest.slice(0, end).trim());
-    rest = rest.slice(end).trimStart();
-  }
-  return chunks;
-}
-
 /** Voice can edit a draft or invoke the ordinary submit hook; it cannot run tools or grant approvals. */
 export function createAgentVoice(hooks: VoiceHooks) {
   let current: Call | undefined, audio: AudioContext | undefined, microphone: MediaStream | undefined;
   let pendingKind: Call['kind'] | undefined;
   const audioSession = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
   let previousAudioPurpose: string | undefined;
-  let analyser: AnalyserNode | undefined, microphoneSource: MediaStreamAudioSourceNode | undefined;
-  let sampleTimer: ReturnType<typeof setTimeout> | undefined;
   let mode: ConversationVoiceMode = 'off', readEnabled = false, revision = 0, readRevision = 0, transitioning = false, sending = false;
-  let lastInput = 0, lastSpeech = 0, voiceMs = 0, sampleAt = 0, noiseFloor = 0.002, edited = false, submitted = false;
+  let lastInput = 0, edited = false;
   let lastState: Pick<VoiceState, 'phase' | 'message'> = { phase: 'idle', message: '' };
   const queue: { text: string; key: string }[] = [], readKeys = new Set<string>();
   const identity = { dispose };
@@ -123,17 +93,9 @@ export function createAgentVoice(hooks: VoiceHooks) {
     releaseOwner(identity);
   }
   function stopCapture() {
-    clearTimeout(sampleTimer); sampleTimer = undefined;
     microphone?.getTracks().forEach(track => { track.stop(); }); microphone = undefined;
-    microphoneSource?.disconnect(); microphoneSource = undefined; analyser = undefined;
   }
-  function resetInput() { lastInput = 0; lastSpeech = 0; voiceMs = 0; edited = !!hooks.getDraft().trim(); }
-  function observeMicrophone() {
-    if (!audio || !microphone || analyser || mode === 'off') return;
-    microphoneSource = audio.createMediaStreamSource(microphone);
-    analyser = audio.createAnalyser(); analyser.fftSize = 2048; microphoneSource.connect(analyser);
-    sampleAt = Date.now(); sample();
-  }
+  function resetInput() { lastInput = 0; edited = !!hooks.getDraft().trim(); }
   const request = (call: Call, action: 'start' | 'status' | 'stop', sdp?: string): Promise<SignalReply> =>
     signal(hooks.ward, action, { owner: call.owner, lease: call.lease, sdp });
   function later(call: Call, fn: () => void, ms: number) {
@@ -213,9 +175,6 @@ export function createAgentVoice(hooks: VoiceHooks) {
           call.firstInput = false;
         }
         hooks.setDraft(draft + fragment);
-        if (submitted && voiceMs === 0) {
-          edited = true; state(call, call.phase, 'Late transcript received. Review your draft, then Finish & Send.');
-        }
         if ((draft + fragment).length > 8000) fail(new Error('Dictation stopped at the message limit. Shorten your draft; all received text is preserved.'));
       } else if (event.type === 'output_transcript.added' && call.kind === 'speech') call.transcript += item.text;
     }
@@ -305,7 +264,6 @@ export function createAgentVoice(hooks: VoiceHooks) {
           microphone = capture;
         }
         stream = microphone;
-        observeMicrophone();
       }
       const track = stream.getAudioTracks()[0];
       if (!track) throw new Error('No microphone audio track is available.');
@@ -325,27 +283,6 @@ export function createAgentVoice(hooks: VoiceHooks) {
     finally { if (epoch === revision) { pendingKind = undefined; void pump(); } }
   }
 
-  function sample() {
-    clearTimeout(sampleTimer);
-    if (!analyser || !microphone || mode === 'off') return;
-    if (hooks.isAlive && !hooks.isAlive()) { dispose(); return; }
-    const now = Date.now(), frame = new Float32Array(analyser.fftSize);
-    analyser.getFloatTimeDomainData(frame);
-    const rms = Math.sqrt(frame.reduce((sum, value) => sum + value * value, 0) / frame.length);
-    const threshold = Math.max(0.008, noiseFloor * 3.5);
-    if (rms < threshold) noiseFloor = noiseFloor * 0.98 + rms * 0.02;
-    if (current && !transitioning && !sending && !current.drain && ['listening', 'speaking'].includes(current.phase)) {
-      if (rms >= threshold) {
-        const elapsed = Math.min(100, now - sampleAt);
-        voiceMs = now - lastSpeech > 100 ? elapsed : voiceMs + elapsed;
-        lastSpeech = now;
-        if (current.kind === 'speech' && voiceMs >= 120) void bargeIn();
-      } else if (now - lastSpeech > 100) voiceMs = 0;
-    }
-    sampleAt = now;
-    if (!transitioning) void pump();
-    sampleTimer = setTimeout(sample, 20);
-  }
   async function submitCurrent(): Promise<void> {
     if (sending || mode === 'off' || !hooks.submitDraft) return;
     const expected = hooks.getDraft(), epoch = revision;
@@ -354,7 +291,7 @@ export function createAgentVoice(hooks: VoiceHooks) {
     try {
       const accepted = await hooks.submitDraft(expected);
       if (epoch !== revision) return;
-      if (accepted) { resetInput(); submitted = true; if (current) current.firstInput = true; }
+      if (accepted) { resetInput(); if (current) current.firstInput = true; }
       else { edited = true; announce('listening', 'Review your draft, then Finish & Send.'); }
     } catch (error) { if (epoch === revision) { edited = true; announce('error', error instanceof Error ? error.message : 'Could not send your draft. Review it before trying again.'); } }
     finally { sending = false; }
@@ -397,8 +334,11 @@ export function createAgentVoice(hooks: VoiceHooks) {
   async function pump() {
     if (!readEnabled || !queue.length || transitioning || sending || pendingKind || current?.kind === 'speech') return;
     if (current?.kind === 'dictation' && mode === 'off') return;
-    if (current && (current.phase !== 'listening' || hooks.getDraft().trim() || voiceMs > 0 ||
-        (lastSpeech && Date.now() - lastSpeech < 1200) || (lastInput && Date.now() - lastInput < 1200))) return;
+    if (current && (current.phase !== 'listening' || hooks.getDraft().trim())) return;
+    if (current && lastInput && Date.now() - lastInput < 1200) {
+      later(current, () => { void pump(); }, 1200 - (Date.now() - lastInput));
+      return;
+    }
     const next = queue.shift();
     if (!next) return;
     transitioning = true;
@@ -414,15 +354,6 @@ export function createAgentVoice(hooks: VoiceHooks) {
       else await resumeListening(epoch);
     } finally { if (epoch === revision) transitioning = false; }
   }
-  async function bargeIn() {
-    if (transitioning || current?.kind !== 'speech' || mode === 'off') return;
-    current.output.gain.value = 0; queue.length = 0;
-    revision++; const epoch = revision; transitioning = true;
-    close(current); resetInput();
-    announce('connecting', 'Reconnecting voice. Wait for Listening before speaking.');
-    try { await resumeListening(epoch); }
-    finally { if (epoch === revision) transitioning = false; }
-  }
   async function setConversation(next: ConversationVoiceMode) {
     if (next === mode) return;
     if (next === 'off') { await viewHidden(); return; }
@@ -431,12 +362,12 @@ export function createAgentVoice(hooks: VoiceHooks) {
       mode = next;
       edited ||= !!hooks.getDraft().trim();
       const call = current, epoch = revision;
-      try { await unlock(); if (epoch !== revision || current !== call) return; observeMicrophone(); announce(call.phase, 'Listening — Finish & Send when ready.'); }
+      try { await unlock(); if (epoch !== revision || current !== call) return; announce(call.phase, 'Listening — Finish & Send when ready.'); }
       catch (error) { if (epoch === revision) fail(error); }
       return;
     }
     const epoch = ++revision;
-    mode = next; resetInput(); submitted = false;
+    mode = next; resetInput();
     try {
       if (!hooks.submitDraft) throw new Error('Conversation voice is unavailable in this view.');
       const resumed = unlock();
@@ -499,7 +430,7 @@ export function createAgentVoice(hooks: VoiceHooks) {
   }
   async function dictate() {
     if (current?.kind === 'dictation') { await stop(); return; }
-    mode = 'off'; revision++; resetInput(); submitted = false;
+    mode = 'off'; revision++; resetInput();
     await connect('dictation');
   }
   async function speak(text: string) {
