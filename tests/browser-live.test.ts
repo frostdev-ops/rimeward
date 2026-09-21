@@ -37,7 +37,6 @@ interface Client {
   closed: Promise<number>;
   /** The first message matching, already received or still to come. */
   next(pred: (m: Msg) => boolean, ms?: number): Promise<Msg>;
-  frame(ms?: number): Promise<Buffer>;
   send(cmds: unknown): void;
 }
 
@@ -57,11 +56,6 @@ function client(ward: string, session: string, dsf?: number): Client {
     next: (pred, ms = 5000) => new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`no message within ${ms}ms; got ${JSON.stringify(msgs.map(m => m.type))}`)), ms);
       const check = () => { const m = msgs.find(pred); if (m) { clearTimeout(timer); resolve(m); return; } waiters.push(check); };
-      check();
-    }),
-    frame: (ms = 5000) => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`no frame within ${ms}ms`)), ms);
-      const check = () => { const f = frames.at(-1); if (f) { clearTimeout(timer); resolve(f); return; } waiters.push(check); };
       check();
     }),
     send: cmds => ws.send(JSON.stringify({ cmds })),
@@ -177,7 +171,11 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     assert.equal(view.dsf, 2, 'the session\'s scale, fixed at launch, not this viewer\'s');
     await a.next(m => m.type === 'tabs');
     // The first frame of a cold launch can still carry the window's settling size.
-    await until(() => a.frames.length > 0 && jpegSize(a.frames.at(-1)!).height === s!.viewport.height * 2, 5000, '2× frame');
+    await until(() => {
+      if (!a.frames.length) return false;
+      const { width, height } = jpegSize(a.frames.at(-1)!);
+      return width === s!.viewport.width * 2 && height === s!.viewport.height * 2;
+    }, 5000, '2× frame');
     assert.deepEqual(jpegSize(a.frames.at(-1)!), { width: s.viewport.width * 2, height: s.viewport.height * 2 });
 
     // The page records what actually reaches it; `mousedown` can be slow on demand.
@@ -195,10 +193,29 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     a.send([{ t: 'goto', url: 'javascript:alert(1)' }]);
     assert.match(String((await a.next(m => m.type === 'error')).message), /http/);
     a.send([{ t: 'resize', w: 900, h: 600 }]);
-    await until(() => s!.viewport.width === 900 && s!.viewport.height === 600, 5000, 'resize');
-    // A frame already in flight can still have the pre-resize dimensions.
-    await until(() => a.frames.length > 0 && jpegSize(a.frames.at(-1)!).width === 1800 && jpegSize(a.frames.at(-1)!).height === 1200, 5000, 'resized frame');
-    assert.deepEqual(jpegSize(a.frames.at(-1)!), { width: 1800, height: 1200 });
+    const resizedView = await a.next(m => m.type === 'view' && m.width === 900 && m.height === 600, 5000);
+    assert.equal(resizedView.dsf, 2, 'resize keeps the session\'s launch scale');
+    const max = s.castMax;
+    assert.ok(max, 'the running HiDPI cast has frame bounds');
+    const before = a.frames.length;
+    // Keep the input fixture repainting until a fresh frame arrives. Shrinking the
+    // viewport keeps the original cast bounds, so the encoded size can be scaled.
+    const repaint = await s.page.addStyleTag({ content: `
+      @keyframes repaint { to { opacity: 0.5; } }
+      #i { animation: repaint 100ms alternate infinite; }
+    ` });
+    try {
+      await until(() => {
+        if (a.frames.length <= before) return false;
+        const { width, height } = jpegSize(a.frames.at(-1)!);
+        return width > 0 && height > 0 && width <= max.width && height <= max.height &&
+          Math.abs(width - height * 900 / 600) <= 1;
+      }, 5000, 'resized frame');
+    } catch (error) {
+      t.diagnostic(JSON.stringify({ framesBefore: before, frames: a.frames.length,
+        sizes: a.frames.slice(-5).map(jpegSize), viewport: s.viewport, dsf: s.dsf, cast: !!s.cast, max }));
+      throw error;
+    } finally { await repaint.evaluate(element => element.parentNode?.removeChild(element)).catch(() => {}); }
 
     // Held reflects execution: Shift-down executed, Shift-up queued behind a
     // slow command, the socket closes → the queued up is purged, the release
@@ -351,8 +368,33 @@ test('the ward WebSocket: the stream\'s signaling rides each viewer\'s own socke
     // A third viewer on a server host stays on JPEG: two peers per session.
     const c = client('bw', sid); clients.push(c);
     await c.next(m => m.type === 'view');
-    c.send([{ t: 'resize', w: 1000, h: 700 }]); // a late viewer sees a frame at the next repaint (the client resizes on connect); the capture must not starve the screencast
-    await c.frame(8000);
+    c.send([{ t: 'resize', w: 1000, h: 700 }]);
+    await c.next(m => m.type === 'view' && m.width === 1000 && m.height === 700);
+    // A muted about:blank may not repaint on resize. Keep visible content changing
+    // while capture and the compositor settle; the capture must not starve JPEG.
+    const before = c.frames.length;
+    await s.page.setContent(`<style>
+      @keyframes repaint { to { opacity: 0.5; } }
+      h1 { animation: repaint 100ms alternate infinite; }
+    </style><h1>JPEG fallback while the tab is captured</h1>`);
+    const max = s.castMax;
+    assert.ok(max, 'the running JPEG cast has frame bounds');
+    try {
+      // tabCapture can scale the compositor surface within the original cast bounds.
+      // The new viewport's aspect ratio must survive, allowing one encoded pixel of rounding.
+      await until(() => {
+        if (c.frames.length <= before) return false;
+        const { width, height } = jpegSize(c.frames.at(-1)!);
+        return width > 0 && height > 0 && width <= max.width && height <= max.height &&
+          Math.abs(width - height * 1000 / 700) <= 1;
+      }, 8000, 'resized JPEG fallback frame');
+    } catch (error) {
+      t.diagnostic(JSON.stringify({
+        framesBefore: before, frames: [a.frames.length, b.frames.length, c.frames.length],
+        sizes: c.frames.slice(-5).map(jpegSize), viewport: s.viewport, dsf: s.dsf, cast: !!s.cast,
+      }));
+      throw error;
+    }
     await sleep(1000);
     assert.equal(c.msgs.some(m => m.type === 'rtc'), false, 'no stream for the third viewer');
 

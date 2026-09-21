@@ -256,11 +256,12 @@ dialog.fd-dialog.dev-project-dialog { border-radius:1.1rem; padding:1.6rem; }
 .term-agent-choices { display:flex; align-items:center; gap:.4rem; }
 .term-agent-choices .btn { border-color:transparent; background:transparent; color:var(--color-ink-muted); font-size:.75rem; }
 .term-agent-choices .btn:hover { border-color:var(--color-line); background:var(--color-surface-2); color:var(--color-ink); }
-.term-footer { display:flex; align-items:center; gap:.65rem; min-height:32px; padding:.4rem .1rem 0; flex-shrink:0; }
+.term-footer { display:flex; flex-wrap:wrap; align-items:center; gap:.65rem; min-height:32px; padding:.4rem .1rem 0; flex-shrink:0; }
+.term-footer .workspace-session-owner { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
 .term-project { display:inline-flex; align-items:center; gap:.35rem; min-width:0; max-width:35%; padding:.2rem; color:var(--color-ink-muted); border-radius:.3rem; font-size:.68rem; cursor:pointer; }
 .term-project span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .term-project:hover { color:var(--color-accent-hi); }
-.term-status { margin-left:auto; color:var(--color-ink-muted); font-size:.65rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.term-status { margin-left:auto; min-width:0; max-width:100%; color:var(--color-ink-muted); font-size:.65rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .term-status[data-state="active"]::before { content:''; display:inline-block; width:5px; height:5px; border-radius:50%; background:var(--color-ok); margin-right:.4rem; vertical-align:middle; }
 .term-status[data-state="attention"] { color:var(--color-warn); }
 /* A CLI session's permission mode (and the one queued for its next restart), before the status. */

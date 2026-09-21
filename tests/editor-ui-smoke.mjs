@@ -25,14 +25,21 @@ fs.writeFileSync(path.join(project,'package.json'),'{"name":"orbital","private":
 fs.writeFileSync(path.join(project,'binary.dat'),Buffer.from([0,1,2,3]));
 process.env.PLAYWRIGHT_BROWSERS_PATH ||= path.join(repo,'desktop/runtime/browsers');
 const {chromium}=await import('playwright-core');
-const child=spawn(process.execPath,['desktop-runtime.mjs'],{cwd:repo,env:{PATH:process.env.PATH,HOME:process.env.HOME,SHELL:process.env.SHELL},stdio:['pipe','pipe','pipe']});
+const child=spawn(process.execPath,['desktop-runtime.mjs'],{cwd:repo,env:{PATH:process.env.PATH,HOME:temp,USERPROFILE:temp,SHELL:process.env.SHELL},stdio:['pipe','pipe','pipe']});
 let browser,logs=''; child.stderr.on('data',d=>logs+=d);
 const ready=new Promise((resolve,reject)=>{
   const timer=setTimeout(()=>reject(Error('Desktop startup timeout '+logs)),20000);
-  readline.createInterface({input:child.stdout}).on('line',line=>{try{const m=JSON.parse(line);if(m.type==='ready'){clearTimeout(timer);resolve(m.url);}if(m.type==='vault')child.stdin.write(JSON.stringify({id:m.id,value:'[]'})+'\n');}catch{}});
+  readline.createInterface({input:child.stdout}).on('line',line=>{try{
+    const m=JSON.parse(line);
+    if(m.type==='ready'){clearTimeout(timer);resolve(m.url);}
+    if(m.type==='vault')child.stdin.write(JSON.stringify({id:m.id,value:'[]'})+'\n');
+    // This fixture has no native Screen lens; permission refresh must receive that answer.
+    if(m.type==='desktop' && ['lens-status','lens-start'].includes(m.op))
+      child.stdin.write(JSON.stringify({id:m.id,error:'Screen lens is unavailable in this UI fixture.'})+'\n');
+  }catch{}});
   child.once('exit',code=>{clearTimeout(timer);reject(Error('Desktop exited '+code+' '+logs));});
 });
-child.stdin.write(JSON.stringify({key:Buffer.alloc(32,7).toString('base64'),data:path.join(temp,'state'),browsers:process.env.PLAYWRIGHT_BROWSERS_PATH})+'\n');
+child.stdin.write(JSON.stringify({key:Buffer.alloc(32,7).toString('base64'),data:path.join(temp,'state'),documents:path.join(temp,'Documents'),browsers:process.env.PLAYWRIGHT_BROWSERS_PATH})+'\n');
 try {
   const url=await ready, origin=new URL(url).origin;
   browser=await chromium.launch({headless:true,channel:'chromium',args:['--disable-gpu']});

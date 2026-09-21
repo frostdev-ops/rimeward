@@ -6,7 +6,7 @@ Validated 2026-09-08. The investigation below records the original protocol prob
 
 The shared agent composer has microphone dictation, a per-message **Read aloud** action, **Stop voice**, an independent **Read responses** toggle, and a **Finish & Send** conversation mode. Read responses speaks new complete Rime messages without requesting microphone access. Dictation edits the saved draft and keeps the ordinary Send, steering, context, and approval paths. Stopping voice does not interrupt running agent tools.
 
-Voice uses the existing Codex OAuth connection through authenticated ward signaling and the paired-device harness. OAuth tokens stay on the server. A server control channel owns provider cleanup, one call per account, a five-minute active limit, and a 45-second client heartbeat deadline. Expired login, unavailable voice, and another call leave typed chat usable. Voice transcripts and provider events have no tool execution or canonical-message path.
+Voice uses the existing Codex OAuth connection through authenticated ward signaling and the paired-device harness. OAuth tokens stay on the installation serving the call. A server control channel owns provider cleanup, one call per account, a renewable five-minute lease, and a 45-second client heartbeat deadline. Each accepted heartbeat extends the lease up to the provider deadline; a late heartbeat cannot revive an expired call. Expired login, unavailable voice, and another call leave typed chat usable. Voice transcripts and provider events have no tool execution or canonical-message path.
 
 Dictation playback is muted: live validation found that the voice model can echo microphone speech despite its instructions. Read-aloud supplies only the selected assistant message. Numbers and code names can be pronounced differently; the displayed Rime message remains authoritative. No billing or plan-allowance claims are made.
 
@@ -18,9 +18,26 @@ Live synthetic checks of the implemented conversation client submitted the compl
 
 A disposable built-UI check also passed: the Read responses checkbox never requested microphone access; direct-stream and delayed mirror delivery spoke a stable event ID once; distinct events with identical text both spoke; `done` and history refresh did not replay speech. Switching Home/Away pages preserved playback, queued replies, and the toggle. Typed Enter still submitted during conversational playback and connection startup. The fixture made three synthetic agent requests, no provider calls, and reported no page errors.
 
-The manual-flow gate is satisfied by the user report. Hands-free automatic submission was removed once the provider's own turn detection was adopted: it guessed at turn boundaries from microphone loudness followed by 2.5 seconds of silence and 1.2 seconds of transcript quiet, which was an explicit heuristic and never a provider finalization guarantee. The same sampler still drives barge-in. Finish & Send and manual Stop drain for at least two seconds and 1.2 seconds of transcript quiet, with a six-second ceiling. An unsettled transcript stays editable. Live testing showed that `session.close` is not a transcript flush: closing about 800 ms after speech cut off punctuation.
+The manual-flow gate is satisfied by the earlier user report. Hands-free automatic submission has been removed; provider-driven conversational submission has not shipped. The removed mode guessed at turn boundaries from microphone loudness followed by 2.5 seconds of silence and 1.2 seconds of transcript quiet, which was an explicit heuristic and never a provider finalization guarantee. The sampler remains for barge-in and requires sustained sound rather than accumulating unrelated noise bursts. Finish & Send and manual Stop drain for at least two seconds and 1.2 seconds of transcript quiet, with a six-second ceiling. An unsettled transcript stays editable. Live testing showed that `session.close` is not a transcript flush: closing about 800 ms after speech cut off punctuation.
 
 Only input transcript fragments edit the draft. Provider delegation text and voice output never become agent requests or approvals. Newly received `says` and `reply` messages carry stable event identifiers shared by the direct stream and live mirror, preventing duplicate speech across those deliveries; stored history and repeated `done` data do not enqueue speech. Speech is sent sequentially in chunks of at most 500 UTF-8 bytes. Barge-in immediately mutes playback and clears queued speech, then closes the old call and waits for server acknowledgement before reconnecting capture. The UI shows Connecting during that gap; it does not promise to capture words spoken before Listening.
+
+### Voice implementation review (2026-09-21)
+
+Call admission reserves the account before asynchronous orphan recovery. A durable lease records the original account, credential generation, and owning process; another live process cannot take it over. Recovery requires `session.closed` from the provider. A refused socket, timeout, changed credential, or old record without account identity remains uncertain until expiry. The diagnostic probe uses the same admission and cleanup path and refuses all existing leases. These changes do not establish that every provider-side orphan can be recovered.
+
+The client shares audio ownership across live voice and clip dictation. Teardown waits preserve every unconfirmed result. Delayed Stop/drain/permission/recording callbacks cannot close a newer capture, and queued read-aloud does not interrupt manual dictation or an unsent draft. Retired Hands-free mode has no submission path.
+
+`tests/voice-delegation-probe.mjs --check` performs local, read-only preflight without refreshing tokens or calling the provider. An actual run uses one Chromium instance and a loopback page, injects synthetic audio only after the connection and context seed are ready, maintains the lease, records each incoming/outgoing frame, and waits for acknowledged provider closure in cleanup. Unknown probe names fail before admission. `p5` isolates the commentary and omitted-channel cases; `p6` isolates baseline, initial history, and a tools array, so all six probe groups make nine calls. Accepting a tools field does not establish executable function tools.
+
+Run on an installation with the existing ChatGPT connection. Select `RIMEWARD_PROBE_USER` and `RIMEWARD_PROBE_WARD` when ambiguous. macOS uses `say`; elsewhere supply synthetic WAV files named for each case through `RIMEWARD_PROBE_AUDIO_DIR`. No build is needed:
+
+```sh
+node --env-file-if-exists=.env tests/voice-delegation-probe.mjs --check
+node --env-file-if-exists=.env tests/voice-delegation-probe.mjs p1 p5
+```
+
+The probe is diagnostic and creates real provider usage when run without `--check`. No protocol conclusions, silent-channel guarantee, acoustic echo validation, or completed persistent voice conversation are implied by its presence. Delegation behavior still needs observed provider results; real speaker/microphone behavior needs the target signed desktop app.
 
 
 ## Clip dictation (the other credentials)

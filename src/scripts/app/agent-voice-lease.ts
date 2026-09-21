@@ -20,7 +20,7 @@ export interface VoiceOwner { dispose: () => void }
 
 let owner: VoiceOwner | undefined;
 let releasing: Promise<boolean> = Promise.resolve(true);
-window.addEventListener('pagehide', () => owner?.dispose());
+if (typeof window !== 'undefined') window.addEventListener('pagehide', () => owner?.dispose());
 
 /** Take the page's single capture/playback owner, disposing whoever held it. */
 export function claimOwner(identity: VoiceOwner) {
@@ -32,15 +32,15 @@ export function releaseOwner(identity: VoiceOwner) { if (owner === identity) own
 
 /** Whether the previously held lease has confirmed it closed. A new call must wait on this. */
 export const releasePending = () => releasing;
-/** Queue a teardown behind the ones before it, so starts and stops stay in order. */
+/** Wait for every teardown; an unconfirmed earlier call cannot be hidden by a later local close. */
 export function chainRelease(release: Promise<boolean>): Promise<boolean> {
   const previous = releasing;
-  const next = Promise.all([previous, release]).then(([, closed]) => closed);
+  const next = Promise.all([previous.catch(() => false), release.catch(() => false)]).then(([before, closed]) => before && closed);
   releasing = next;
   return next;
 }
 /** Forget an unconfirmed close: the authoritative answer is the server's, on the next attempt. */
-export function resetRelease() { releasing = Promise.resolve(true); }
+export function resetRelease(expected: Promise<boolean>) { if (releasing === expected) releasing = Promise.resolve(true); }
 
 export async function signal(
   ward: string,

@@ -50,6 +50,11 @@ try {
   await page.addInitScript(liveStreamFixture);
   let inputPosts=0;
   await page.route('**/api/dev/input*',async route=>{inputPosts++;await route.continue();});
+  await page.route('**/api/workspaces*',async route=>{
+    const request=route.request(), body=request.method()==='POST'?request.postDataJSON():null;
+    if(body?.action==='dev' && body.operation==='input')inputPosts++;
+    await route.fallback();
+  });
   await page.goto(url);
   await page.waitForURL('**/desktop/start');
   await page.getByRole('button',{name:'Continue without connecting'}).click();
@@ -156,26 +161,35 @@ try {
   assert.equal(await expanded.isVisible(),true,'Escape closes menu before expanded terminal');
   await expanded.getByRole('button',{name:'Close',exact:true}).click();
   // New session options are secondary; missing agent guidance doesn't run a CLI.
-  await page.route('**/api/dev/capabilities*',async route=>{const r=await route.fetch();const v=await r.json();v.agents={codex:false,claude:false};await route.fulfill({json:v});});
+  await page.route('**/api/workspaces*',async route=>{
+    const request=route.request(), body=request.method()==='POST'?request.postDataJSON():null;
+    if(body?.action==='dev' && body.ward==='terminal-ui' && body.operation==='capabilities' && body.method==='GET'){
+      const r=await route.fetch();const v=await r.json();v.agents={codex:false,claude:false};await route.fulfill({json:v});
+    }else await route.fallback();
+  });
   await page.reload();
   await ward.getByText('You’re in control',{exact:true}).waitFor();
   assert.equal((await page.evaluate(()=>fetch('/api/dev/sessions').then(r=>r.json()))).length,1,'reload keeps the same session and ownership');
   // A transient snapshot failure must recover even when the live stream is idle.
   let failedSnapshots = 0;
-  await page.route('**/api/dev/sessions*', async route => {
-    if (route.request().method() === 'GET' && !failedSnapshots++)
+  // Workspace reads use POST envelopes; fault this pane's snapshot, not the session list.
+  const failSnapshot = async route => {
+    const request = route.request(), body = request.method() === 'POST' ? request.postDataJSON() : null;
+    if (body?.action === 'dev' && body.ward === 'terminal-ui' && body.operation === 'sessions' &&
+        body.method === 'GET' && body.args?.id === first.id && !failedSnapshots++)
       await route.fulfill({status:503,json:{error:'Transient snapshot failure'}});
-    else await route.continue();
-  });
+    else await route.fallback();
+  };
+  await page.route('**/api/workspaces*', failSnapshot);
   await page.reload();
   await ward.getByText('You’re in control',{exact:true}).waitFor();
   assert.ok(failedSnapshots > 1, 'the snapshot is retried without output or user input');
-  await page.unroute('**/api/dev/sessions*');
+  await page.unroute('**/api/workspaces*', failSnapshot);
   await ward.getByRole('button',{name:'New terminal session'}).click();
   let launch=page.getByRole('dialog',{name:'New terminal session',exact:true});
   await launch.locator('select[aria-label="Program"]').selectOption('codex',{force:true});
   assert.equal(await launch.getByRole('button',{name:'Start Codex'}).isDisabled(),true);
-  assert.match(await launch.innerText(),/isn’t installed/);
+  assert.match(await launch.innerText(),/Managed Codex sessions are unavailable at this location\./);
   await launch.locator('select[aria-label="Program"]').selectOption('shell',{force:true});
   await launch.getByRole('button',{name:'Open terminal',exact:true}).click();
   await ward.getByText('Shared with Rime',{exact:true}).waitFor();
@@ -236,6 +250,11 @@ try {
   const divider=ward.locator('.term-divider');
   const d=await divider.boundingBox();
   await page.mouse.move(d.x+d.width/2,d.y+d.height/2);await page.mouse.down();await page.mouse.move(d.x+120,d.y+d.height/2,{steps:4});await page.mouse.up();
+  // The pointer-up handler saves asynchronously; observe persistence before reading it back.
+  await page.waitForFunction(async()=>{
+    const response=await fetch('/api/dev/view?id=terminal-ui');
+    return response.ok && (await response.json()).groups?.[0]?.ratio>0.55;
+  });
   state=await view();
   assert.ok(state.groups[0].ratio>0.55,'divider drag changes the saved ratio');
   assert.equal(await fits(ward.locator('.term-panes')),true,'panes still fit after resizing');
@@ -288,7 +307,15 @@ try {
   mobile.on('pageerror',e=>errors.push(e.message));await mobile.goto(origin+'/dash');
   const mobileWard=mobile.locator('[data-wd="terminal-ui"]');
   await mobileWard.getByRole('button',{name:'Take control',exact:true}).click();
-  await mobileWard.getByText('You’re in control',{exact:true}).waitFor();
+  await mobileWard.getByText('You’re in control',{exact:true}).waitFor().catch(async error=>{
+    console.error(JSON.stringify(await mobileWard.locator('.term-footer').evaluate(el=>({
+      width:el.getBoundingClientRect().width,
+      children:[...el.children].map(child=>({class:child.className,text:child.textContent,hidden:child.hidden,
+        width:child.getBoundingClientRect().width,height:child.getBoundingClientRect().height,
+        display:getComputedStyle(child).display,flex:getComputedStyle(child).flex})),
+    }))));
+    throw error;
+  });
   await ward.getByText('Viewing · controlled elsewhere',{exact:true}).waitFor();
   assert.equal(await mobileWard.locator('.term-keys').isVisible(),true);
   assert.equal(await mobileWard.locator('.term-toolbar').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);

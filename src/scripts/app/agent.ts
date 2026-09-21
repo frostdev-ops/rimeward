@@ -410,6 +410,10 @@ interface State {
   attachments: { id: string; name: string }[];
   uploading: number;
   draft: string;
+  /** One pending Send across the ward and its expanded composer. */
+  submitting?: symbol;
+  /** Retained through voice drain so a cancelled Send cannot submit later edits. */
+  voiceSubmission?: () => boolean;
   childDrafts?: Map<string, { text: string; questionId?: number }>;
   mentions: WardMention[];
   clearing: boolean;
@@ -643,25 +647,27 @@ async function pickRoute(st: State, value: string): Promise<void> {
 }
 
 function hideVoiceCapture(st: State) {
-  if (![...st.uis].some(ui => ui.root.isConnected && ui.root.getClientRects().length > 0)) void st.voice?.viewHidden();
+  if (![...st.uis].some(ui => ui.root.isConnected && ui.root.getClientRects().length > 0)) {
+    void st.voice?.viewHidden(); st.clip?.cancel();
+  }
 }
 window.addEventListener('fd:page', () => { for (const st of states.values()) hideVoiceCapture(st); });
 document.addEventListener('visibilitychange', () => {
   document.documentElement.classList.toggle('ag-page-hidden', document.hidden);
-  if (document.visibilityState === 'hidden') for (const st of states.values()) void st.voice?.viewHidden();
+  if (document.visibilityState === 'hidden') for (const st of states.values()) { void st.voice?.viewHidden(); st.clip?.cancel(); }
 });
 
 function voiceFor(st: State) {
   return st.voice ??= createAgentVoice({
     ward: st.w.i,
     getDraft: () => st.draft,
-    setDraft: value => setDraft(st, value),
+    setDraft: value => setDraft(st, value, true),
     isAlive: () => readLayout().some(w => w.i === st.w.i && w.type === 'agent'),
     submitDraft: async expected => {
+      if (st.voiceSubmission && !st.voiceSubmission()) return false;
       if (st.draft !== expected || st.pending || st.clearing || st.uploading || st.configured === false) return false;
       if (!expected.trim()) return false;
-      submitText(st, expected.trim());
-      return st.draft === '';
+      return submitText(st, expected.trim());
     },
     onState: state => { st.voiceState = state; paint(st); },
   });
@@ -673,7 +679,7 @@ function clipFor(st: State) {
   return st.clip ??= createClipDictation({
     ward: st.w.i,
     getDraft: () => st.draft,
-    setDraft: value => setDraft(st, value),
+    setDraft: value => setDraft(st, value, true),
     onState: state => { st.clipState = state; paint(st); },
   });
 }
@@ -1129,7 +1135,8 @@ function restoreSurface(st: State, data: { conversation?: number; transcript?: T
   st.ownerRuntimeId = nextOwner;
   st.ownerName = data.ownerName;
   st.modelAccess = data.modelAccess;
-  st.placementBlocked = undefined;
+  // An unchanged snapshot cannot settle a New chat request whose response was lost.
+  if (!st.newChatRequest) st.placementBlocked = undefined;
   st.items = itemsFrom(data.live?.transcript ?? data.transcript ?? []);
   const matched = new Set<Item>();
   for (const item of st.items) if (item.k === 'msg') {
@@ -1159,14 +1166,16 @@ function restoreSurface(st: State, data: { conversation?: number; transcript?: T
   return run;
 }
 
-function setDraft(st: State, value: string): void {
+function setDraft(st: State, value: string, transcribing = false): void {
+  // A pending Send may accept the transcription tail, but never a later composer edit.
+  if (!transcribing) st.submitting = undefined;
   st.draft = value;
   try { saveDraft(st); } catch { /* Explicit permission checkpoint reports storage failure. */ }
   for (const ui of st.uis) {
     if (ui.input.value !== value) ui.input.value = value;
     autoGrow(ui.input);
     paintChips(st, ui.chips);
-    ui.send.disabled = st.configured === false || st.uploading > 0 || st.clearing || (!value.trim() && !st.attachments.length);
+    ui.send.disabled = !!st.placementBlocked || !!st.pending?.question || st.configured === false || st.uploading > 0 || st.clearing || (!value.trim() && !st.attachments.length);
   }
 }
 
@@ -1218,7 +1227,7 @@ function saveDraft(st: State) {
 window.addEventListener('fd:before-workspace-navigation', event => {
   (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(Promise.resolve().then(() => {
     for (const st of states.values()) {
-      st.voice?.dispose();
+      st.voice?.dispose(); st.clip?.dispose();
       if (st.uploading) throw Error('Wait for Rime attachments to finish uploading before relaunching.');
       saveDraft(st);
       const ui = [...st.uis].find(ui => ui.root.closest('dialog[open]')) ?? [...st.uis][0];
@@ -1237,7 +1246,7 @@ function paintQuestion(st: State, ui: Ui): void {
   if (!drafts.has(question.id)) drafts.set(question.id, readDesktopState<UserAnswer>(checkpoint) ?? (question.input === 'multiple' ? [] : ''));
   const save = (value: UserAnswer) => { drafts.set(question.id, value); saveDesktopState(checkpoint, value); paint(st); };
   const answer = async (value: UserAnswer | null) => {
-    if (st.questionSubmitting || currentQuestion(st)?.id !== question.id) return;
+    if (st.questionSubmitting || st.clearing || st.placementBlocked || currentQuestion(st)?.id !== question.id) return;
     st.questionSubmitting = true; paint(st);
     const payload = { action: 'answer-question', questionId: question.id, answer: value };
     try {
@@ -1285,7 +1294,7 @@ function paintQuestion(st: State, ui: Ui): void {
   const text = box.querySelector<HTMLTextAreaElement>('textarea');
   if (text) { if (text.value !== value) text.value = typeof value === 'string' ? value : ''; text.disabled = !!st.questionSubmitting; }
   const valid = Array.isArray(value) ? value.length > 0 : typeof value === 'string' && !!value.trim() && value.length <= 8000;
-  for (const button of box.querySelectorAll<HTMLButtonElement>('button')) button.disabled = !!st.questionSubmitting || (button.hasAttribute('data-question-submit') && !valid);
+  for (const button of box.querySelectorAll<HTMLButtonElement>('button')) button.disabled = !!st.questionSubmitting || st.clearing || !!st.placementBlocked || (button.hasAttribute('data-question-submit') && !valid);
   box.setAttribute('aria-busy', String(!!st.questionSubmitting));
 }
 
@@ -1346,11 +1355,11 @@ function paint(st: State): void {
     if (ui.status.textContent !== status) ui.status.textContent = status;
     paintContext(ui.context, st.context);
     ui.root.dataset.working = String(working);
-    ui.input.disabled = !!st.placementBlocked || !!st.pending?.question;
+    ui.input.disabled = !!st.placementBlocked || !!st.pending?.question || st.clearing;
     ui.input.placeholder = st.pending?.question ? 'Answer the question above to continue…' : st.configured === false ? 'Reconnect or configure a local provider in Account…' : working ? 'Add a follow-up…' : 'Message Rime…';
-    ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-attach]').forEach(b => { b.disabled = st.configured === false; });
-    ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-clear]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
-    ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-history]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0; });
+    ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-attach]').forEach(b => { b.disabled = st.configured === false || st.clearing; });
+    ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-clear]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0 || !!st.questionSubmitting; });
+    ui.root.querySelectorAll<HTMLButtonElement>('[data-ag-history]').forEach(b => { b.disabled = working || st.clearing || st.uploading > 0 || !!st.questionSubmitting; });
     ui.stop.classList.toggle('hidden', !st.busy && !st.remote); // server-side stop — any client, any turn
     ui.stop.disabled = !!st.stopping;
     ui.stop.setAttribute('aria-label', st.stopping ? 'Requesting stop' : 'Stop');
@@ -1363,6 +1372,7 @@ function paint(st: State): void {
     ui.tasksButton.dataset.waiting = String(waiting > 0);
     ui.pendingBox.classList.toggle('hidden', !st.pending || !!st.pending.question);
     ui.pendingBox.classList.toggle('flex', !!st.pending && !st.pending.question);
+    ui.pendingBox.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = st.busy || st.clearing || !!st.placementBlocked; });
     ui.pendingText.textContent = st.pending?.summary ?? '';
     ui.pendingDetails.hidden = !st.pending?.patch;
     if (ui.pendingPatchSource !== (st.pending?.patch ?? '')) {
@@ -1379,15 +1389,15 @@ function paint(st: State): void {
  *  turn-finished ping: the chain hasn't released `busy` yet at that instant, so
  *  trusting it there would strand a spinner and a disabled composer. */
 async function refetch(st: State, settled = false): Promise<void> {
-  if (!st.uis.size) return; // The initial render owns mounting; a reconnect must not supersede it.
+  if (!st.uis.size || st.clearing) return; // The initial render and New chat own their transitions.
   const revision = st.revision;
   const refresh = ++st.refresh;
   const { status, data } = await getJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { signal: AbortSignal.timeout(10_000) }).catch(() => ({ status: 0, data: null }));
+  if (st.clearing || st.busy || st.refresh !== refresh || st.revision !== revision && !data?.live) return;
   if (status !== 200 || !data) {
     if (data?.transition) { st.newChatRequest = data.transition; st.placementBlocked = data.error ?? 'Reconcile the new conversation before continuing.'; paint(st); }
     return;
   }
-  if (st.busy || st.refresh !== refresh || st.revision !== revision && !data.live) return;
   st.configured = data.configured;
   if (data.dictation === 'live' || data.dictation === 'clip' || data.dictation === null) st.dictation = data.dictation;
   st.context = data.context ?? undefined;
@@ -1609,20 +1619,23 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
 
   try {
     await flushMentionedWards(Array.isArray(payload.ward_ids) ? payload.ward_ids : []);
+    if (st.abort !== controller) return;
     const res = await fetch(`/api/agent/${encodeURIComponent(st.w.i)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
+    if (st.abort !== controller) { await res.body?.cancel().catch(() => {}); return; }
 
     // Error paths (busy, not-configured) and slash commands answer plain JSON.
     if (!res.headers.get('content-type')?.includes('text/event-stream')) {
       const data = await res.json().catch(() => null);
+      if (st.abort !== controller) return;
       endTurn(st);
       if (res.ok && data?.command) {
         if (data.command === 'clear') {
-          st.voice?.dispose();
+          st.voice?.dispose(); st.clip?.cancel();
           // The empty log IS the confirmation, and clearThread's ping would
           // wipe a note here anyway. Other clients follow from that ping.
           st.items = [];
@@ -1652,8 +1665,9 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
     accepted = true;
     // A malformed stream recovers from the stored transcript instead of silently losing events.
     await readSse(res.body!, payload => { if (payload !== '[DONE]') dispatch(JSON.parse(payload)); }, undefined, controller.signal);
-    if (!completed) reconnect();
+    if (!completed && st.abort === controller) reconnect();
   } catch (err) {
+    if (completed || st.abort !== controller) return;
     if (accepted && !completed) { reconnect(); return; }
     endTurn(st);
     if ((err as Error)?.name === 'AbortError') {
@@ -1664,9 +1678,11 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
     }
     fail(st, err instanceof Error ? err.message : 'network error', restore);
   } finally {
-    if (st.abort === controller) st.abort = null;
-    if (!st.remote) reloadHolds.delete(st.w.i);
-    flushPendingLayout(); // a layout broadcast that landed mid-turn can go now
+    if (st.abort === controller) {
+      st.abort = null;
+      if (!st.remote) reloadHolds.delete(st.w.i);
+      flushPendingLayout(); // a layout broadcast that landed mid-turn can go now
+    }
   }
 }
 
@@ -1675,40 +1691,41 @@ function submit(st: State, ui: Ui): void {
 }
 
 /** Send text as this ward's next message. Separate from the composer: a voice call outlives its view. */
-function submitText(st: State, text: string): void {
-  if (st.configured === false || st.pending?.question) return;
-  if (text.length > 8000) { toast('Messages are limited to 8,000 characters.'); return; }
+function submitText(st: State, text: string): boolean {
+  if (st.placementBlocked || st.configured === false || st.pending?.question) return false;
+  if (text.length > 8000) { toast('Messages are limited to 8,000 characters.'); return false; }
   const mentions = activeMentions(text, st.mentions);
-  if ((!text && !st.attachments.length) || st.uploading > 0 || st.clearing) return;
+  if ((!text && !st.attachments.length) || st.uploading > 0 || st.clearing) return false;
   for (const view of st.uis) view.follow = true;
-  if (parseCommand(text)?.name === 'tasks') {
+  const command = parseCommand(text);
+  if (command?.name === 'tasks') {
     setDraft(st, '');
     openTasks(st);
-    return;
+    return true;
   }
-  if (parseCommand(text)?.name === 'background') {
+  if (command?.name === 'background') {
     setDraft(st, '');
     void background(st);
-    return;
+    return true;
   }
-  if (parseCommand(text)?.name === 'clear') {
-    if (st.busy || st.remote) { toast('Finish the active response before starting a new conversation.'); return; }
+  if (command?.name === 'clear') {
+    if (st.busy || st.remote || st.questionSubmitting) { toast('Finish the active response before starting a new conversation.'); return false; }
     void clearChat(st);
-    return;
+    return true;
   }
   // Mid-turn (here or elsewhere), a message is a steer: it lands inside the
   // running turn and paints from its 'user' event. Commands stay commands.
-  if ((st.busy || st.remote) && !text.startsWith('/')) {
+  if ((st.busy || st.remote) && !command) {
     if (st.attachments.length) {
       toast('Attachments send once this turn finishes.');
-      return;
+      return false;
     }
     setDraft(st, '');
     st.mentions = [];
     void steer(st, text, mentions);
-    return;
+    return true;
   }
-  if (st.busy) return; // a command while this client streams — the server answers it, the stream stays
+  if (st.busy) return false; // a command while this client streams — the server answers it, the stream stays
   setDraft(st, '');
   if (text) st.items.push({ k: 'msg', role: 'user', text: tagMentionMessage(text, mentions) });
   const sent = st.attachments;
@@ -1717,15 +1734,20 @@ function submitText(st: State, text: string): void {
   st.attachments = [];
   st.mentions = [];
   void post(st, { message: text, file_ids, ward_mentions: mentions, ward_ids: mentions.map(m => m.ward) }, { files: sent, mentions });
+  return true;
 }
 
 /** Steer the running turn. steered:false = it ended first, so send normally. */
 async function steer(st: State, text: string, mentions: WardMention[] = []): Promise<void> {
+  const conversation = st.conversation, owner = st.ownerRuntimeId;
+  const current = () => !st.clearing && st.conversation === conversation && st.ownerRuntimeId === owner;
   try { await flushMentionedWards(mentions.map(m => m.ward)); }
-  catch (e) { fail(st, e instanceof Error ? e.message : 'Could not save ward context', { text, mentions }); return; }
+  catch (e) { if (current()) fail(st, e instanceof Error ? e.message : 'Could not save ward context', { text, mentions }); return; }
+  if (!current()) return;
   const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { message: text, ward_mentions: mentions, ward_ids: mentions.map(m => m.ward), mode: 'steer' });
-  if (status === 200 && data?.steered) return;
-  if (status === 200 && data && !st.busy) {
+  if (!current()) return;
+  if (status === 200 && data?.steered === true) return;
+  if (status === 200 && data?.steered === false && !st.busy) {
     st.items.push({ k: 'msg', role: 'user', text: tagMentionMessage(text, mentions) });
     void post(st, { message: text, ward_mentions: mentions, ward_ids: mentions.map(m => m.ward) }, { mentions });
     return;
@@ -2177,7 +2199,7 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
   childLive.set(task.id, onLive);
   const timer = setInterval(() => { void refresh(); }, 2000);
   d.addEventListener('close', () => {
-    saveDraft(); clearInterval(timer); cancelAnimationFrame(childFrame); childUi.scroll?.dispose(); childState.voice?.dispose();
+    saveDraft(); clearInterval(timer); cancelAnimationFrame(childFrame); childUi.scroll?.dispose(); childState.voice?.dispose(); childState.clip?.dispose();
     if (childLive.get(task.id) === onLive) childLive.delete(task.id);
     d.remove();
     [...tasksDialog.querySelectorAll<HTMLButtonElement>('[data-ag-child]')].find(button => button.dataset.agChild === task.id)?.focus();
@@ -2188,7 +2210,7 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
 
 function decide(st: State, action: 'confirm' | 'decline'): void {
   const pending = st.pending;
-  if (!pending || st.busy) return;
+  if (!pending || st.busy || st.clearing || st.placementBlocked) return;
   st.pending = null; // hide the bar immediately; the stream reports the outcome
   // …but a request that never landed (busy 409) leaves the confirm parked
   // server-side, so the bar has to come back or the retry is unclickable.
@@ -2196,9 +2218,13 @@ function decide(st: State, action: 'confirm' | 'decline'): void {
 }
 
 async function clearChat(st: State): Promise<void> {
-  if (st.busy || st.remote || st.clearing || st.uploading) return;
-  st.voice?.dispose();
+  if (st.busy || st.remote || st.clearing || st.uploading || st.questionSubmitting) return;
   st.clearing = true;
+  st.submitting = undefined;
+  st.revision++;
+  st.refresh++; // An earlier surface read must not replace the result or a clear failure.
+  st.voice?.dispose();
+  st.clip?.cancel();
   paint(st);
   const key = `rimeward-new-chat:${st.w.i}:${st.ownerRuntimeId ?? ''}:${st.conversation ?? 'empty'}`;
   let idempotencyKey: string;
@@ -2206,9 +2232,14 @@ async function clearChat(st: State): Promise<void> {
   try { const saved = sessionStorage.getItem(key); retry ||= !!saved; idempotencyKey = st.newChatRequest ?? saved ?? crypto.randomUUID(); sessionStorage.setItem(key, idempotencyKey); }
   catch { idempotencyKey = st.newChatRequest ?? crypto.randomUUID(); }
   st.newChatRequest = idempotencyKey;
-  const { ok, data } = await postJson('/api/agent-placement', { action: 'new', ward: st.w.i, idempotencyKey, expectedConversation: st.conversation ?? null, ...(!retry ? { expectedOwnerRuntimeId: st.ownerRuntimeId } : {}) });
+  const { ok, status, data } = await postJson('/api/agent-placement', { action: 'new', ward: st.w.i, idempotencyKey, expectedConversation: st.conversation ?? null, ...(!retry ? { expectedOwnerRuntimeId: st.ownerRuntimeId } : {}) });
   st.clearing = false;
-  if (!ok) { fail(st, data?.error ?? 'Could not start a new chat. Try again.', {}); return; }
+  if (!ok || !Number.isSafeInteger(data?.conversation) || data.conversation < 1 || typeof data.ownerRuntimeId !== 'string' || !data.ownerRuntimeId || data.idempotencyKey !== idempotencyKey) {
+    const error = typeof data?.error === 'string' && data.error ? data.error : undefined;
+    if (ok || status === 0 || !error) st.placementBlocked = 'New chat could not be confirmed. Retry New chat before sending.';
+    fail(st, error ?? st.placementBlocked ?? 'Could not confirm a new chat. Try again.', {});
+    return;
+  }
   try { sessionStorage.removeItem(key); } catch { /* The durable server receipt remains authoritative. */ }
   st.newChatRequest = undefined; st.placementBlocked = undefined;
   st.items = [];
@@ -2224,7 +2255,7 @@ async function clearChat(st: State): Promise<void> {
 }
 
 async function addFiles(st: State, picked: FileList | File[]): Promise<void> {
-  if (st.configured === false) return;
+  if (st.configured === false || st.clearing) return;
   const list = Array.from(picked);
   if (!list.length) return;
   const form = new FormData();
@@ -2412,6 +2443,8 @@ function wireCommandMenu(ui: Ui, run: () => void, cur: () => State | undefined):
       return;
     }
     ui.input.value = now ? `/${c.name}` : `/${c.name} `;
+    const st = cur();
+    if (st) { st.voice?.draftEdited(); setDraft(st, ui.input.value); }
     close();
     if (now) run();
     else {
@@ -2473,25 +2506,31 @@ function wireCommandMenu(ui: Ui, run: () => void, cur: () => State | undefined):
  *  at event time — the dialog rebinds wards without re-adding listeners. */
 function wireComposer(ui: Ui, cur: () => State | undefined): void {
   const file = ui.root.querySelector<HTMLInputElement>('input[type="file"]')!;
-  let sending = false;
   const go = async () => {
     const st = cur();
-    if (!st || sending) return;
-    sending = true;
+    if (!st || st.submitting || st.voiceSubmission || st.clearing || st.placementBlocked) return;
+    const conversation = st.conversation, owner = st.ownerRuntimeId;
+    const submission = Symbol();
+    const ownsSubmission = () => st.submitting === submission && cur() === st && ui.root.isConnected && st.conversation === conversation && st.ownerRuntimeId === owner;
+    st.submitting = submission;
     try {
       if (st.voiceState && st.voiceState.mode !== 'off' && ['listening', 'finishing'].includes(st.voiceState.phase)) {
+        st.voiceSubmission = ownsSubmission;
         await st.voice?.finishAndSend();
       } else {
         await st.voice?.finishDraft();
-        if (cur() === st && ui.root.isConnected) submit(st, ui);
+        if (ownsSubmission()) submit(st, ui);
       }
-    } finally { sending = false; }
+    } finally {
+      if (st.submitting === submission) st.submitting = undefined;
+      if (st.voiceSubmission === ownsSubmission) st.voiceSubmission = undefined;
+    }
   };
   ui.microphone.addEventListener('click', () => {
     const st = cur();
     if (!st) return;
     if (st.dictation === 'clip') { void clipFor(st).toggle(); return; }
-    if (st.voiceState && st.voiceState.mode !== 'off') void st.voice?.finishAndSend();
+    if (st.voiceState && st.voiceState.mode !== 'off') void go();
     else if (st.voiceState?.phase === 'speaking') void st.voice?.stop();
     else if (st.voiceState && !['idle', 'error'].includes(st.voiceState.phase)) void st.voice?.finishDraft();
     else void voiceFor(st).dictate();
@@ -2880,6 +2919,7 @@ async function openHistory(w:WardInstance) {
 async function renderAgent(w: WardInstance): Promise<void> {
   ensureStream();
   const st = stateFor(w);
+  if (st.clearing) return;
   const revision = st.revision;
   const refresh = ++st.refresh;
   const { status, data } = await getJson(`/api/agent/${encodeURIComponent(w.i)}`).catch(() => ({ status: 0, data: null }));
@@ -3041,4 +3081,6 @@ function watchAgent(ward: string): void {
 
 // ------------------------------------------------------------------- registry
 
-RENDERERS.agent = { render: (w) => renderAgent(w), preserveBody: true, stop: id => states.get(id)?.voice?.dispose() }; // event-driven — no poll
+RENDERERS.agent = { render: (w) => renderAgent(w), preserveBody: true, stop: id => {
+  const st = states.get(id); st?.voice?.dispose(); st?.clip?.dispose();
+} }; // event-driven — no poll

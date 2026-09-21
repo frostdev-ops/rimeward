@@ -183,6 +183,8 @@ try {
   const origin = "https://localhost:" + proxy.address().port;
   const desktop = child(["desktop-runtime.mjs"], {
     HOMEPAGE_DATA_DIR: path.join(temporary, "desktop"),
+    HOME: temporary,
+    USERPROFILE: temporary,
     NODE_EXTRA_CA_CERTS: cert,
   });
   const boot = ready(desktop, "ready");
@@ -190,6 +192,7 @@ try {
     JSON.stringify({
       key: Buffer.alloc(32, 7).toString("base64"),
       data: path.join(temporary, "desktop"),
+      documents: path.join(temporary, "Documents"),
       browsers: process.env.PLAYWRIGHT_BROWSERS_PATH || path.join(runtime, "browsers"),
     }) + "\n",
   );
@@ -513,6 +516,8 @@ try {
   await terminal.getByRole('button', { name: 'Open terminal', exact: true }).click();
   const sessionTab = terminal.locator('[role=tab][data-session]').first();
   await sessionTab.waitFor();
+  // Creating the tab precedes the UI's control request; let that request finish before takeover.
+  await terminal.getByText('Shared with Rime', { exact: true }).waitFor();
   const session = { id: await sessionTab.getAttribute('data-session') };
   await post(desktopPage, "/api/dev/control", {
     id: session.id,
@@ -717,12 +722,17 @@ try {
   );
 } finally {
   if (browser) await browser.close();
-  for (const p of children) if (p.exitCode === null) p.kill("SIGTERM");
   for (const s of connections) s.destroy();
   proxy?.close();
+  await Promise.all(children.map(async p => {
+    if (p.exitCode !== null || p.signalCode !== null) return;
+    const exited = once(p, 'exit');
+    const timeout = setTimeout(() => p.kill('SIGKILL'), 4000).unref();
+    p.kill('SIGTERM');
+    try { await exited; } finally { clearTimeout(timeout); }
+  }));
   fs.rmSync(path.join(repo, "tests/.handoff-server-fixture.mjs"), {
     force: true,
   });
-  await new Promise((r) => setTimeout(r, 500));
   fs.rmSync(temporary, { recursive: true, force: true });
 }

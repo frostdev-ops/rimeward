@@ -36,6 +36,8 @@ try {
   browser=await chromium.launch({headless:true,channel:'chromium',args:['--disable-gpu']});
   const errors=[], requests=[];
   let failClear=false, rejectMessage=false, transcript=[];
+  const conversations=new Map([['rime',1],['reviewer',2]]);
+  let nextConversation=3;
   let commsPosts=0,commReads=0;
   const configure = async (ctx) => {
     await ctx.addCookies([{name:'rimeward_session',value:info.cookie,url:origin}]);
@@ -45,12 +47,18 @@ try {
       commReads++;
       return route.fulfill({json:route.request().url().includes('view=messages')?{messages:[]}:{type:'push',hasToken:true,tokenOptional:true,status:'ready',channel:'updates',self:{name:'Project updates'}}});
     });
+    await ctx.route('**/api/agent-placement',async route=>{
+      const body=route.request().postDataJSON(); requests.push(body);
+      if(failClear)return route.fulfill({status:503,json:{error:'Try again shortly'}});
+      conversations.set(body.ward,nextConversation++);
+      transcript=[];
+      return route.fulfill({json:{conversation:conversations.get(body.ward),ownerRuntimeId:'server',idempotencyKey:body.idempotencyKey}});
+    });
     await ctx.route('**/api/agent/**',async route=>{
       const req=route.request();
-      if(req.method()==='GET')return route.fulfill({json:{configured:true,provider:'codex',context:{model:'catalog-model',tokens:30000,window:100000,compactAt:90000,source:'catalog'},transcript:new URL(req.url()).pathname.endsWith('reviewer')?[]:transcript,pending:null,busy:false}});
+      if(req.method()==='GET')return route.fulfill({json:{configured:true,provider:'codex',conversation:conversations.get(new URL(req.url()).pathname.split('/').at(-1)),ownerRuntimeId:'server',context:{model:'catalog-model',tokens:30000,window:100000,compactAt:90000,source:'catalog'},transcript:new URL(req.url()).pathname.endsWith('reviewer')?[]:transcript,pending:null,busy:false}});
       if(new URL(req.url()).pathname.endsWith('/files'))return route.fulfill({json:{files:[{ok:true,id:'12',name:'example.txt'}]}});
       const body=req.postDataJSON(); requests.push(body);
-      if(body.action==='clear')return route.fulfill({status:failClear?503:200,json:failClear?{error:'Try again shortly'}:{ok:true}});
       if(body.action==='interrupt'||body.mode==='steer')return route.fulfill({json:{ok:true,steered:true}});
       if(rejectMessage)return route.fulfill({status:503,json:{error:'Provider unavailable. Your draft is safe.'}});
       return route.fulfill({contentType:'text/event-stream',body:'data: '+JSON.stringify({type:'reply',text:'A concise answer with **clear next steps**.'})+'\n\ndata: '+JSON.stringify({type:'done'})+'\n\n'});

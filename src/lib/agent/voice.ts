@@ -5,7 +5,7 @@ import { accountMeta, getAgentAccount, credentialGeneration } from './accounts.t
 import { getDashboard } from '../dashboard.ts';
 import { getDb } from '../db.ts';
 import { limitDeviceAuth } from '../dev/device-auth.ts';
-import { deleteSetting, getSetting, setSetting } from '../settings.ts';
+import { getSetting, setSetting } from '../settings.ts';
 
 const SDP_MAX = 64 * 1024;
 const LEASE_MS = 5 * 60_000;
@@ -14,19 +14,44 @@ const HEARTBEAT_MS = 45_000;
 const PROVIDER_EXPIRY_MS = 2 * 60 * 60_000 + 60_000;
 const leaseKey = (user: number) => `voice:lease:${user}`;
 /** The tombstone that outlives this process: when a call may still be billing, and which call it is. */
-interface Tombstone { until: number; callId?: string }
+interface Tombstone { until: number; callId?: string; account?: string; generation?: string; pid?: number; instance?: string; lease?: string }
+const processInstance = randomUUID();
+const CALL_ID = /^[a-zA-Z0-9_-]{8,200}$/;
 function readTombstone(user: number): Tombstone | null {
   const raw = getSetting(leaseKey(user));
   if (!raw) return null;
   // Older rows stored the bare expiry; they have no call id to hang up with.
   let value: unknown;
-  try { value = raw.startsWith('{') ? JSON.parse(raw) as unknown : Number(raw); } catch { return null; }
+  try { value = JSON.parse(raw) as unknown; } catch { throw fail('The previous voice session record is unreadable. Its closure cannot be confirmed.', 409); }
   const until = typeof value === 'number' ? value : Number((value as Tombstone)?.until);
-  if (!Number.isFinite(until) || until <= Date.now()) return null;
-  const callId = typeof value === 'object' && value ? (value as Tombstone).callId : undefined;
-  return { until, callId: typeof callId === 'string' ? callId : undefined };
+  if (!Number.isFinite(until) || until <= 0) throw fail('The previous voice session record is invalid. Its closure cannot be confirmed.', 409);
+  if (until <= Date.now()) return null;
+  const mark = typeof value === 'object' && value ? value as Tombstone : undefined;
+  return { until, callId: typeof mark?.callId === 'string' && CALL_ID.test(mark.callId) ? mark.callId : undefined,
+    account: typeof mark?.account === 'string' ? mark.account : undefined,
+    generation: typeof mark?.generation === 'string' ? mark.generation : undefined,
+    pid: typeof mark?.pid === 'number' && Number.isSafeInteger(mark.pid) && mark.pid > 0 ? mark.pid : undefined,
+    instance: typeof mark?.instance === 'string' ? mark.instance : undefined,
+    lease: typeof mark?.lease === 'string' ? mark.lease : undefined };
 }
-const writeTombstone = (user: number, mark: Tombstone) => { setSetting(leaseKey(user), JSON.stringify(mark)); };
+const writeTombstone = (user: number, lease: Lease) => {
+  setSetting(leaseKey(user), JSON.stringify({ until: lease.providerExpiresAt, callId: lease.callId,
+    account: lease.account, generation: lease.generation, pid: process.pid, instance: processInstance, lease: lease.id }));
+};
+function clearTombstone(user: number, lease: Lease): void {
+  const raw = getSetting(leaseKey(user));
+  if (!raw) return;
+  try {
+    const mark = JSON.parse(raw) as Tombstone;
+    if (mark.lease === lease.id && mark.instance === processInstance)
+      getDb().prepare('DELETE FROM settings WHERE key=? AND value=?').run(leaseKey(user), raw);
+  } catch { /* A damaged or replaced record is never proof that our lease still owns it. */ }
+}
+function anotherProcessOwns(mark: Tombstone): boolean {
+  if (!mark.pid || mark.instance === processInstance) return false;
+  try { process.kill(mark.pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
+}
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const fail = (message: string, status = 400) => Object.assign(new Error(message), { status });
 
@@ -62,6 +87,8 @@ interface Lease {
 }
 // ponytail: one Node process owns calls; use a shared lease store before running multiple workers.
 const leases = new Map<number, Lease>();
+// Reserve before orphan recovery awaits the network; concurrent starts must not both create calls.
+const admitting = new Set<number>();
 let sweep: ReturnType<typeof setInterval> | undefined;
 
 async function boundedText(body: ReadableStream<Uint8Array> | null, max: number) {
@@ -114,10 +141,13 @@ const controlSocket = (callId: string, headers: Record<string, string>) =>
 /** Ask the provider to end a call and wait for it to say so. True only on an acknowledged close. */
 function closeSocket(socket: WebSocket | undefined, acknowledged: () => boolean): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) { resolve(false); return; }
-    const finish = () => { clearTimeout(timeout); socket.off('close', finish); socket.terminate(); resolve(acknowledged()); };
+    if (acknowledged()) { socket?.terminate(); resolve(true); return; }
+    if (!socket || socket.readyState !== WebSocket.OPEN) { socket?.terminate(); resolve(false); return; }
+    const onMessage = () => { if (acknowledged()) finish(); };
+    const finish = () => { clearTimeout(timeout); socket.off('close', finish); socket.off('message', onMessage); socket.terminate(); resolve(acknowledged()); };
     const timeout = setTimeout(finish, 3000);
     socket.once('close', finish);
+    socket.on('message', onMessage);
     socket.send(JSON.stringify({ type: 'session.close' }), error => { if (error) finish(); });
   });
 }
@@ -135,11 +165,16 @@ async function closeLease(lease: Lease): Promise<boolean> {
  * provider's two-hour window locks the user out of voice for two hours. Hang it up instead.
  */
 async function hangUpOrphan(user: number, mark: Tombstone): Promise<boolean> {
-  if (!mark.callId) return false;
+  if (!mark.callId || !mark.account || !mark.generation || anotherProcessOwns(mark)) return false;
+  const recorded = getSetting(leaseKey(user));
   let headers: Record<string, string>;
   try {
+    const account = getAgentAccount(user, 'codex');
+    if (!account || credentialGeneration(user, 'codex') !== mark.generation ||
+        accountMeta(account).account_id !== mark.account) return false;
     const tokens = await ensureFreshTokens(user);
-    if (!tokens.account_id || !tokens.access_token) return false;
+    if (!tokens.access_token || tokens.account_id !== mark.account || tokens.credential !== mark.generation ||
+        credentialGeneration(user, 'codex') !== mark.generation) return false;
     headers = {
       Authorization: `Bearer ${tokens.access_token}`, 'chatgpt-account-id': tokens.account_id,
       'content-type': 'application/json', 'openai-alpha': 'quicksilver=v2', originator: 'codex_cli_rs',
@@ -157,10 +192,10 @@ async function hangUpOrphan(user: number, mark: Tombstone): Promise<boolean> {
     socket.once('error', () => { resolve(false); });
     socket.once('close', () => { resolve(false); });
   });
-  // An already-dead call refuses the socket; that is the outcome we wanted, so treat it as closed.
-  if (!opened) { socket.terminate(); deleteSetting(leaseKey(user)); return true; }
+  // A timeout, rejected credential or refused socket does not prove the call ended.
+  if (!opened) { socket.terminate(); return false; }
   const closed = await closeSocket(socket, () => acknowledged);
-  if (closed) deleteSetting(leaseKey(user));
+  if (closed) getDb().prepare('DELETE FROM settings WHERE key=? AND value=?').run(leaseKey(user), recorded);
   return closed;
 }
 
@@ -170,7 +205,7 @@ function ensureSweep() {
     const now = Date.now();
     for (const [user, lease] of leases) {
       if (lease.closed || lease.providerExpiresAt <= now) {
-        leases.delete(user); deleteSetting(leaseKey(user));
+        leases.delete(user); clearTombstone(user, lease);
         lease.socket?.terminate();
         continue;
       }
@@ -194,11 +229,11 @@ async function attachControl(user: number, lease: Lease, callId: string, headers
       if (event.type === 'session.usage.updated' && event.session_usage) lease.usage = event.session_usage;
       if (event.type === 'session.closed') {
         lease.closed = true;
-        if (leases.get(user) === lease) deleteSetting(leaseKey(user));
+        if (leases.get(user) === lease) clearTombstone(user, lease);
       }
       if (event.type === 'session.started' && Number.isFinite(event.session?.expires_at) && event.session.expires_at * 1000 > Date.now() && leases.get(user) === lease && !lease.closed) {
         lease.providerExpiresAt = event.session.expires_at * 1000 + 60_000;
-        writeTombstone(user, { until: lease.providerExpiresAt, callId: lease.callId });
+        writeTombstone(user, lease);
       }
     } catch { /* Voice content never enters Rime's executor or canonical history. */ }
   });
@@ -211,7 +246,7 @@ async function attachControl(user: number, lease: Lease, callId: string, headers
 
 /** Included in the runtime's existing graceful shutdown; tombstones survive an unclean exit. */
 export async function shutdownVoice() {
-  await Promise.all([...leases.values()].map(closeLease));
+  return (await Promise.all([...leases.values()].map(closeLease))).every(Boolean);
 }
 
 /** Only signaling and lease control. Audio and transcript events never run agent tools. */
@@ -228,28 +263,55 @@ export async function voiceAction(user: number, ward: string, principal: string,
       if (closed && leases.get(user) === lease) leases.delete(user);
       return { ok: true, closed };
     }
-    const active = !lease.closing && !lease.closed && lease.expiresAt > Date.now() && stillAuthorized(user, lease) && lease.socket?.readyState === WebSocket.OPEN;
+    const now = Date.now();
+    const active = lease.ready && !lease.closing && !lease.closed && lease.expiresAt > now && lease.providerExpiresAt > now &&
+      now - lease.heartbeat <= HEARTBEAT_MS && stillAuthorized(user, lease) && lease.socket?.readyState === WebSocket.OPEN;
     if (active) {
-      lease.heartbeat = Date.now();
-      lease.expiresAt = Math.min(Date.now() + LEASE_MS, lease.providerExpiresAt);
+      lease.heartbeat = now;
+      lease.expiresAt = Math.min(now + LEASE_MS, lease.providerExpiresAt);
     } else void closeLease(lease);
     return { active, expiresAt: lease.expiresAt, closed: lease.closed, usage: lease.usage };
   }
+  return admitVoice(user, ward, principal, body, credential);
+}
+
+/** Server-side diagnostic entry only. HTTP callers always use the fixed dictation/read-aloud session. */
+export function probeVoiceCall(user: number, ward: string, body: Extract<VoiceAction, { action: 'start' }>, session: Record<string, unknown>): Promise<VoiceReply> {
+  return admitVoice(user, ward, `probe:${process.pid}`, body, undefined, session);
+}
+
+async function admitVoice(user: number, ward: string, principal: string, body: Extract<VoiceAction, { action: 'start' }>, credential?: string, session?: Record<string, unknown>): Promise<VoiceReply> {
   validateSdp(body.sdp);
+  if (admitting.has(user)) throw fail('Voice is already connecting. Wait for that attempt to finish.', 409);
+  admitting.add(user);
+  try { return await startVoice(user, ward, principal, body, credential, session); }
+  finally { admitting.delete(user); }
+}
+
+async function startVoice(user: number, ward: string, principal: string, body: Extract<VoiceAction, { action: 'start' }>, credential?: string, session?: Record<string, unknown>): Promise<VoiceReply> {
   // Conversation playback rotates acknowledged peers: two starts per full listen/read cycle.
   limitDeviceAuth(`voice-start:${user}`, 60);
   if (!getDashboard(user).some(w => w.i === ward && w.type === 'agent')) throw fail('Agent ward unavailable.', 404);
-  const previous = leases.get(user);
-  if (previous && !previous.closed && previous.providerExpiresAt > Date.now()) throw fail('Voice is active in another view. Stop it there before starting again.', 409);
-  previous?.socket?.terminate();
-  const orphan = readTombstone(user);
-  if (orphan && !await hangUpOrphan(user, orphan)) throw fail('A previous voice call may still be active and could not be closed. Wait for it to expire before starting again.', 409);
-  if (!getAgentAccount(user, 'codex')) throw fail('Connect ChatGPT under Account → Agent to use voice.', 503);
+  const account = getAgentAccount(user, 'codex');
+  if (!account) throw fail('Connect ChatGPT under Account → Agent to use voice.', 503);
   const generation = credentialGeneration(user, 'codex');
   if (credential && credential !== generation) throw fail('ChatGPT connection changed before voice admission.', 409);
-  const lease: Lease = { id: randomUUID(), owner: body.owner, principal, ward, expiresAt: Date.now() + LEASE_MS, providerExpiresAt: Date.now() + PROVIDER_EXPIRY_MS, heartbeat: Date.now(), account: '', generation, closed: false, ready: false };
+  const previous = leases.get(user), now = Date.now();
+  if (previous && !previous.closed && previous.providerExpiresAt > now) {
+    if (session || (!previous.closing && previous.expiresAt > now && (!previous.ready || now - previous.heartbeat <= HEARTBEAT_MS)))
+      throw fail('Voice is active in another view. Stop it there before starting again.', 409);
+    await closeLease(previous);
+  }
+  previous?.socket?.terminate();
+  const orphan = readTombstone(user);
+  if (orphan && (session || !await hangUpOrphan(user, orphan))) throw fail('A previous voice call may still be active and could not be closed. Wait for it to expire before starting again.', 409);
+  const lease: Lease = { id: randomUUID(), owner: body.owner, principal, ward, expiresAt: Date.now() + LEASE_MS, providerExpiresAt: Date.now() + PROVIDER_EXPIRY_MS, heartbeat: Date.now(), account: String(accountMeta(account).account_id ?? ''), generation, closed: false, ready: false };
+  // The probe and the app can be separate processes using the same local database.
+  getDb().transaction(() => {
+    if (readTombstone(user)) throw fail('Voice is already active in another process.', 409);
+    writeTombstone(user, lease);
+  }).immediate();
   leases.set(user, lease);
-  writeTombstone(user, { until: lease.providerExpiresAt });
   ensureSweep();
   let sent = false;
   try {
@@ -258,6 +320,8 @@ export async function voiceAction(user: number, ward: string, principal: string,
     if (tokens.credential !== generation || credentialGeneration(user, 'codex') !== generation)
       throw fail('ChatGPT connection changed while voice was starting. Nothing was sent to its replacement.', 409);
     lease.account = tokens.account_id;
+    if (lease.closed || lease.closing || leases.get(user) !== lease || !stillAuthorized(user, lease)) throw fail('Voice connection was cancelled.', 409);
+    writeTombstone(user, lease);
     const headers = {
       Authorization: `Bearer ${tokens.access_token}`, 'chatgpt-account-id': tokens.account_id,
       'content-type': 'application/json', 'openai-alpha': 'quicksilver=v2', originator: 'codex_cli_rs',
@@ -270,6 +334,7 @@ export async function voiceAction(user: number, ward: string, principal: string,
         model: 'gpt-live-1-codex',
         instructions: 'You are the voice interface for Rimeward. Say supplied speakable context aloud verbatim. Never repeat microphone speech or answer it yourself. Wait for speakable context from the agent. Do not use tools.',
         audio: { output: { voice: 'cove' } }, delegation: { type: 'client', ack_filler: false },
+        ...session,
       } }),
     });
     if (!response.ok) {
@@ -279,21 +344,22 @@ export async function voiceAction(user: number, ward: string, principal: string,
     }
     const location = response.headers.get('location') ?? '';
     const callId = new URL(location, 'https://chatgpt.com').pathname.split('/').filter(Boolean).at(-1);
-    if (!callId || !/^[a-zA-Z0-9_-]{8,200}$/.test(callId)) {
+    if (!callId || !CALL_ID.test(callId)) {
       await response.body?.cancel();
       throw fail('Voice returned an invalid call identifier.', 502);
     }
     lease.callId = callId;
-    writeTombstone(user, { until: lease.providerExpiresAt, callId });
+    writeTombstone(user, lease);
     await attachControl(user, lease, callId, headers);
     const sdp = await boundedText(response.body, SDP_MAX);
     validateSdp(sdp);
-    if (lease.closed || lease.closing || !stillAuthorized(user, lease)) throw fail('Voice connection was cancelled.', 409);
+    if (lease.closed || lease.closing || lease.socket?.readyState !== WebSocket.OPEN || !stillAuthorized(user, lease)) throw fail('Voice connection was cancelled.', 409);
     lease.heartbeat = Date.now();
+    lease.expiresAt = Math.min(lease.heartbeat + LEASE_MS, lease.providerExpiresAt);
     lease.ready = true;
     return { sdp, lease: lease.id, expiresAt: lease.expiresAt };
   } catch (error) {
-    if (!sent && leases.get(user) === lease) { leases.delete(user); deleteSetting(leaseKey(user)); }
+    if (!sent && leases.get(user) === lease) { leases.delete(user); clearTombstone(user, lease); }
     else void closeLease(lease);
     if (error instanceof Error && 'status' in error) throw error;
     throw fail('Voice connection was interrupted. The previous call may still be active; it will not be retried automatically.', 502);

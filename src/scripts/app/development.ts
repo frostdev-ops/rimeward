@@ -498,6 +498,7 @@ async function mount(w: WardInstance) {
           if (!groupOf(id)) groups = [...groups, id];
           zoomed = undefined;
           await save();
+          if (stopped) return;
           render();
           panes.get(id)?.focus();
         });
@@ -520,6 +521,7 @@ async function mount(w: WardInstance) {
           state = { ...state, session: next, tabs: [...tabs], closedSessions: [...closed] };
           zoomed = undefined;
           await save();
+          if (stopped) return;
           render();
           (focused()?.el.contains(document.activeElement) ? undefined : sessions.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? newButton)?.focus();
           const running = ids.find(id => list.find(s => s.id === id)?.state === "running");
@@ -538,12 +540,25 @@ async function mount(w: WardInstance) {
           // permissions in terminal_start instead. A shell ignores the mode.
           const s: SessionView = previous ? await api("restart", { id: previous }, "POST") :
             await api("sessions", { project: state.project, kind: "shell", mode: "approvals", cols: size?.cols ?? 100, rows: size?.rows ?? 30, ...options }, "POST");
+          // Finish any list snapshot begun before creation before adding the new session.
+          await refreshing;
+          if (stopped) return;
           if (!list.some(x => x.id === s.id)) list.unshift(s);
-          if (place && groupOf(place.target) && !groupOf(s.id)) groups = groups.map(g => has(g, place.target) ? insert(g, place.target, s.id, place.side) : g);
+          const existingGroup = groupOf(s.id);
+          if (place && groupOf(place.target) && (!existingGroup || existingGroup === s.id)) {
+            // A created-session event may already have added a standalone tab. The requested
+            // split still owns that initial placement; keep an explicitly regrouped pane intact.
+            groups = groups.filter(g => g !== s.id).map(g => has(g, place.target) ? insert(g, place.target, s.id, place.side) : g);
+            await save();
+            if (stopped) return;
+            render();
+          }
           await attach(s.id);
+          if (stopped) return;
           await api("control", { id: s.id, takeover: true }, "POST");
+          if (stopped) return;
           const p = panes.get(s.id);
-          if (p) { p.reclaim(); await p.update(); p.resize(); p.focus(); }
+          if (p) { p.reclaim(); await p.update(); if (!stopped) { p.resize(); p.focus(); } }
         } finally {
           launching = false;
           if (!stopped) draw();

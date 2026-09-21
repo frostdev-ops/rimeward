@@ -503,13 +503,12 @@ async function send(m: Mount, cmds: Cmd[], driver?: LocalDriver): Promise<void> 
   }
 }
 
-/** Canvas pixel → remote viewport CSS px: the frame is viewport × dsf pixels
- *  drawn object-fit:contain, so it may be letterboxed inside the canvas. While
- *  the video shows, the viewport `view` announced is the picture's size — the
- *  encoder may be sending fewer pixels than that at any moment. */
+/** Map the contained picture to the announced remote CSS viewport. Both video
+ *  and JPEG encoders can scale frames independently of the device scale factor;
+ *  the bitmap size is only a fallback for drivers without viewport metadata. */
 function toPage(m: Mount, e: { clientX: number; clientY: number }, surface = m.canvas): { x: number; y: number } {
   const r = surface.getBoundingClientRect();
-  const live = !m.video.hidden ? m.viewport : undefined;
+  const live = m.viewport;
   const cw = live ? live.width : (surface.width || 1) / m.dsf;
   const ch = live ? live.height : (surface.height || 1) / m.dsf;
   const scale = Math.min(r.width / cw, r.height / ch) || 1;
