@@ -12,7 +12,7 @@ import type { ContextUsage } from '../../lib/agent/context.ts';
 // below builds DOM nodes and never touches innerHTML.
 
 import { ACTIONS } from '../../lib/logic.ts';
-import { createAgentVoice, type VoiceState } from './agent-voice.ts';
+import { createAgentVoice, type ConversationVoiceMode, type VoiceState } from './agent-voice.ts';
 import { createClipDictation, type DictationState } from './agent-dictation.ts';
 import { completeCommand, parseCommand, type CommandSpec } from '../../lib/agent/commands.ts';
 import type { AgentTask } from '../../lib/agent/tasks.ts';
@@ -657,14 +657,10 @@ function voiceFor(st: State) {
     getDraft: () => st.draft,
     setDraft: value => setDraft(st, value),
     isAlive: () => readLayout().some(w => w.i === st.w.i && w.type === 'agent'),
-    canAutoSend: () => document.visibilityState !== 'hidden' && !st.pending && !st.clearing && !st.uploading && !st.attachments.length && st.configured !== false &&
-      [...st.uis].some(ui => ui.root.isConnected && ui.root.getClientRects().length > 0) &&
-      ![...st.uis].some(ui => document.activeElement === ui.input),
     submitDraft: async expected => {
       if (st.draft !== expected || st.pending || st.clearing || st.uploading || st.configured === false) return false;
-      const ui = [...st.uis].find(ui => ui.root.isConnected && ui.root.getClientRects().length > 0);
-      if (!ui || !expected.trim()) return false;
-      submit(st, ui);
+      if (!expected.trim()) return false;
+      submitText(st, expected.trim());
       return st.draft === '';
     },
     onState: state => { st.voiceState = state; paint(st); },
@@ -1675,8 +1671,12 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
 }
 
 function submit(st: State, ui: Ui): void {
+  submitText(st, ui.input.value.trim());
+}
+
+/** Send text as this ward's next message. Separate from the composer: a voice call outlives its view. */
+function submitText(st: State, text: string): void {
   if (st.configured === false || st.pending?.question) return;
-  const text = ui.input.value.trim();
   if (text.length > 8000) { toast('Messages are limited to 8,000 characters.'); return; }
   const mentions = activeMentions(text, st.mentions);
   if ((!text && !st.attachments.length) || st.uploading > 0 || st.clearing) return;
@@ -2506,7 +2506,7 @@ function wireComposer(ui: Ui, cur: () => State | undefined): void {
   ui.readResponses.addEventListener('change', () => { const st = cur(); if (st) void voiceFor(st).setReadResponses(ui.readResponses.checked); });
   ui.conversationMode.addEventListener('change', () => {
     const st = cur();
-    if (st) void voiceFor(st).setConversation(ui.conversationMode.value as 'off' | 'finish-send' | 'hands-free');
+    if (st) void voiceFor(st).setConversation(ui.conversationMode.value as ConversationVoiceMode);
   });
   ui.picker.provider.addEventListener('change', () => { const st = cur(); if (st) void pickRoute(st, ui.picker.provider.value); });
   ui.picker.model.addEventListener('change', () => {
@@ -2666,7 +2666,7 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   readLabel.append(readResponses, document.createTextNode('Read responses')); readLabel.title = 'Read each reply aloud';
   const modeLabel = el('label');
   const conversationMode = el('select'); conversationMode.setAttribute('aria-label', 'Voice conversation mode');
-  for (const [value, label] of [['off', 'Off'], ['finish-send', 'Finish & Send'], ['hands-free', 'Hands-free']]) {
+  for (const [value, label] of [['off', 'Off'], ['finish-send', 'Finish & Send']]) {
     const option = el('option', undefined, label); option.value = value!; conversationMode.append(option);
   }
   modeLabel.append(document.createTextNode('Conversation'), conversationMode); modeLabel.title = 'Voice conversation mode';

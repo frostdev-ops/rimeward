@@ -1,4 +1,6 @@
-export type ConversationVoiceMode = 'off' | 'finish-send' | 'hands-free';
+import { chainRelease, claimOwner, ownsAudio, releaseOwner, releasePending, resetRelease, signal, type SignalReply } from './agent-voice-lease.ts';
+
+export type ConversationVoiceMode = 'off' | 'finish-send';
 export interface VoiceState {
   phase: 'idle' | 'connecting' | 'listening' | 'finishing' | 'speaking' | 'error';
   message: string;
@@ -13,9 +15,7 @@ interface VoiceHooks {
   onState: (state: VoiceState) => void;
   isAlive?: () => boolean;
   submitDraft?: (expected: string) => Promise<boolean>;
-  canAutoSend?: () => boolean;
 }
-interface SignalReply { sdp?: string; lease?: string; expiresAt?: number; active?: boolean; closed?: boolean }
 interface Call {
   owner: string;
   lease?: string;
@@ -48,10 +48,6 @@ interface Call {
 // fd-voice-wire=1. Off by default — transcripts are the user's speech.
 const wireLog = (() => { try { return localStorage.getItem('fd-voice-wire') === '1'; } catch { return false; } })();
 
-// Capture and queued playback have one owner even while its chat is hidden.
-let owner: { dispose: () => void } | undefined;
-let releasing: Promise<boolean> = Promise.resolve(true);
-window.addEventListener('pagehide', () => owner?.dispose());
 const normalized = (text: string) => text.trim().replace(/\s+/g, ' ');
 
 // The experimental speakable wire accepts at most 500 UTF-8 bytes per append.
@@ -91,11 +87,10 @@ export function createAgentVoice(hooks: VoiceHooks) {
   let analyser: AnalyserNode | undefined, microphoneSource: MediaStreamAudioSourceNode | undefined;
   let sampleTimer: ReturnType<typeof setTimeout> | undefined;
   let mode: ConversationVoiceMode = 'off', readEnabled = false, revision = 0, transitioning = false, sending = false;
-  let lastInput = 0, lastSpeech = 0, voiceMs = 0, sampleAt = 0, noiseFloor = 0.002, edited = false, submitted = false;
+  let lastInput = 0, voiceMs = 0, sampleAt = 0, noiseFloor = 0.002, edited = false, submitted = false;
   let lastState: Pick<VoiceState, 'phase' | 'message'> = { phase: 'idle', message: '' };
   const queue: { text: string; key: string }[] = [], readKeys = new Set<string>();
   const identity = { dispose };
-  const url = `/api/agent/${encodeURIComponent(hooks.ward)}/voice?_ward=${encodeURIComponent(hooks.ward)}`;
 
   function announce(phase: VoiceState['phase'], message: string) {
     lastState = { phase, message };
@@ -105,7 +100,7 @@ export function createAgentVoice(hooks: VoiceHooks) {
     if (current !== call) return;
     call.phase = phase; announce(phase, message);
   }
-  function claim() { if (owner !== identity) owner?.dispose(); owner = identity; }
+  function claim() { claimOwner(identity); }
   function audioPurpose(capture: boolean) {
     if (!audioSession) return;
     previousAudioPurpose ??= audioSession.type;
@@ -125,31 +120,22 @@ export function createAgentVoice(hooks: VoiceHooks) {
       try { audioSession.type = previousAudioPurpose; } catch { /* Optional browser API. */ }
       previousAudioPurpose = undefined;
     }
-    if (owner === identity) owner = undefined;
+    releaseOwner(identity);
   }
   function stopCapture() {
     clearTimeout(sampleTimer); sampleTimer = undefined;
     microphone?.getTracks().forEach(track => { track.stop(); }); microphone = undefined;
     microphoneSource?.disconnect(); microphoneSource = undefined; analyser = undefined;
   }
-  function resetInput() { lastInput = 0; lastSpeech = 0; voiceMs = 0; edited = !!hooks.getDraft().trim(); }
+  function resetInput() { lastInput = 0; voiceMs = 0; edited = !!hooks.getDraft().trim(); }
   function observeMicrophone() {
     if (!audio || !microphone || analyser || mode === 'off') return;
     microphoneSource = audio.createMediaStreamSource(microphone);
     analyser = audio.createAnalyser(); analyser.fftSize = 2048; microphoneSource.connect(analyser);
     sampleAt = Date.now(); sample();
   }
-  async function request(call: Call, action: 'start' | 'status' | 'stop', sdp?: string): Promise<SignalReply> {
-    const response = await fetch(url, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, cache: 'no-store',
-      body: JSON.stringify({ action, owner: call.owner, lease: call.lease, sdp }),
-      // Keep harvesting a slow refresh/create after the shorter UI connection timeout closes media.
-      signal: AbortSignal.timeout(action === 'start' ? 90_000 : 10_000), keepalive: action === 'stop',
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(typeof data?.error === 'string' ? data.error : 'Voice is unavailable. Try again.');
-    return data;
-  }
+  const request = (call: Call, action: 'start' | 'status' | 'stop', sdp?: string): Promise<SignalReply> =>
+    signal(hooks.ward, action, { owner: call.owner, lease: call.lease, sdp });
   function later(call: Call, fn: () => void, ms: number) {
     const timer = setTimeout(() => { call.timers.delete(timer); if (current === call) fn(); }, ms);
     call.timers.add(timer);
@@ -167,15 +153,12 @@ export function createAgentVoice(hooks: VoiceHooks) {
     call.channel.close(); call.peer.close();
     call.resolveDrain?.(false); call.resolveDrain = undefined; call.resolveEnd();
     if (!call.released) {
-      const previous = releasing;
-      const release = (async () => {
+      call.released = chainRelease((async () => {
         if (call.starting && !call.lease) call.lease = (await call.starting).lease;
         if (!call.lease) return true;
         const result = await request(call, 'stop');
         return result.closed === true || call.closedAck === true;
-      })().catch(() => false);
-      call.released = Promise.all([previous, release]).then(([, closed]) => closed);
-      releasing = call.released;
+      })().catch(() => false));
     }
     if (mode === 'off') stopCapture();
     if (!keepContext) closeAudioIfUnused();
@@ -272,13 +255,13 @@ export function createAgentVoice(hooks: VoiceHooks) {
       if (current) close(current, '', true);
       audio = context;
       await resumed;
-      if (epoch !== revision || owner !== identity || (kind === 'dictation' && conversational && mode === 'off')) return;
-      if (!await releasing) {
+      if (epoch !== revision || !ownsAudio(identity) || (kind === 'dictation' && conversational && mode === 'off')) return;
+      if (!await releasePending()) {
         // A later explicit attempt may ask the authoritative server again; never retry creation here.
-        releasing = Promise.resolve(true);
+        resetRelease();
         throw new Error('The previous voice session has not confirmed it closed. Wait before starting again.');
       }
-      if (epoch !== revision || owner !== identity || (kind === 'dictation' && conversational && mode === 'off')) return;
+      if (epoch !== revision || !ownsAudio(identity) || (kind === 'dictation' && conversational && mode === 'off')) return;
       const source = context.createConstantSource(); source.offset.value = 0;
       const destination = context.createMediaStreamDestination(); source.connect(destination); source.start();
       const peer = new RTCPeerConnection(), channel = peer.createDataChannel('oai-events');
@@ -302,7 +285,7 @@ export function createAgentVoice(hooks: VoiceHooks) {
       channel.onopen = () => {
         if (current !== owned) return;
         clearTimeout(timeout); owned.timers.delete(timeout);
-        state(owned, kind === 'dictation' ? 'listening' : 'speaking', kind === 'speech' ? 'Reading reply aloud…' : mode === 'hands-free' ? 'Listening — pauses send your message.' : mode === 'finish-send' ? 'Listening — Finish & Send when ready.' : 'Listening — edit or send when ready.');
+        state(owned, kind === 'dictation' ? 'listening' : 'speaking', kind === 'speech' ? 'Reading reply aloud…' : mode === 'finish-send' ? 'Listening — Finish & Send when ready.' : 'Listening — edit or send when ready.');
         if (kind === 'speech') sendChunk(owned);
       };
       let stream = call.silence;
@@ -345,23 +328,18 @@ export function createAgentVoice(hooks: VoiceHooks) {
     if (rms < threshold) noiseFloor = noiseFloor * 0.98 + rms * 0.02;
     if (current && !transitioning && !sending && !current.drain && ['listening', 'speaking'].includes(current.phase)) {
       if (rms >= threshold) {
-        voiceMs += Math.min(100, now - sampleAt); lastSpeech = now;
+        voiceMs += Math.min(100, now - sampleAt);
         if (current.kind === 'speech' && voiceMs >= 120) void bargeIn();
-      }
-      if (mode === 'hands-free' && current.kind === 'dictation' && voiceMs >= 200 &&
-          now - lastSpeech >= 2500 && now - lastInput >= 1200 && hooks.getDraft().trim()) {
-        if (hooks.canAutoSend?.() === false) edited = true;
-        if (!edited && hooks.canAutoSend?.() && !hooks.getDraft().trimStart().startsWith('/')) void submitCurrent(true);
       }
     }
     sampleAt = now;
     if (!transitioning) void pump();
     sampleTimer = setTimeout(sample, 20);
   }
-  async function submitCurrent(automatic: boolean): Promise<void> {
+  async function submitCurrent(): Promise<void> {
     if (sending || mode === 'off' || !hooks.submitDraft) return;
     const expected = hooks.getDraft(), epoch = revision;
-    if (!expected.trim() || expected.length > 8000 || (automatic && (edited || !hooks.canAutoSend?.() || expected.trimStart().startsWith('/')))) return;
+    if (!expected.trim() || expected.length > 8000) return;
     sending = true;
     try {
       const accepted = await hooks.submitDraft(expected);
@@ -394,12 +372,12 @@ export function createAgentVoice(hooks: VoiceHooks) {
     const quiet = await drain(call, false);
     if (epoch !== revision || current !== call) return;
     call.drain = undefined;
-    if (quiet) await submitCurrent(false);
+    if (quiet) await submitCurrent();
     else { edited = true; announce('listening', 'Transcript is still arriving. Review your draft, then Finish & Send.'); }
     if (epoch !== revision || current !== call) return;
     try { await call.sender?.replaceTrack(microphone?.getAudioTracks()[0] ?? null); }
     catch (error) { if (current === call) fail(error); return; }
-    state(call, 'listening', !quiet ? 'Transcript is still arriving. Review your draft, then Finish & Send.' : edited ? 'Review your draft, then Finish & Send.' : mode === 'hands-free' ? 'Listening — pauses send your message.' : 'Listening — Finish & Send when ready.');
+    state(call, 'listening', !quiet ? 'Transcript is still arriving. Review your draft, then Finish & Send.' : edited ? 'Review your draft, then Finish & Send.' : 'Listening — Finish & Send when ready.');
     void pump();
   }
   async function resumeListening(epoch: number) {
@@ -440,7 +418,7 @@ export function createAgentVoice(hooks: VoiceHooks) {
       if (!hooks.submitDraft) { fail(new Error('Conversation voice is unavailable in this view.')); return; }
       mode = next;
       edited ||= !!hooks.getDraft().trim();
-      try { await unlock(); observeMicrophone(); announce(current?.phase ?? 'idle', next === 'hands-free' ? 'Listening — pauses send your message. Review any existing draft with Finish & Send.' : 'Listening — Finish & Send when ready.'); }
+      try { await unlock(); observeMicrophone(); announce(current?.phase ?? 'idle', 'Listening — Finish & Send when ready.'); }
       catch (error) { fail(error); }
       return;
     }
