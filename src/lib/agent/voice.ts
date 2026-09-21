@@ -13,6 +13,20 @@ const HEARTBEAT_MS = 45_000;
 // Live V3 sessions advertise a two-hour expiry. Keep uncertainty through that window plus clock margin.
 const PROVIDER_EXPIRY_MS = 2 * 60 * 60_000 + 60_000;
 const leaseKey = (user: number) => `voice:lease:${user}`;
+/** The tombstone that outlives this process: when a call may still be billing, and which call it is. */
+interface Tombstone { until: number; callId?: string }
+function readTombstone(user: number): Tombstone | null {
+  const raw = getSetting(leaseKey(user));
+  if (!raw) return null;
+  // Older rows stored the bare expiry; they have no call id to hang up with.
+  let value: unknown;
+  try { value = raw.startsWith('{') ? JSON.parse(raw) as unknown : Number(raw); } catch { return null; }
+  const until = typeof value === 'number' ? value : Number((value as Tombstone)?.until);
+  if (!Number.isFinite(until) || until <= Date.now()) return null;
+  const callId = typeof value === 'object' && value ? (value as Tombstone).callId : undefined;
+  return { until, callId: typeof callId === 'string' ? callId : undefined };
+}
+const writeTombstone = (user: number, mark: Tombstone) => { setSetting(leaseKey(user), JSON.stringify(mark)); };
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const fail = (message: string, status = 400) => Object.assign(new Error(message), { status });
 
@@ -26,6 +40,8 @@ export interface VoiceReply {
   active?: boolean;
   ok?: boolean;
   closed?: boolean;
+  /** The provider's own accounting for this call — the only cost signal a long session has. */
+  usage?: unknown;
 }
 interface Lease {
   id: string;
@@ -41,6 +57,8 @@ interface Lease {
   closing?: Promise<boolean>;
   closed: boolean;
   ready: boolean;
+  callId?: string;
+  usage?: unknown;
 }
 // ponytail: one Node process owns calls; use a shared lease store before running multiple workers.
 const leases = new Map<number, Lease>();
@@ -88,18 +106,62 @@ function stillAuthorized(user: number, lease: Lease) {
     (!lease.principal.startsWith('device:') || !!getDb().prepare('SELECT 1 FROM devices WHERE id=? AND user_id=?').get(lease.principal.slice(7), user));
 }
 
-async function closeLease(lease: Lease): Promise<boolean> {
-  if (lease.closed) return true;
-  if (lease.closing) return lease.closing;
-  lease.closing = new Promise<boolean>((resolve) => {
-    const socket = lease.socket;
+const controlSocket = (callId: string, headers: Record<string, string>) =>
+  new WebSocket(`wss://api.openai.com/v1/live/${encodeURIComponent(callId)}`, {
+    headers, handshakeTimeout: 10_000, maxPayload: 256 * 1024, followRedirects: false,
+  });
+
+/** Ask the provider to end a call and wait for it to say so. True only on an acknowledged close. */
+function closeSocket(socket: WebSocket | undefined, acknowledged: () => boolean): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) { resolve(false); return; }
-    const finish = () => { clearTimeout(timeout); socket.off('close', finish); socket.terminate(); resolve(lease.closed); };
+    const finish = () => { clearTimeout(timeout); socket.off('close', finish); socket.terminate(); resolve(acknowledged()); };
     const timeout = setTimeout(finish, 3000);
     socket.once('close', finish);
     socket.send(JSON.stringify({ type: 'session.close' }), error => { if (error) finish(); });
   });
+}
+
+async function closeLease(lease: Lease): Promise<boolean> {
+  if (lease.closed) return true;
+  if (lease.closing) return lease.closing;
+  lease.closing = closeSocket(lease.socket, () => lease.closed);
   return lease.closing;
+}
+
+/**
+ * A tombstone with no lease in memory is a call this process lost track of — a restart, a crash
+ * mid-call. It cannot just be ignored, because it may still be billing; but waiting out the
+ * provider's two-hour window locks the user out of voice for two hours. Hang it up instead.
+ */
+async function hangUpOrphan(user: number, mark: Tombstone): Promise<boolean> {
+  if (!mark.callId) return false;
+  let headers: Record<string, string>;
+  try {
+    const tokens = await ensureFreshTokens(user);
+    if (!tokens.account_id || !tokens.access_token) return false;
+    headers = {
+      Authorization: `Bearer ${tokens.access_token}`, 'chatgpt-account-id': tokens.account_id,
+      'content-type': 'application/json', 'openai-alpha': 'quicksilver=v2', originator: 'codex_cli_rs',
+    };
+  } catch { return false; }
+  const socket = controlSocket(mark.callId, headers);
+  let acknowledged = false;
+  socket.on('error', () => {}); // Do not expose upstream diagnostics or headers.
+  socket.on('message', data => {
+    try { if ((JSON.parse(data.toString()) as { type?: unknown }).type === 'session.closed') acknowledged = true; }
+    catch { /* Voice content never enters Rime's executor or canonical history. */ }
+  });
+  const opened = await new Promise<boolean>((resolve) => {
+    socket.once('open', () => { resolve(true); });
+    socket.once('error', () => { resolve(false); });
+    socket.once('close', () => { resolve(false); });
+  });
+  // An already-dead call refuses the socket; that is the outcome we wanted, so treat it as closed.
+  if (!opened) { socket.terminate(); deleteSetting(leaseKey(user)); return true; }
+  const closed = await closeSocket(socket, () => acknowledged);
+  if (closed) deleteSetting(leaseKey(user));
+  return closed;
 }
 
 function ensureSweep() {
@@ -123,21 +185,20 @@ function ensureSweep() {
 }
 
 async function attachControl(user: number, lease: Lease, callId: string, headers: Record<string, string>) {
-  const socket = new WebSocket(`wss://api.openai.com/v1/live/${encodeURIComponent(callId)}`, {
-    headers, handshakeTimeout: 10_000, maxPayload: 256 * 1024, followRedirects: false,
-  });
+  const socket = controlSocket(callId, headers);
   lease.socket = socket;
   socket.on('error', () => {}); // Do not expose upstream diagnostics or headers.
   socket.on('message', data => {
     try {
       const event = JSON.parse(data.toString());
+      if (event.type === 'session.usage.updated' && event.session_usage) lease.usage = event.session_usage;
       if (event.type === 'session.closed') {
         lease.closed = true;
         if (leases.get(user) === lease) deleteSetting(leaseKey(user));
       }
       if (event.type === 'session.started' && Number.isFinite(event.session?.expires_at) && event.session.expires_at * 1000 > Date.now() && leases.get(user) === lease && !lease.closed) {
         lease.providerExpiresAt = event.session.expires_at * 1000 + 60_000;
-        setSetting(leaseKey(user), String(lease.providerExpiresAt));
+        writeTombstone(user, { until: lease.providerExpiresAt, callId: lease.callId });
       }
     } catch { /* Voice content never enters Rime's executor or canonical history. */ }
   });
@@ -158,7 +219,7 @@ export async function voiceAction(user: number, ward: string, principal: string,
   if (body.action !== 'start') {
     const lease = leases.get(user);
     if (!lease) {
-      const closed = !(Number(getSetting(leaseKey(user))) > Date.now());
+      const closed = !readTombstone(user);
       return body.action === 'stop' ? { ok: true, closed } : { active: false, closed };
     }
     if (lease.id !== body.lease || lease.owner !== body.owner || lease.principal !== principal || lease.ward !== ward) throw fail('This voice session belongs to another client.', 403);
@@ -168,23 +229,27 @@ export async function voiceAction(user: number, ward: string, principal: string,
       return { ok: true, closed };
     }
     const active = !lease.closing && !lease.closed && lease.expiresAt > Date.now() && stillAuthorized(user, lease) && lease.socket?.readyState === WebSocket.OPEN;
-    if (active) lease.heartbeat = Date.now();
-    else void closeLease(lease);
-    return { active, expiresAt: lease.expiresAt, closed: lease.closed };
+    if (active) {
+      lease.heartbeat = Date.now();
+      lease.expiresAt = Math.min(Date.now() + LEASE_MS, lease.providerExpiresAt);
+    } else void closeLease(lease);
+    return { active, expiresAt: lease.expiresAt, closed: lease.closed, usage: lease.usage };
   }
   validateSdp(body.sdp);
   // Conversation playback rotates acknowledged peers: two starts per full listen/read cycle.
   limitDeviceAuth(`voice-start:${user}`, 60);
   if (!getDashboard(user).some(w => w.i === ward && w.type === 'agent')) throw fail('Agent ward unavailable.', 404);
   const previous = leases.get(user);
-  if ((previous && !previous.closed && previous.providerExpiresAt > Date.now()) || Number(getSetting(leaseKey(user))) > Date.now()) throw fail('Voice is active in another view, or its previous call may still be active. Wait for it to close before starting again.', 409);
+  if (previous && !previous.closed && previous.providerExpiresAt > Date.now()) throw fail('Voice is active in another view. Stop it there before starting again.', 409);
   previous?.socket?.terminate();
+  const orphan = readTombstone(user);
+  if (orphan && !await hangUpOrphan(user, orphan)) throw fail('A previous voice call may still be active and could not be closed. Wait for it to expire before starting again.', 409);
   if (!getAgentAccount(user, 'codex')) throw fail('Connect ChatGPT under Account → Agent to use voice.', 503);
   const generation = credentialGeneration(user, 'codex');
   if (credential && credential !== generation) throw fail('ChatGPT connection changed before voice admission.', 409);
   const lease: Lease = { id: randomUUID(), owner: body.owner, principal, ward, expiresAt: Date.now() + LEASE_MS, providerExpiresAt: Date.now() + PROVIDER_EXPIRY_MS, heartbeat: Date.now(), account: '', generation, closed: false, ready: false };
   leases.set(user, lease);
-  setSetting(leaseKey(user), String(lease.providerExpiresAt));
+  writeTombstone(user, { until: lease.providerExpiresAt });
   ensureSweep();
   let sent = false;
   try {
@@ -218,6 +283,8 @@ export async function voiceAction(user: number, ward: string, principal: string,
       await response.body?.cancel();
       throw fail('Voice returned an invalid call identifier.', 502);
     }
+    lease.callId = callId;
+    writeTombstone(user, { until: lease.providerExpiresAt, callId });
     await attachControl(user, lease, callId, headers);
     const sdp = await boundedText(response.body, SDP_MAX);
     validateSdp(sdp);

@@ -43,6 +43,11 @@ interface Call {
   resolveDrain?: (quiet: boolean) => void;
 }
 
+// The V3 event parser recognises a handful of types and drops the rest in silence, so a
+// protocol question can only be answered by logging the frames themselves: localStorage
+// fd-voice-wire=1. Off by default — transcripts are the user's speech.
+const wireLog = (() => { try { return localStorage.getItem('fd-voice-wire') === '1'; } catch { return false; } })();
+
 // Capture and queued playback have one owner even while its chat is hidden.
 let owner: { dispose: () => void } | undefined;
 let releasing: Promise<boolean> = Promise.resolve(true);
@@ -158,9 +163,7 @@ export function createAgentVoice(hooks: VoiceHooks) {
     for (const timer of call.timers) clearTimeout(timer);
     call.timers.clear();
     if (current === call) { current = undefined; announce('idle', message); }
-    if (call.channel.readyState === 'open') {
-      try { call.channel.send(JSON.stringify({ type: 'session.close' })); } catch { /* server also closes the lease */ }
-    }
+    try { wireSend(call, { type: 'session.close' }); } catch { /* server also closes the lease */ }
     call.channel.close(); call.peer.close();
     call.resolveDrain?.(false); call.resolveDrain = undefined; call.resolveEnd();
     if (!call.released) {
@@ -187,14 +190,23 @@ export function createAgentVoice(hooks: VoiceHooks) {
       : error instanceof Error ? error.message : 'Voice disconnected. Your draft is still editable.';
     announce('error', message);
   }
+  function wireSend(call: Call, message: Record<string, unknown>) {
+    if (call.channel.readyState !== 'open') return false;
+    const text = JSON.stringify(message);
+    if (wireLog) console.debug('[voice wire] \u2192', call.kind, text);
+    call.channel.send(text);
+    return true;
+  }
   function sendChunk(call: Call) {
     const text = call.chunks.shift();
     if (!text || call.channel.readyState !== 'open') return;
     if (call.transcript && !/\s$/.test(call.transcript)) call.transcript += ' ';
-    call.channel.send(JSON.stringify({ type: 'session.context.append', channel: 'speakable', content: [{ type: 'input_text', text }] }));
+    wireSend(call, { type: 'session.context.append', channel: 'speakable', content: [{ type: 'input_text', text }] });
   }
   function receive(call: Call, raw: unknown) {
-    if (current !== call || typeof raw !== 'string' || raw.length > 100_000) return;
+    if (typeof raw !== 'string') return;
+    if (wireLog) console.debug('[voice wire] \u2190', call.kind, current === call ? 'live' : 'stale', raw);
+    if (current !== call || raw.length > 100_000) return;
     let event: { type?: unknown; item?: { id?: unknown; text?: unknown }; turn?: { id?: unknown; role?: unknown } } | null;
     try { event = JSON.parse(raw); } catch { return; }
     if (!event || typeof event !== 'object') return;
@@ -233,8 +245,7 @@ export function createAgentVoice(hooks: VoiceHooks) {
       later(call, () => close(call, matches ? 'Read-aloud finished.' : 'Read-aloud finished. Spoken wording may differ from the message.'), 1500);
     }
   }
-  function monitor(call: Call, expiresAt: number) {
-    later(call, () => fail(new Error('Voice session expired. Start again to continue.')), Math.max(0, expiresAt - Date.now()));
+  function monitor(call: Call) {
     const heartbeat = async () => {
       if (hooks.isAlive && !hooks.isAlive()) { dispose(); return; }
       try {
@@ -317,7 +328,7 @@ export function createAgentVoice(hooks: VoiceHooks) {
       if (current !== call) return;
       if (!call.lease || typeof result.sdp !== 'string' || typeof result.expiresAt !== 'number' || !Number.isFinite(result.expiresAt)) throw new Error('Voice returned an invalid connection. Try again.');
       await peer.setRemoteDescription({ type: 'answer', sdp: result.sdp });
-      if (current === call) monitor(call, result.expiresAt);
+      if (current === call) monitor(call);
       return call;
     } catch (error) { if (epoch === revision && (!call || current === call)) fail(error); return; }
     finally { if (epoch === revision) pendingKind = undefined; }
