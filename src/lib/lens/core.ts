@@ -10,6 +10,7 @@ import { DocState } from './doc.ts';
 import type { Claims, Draft } from './doc.ts';
 import { diffDocs, iou, outsideLive } from './diff.ts';
 import { ack as applyAck, claimDelivery, nextKind, renderDelta, renderKeyframe } from './events.ts';
+import type { Rendered } from './events.ts';
 import {
   DESCRIBE_PROMPT,
   DESCRIBE_SCHEMA,
@@ -507,7 +508,7 @@ export class LensCore {
     this.#firstBumpAt = null;
   }
 
-  /** Timers must never hold the process open. */
+  /** Unreference timing that does not need to keep the process open. */
   #hold(handle: unknown): unknown {
     (handle as { unref?: () => void } | null)?.unref?.();
     return handle;
@@ -699,7 +700,7 @@ export class LensCore {
     );
 
     let target = doc;
-    let rendered;
+    let rendered: Rendered;
     const since = kind.kind === 'delta' ? this.#doc.version(kind.since) : undefined;
     if (kind.kind === 'delta' && since) {
       rendered = renderDelta(doc, since, diff, consumer, { removals: this.#deps.source.removals });
@@ -933,12 +934,12 @@ export class LensCore {
     if (o.signal?.aborted) return Promise.resolve({ cancelled: true, v: doc.v, epoch: doc.epoch });
 
     return new Promise<WaitResult>((resolve) => {
-      const timer = this.#hold(
-        this.#clock.setTimeout(() => {
-          const now = this.#doc.current();
-          this.#resolve(id, { timeout: true, v: now.v, epoch: now.epoch });
-        }, o.timeoutMs)
-      );
+      // An explicit wait owns work until delivery, cancellation or its deadline.
+      // Keep it alive even when the source has no other referenced handles.
+      const timer = this.#clock.setTimeout(() => {
+        const now = this.#doc.current();
+        this.#resolve(id, { timeout: true, v: now.v, epoch: now.epoch });
+      }, o.timeoutMs);
       const waiter: Waiter = { resolve, timer };
       if (o.signal) {
         waiter.signal = o.signal;

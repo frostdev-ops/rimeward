@@ -162,6 +162,8 @@ jobs:
           node desktop/sign-runtime.mjs
 
       - name: Desktop lint and native tests
+        env:
+          RUST_BACKTRACE: '1'
         run: npm run desktop:check
 
       - name: Runtime validation
