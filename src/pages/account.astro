@@ -275,7 +275,7 @@ const TABS = [
 
           <div class="acct-grid">
             <div class="min-w-36 flex-1">
-              <label for="th-icontint" class="label">Icon tint <span class="text-ink-faint">(emoji become flat silhouettes; Meteocons keep their colours)</span></label>
+              <label for="th-icontint" class="label">Icon tint</label>
               <div class="flex items-center gap-2">
                 <select id="th-icontint" name="iconTint" class="input">
                   <option value="ink" selected={theme.iconTint === 'ink'}>Text colour</option>
@@ -284,6 +284,7 @@ const TABS = [
                 </select>
                 <input id="th-iconcolor" name="iconColor" type="color" value={theme.iconColor} aria-label="Icon colour" class="h-10 w-14 cursor-pointer rounded-md border border-line-strong bg-surface p-1" />
               </div>
+              <p class="mt-1 text-[11px] text-ink-faint">Emoji become flat silhouettes; Meteocons keep their colours.</p>
             </div>
             <div class="min-w-36 flex-1">
               <label for="th-iconop" class="label">Icon opacity <span data-val="iconOpacity" class="text-ink-faint"></span></label>
