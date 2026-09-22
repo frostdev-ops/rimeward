@@ -2,12 +2,16 @@
 import ValleyLayout from '../../layouts/ValleyLayout.astro';
 import Icon from '../../components/Icon.astro';
 import {isDesktop} from '../../lib/dev/runtime.ts';
+import {getSetting} from '../../lib/settings.ts';
 if(!isDesktop())return new Response('Desktop setup is available in the app.',{status:404});
 Astro.response.headers.set('cache-control','no-store');
 // First run carries no app header, so the two things AppLayout does for the
 // desktop happen here: consume the one-shot restore cookie a native relaunch
 // set, and stamp the marker desktop-state.ts / macos-permissions.ts read.
 const me = Astro.locals.user!;
+// Every launch lands here; a desktop that finished setup goes straight on
+// rather than flashing the welcome page (?setup=1 is the Connections page).
+if (!Astro.url.searchParams.has('setup') && getSetting(`desktop:onboarded:${me.userId}`) === '1') return Astro.redirect('/dash');
 const restoring = process.platform === 'darwin' && Astro.cookies.get('rimeward_ui_restore')?.value === '1';
 if (restoring) Astro.cookies.delete('rimeward_ui_restore', { path: '/' });
 ---
