@@ -1269,6 +1269,7 @@ async function mount(w: WardInstance) {
               output.textContent = e.message;
             }),
           5000,
+          () => !content.getClientRects().length, // off stage: no git run every 5 s
         ),
       );
     }
