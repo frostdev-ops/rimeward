@@ -61,8 +61,8 @@ if (restoring) Astro.cookies.delete('rimeward_ui_restore', { path: '/' });
       <h2 id="computer-control-title">Remote Desktop access</h2>
       <p>Your signed-in account can view and control this computer when OS permissions allow it. Viewing starts without input control. Rime screenshots join its conversation; human viewing does not.</p>
       <form id="computer-control-form">
-        <label><input type="checkbox" id="computer-control-enabled" /> Enable remote access (resume a local Stop)</label>
-        <p class="setup-help">Stop immediately from the Rimeward tray menu. File and terminal tools keep their existing permissions.</p>
+        <label><input type="checkbox" id="computer-control-enabled" /> Allow remote access to this computer</label>
+        <p class="setup-help">Stop it at any time from the Rimeward tray menu; turning this on again resumes access. File and terminal tools keep their existing permissions.</p>
         <p id="computer-control-permissions" class="setup-help"></p>
         <button type="button" class="btn" data-macos-permissions hidden>Set up Mac permissions…</button>
         <button type="submit" class="btn">Save control settings</button>
