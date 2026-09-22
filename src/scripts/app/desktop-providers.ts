@@ -90,7 +90,7 @@ function card(scope: Scope, title: string, subtitle: string) {
     'data-oauth-binding': scope.oauthBinding,
   },
     node('button', 'btn-primary', { type: 'button', 'data-start': '' }, scope.codex.connected ? 'Reconnect ChatGPT' : 'Connect ChatGPT'),
-    node('p', 'text-xs', { role: 'status', 'aria-live': 'polite' }, `Signs in to ${title}.`),
+    node('p', 'text-xs', { role: 'status', 'aria-live': 'polite' }, `Signs in to ${title.charAt(0).toLowerCase()}${title.slice(1)}.`),
     node('a', 'link', { hidden: '', target: '_blank', rel: 'noreferrer', 'data-open': '' }, 'Continue in browser'),
     node('button', 'btn', { type: 'button', hidden: '', 'data-cancel': '' }, 'Cancel'),
     node('form', 'grid gap-2', { hidden: '', 'data-manual': '' },
