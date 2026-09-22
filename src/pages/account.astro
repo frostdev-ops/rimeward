@@ -103,7 +103,6 @@ const codexLive: ReturnType<typeof codexAttempts> = [];
 // marker that only exists on server-proxied HTML, so an offline desktop could not start a local
 // sign-in at all. A standalone desktop has no server to offer, so it stays implicitly local.
 const localScope = isDesktop();
-const canChooseDestination = localScope && !!sharedAgent;
 const AGENT_KEYS = [
   { id: 'openrouter', name: 'OpenRouter API key', hint: 'powers the openrouter provider — openrouter.ai/keys' },
   { id: 'openai', name: 'OpenAI API key', hint: 'powers the openai provider (the OpenAI API, billed to your key) — platform.openai.com/api-keys' },
@@ -117,6 +116,7 @@ const bbLabel = bbKey ? `${bbKey.slice(0, 4)}••••${bbKey.slice(-4)}` : '
 const agentRoundCap = agentRounds(me.userId);
 const shellNet = getSetting(`agent_shell_network:${me.userId}`) === 'true';
 const agentErr = agentLastError(me.userId);
+const signInConnectors = identityConnectors().filter((c) => c.enabled);
 
 // Panel order = tab order. The id is also the deep-link hash; the API routes
 // redirect to #background / #dashboard / #agent, and a hash naming a card
@@ -1003,10 +1003,8 @@ const TABS = [
           </div>
           {codexAccount && <form method="post" action="/api/account/agent"><input type="hidden" name="binding" value={agentBinding}/><button name="action" value="codex-disconnect" class="btn">Disconnect</button></form>}
         </div>
-        <section class="space-y-2 py-3"><h3>Sign-in identities</h3>{identityConnectors().filter(c=>c.enabled).map(c=><form method="post" action={`/api/auth/identity/${c.id}/link`}><button class="btn">Link {c.name} for sign-in</button></form>)}</section>
         <section data-codex-connect data-scope="account" data-native={localScope ? '1' : undefined} data-destination="local" data-oauth-binding={oauthRuntimeBinding(me.userId)} class="space-y-2 border-b border-line py-3">
-          <a data-local-settings hidden={!localScope} class="link" href="/desktop/providers">Manage this desktop’s provider connections</a>
-          <label data-destination hidden={!canChooseDestination}>Connect to<select class="input" data-target><option value="default">Connected server</option><option value="local">This desktop only</option></select></label>
+          <a data-local-settings hidden={!localScope} class="link block" href="/desktop/providers">Manage this desktop’s provider connections</a>
           {codexLive.length > 0 && <p class="text-xs text-ink-muted">Sign-in in progress on this installation: {codexLive.map(a => a.destination).join(', ')}.</p>}
           <button type="button" data-start class="btn-primary">{codexAccount?'Reconnect ChatGPT':'Connect ChatGPT'}</button>
           <p role="status" aria-live="polite" class="text-xs">{sharedAgent?'Local connection · This desktop':'Connect to this account'}</p>
@@ -1121,6 +1119,14 @@ const TABS = [
           <button type="submit" class="btn-primary">Save</button>
         </form>
       </div>
+      {signInConnectors.length > 0 && (
+        <div class="card mt-6 p-4">
+          <h2 class="section-title mb-3">Sign-in identities</h2>
+          <div class="flex flex-wrap gap-2">
+            {signInConnectors.map((c) => <form method="post" action={`/api/auth/identity/${c.id}/link`}><button class="btn">Link {c.name} for sign-in</button></form>)}
+          </div>
+        </div>
+      )}
     </section>
   </main>
 
