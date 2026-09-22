@@ -14,7 +14,7 @@ Use this path to run Rimeward entirely as a desktop application. You do not need
 
 | Platform | Installation and requirements |
 | --- | --- |
-| macOS | Apple Silicon, macOS 14 or newer. Download the DMG and move Rimeward into Applications. Intel Mac installers are not provided. |
+| macOS | Apple Silicon, macOS 14 or newer. Download the DMG and move Rimeward into Applications, or run `brew install --cask frostdev-ops/tap/rimeward`. Intel Mac installers are not provided. |
 | Windows | Use the Windows installer from the release assets. The release workflow targets x86-64 Windows. |
 | Linux | Use the DEB or AppImage. Current packages target Ubuntu 24.04 or newer, or an equivalent system with glibc 2.39, WebKitGTK 4.1, and PipeWire 0.3.65 or newer. |
 
