@@ -2,26 +2,33 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Rimeward</title>
     <style>
-      :root { color-scheme: dark light; font: 16px/1.6 system-ui, sans-serif; }
-      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: light-dark(#f5f7fa, #101419); color: light-dark(#18212c, #e1e7ef); }
-      main { width: min(36rem, calc(100% - 3rem)); padding: 2rem 0; }
-      h1 { margin: 0 0 1rem; font-size: 1.7rem; letter-spacing: -.04em; }
-      p { margin: .75rem 0; }
-      #detail { opacity: .75; }
-      code { overflow-wrap: anywhere; font-size: .85rem; }
+      :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; }
+      body { margin: 0; min-height: 100dvh; display: grid; place-items: center; background: radial-gradient(ellipse at 50% 20%, #10304b, #06121f 70%); color: #e8f2fa; }
+      main { box-sizing: border-box; width: min(32rem, 100%); padding: 2rem 1.5rem; text-align: center; }
+      h1 { margin: 0 0 2.5rem; color: #6fdcff; font-size: 1.2rem; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; }
+      #status { margin: 0; font-size: 1.35rem; font-weight: 600; letter-spacing: -.03em; }
+      #detail { min-height: 3em; margin: .6rem 0 0; color: #a9bfd0; font-size: .875rem; }
+      .progress { height: 2px; margin: 1.5rem auto 0; overflow: hidden; border-radius: 2px; background: #24405f; }
+      .progress::before { content: ''; display: block; width: 35%; height: 100%; background: #17c8f4; animation: loading 1.7s ease-in-out infinite alternate; }
+      #diagnostic { margin: 1.5rem 0 0; padding: 1rem; border: 1px solid #24405f; border-radius: .75rem; background: #0d1b2e; color: #a9bfd0; font-size: .875rem; }
+      code { display: block; margin-top: .75rem; overflow-wrap: anywhere; color: #e8f2fa; font-size: .8rem; }
+      main.failed .progress { display: none; }
+      @keyframes loading { to { transform: translateX(190%); } }
+      @media (prefers-reduced-motion: reduce) { .progress::before { animation: none; width: 100%; } }
     </style>
   </head>
   <body>
     <main>
       <h1>Rimeward</h1>
       <div role="status" aria-live="polite">
-        <p id="status">Starting your local environment…</p>
+        <p id="status">Opening your workspace…</p>
         <p id="detail">Preparing the application.</p>
       </div>
-      <p id="diagnostic" hidden><code></code></p>
+      <div class="progress" aria-hidden="true"></div>
+      <p id="diagnostic" hidden>Diagnostic code<code></code></p>
     </main>
     <script>
       const stages = {
@@ -46,8 +53,9 @@
       async function update() {
         try {
           const result = await window.__TAURI__.core.invoke('startup_status');
-          document.querySelector('#detail').textContent = result.error ? fixes[result.error] : stages[result.stage];
+          document.querySelector('#detail').textContent = result.error ? (fixes[result.error] ?? fixes['runtime-error']) : (stages[result.stage] ?? stages.initializing);
           if (result.error) {
+            document.querySelector('main').classList.add('failed');
             document.querySelector('#status').textContent = 'Your local environment could not start.';
             document.querySelector('#diagnostic').hidden = false;
             document.querySelector('code').textContent = `${result.stage} / ${result.error}${result.os_code === null ? '' : ` / OS ${result.os_code}`}`;

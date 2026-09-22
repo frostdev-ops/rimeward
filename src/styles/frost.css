@@ -2676,8 +2676,10 @@ body:has(#valley-canvas)::after {
 /* The desktop first run: taller content, so top-aligned with a wider pool. */
 .valley-wrap.wide {
   justify-content: flex-start;
-  padding-top: 3.5rem;
+  padding-top: 2rem;
   gap: 1.25rem;
+  --color-surface: rgb(10 22 38 / 0.92);
+  --color-surface-2: rgb(2 8 16 / 0.86);
 }
 .valley-wrap.wide .valley-mark {
   width: min(60vw, 15rem);
