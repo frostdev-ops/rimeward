@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import type { AgentEvent } from '../../../lib/agent/core.ts';
+import type { AgentEvent, VoiceOrigin } from '../../../lib/agent/core.ts';
 import { agentConfigured } from '../../../lib/agent/provider.ts';
 import { validateMentionLabels, type WardMention } from '../../../lib/agent/mentions.ts';
 import { validateWardMentions } from '../../../lib/agent/ward-context.ts';
@@ -38,7 +38,7 @@ export const GET: APIRoute = async ({ params, locals, url }) => {
 };
 
 export const POST: APIRoute = async ({ params, request, locals }) => {
-  const { agentWardConfig, backgroundTurn, clearThread, interruptTurn, resolveConfirmTurn, prepareUserAnswer, steerTurn, runChatTurn, runCommand, wardBusy } = await import('../../../lib/agent/core.ts');
+  const { agentWardConfig, assertVoiceConversation, backgroundTurn, clearThread, interruptTurn, resolveConfirmTurn, prepareUserAnswer, steerTurn, runChatTurn, runCommand, wardBusy } = await import('../../../lib/agent/core.ts');
   const userId = locals.user!.userId;
   const ward = String(params.ward);
 
@@ -52,6 +52,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     /** resume-task: continuation instructions, and the chat the person is looking at (its report binds there). */
     instructions?: unknown;
     conversation?: unknown;
+    voice?: unknown;
     answer?: unknown;
     task?: string;
     questionId?: unknown;
@@ -59,13 +60,54 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     /** steer: hand the message to the turn already running (JSON {steered}); never a stream. */
     mode?: 'steer';
   } | null;
-  if (!body) return Response.json({ error: 'bad body' }, { status: 400 });
-  const typed = typeof body.message === 'string' ? body.message.trim().slice(0, 8000) : '';
-  const command = body.action ? null : parseCommand(typed);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return Response.json({ error: 'bad body' }, { status: 400 });
+  let voice: VoiceOrigin | undefined;
+  let voiceText: string | undefined;
+  if (body.voice !== undefined) {
+    const origin = body.voice && typeof body.voice === 'object' && !Array.isArray(body.voice) ? body.voice as Record<string, unknown> : null;
+    const boundedId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 200 && value.trim() === value && ![...value].some(point => point.charCodeAt(0) < 32 || point.charCodeAt(0) === 127);
+    const invalid = () => Response.json({ error: 'Invalid voice request. Voice may submit a bounded delegated message to its current conversation only.' }, { status: 400 });
+    const open = '<realtime_delegation>', close = '</realtime_delegation>';
+    if (Object.keys(body).some(key => !['message', 'mode', 'voice', 'conversation'].includes(key)) ||
+        !origin || Object.keys(origin).some(key => !['session', 'delegation', 'ownerRuntimeId'].includes(key)) ||
+        typeof origin.session !== 'string' || origin.session.length !== 36 || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(origin.session) ||
+        !boundedId(origin.delegation) || !boundedId(origin.ownerRuntimeId) ||
+        typeof body.conversation !== 'number' || !Number.isSafeInteger(body.conversation) || body.conversation <= 0 ||
+        (body.mode !== undefined && body.mode !== 'steer') || typeof body.message !== 'string' || body.message.length > 8000 ||
+        !body.message.trim().startsWith(open) || !body.message.trim().endsWith(close)) return invalid();
+    const content = body.message.trim().slice(open.length, -close.length).trim();
+    // The client escapes every angle bracket: raw tags cannot close or nest this envelope.
+    if (/[<>]/.test(content)) return invalid();
+    let value: unknown;
+    try { value = JSON.parse(content); } catch { return invalid(); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid();
+    const envelope = value as Record<string, unknown>;
+    if (Object.keys(envelope).some(key => !['origin', 'session', 'delegation', 'request'].includes(key)) ||
+        envelope.origin !== 'voice-model' || envelope.session !== origin.session || envelope.delegation !== origin.delegation ||
+        typeof envelope.request !== 'string' || !envelope.request.trim() || envelope.request.length > 8000 ||
+        envelope.request.trimStart().startsWith('/')) return invalid();
+    const canonical = JSON.stringify({ origin: 'voice-model', session: origin.session, delegation: origin.delegation,
+      request: envelope.request.trim() }).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+    voiceText = `${open}\n${canonical}\n${close}`;
+    if (voiceText.length > 8000) return invalid();
+    voice = { session: origin.session, delegation: origin.delegation, ownerRuntimeId: origin.ownerRuntimeId };
+  }
+  const typed = voiceText ?? (typeof body.message === 'string' ? body.message.trim().slice(0, 8000) : '');
+  const command = body.action || voice ? null : parseCommand(typed);
   // Local controls must remain responsive while reconciliation is in flight.
   if (!body.action && body.mode !== 'steer' && command?.name !== 'compact') await syncRime(userId);
   const cfg = agentWardConfig(userId, ward);
   if (!cfg) return Response.json({ error: 'not an agent ward' }, { status: 400 });
+  if (voice) {
+    try {
+      const ownerRuntimeId = await (await import('../../../lib/dev/agent-placement.ts')).assertAgentRunsHere(userId, ward);
+      if (voice.ownerRuntimeId !== ownerRuntimeId) throw Error('The conversation moved to another run owner. Start a new voice session.');
+      assertVoiceConversation(userId, ward, body.conversation as number);
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : 'The voice conversation is no longer current.' }, { status: 409 });
+    }
+  }
+  const voiceGuard = voice ? { voice, expectedConversation: body.conversation as number } : {};
   if (body.action === 'message-child') {
     try {
       const { messageChild } = await import('../../../lib/agent/inbox.ts');
@@ -146,7 +188,8 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
     // steered:false = the turn ended first — the client sends it as a turn.
     if (!typed) return Response.json({ error: 'empty message' }, { status: 400 });
     if (!wardBusy(userId, ward)) return Response.json({ steered: false });
-    steerTurn(userId, ward, { text: typed, from: 'user', wardIds, mentions });
+    try { steerTurn(userId, ward, { text: typed, from: 'user', wardIds, mentions, ...voiceGuard }); }
+    catch (error) { return Response.json({ error: error instanceof Error ? error.message : 'The voice request could not be queued.' }, { status: 409 }); }
     return Response.json({ steered: true });
   }
   const answering = body.action === 'answer-question';
@@ -186,7 +229,7 @@ export const POST: APIRoute = async ({ params, request, locals }) => {
       };
       const run = deciding
         ? resolveConfirmTurn(userId, ward, String(waitingQuestion ? body.questionId : body.confirmId ?? ''), waitingQuestion ? body.answer !== null : body.action === 'confirm', send, waitingQuestion ? body.answer : undefined)
-        : runChatTurn(userId, ward, { message: answering ? '' : message, fileIds: answering ? [] : fileIds, wardIds, mentions }, send);
+        : runChatTurn(userId, ward, { message: answering ? '' : message, fileIds: answering ? [] : fileIds, wardIds, mentions, ...voiceGuard }, send);
       run
         .then((turn) => send({ type: 'done', reply: turn.reply, steps: turn.steps, pending: turn.pending ?? null }))
         .catch((err) => send({ type: 'error', error: err instanceof Error ? err.message : 'turn failed' }))

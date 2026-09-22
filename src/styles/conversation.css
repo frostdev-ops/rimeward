@@ -218,6 +218,35 @@ dialog.fd-dialog.ag-child-dialog { width:min(52rem,94vw); height:min(88dvh,54rem
 .ag-voice-options label { display:flex; align-items:center; gap:.4rem; cursor:pointer; }
 .ag-voice-options input { accent-color:var(--color-accent); }
 .ag-voice-options select { max-width:9rem; border:1px solid var(--color-line); border-radius:.4rem; padding:.2rem .35rem; color:var(--color-ink); background:var(--color-surface); }
+/* A voice session owns its small caption surface; the ordinary chat retains one log. */
+.ag-live-controls { display:flex; align-items:center; flex-wrap:wrap; gap:.45rem .65rem; padding:.5rem .2rem 0; }
+.ag-live-controls .btn { min-height:32px; padding:.35rem .65rem; font-size:.7rem; }
+.ag-live-toggle[aria-pressed="true"] { color:var(--color-accent-hi); border-color:var(--color-accent); }
+.ag-live-summary, .ag-live-safe { color:var(--color-ink-muted); font-size:.67rem; line-height:1.5; }
+.ag-live-summary { font-variant-numeric:tabular-nums; }
+.ag-live-safe { display:flex; align-items:center; gap:.35rem; cursor:pointer; }
+.ag-live-safe input { accent-color:var(--color-accent); }
+.ag-live-captions { margin:.55rem .2rem 0; padding:.5rem .65rem; border:1px solid var(--color-line); border-radius:.65rem; background:var(--color-surface-2); max-height:9rem; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; }
+.ag-live-caption { display:grid; grid-template-columns:2.6rem minmax(0,1fr); gap:.35rem; font-size:.73rem; line-height:1.5; }
+.ag-live-caption + .ag-live-caption { margin-top:.35rem; }
+.ag-live-caption-label { color:var(--color-ink-muted); font-size:.65rem; }
+.ag-live-caption p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; max-height:4.5rem; overflow:auto; }
+.ag-live-caption-note { margin:.4rem 0 0; color:var(--color-ink-muted); font-size:.6rem; line-height:1.4; }
+.ag-live-usage { margin:.4rem .3rem 0; font-size:.65rem; color:var(--color-ink-muted); }
+.ag-live-usage summary { cursor:pointer; }
+.ag-live-usage pre { max-height:8rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.65rem; padding:.5rem; }
+.ag-live-banner { position:fixed; z-index:1100; bottom:max(.75rem,env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%); width:max-content; max-width:calc(100vw - 1.5rem); display:flex; align-items:center; flex-wrap:wrap; justify-content:center; gap:.4rem .6rem; padding:.45rem .65rem; border:1px solid var(--color-line-strong); border-radius:.85rem; background:var(--color-surface); color:var(--color-ink); box-shadow:0 3px 16px color-mix(in srgb,var(--color-ink) 12%,transparent); font-size:.7rem; }
+.ag-live-banner-open { min-width:0; max-width:18rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--color-accent-hi); cursor:pointer; font-weight:550; }
+.ag-live-banner-summary { color:var(--color-ink-muted); font-size:.65rem; font-variant-numeric:tabular-nums; }
+.ag-live-banner .btn { min-height:30px; padding:.3rem .55rem; font-size:.68rem; }
+.ag-live-banner [aria-pressed="true"] { border-color:var(--color-accent); color:var(--color-accent-hi); }
+.ag-live-controls[hidden], .ag-live-controls [hidden], .ag-live-captions[hidden], .ag-live-captions [hidden], .ag-live-usage[hidden], .ag-live-banner[hidden], .ag-live-banner [hidden] { display:none; }
+.ag-live-controls button:focus-visible, .ag-live-safe input:focus-visible, .ag-live-banner button:focus-visible, .ag-live-usage summary:focus-visible { outline:2px solid var(--color-accent); outline-offset:3px; }
+@media (max-width:639px) {
+  .ag-live-controls .btn, .ag-live-banner .btn { min-height:40px; }
+  .ag-live-banner { gap:.35rem .5rem; padding:.4rem .5rem; }
+  .ag-live-banner-open { max-width:10rem; }
+}
 /* Structured questions share the conversation's theme, icons and native form controls. */
 .ag-question { display:flex; flex-direction:column; gap:.7rem; max-height:min(50vh,28rem); margin:0 0 .65rem; padding:.85rem; border:1px solid color-mix(in srgb,var(--color-accent) 35%,var(--color-line)); border-radius:.8rem; background:color-mix(in srgb,var(--color-accent) 5%,var(--color-surface)); }
 .ag-question[hidden] { display:none; }

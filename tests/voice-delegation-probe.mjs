@@ -251,7 +251,7 @@ async function runProbe(page, account, probe, voice, logFile) {
       } catch { result.closed = false; }
     } else {
       // A failed create may still have admitted a call; its server-side tombstone remains authoritative.
-      result.closed = await voice.shutdownVoice();
+      result.closed = await voice.closeProbeVoice(account.user, account.ward, owner);
     }
     try {
       if (!page.isClosed()) await page.evaluate(async () => { await Promise.all(window.pendingLogs ?? []); });

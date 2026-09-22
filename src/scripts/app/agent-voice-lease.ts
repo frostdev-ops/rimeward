@@ -14,6 +14,9 @@ export interface SignalReply {
   active?: boolean;
   closed?: boolean;
   usage?: unknown;
+  mode?: 'live' | 'manual';
+  reason?: string;
+  message?: string;
 }
 
 export interface VoiceOwner { dispose: () => void }
@@ -42,10 +45,38 @@ export function chainRelease(release: Promise<boolean>): Promise<boolean> {
 /** Forget an unconfirmed close: the authoritative answer is the server's, on the next attempt. */
 export function resetRelease(expected: Promise<boolean>) { if (releasing === expected) releasing = Promise.resolve(true); }
 
+/** The legacy Codex context wire is bounded in UTF-8 bytes, not characters. */
+export function speechChunks(text: string, preserveWhitespace = false): string[] {
+  const chunks: string[] = [], encoder = new TextEncoder();
+  const sentences = new Intl.Segmenter(undefined, { granularity: 'sentence' });
+  let rest = text.trim();
+  while (rest) {
+    let bytes = 0, end = 0, boundary = 0;
+    for (const point of rest) {
+      const size = encoder.encode(point).length;
+      if (bytes + size > 500) break;
+      bytes += size; end += point.length;
+      if (/\s/.test(point)) boundary = end;
+    }
+    if (end < rest.length) {
+      let sentence = 0;
+      for (const part of sentences.segment(rest)) {
+        const finish = part.index + part.segment.trimEnd().length;
+        if (finish > end) break;
+        sentence = finish;
+      }
+      end = sentence || boundary || end;
+    }
+    chunks.push(preserveWhitespace ? rest.slice(0, end) : rest.slice(0, end).trim());
+    rest = preserveWhitespace ? rest.slice(end) : rest.slice(end).trimStart();
+  }
+  return chunks;
+}
+
 export async function signal(
   ward: string,
   action: 'start' | 'status' | 'stop',
-  body: { owner: string; lease?: string; sdp?: string },
+  body: { owner: string; lease?: string; sdp?: string; mode?: 'live'; context?: { role: 'user' | 'assistant'; text: string }[] },
 ): Promise<SignalReply> {
   const url = `/api/agent/${encodeURIComponent(ward)}/voice?_ward=${encodeURIComponent(ward)}`;
   const response = await fetch(url, {

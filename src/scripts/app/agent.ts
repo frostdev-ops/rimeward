@@ -13,6 +13,7 @@ import type { ContextUsage } from '../../lib/agent/context.ts';
 
 import { ACTIONS } from '../../lib/logic.ts';
 import { createAgentVoice, type ConversationVoiceMode, type VoiceState } from './agent-voice.ts';
+import { createAgentLive, type AgentLiveVoice, type LiveDigestInput, type LiveSubmission, type LiveVoiceRequest, type LiveVoiceState } from './agent-live.ts';
 import { createClipDictation, type DictationState } from './agent-dictation.ts';
 import { completeCommand, parseCommand, type CommandSpec } from '../../lib/agent/commands.ts';
 import type { AgentTask } from '../../lib/agent/tasks.ts';
@@ -20,7 +21,7 @@ import type { UserQuestion, PendingQuestion, UserAnswer } from '../../lib/agent/
 import type { TranscriptMsg } from '../../lib/agent/conversations.ts';
 import { AGENT_EFFORTS, CATALOG, pageOf, wardTitle, type AgentEffort, type AgentProviderId, type WardInstance } from '../../lib/wards.ts';
 import { RENDERERS, body, note, readLayout } from './wards.ts';
-import { popoutWard } from './ward-view.ts';
+import { inWardView, popoutWard } from './ward-view.ts';
 import { el, getJson, hm, postJson, tapToast, toast } from './dom.ts';
 import { icon } from './icon.ts';
 import { popupFrame, popupLayer, popupViewport } from './popup-layer.ts';
@@ -32,6 +33,7 @@ import { patchPreview, samePatchPreview } from './agent-patch.ts';
 import { PERMISSION_HELP, PERMISSION_LABELS, PERMISSION_MODES, isPermissionMode, type PermissionMode } from '../../lib/dev/types.ts';
 import '../../styles/conversation.css';
 import { ensureStream, flushPendingLayout, onAgentLive, onAgentPing, reloadHolds, type AgentLive } from './logic.ts';
+import { onSnapshot } from './status.ts';
 
 // ------------------------------------------------------------------ markdown
 // Covers the subset a chat actually emits: inline code/bold/italic/strike/
@@ -325,9 +327,16 @@ interface Run {
   steps: Map<string, StepItem>;
   seq: number;
   spoken: Set<string>;
+  liveDelegations: string[];
+  liveSession?: string;
+}
+interface LivePendingBinding {
+  session: string;
+  scope: string;
+  delegationIds: string[];
 }
 let runSeq = 0;
-const newRun = (): Run => ({ steps: new Map(), seq: ++runSeq, spoken: new Set() });
+const newRun = (request?: LiveVoiceRequest): Run => ({ steps: new Map(), seq: ++runSeq, spoken: new Set(), liveDelegations: request ? [request.id] : [], liveSession: request?.session });
 const batchKey = (seq: number | string, round: unknown) => (typeof round === 'number' ? `${seq}:${round}` : undefined);
 
 type Item =
@@ -348,6 +357,16 @@ interface Ui {
   microphone: HTMLButtonElement;
   voiceStop: HTMLButtonElement;
   voiceStatus: HTMLElement;
+  liveControls: HTMLElement;
+  liveToggle: HTMLButtonElement;
+  liveSummary: HTMLElement;
+  liveAudio: HTMLButtonElement;
+  liveSafe: HTMLInputElement;
+  liveCaptions: HTMLElement;
+  liveInput: HTMLElement;
+  liveOutput: HTMLElement;
+  liveUsage: HTMLDetailsElement;
+  liveUsageText: HTMLElement;
   readResponses: HTMLInputElement;
   conversationMode: HTMLSelectElement;
   /** The footer's provider / model / effort / Coding CLI permissions pickers (paintPicker fills them). */
@@ -380,13 +399,14 @@ interface State {
   task?: string;
   reloadLive?: () => void;
   conversation?: number;
+  provider?: AgentProviderId;
   ownerRuntimeId?: string;
   ownerName?: string;
   /** Which connection serves and bills this ward's model calls - a different question from where the
    *  conversation runs, and shown as its own line so neither is mistaken for the other. `live` marks
    *  the receipt of a turn actually in flight; otherwise it describes what the NEXT turn would use,
    *  which can differ, and `blocked` means no route can serve this conversation at all. */
-  modelAccess?: { label: string; policy: string; via: string; reason: string; server?: string; live?: boolean; blocked?: string };
+  modelAccess?: { label: string; policy: string; via: string; reason: string; server?: string; runtime?: string; profile?: string; live?: boolean; blocked?: string };
   newChatRequest?: string;
   placementBlocked?: string;
   run?: string;
@@ -430,6 +450,12 @@ interface State {
   uis: Set<Ui>;
   voice?: ReturnType<typeof createAgentVoice>;
   voiceState?: VoiceState;
+  live?: AgentLiveVoice;
+  liveState?: LiveVoiceState;
+  liveMode?: boolean;
+  liveFrame?: number;
+  /** Call-local result correlation only; never persisted or sent with a human decision. */
+  livePending?: Map<string, LivePendingBinding>;
   /** How this ward takes dictation, as the last repaint reported it. */
   dictation?: 'live' | 'clip' | null;
   clip?: ReturnType<typeof createClipDictation>;
@@ -451,6 +477,13 @@ function paintContext(el: HTMLElement, c: State['context']): void {
 }
 
 const states = new Map<string, State>();
+
+// The existing status stream is the only source for the voice digest. Captions never enter it.
+let liveStatus: LiveDigestInput['status'];
+onSnapshot(snapshot => {
+  liveStatus = { at: snapshot.at, services: snapshot.services.map(({ label, ok }) => ({ label, ok })) };
+  for (const st of states.values()) st.live?.refreshContext();
+});
 
 // ------------------------------------------------------------ model pickers
 //
@@ -657,6 +690,257 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') for (const st of states.values()) { void st.voice?.viewHidden(); st.clip?.cancel(); }
 });
 
+/** The call follows its conversation, not a view or the changing event revision. */
+function liveScope(st: State): string {
+  const w = readLayout().find(w => w.i === st.w.i) ?? st.w;
+  return JSON.stringify([st.w.i, st.conversation, st.ownerRuntimeId, st.provider,
+    w.config?.provider, w.config?.endpoint, w.device, w.workspace,
+    st.modelAccess?.via, st.modelAccess?.runtime, st.modelAccess?.profile]);
+}
+
+function liveAvailable(st: State): boolean {
+  return !st.task && st.configured === true && st.dictation === 'live' &&
+    Number.isSafeInteger(st.conversation) && Number(st.conversation) > 0 && !!st.ownerRuntimeId && !!st.provider &&
+    !st.clearing && !st.switching && !st.placementBlocked && !st.newChatRequest && !st.modelAccess?.blocked &&
+    readLayout().some(w => w.i === st.w.i && w.type === 'agent');
+}
+
+function endLive(st: State, message?: string): void {
+  st.liveMode = false;
+  st.livePending?.clear();
+  void st.live?.stop(message);
+  queueLivePaint(st);
+}
+
+function livePendingBindings(st: State): Map<string, LivePendingBinding> | undefined {
+  const bindings = st.livePending;
+  if (!bindings?.size) return bindings;
+  const session = st.live?.session, scope = liveScope(st);
+  for (const [id, binding] of bindings) {
+    if (!session || binding.session !== session || binding.scope !== scope || st.live?.binding !== scope) bindings.delete(id);
+  }
+  return bindings;
+}
+
+function rememberLivePending(st: State, run: Run, id?: string): void {
+  livePendingBindings(st);
+  const session = st.live?.session, scope = st.live?.binding;
+  if (st.task || !id || id.length > 200 || !session || !scope || scope !== liveScope(st) || run.liveSession !== session || !run.liveDelegations.length) return;
+  st.livePending ??= new Map<string, LivePendingBinding>();
+  const bindings = st.livePending;
+  // Retain failed human requests for an explicit retry, with a hard per-call bound.
+  if (!bindings.has(id) && bindings.size >= 64) bindings.delete(bindings.keys().next().value!);
+  bindings.set(id, { session, scope, delegationIds: run.liveDelegations.slice(-256) });
+}
+
+function inheritLivePending(st: State, run: Run, id?: string, consumed = false): void {
+  if (st.task || !id) return;
+  const binding = livePendingBindings(st)?.get(id);
+  if (!binding) return;
+  const current = run.liveSession === binding.session ? run.liveDelegations : [];
+  run.liveSession = binding.session;
+  run.liveDelegations = [...new Set([...binding.delegationIds, ...current])].slice(-256);
+  if (consumed) st.livePending?.delete(id);
+}
+
+function observeLiveUser(st: State, run: Run, text: string): void {
+  if (st.task) return;
+  const id = st.live?.observeUser(text), session = st.live?.session;
+  if (!id || !session) return;
+  if (run.liveSession !== session) { run.liveSession = session; run.liveDelegations = []; }
+  if (!run.liveDelegations.includes(id)) run.liveDelegations.push(id);
+}
+
+function syncLiveContext(st: State): void {
+  livePendingBindings(st);
+  if (!st.live?.active) return;
+  if (st.live.binding && (!liveAvailable(st) || st.live.binding !== liveScope(st))) {
+    endLive(st, 'The conversation, provider or runtime changed. Start a new voice session.');
+    return;
+  }
+  if (st.pending || currentQuestion(st)) st.live.needsOnScreenAction();
+  else st.live.clearOnScreenAction();
+  st.live.refreshContext();
+}
+
+/** Only completed messages already in ordinary chat seed a call; no draft, tool output or captions. */
+function liveHistory(st: State): { role: 'user' | 'assistant'; text: string }[] {
+  const history: { role: 'user' | 'assistant'; text: string }[] = [];
+  const encoder = new TextEncoder();
+  let remaining = 12_000;
+  for (let index = st.items.length - 1; index >= 0 && history.length < 12 && remaining > 0; index--) {
+    const item = st.items[index]!;
+    if (item.k !== 'msg' || item.streaming || item.incomplete || (item.src && item.src !== 'chat') || !item.text.trim()) continue;
+    const text = item.text.trim();
+    const length = encoder.encode(text).length;
+    if (length <= remaining) { history.unshift({ role: item.role, text }); remaining -= length; continue; }
+    const suffix = '\n[Earlier chat excerpt ends here.]';
+    let excerpt = '', used = encoder.encode(suffix).length;
+    for (const point of text) {
+      used += encoder.encode(point).length;
+      if (used > remaining) break;
+      excerpt += point;
+    }
+    if (excerpt.trim()) history.unshift({ role: item.role, text: excerpt + suffix });
+    break;
+  }
+  return history;
+}
+
+function liveFor(st: State): AgentLiveVoice {
+  if (st.live) return st.live;
+  st.live = createAgentLive({
+    ward: st.w.i,
+    scope: () => liveScope(st),
+    available: () => liveAvailable(st),
+    route: () => ({ busy: st.busy || st.remote, pending: !!st.pending || !!currentQuestion(st),
+      blocked: !liveAvailable(st) || !!st.submitting || !!st.questionSubmitting || !!st.stopping }),
+    history: () => liveHistory(st),
+    digest: () => ({ busy: st.busy || st.remote, pending: !!st.pending || !!currentQuestion(st), status: liveStatus, unread: unread.get(st.w.i) ?? 0 }),
+    delegate: request => new Promise<LiveSubmission>(resolve => {
+      let settled = false;
+      const live: LiveDispatch = { request, scope: liveScope(st), conversation: st.conversation!, ownerRuntimeId: st.ownerRuntimeId!,
+        admit: value => { if (!settled) { settled = true; resolve(value); } } };
+      if (!submitText(st, request.text, live)) live.admit({ accepted: false, reason: liveRefusal(st, live) ?? 'This conversation cannot accept a voice request right now.' });
+    }),
+    onState: value => {
+      const previous = st.liveState?.phase;
+      st.liveState = value;
+      if (value.phase === 'idle') st.liveMode = false;
+      if (previous !== value.phase) syncLiveContext(st);
+      queueLivePaint(st);
+    },
+  });
+  return st.live;
+}
+
+function startLive(st: State): void {
+  if (!liveAvailable(st)) { toast('Open an available conversation with ChatGPT voice access before starting a voice session.'); queueLivePaint(st); return; }
+  st.liveMode = true;
+  st.voice?.dispose(); st.clip?.cancel();
+  void liveFor(st).start();
+  queueLivePaint(st);
+}
+
+function liveElapsed(state?: LiveVoiceState): string {
+  if (!state?.startedAt) return state?.phase === 'ending' ? 'Ending session' : 'Connecting';
+  const seconds = Math.max(0, Math.floor(((state.endedAt ?? Date.now()) - state.startedAt) / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+let liveUiTimer: ReturnType<typeof setInterval> | undefined;
+let liveBanner: { root: HTMLElement; open: HTMLButtonElement; summary: HTMLElement; mute: HTMLButtonElement; end: HTMLButtonElement; audio: HTMLButtonElement } | undefined;
+
+function paintLiveBanner(): void {
+  const active = [...states.values()].filter(st => !st.task && st.live?.active);
+  const st = active.find(st => st.live?.session) ?? active[0];
+  if (!st) {
+    if (liveBanner) liveBanner.root.hidden = true;
+    clearInterval(liveUiTimer); liveUiTimer = undefined;
+    return;
+  }
+  if (!liveBanner) {
+    const root = el('aside', 'ag-live-banner'); root.setAttribute('aria-label', 'Active voice session');
+    const open = el('button', 'ag-live-banner-open'); open.type = 'button';
+    const summary = el('span', 'ag-live-banner-summary');
+    const mute = el('button', 'btn'); mute.type = 'button';
+    const end = el('button', 'btn', 'End'); end.type = 'button'; end.setAttribute('aria-label', 'End voice session');
+    const audio = el('button', 'btn', 'Enable voice audio'); audio.type = 'button';
+    root.append(open, summary, audio, mute, end);
+    liveBanner = { root, open, summary, mute, end, audio };
+  }
+  const { root, open, summary, mute, end, audio } = liveBanner;
+  // A modal makes the rest of the document inert; keep the session's controls reachable there too.
+  const host = document.activeElement?.closest('dialog[open]') ?? [...document.querySelectorAll<HTMLDialogElement>('dialog[open]')].at(-1) ?? document.body;
+  if (root.parentElement !== host) host.append(root);
+  root.hidden = false;
+  open.textContent = `Voice · ${wardTitle(st.w)}`;
+  open.title = 'Open the conversation for this voice session'; open.onclick = () => openDialog(st);
+  const phase = st.liveState?.phase;
+  const label = phase === 'connecting' ? 'Connecting' : phase === 'ending' ? 'Ending' : st.liveState?.playbackBlocked ? 'Audio paused'
+    : st.liveState?.muted ? 'Muted' : phase === 'speaking' ? 'Speaking' : 'Listening';
+  summary.textContent = st.liveState?.startedAt ? `${label} · ${liveElapsed(st.liveState)}` : label;
+  mute.textContent = st.liveState?.muted ? 'Unmute' : 'Mute'; mute.setAttribute('aria-pressed', String(st.liveState?.muted === true));
+  mute.setAttribute('aria-label', st.liveState?.muted ? 'Unmute voice microphone' : 'Mute voice microphone');
+  mute.disabled = !st.live?.session; mute.onclick = () => st.live?.setMuted(!st.liveState?.muted);
+  end.disabled = !st.live?.session; end.onclick = () => endLive(st);
+  audio.hidden = !st.liveState?.playbackBlocked; audio.onclick = () => st.live?.resumeAudio();
+  if (!liveUiTimer) liveUiTimer = setInterval(() => {
+    for (const state of states.values()) if (state.live?.active) { syncLiveContext(state); queueLivePaint(state); }
+    paintLiveBanner();
+  }, 1000);
+}
+
+/** Caption frames only update voice controls, never rebuild the chat log or save a draft. */
+function queueLivePaint(st: State): void {
+  if (st.liveFrame !== undefined) return;
+  st.liveFrame = requestAnimationFrame(() => {
+    st.liveFrame = undefined;
+    for (const ui of st.uis) if (ui.root.isConnected) paintVoiceControls(st, ui);
+    paintLiveBanner();
+  });
+}
+
+function paintVoiceControls(st: State, ui: Ui): void {
+  const liveActive = !!st.live?.active, liveMode = !!st.liveMode || liveActive;
+  const voicePhase = st.voiceState?.phase ?? 'idle';
+  const voiceActive = voicePhase !== 'idle' && voicePhase !== 'error';
+  const conversationMode = liveMode ? 'live' : st.voiceState?.mode ?? 'off';
+  const clip = st.dictation === 'clip', clipPhase = st.clipState?.phase ?? 'idle';
+  const spoken = st.dictation === 'live' || st.dictation === undefined;
+  ui.readResponses.checked = !liveMode && (st.voiceState?.readEnabled ?? false);
+  ui.readResponses.disabled = !spoken || liveMode || !!st.task;
+  ui.conversationMode.value = conversationMode;
+  ui.conversationMode.disabled = !spoken || st.clearing || voicePhase === 'finishing' || !!st.task;
+  const liveOption = [...ui.conversationMode.options].find(option => option.value === 'live');
+  if (liveOption) liveOption.disabled = !liveActive && !liveAvailable(st);
+  ui.microphone.hidden = st.dictation === null;
+  ui.microphone.disabled = liveMode ? !st.live?.session : clip ? st.clearing || clipPhase === 'sending'
+    : st.clearing || voicePhase === 'finishing' || (conversationMode !== 'off' && voicePhase !== 'listening');
+  ui.microphone.setAttribute('aria-pressed', String(liveMode ? st.liveState?.muted === true : clip ? clipPhase === 'recording' : voicePhase === 'listening'));
+  const microphoneLabel = liveMode ? st.liveState?.muted ? 'Unmute voice microphone' : 'Mute voice microphone'
+    : clip ? clipPhase === 'recording' ? 'Stop and transcribe' : clipPhase === 'sending' ? 'Transcribing…' : 'Dictate message'
+    : conversationMode !== 'off' ? 'Finish & Send' : voicePhase === 'listening' ? 'Finish dictation' : voiceActive ? 'Stop voice' : 'Dictate message';
+  ui.microphone.title = microphoneLabel; ui.microphone.setAttribute('aria-label', microphoneLabel);
+  ui.voiceStop.hidden = liveMode || (clip ? clipPhase !== 'recording' : !voiceActive && !st.voiceState?.readEnabled && conversationMode === 'off');
+  const showLiveStatus = liveMode || (st.liveState?.phase === 'error' && !voiceActive && clipPhase === 'idle');
+  const voiceMessage = showLiveStatus ? st.liveState?.message ?? '' : clip ? st.clipState?.message ?? '' : st.voiceState?.message ?? '';
+  ui.voiceStatus.hidden = !voiceMessage;
+  if (ui.voiceStatus.textContent !== voiceMessage) ui.voiceStatus.textContent = voiceMessage;
+  ui.voiceStatus.dataset.error = String(showLiveStatus ? st.liveState?.phase === 'error' : clip ? clipPhase === 'error' : voicePhase === 'error');
+  if (ui.root.dataset.liveVoice !== String(liveMode)) {
+    ui.root.dataset.liveVoice = String(liveMode);
+    for (const button of ui.log.querySelectorAll<HTMLButtonElement>('[data-read]'))
+      button.disabled = liveMode || st.dictation === 'clip' || st.dictation === null || button.closest<HTMLElement>('.ag-message')?.dataset.streaming === 'true';
+  }
+  ui.liveControls.hidden = !!st.task;
+  ui.liveToggle.textContent = liveActive ? st.liveState?.phase === 'ending' ? 'Ending voice session…' : 'End voice session' : 'Start voice session';
+  ui.liveToggle.setAttribute('aria-label', liveActive ? 'End voice session' : 'Start voice session');
+  ui.liveToggle.setAttribute('aria-pressed', String(liveActive));
+  ui.liveToggle.disabled = liveActive ? !st.live?.session : !liveAvailable(st);
+  ui.liveToggle.title = liveActive ? 'End this voice session; submitted Rime work stays in chat'
+    : liveAvailable(st) ? 'Start a continuous voice conversation with Rimeward' : 'Live voice requires an available conversation and ChatGPT voice access';
+  ui.liveSummary.hidden = !liveActive;
+  ui.liveSummary.textContent = liveActive ? `${liveElapsed(st.liveState)} · ${st.liveState?.usage === undefined ? 'Usage not reported yet' : 'Provider usage below'}` : '';
+  ui.liveAudio.hidden = !liveActive || !st.liveState?.playbackBlocked;
+  ui.liveSafe.closest('label')!.hidden = !liveActive;
+  ui.liveSafe.checked = st.liveState?.speakerSafe ?? false;
+  ui.liveSafe.disabled = !st.live?.session;
+  const input = liveActive ? st.liveState?.input ?? '' : '', output = liveActive ? st.liveState?.output ?? '' : '';
+  ui.liveCaptions.hidden = !liveActive || (!input && !output);
+  if (ui.liveInput.textContent !== input) ui.liveInput.textContent = input;
+  if (ui.liveOutput.textContent !== output) ui.liveOutput.textContent = output;
+  ui.liveInput.parentElement!.hidden = !input; ui.liveOutput.parentElement!.hidden = !output;
+  ui.liveUsage.hidden = !liveActive || st.liveState?.usage === undefined;
+  const usage = liveActive && st.liveState?.usage !== undefined ? JSON.stringify(st.liveState.usage, null, 2) : '';
+  const shownUsage = usage.length > 2000 ? `${usage.slice(0, 2000)}\n[More usage detail omitted]` : usage;
+  if (ui.liveUsageText.textContent !== shownUsage) ui.liveUsageText.textContent = shownUsage;
+}
+
+window.addEventListener('pagehide', () => { for (const st of states.values()) endLive(st); });
+document.addEventListener('astro:before-swap', () => { for (const st of states.values()) endLive(st); });
+document.addEventListener('fd:layout-saved', () => { for (const st of states.values()) syncLiveContext(st); });
+
 function voiceFor(st: State) {
   return st.voice ??= createAgentVoice({
     ward: st.w.i,
@@ -697,6 +981,7 @@ function stateFor(w: WardInstance): State {
   }
   if (st.w.device !== w.device) { st.voice?.dispose(); st.clip?.dispose(); }
   st.w = w; // config changes keep the same id — track the live instance
+  syncLiveContext(st);
   return st;
 }
 
@@ -849,7 +1134,7 @@ function updateBubble(node: HTMLElement, item: Extract<Item, { k: 'msg' }>, st: 
     read.title = 'Read this message aloud'; read.setAttribute('aria-label', 'Read this message aloud');
     read.append(icon('volume'), el('span', undefined, 'Read aloud')); actions.append(read);
   }
-  if (read) { read.disabled = !!item.streaming || st.dictation === 'clip' || st.dictation === null; read.onclick = () => { void voiceFor(st).speak(item.text); }; }
+  if (read) { read.disabled = !!item.streaming || st.dictation === 'clip' || st.dictation === null || !!st.live?.active || !!st.liveMode; read.onclick = () => { if (!st.live?.active && !st.liveMode) void voiceFor(st).speak(item.text); }; }
 }
 
 // ------------------------------------------------------------- empty state
@@ -1122,7 +1407,7 @@ function paintStream(st: State) {
   st.frame = requestAnimationFrame(() => { st.frame = undefined; for (const ui of st.uis) if (ui.root.isConnected) buildLog(st, ui); });
 }
 
-function restoreSurface(st: State, data: { conversation?: number; transcript?: TranscriptMsg[]; live?: LiveTurn; ownerRuntimeId?: string; ownerName?: string; modelAccess?: State['modelAccess']; workspace?: { runOwnerRuntimeId?: string } | null }) {
+function restoreSurface(st: State, data: { conversation?: number; provider?: AgentProviderId; transcript?: TranscriptMsg[]; live?: LiveTurn; ownerRuntimeId?: string; ownerName?: string; modelAccess?: State['modelAccess']; workspace?: { runOwnerRuntimeId?: string } | null }) {
   // Only this run's in-flight items may outlive the snapshot: another tab's New
   // chat swaps the conversation, and its old messages must not be carried over.
   const old = st.items, sameRun = !!data.live && (!st.run || st.run === data.live.id) && (!st.conversation || st.conversation === data.conversation);
@@ -1132,9 +1417,11 @@ function restoreSurface(st: State, data: { conversation?: number; transcript?: T
     st.newChatRequest = undefined;
   }
   st.conversation = data.conversation; st.run = data.live?.id;
+  if (data.provider) st.provider = data.provider;
   st.ownerRuntimeId = nextOwner;
   st.ownerName = data.ownerName;
   st.modelAccess = data.modelAccess;
+  syncLiveContext(st);
   // An unchanged snapshot cannot settle a New chat request whose response was lost.
   if (!st.newChatRequest) st.placementBlocked = undefined;
   st.items = itemsFrom(data.live?.transcript ?? data.transcript ?? []);
@@ -1145,8 +1432,18 @@ function restoreSurface(st: State, data: { conversation?: number; transcript?: T
     if (previous?.k === 'msg') { item.id = previous.id; matched.add(previous); }
   }
   const run = newRun();
+  const previousRun = !st.task && sameRun ? remoteRuns.get(st.w.i) : undefined;
+  if (previousRun) {
+    run.seq = previousRun.seq;
+    run.liveDelegations = [...previousRun.liveDelegations]; run.liveSession = previousRun.liveSession;
+    for (const key of previousRun.spoken) run.spoken.add(key);
+  }
   if (data.live) {
     if (!st.task) remoteRuns.set(st.w.i, run);
+    // A direct request precedes runLoop, so it is the starting transcript's
+    // latest user message, not a replay event. Never bind older chat history.
+    const latest = data.live.transcript[data.live.transcript.length - 1];
+    if (latest?.role === 'user' && (!latest.source || latest.source === 'chat')) observeLiveUser(st, run, latest.text);
     for (const event of data.live.events) applyEvent(st, run, event, undefined, true);
   }
   if (sameRun) {
@@ -1227,7 +1524,7 @@ function saveDraft(st: State) {
 window.addEventListener('fd:before-workspace-navigation', event => {
   (event as CustomEvent<{ waitUntil(p: Promise<unknown>): void }>).detail.waitUntil(Promise.resolve().then(() => {
     for (const st of states.values()) {
-      st.voice?.dispose(); st.clip?.dispose();
+      endLive(st); st.voice?.dispose(); st.clip?.dispose();
       if (st.uploading) throw Error('Wait for Rime attachments to finish uploading before relaunching.');
       saveDraft(st);
       const ui = [...st.uis].find(ui => ui.root.closest('dialog[open]')) ?? [...st.uis][0];
@@ -1254,7 +1551,7 @@ function paintQuestion(st: State, ui: Ui): void {
       else {
         const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, payload);
         if (status !== 200 || !data?.answered) throw Error(data?.error ?? 'Could not send your answer.');
-        st.question = null;
+        if (st.question?.id === question.id) st.question = null;
       }
       if (currentQuestion(st)?.id !== question.id) { drafts.delete(question.id); saveDesktopState(checkpoint, undefined); }
     } catch (error) { toast(error instanceof Error ? error.message : 'Could not send your answer.', undefined, true); }
@@ -1299,6 +1596,7 @@ function paintQuestion(st: State, ui: Ui): void {
 }
 
 function paint(st: State): void {
+  syncLiveContext(st);
   if (st.busy || st.remote) reloadHolds.add(st.w.i);
   else reloadHolds.delete(st.w.i);
   try { saveDraft(st); } catch { /* Retain the in-memory draft until recovery can be saved. */ }
@@ -1318,34 +1616,7 @@ function paint(st: State): void {
       : '';
     ui.ownerLabel.textContent = runsOn && access ? `${runsOn} · ${access}` : runsOn;
     ui.ownerLabel.title = `This conversation stays on its original runtime. New unlinked conversations start on the machine you are using.${st.modelAccess ? `\n${st.modelAccess.blocked ?? `Model access: ${st.modelAccess.reason}.`}` : ''}`;
-    const voicePhase = st.voiceState?.phase ?? 'idle';
-    const voiceActive = voicePhase !== 'idle' && voicePhase !== 'error';
-    const conversationMode = st.voiceState?.mode ?? 'off';
-    // A ward whose credentials transcribe a recording has dictation and nothing else: read-aloud and
-    // the conversation modes are the live route's, and pretending otherwise would offer dead controls.
-    const clip = st.dictation === 'clip';
-    const clipPhase = st.clipState?.phase ?? 'idle';
-    ui.readResponses.checked = st.voiceState?.readEnabled ?? false;
-    // Read-aloud and the conversation modes exist only on the live route; undefined = not reported yet.
-    const spoken = st.dictation === 'live' || st.dictation === undefined;
-    ui.readResponses.disabled = !spoken;
-    ui.conversationMode.value = conversationMode;
-    ui.conversationMode.disabled = !spoken || st.clearing || voicePhase === 'finishing';
-    ui.microphone.hidden = st.dictation === null;
-    ui.microphone.disabled = clip
-      ? st.clearing || clipPhase === 'sending'
-      : st.clearing || voicePhase === 'finishing' || (conversationMode !== 'off' && voicePhase !== 'listening');
-    ui.microphone.setAttribute('aria-pressed', String(clip ? clipPhase === 'recording' : voicePhase === 'listening'));
-    const microphoneLabel = clip
-      ? clipPhase === 'recording' ? 'Stop and transcribe' : clipPhase === 'sending' ? 'Transcribing…' : 'Dictate message'
-      : conversationMode !== 'off' ? 'Finish & Send' : voicePhase === 'listening' ? 'Finish dictation' : voiceActive ? 'Stop voice' : 'Dictate message';
-    ui.microphone.title = microphoneLabel;
-    ui.microphone.setAttribute('aria-label', microphoneLabel);
-    ui.voiceStop.hidden = clip ? clipPhase !== 'recording' : !voiceActive && !st.voiceState?.readEnabled && conversationMode === 'off';
-    const voiceMessage = clip ? st.clipState?.message ?? '' : st.voiceState?.message ?? '';
-    ui.voiceStatus.hidden = !voiceMessage;
-    ui.voiceStatus.textContent = voiceMessage;
-    ui.voiceStatus.dataset.error = String(clip ? clipPhase === 'error' : voicePhase === 'error');
+    paintVoiceControls(st, ui);
     // Mid-turn the composer stays open: a send steers the running turn.
     ui.send.disabled = !!st.placementBlocked || !!st.pending?.question || st.configured === false || st.uploading > 0 || st.clearing || (!st.draft.trim() && !st.attachments.length);
     const working = st.busy || st.remote;
@@ -1383,13 +1654,14 @@ function paint(st: State): void {
     paintQuestion(st, ui);
     paintPicker(st, ui);
   }
+  if (st.live?.active) paintLiveBanner();
 }
 
 /** Reload the persisted transcript. `settled` marks the call that follows a
  *  turn-finished ping: the chain hasn't released `busy` yet at that instant, so
  *  trusting it there would strand a spinner and a disabled composer. */
 async function refetch(st: State, settled = false): Promise<void> {
-  if (!st.uis.size || st.clearing) return; // The initial render and New chat own their transitions.
+  if ((!st.uis.size && !st.live?.active) || st.clearing) return; // A live session can outlast its visible view.
   const revision = st.revision;
   const refresh = ++st.refresh;
   const { status, data } = await getJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { signal: AbortSignal.timeout(10_000) }).catch(() => ({ status: 0, data: null }));
@@ -1399,12 +1671,15 @@ async function refetch(st: State, settled = false): Promise<void> {
     return;
   }
   st.configured = data.configured;
+  if (data.provider) st.provider = data.provider;
   if (data.dictation === 'live' || data.dictation === 'clip' || data.dictation === null) st.dictation = data.dictation;
   st.context = data.context ?? undefined;
   st.tasks = data.tasks ?? [];
-  restoreSurface(st, data);
+  const running = restoreSurface(st, data);
   st.pending = data.pending ?? null;
   st.question = data.question ?? null;
+  rememberLivePending(st, running, st.pending?.confirmId);
+  rememberLivePending(st, running, st.question?.id);
   // A turn is running elsewhere (another client, or an automation) — its live
   // frames repaint over this, but the thread is busy either way.
   st.remote = !settled && !!data.busy;
@@ -1418,7 +1693,7 @@ function recover(st: State): void {
   if (st.recoveryTimer) return;
   st.recoveryTimer = setTimeout(async () => {
     st.recoveryTimer = undefined;
-    if (!st.uis.size || st.busy || !st.remote) return;
+    if ((!st.uis.size && !st.live?.active) || st.busy || !st.remote) return;
     await refetch(st);
     if (st.remote && !st.busy) recover(st);
   }, 5000);
@@ -1451,6 +1726,29 @@ interface Restore {
   pending?: Pending | null;
 }
 
+/** Local transport receipt only. Delegations never borrow composer attachments, mentions or controls. */
+interface LiveDispatch {
+  request: LiveVoiceRequest;
+  conversation: number;
+  ownerRuntimeId: string;
+  scope: string;
+  admit: (result: LiveSubmission) => void;
+}
+
+function liveRefusal(st: State, live: LiveDispatch): string | undefined {
+  if (!liveAvailable(st) || st.live?.session !== live.request.session || st.live.binding !== live.scope ||
+      liveScope(st) !== live.scope || st.conversation !== live.conversation || st.ownerRuntimeId !== live.ownerRuntimeId)
+    return 'The voice session or conversation changed. Nothing new was submitted.';
+  if (st.pending || currentQuestion(st) || st.questionSubmitting)
+    return 'Rime needs your confirmation or answer on screen. Voice cannot operate that control.';
+  if (st.submitting || st.stopping) return 'A chat action is already being submitted. Please let it settle before asking again.';
+}
+
+function livePayload(text: string, live: LiveDispatch): Record<string, unknown> {
+  return { message: text, conversation: live.conversation,
+    voice: { session: live.request.session, delegation: live.request.id, ownerRuntimeId: live.ownerRuntimeId } };
+}
+
 function fail(st: State, msg: string, restore: Restore): void {
   st.items.push({ k: 'note', err: true, text: msg });
   // Nothing typed, uploaded or parked is lost — the request didn't land.
@@ -1470,7 +1768,11 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource, replay = fals
   switch (e.type) {
     case 'user':
       dropThinking(st);
-      if (typeof e.text === 'string' && e.text.trim()) st.items.push({ k: 'msg', role: 'user', text: e.text, src });
+      if (typeof e.text === 'string' && e.text.trim()) {
+        st.items.push({ k: 'msg', role: 'user', text: e.text, src });
+        // Replay may recover a missed absorbed steer, but never speaks or submits it.
+        observeLiveUser(st, run, e.text);
+      }
       return true;
     case 'text_delta': {
       if (typeof e.id !== 'string' || typeof e.delta !== 'string' || !Number.isInteger(e.offset) || e.offset < 0) return true;
@@ -1507,7 +1809,11 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource, replay = fals
         const speechKey = typeof e.id === 'string' ? e.id : e.text;
         if (!e.incomplete && !run.spoken.has(speechKey)) {
           run.spoken.add(speechKey);
-          if (!replay) st.voice?.read(e.text, typeof e.id === 'string' ? e.id : `${run.seq}:${run.spoken.size}`);
+          if (!replay) {
+            const key = typeof e.id === 'string' ? e.id : `${run.seq}:${run.spoken.size}`;
+            if (!st.task) st.live?.backend(e.text, key, run.liveSession === st.live?.session ? run.liveDelegations : []);
+            if (!st.live?.active) st.voice?.read(e.text, key);
+          }
         }
       }
       return true;
@@ -1536,10 +1842,22 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource, replay = fals
       return true;
     }
     case 'pending':
+      if (!replay && e.pending === null && (!src || src === 'chat')) inheritLivePending(st, run, st.pending?.confirmId, true);
       st.pending = e.pending ?? null;
+      rememberLivePending(st, run, st.pending?.confirmId);
+      if (!replay) syncLiveContext(st);
       return true;
     case 'question':
-      st.question = e.question ?? null;
+      if (e.question === null && (!src || src === 'chat')) {
+        // The answer receipt can beat its mirror, and a saved answer can be read
+        // by a later resumed loop. Only the exact consumption event binds that run.
+        if (typeof e.resolvedId === 'string') inheritLivePending(st, run, e.resolvedId, true);
+        else if (!replay && !e.answerId) inheritLivePending(st, run, st.question?.id, true);
+      }
+      if (e.question !== null || !(e.answerId || e.resolvedId) ||
+          st.question?.id === (e.answerId ?? e.resolvedId)) st.question = e.question ?? null;
+      rememberLivePending(st, run, st.question?.id);
+      if (!replay) syncLiveContext(st);
       return true;
     case 'usage':
       if (typeof e.tokens === 'number' && typeof e.model === 'string') st.context = e;
@@ -1555,7 +1873,11 @@ function applyEvent(st: State, run: Run, e: any, src?: TurnSource, replay = fals
         const speechKey = typeof e.id === 'string' ? e.id : e.text;
         if (!e.incomplete && !run.spoken.has(speechKey)) {
           run.spoken.add(speechKey);
-          if (!replay) st.voice?.read(e.text, typeof e.id === 'string' ? e.id : `${run.seq}:${run.spoken.size}`);
+          if (!replay) {
+            const key = typeof e.id === 'string' ? e.id : `${run.seq}:${run.spoken.size}`;
+            if (!st.task) st.live?.backend(e.text, key, run.liveSession === st.live?.session ? run.liveDelegations : []);
+            if (!st.live?.active) st.voice?.read(e.text, key);
+          }
         }
       }
       return true;
@@ -1570,7 +1892,22 @@ async function flushMentionedWards(wards: string[]): Promise<void> {
   await Promise.all(pending);
 }
 
-async function post(st: State, payload: Record<string, unknown>, back: Restore = {}): Promise<void> {
+async function post(st: State, payload: Record<string, unknown>, back: Restore = {}, live?: LiveDispatch): Promise<void> {
+  if (live) {
+    const reason = liveRefusal(st, live);
+    if (reason || st.busy || st.remote) { live.admit({ accepted: false, reason: reason ?? 'The conversation became busy before this voice request was submitted.' }); return; }
+  }
+  let continuationId: string | undefined;
+  if (!live) {
+    if ((payload.action === 'confirm' || payload.action === 'decline') && typeof payload.confirmId === 'string' &&
+        payload.confirmId === (back.pending ?? st.pending)?.confirmId) continuationId = payload.confirmId;
+    else if (payload.action === 'answer-question' && typeof payload.questionId === 'string' &&
+        payload.questionId === currentQuestion(st)?.id) continuationId = payload.questionId;
+  }
+  if (!st.busy && !st.remote) {
+    st.run = undefined;
+    if (!st.task) remoteRuns.delete(st.w.i);
+  }
   st.revision++;
   st.busy = true;
   // Hold off any server-side layout reload until this turn is done — the
@@ -1580,14 +1917,16 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
   st.abort = controller;
   // /compact is a model round-trip that answers as plain JSON — no stream
   // frames to paint status from, so the wait is announced here.
-  if (typeof payload.message === 'string' && /^\/(compact|summari[sz]e)\b/.test(payload.message.trim()))
+  if (!live && typeof payload.message === 'string' && /^\/(compact|summari[sz]e)\b/.test(payload.message.trim()))
     st.items.push({ k: 'thinking', label: 'compacting the older part of this thread…' });
   for (const ui of st.uis) ui.live = true; // the message just pushed transitions in like the reply will
   paint(st);
-  const restore: Restore = { text: typeof payload.message === 'string' ? payload.message : '', ...back };
-  const running = newRun();
+  const restore: Restore = live ? {} : { text: typeof payload.message === 'string' ? payload.message : '', ...back };
+  const running = newRun(live?.request);
+  inheritLivePending(st, running, continuationId);
   let accepted = false;
   let completed = false;
+  let admissionTimer: ReturnType<typeof setTimeout> | undefined;
   const reconnect = () => {
     st.busy = false;
     st.remote = true;
@@ -1600,12 +1939,19 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
 
   const dispatch = (e: any): void => {
     if (completed || st.abort !== controller) return;
-    if (!applyEvent(st, running, e)) {
+    const applied = applyEvent(st, running, e);
+    if (continuationId && (e.type === 'pending' && e.pending === null || e.type === 'question' && e.question === null || e.type === 'done'))
+      st.livePending?.delete(continuationId);
+    if (applied || e.type === 'done') live?.admit({ accepted: true });
+    if (!applied) {
       if (e.type === 'done') {
         completed = true;
         endTurn(st);
         st.pending = e.pending ?? null;
+        rememberLivePending(st, running, st.pending?.confirmId);
       } else if (e.type === 'error') {
+        live?.admit({ accepted: false, reason: String(e.error ?? 'The voice request could not be accepted.') });
+        if (!st.task) st.live?.backend(`Rime reported an error: ${String(e.error ?? 'The request failed.')} Check the chat before repeating any action.`, `error:${running.seq}`, running.liveSession === st.live?.session ? running.liveDelegations : []);
         completed = true;
         endTurn(st);
         // A stream means the server took the request — the confirm is spent,
@@ -1620,12 +1966,18 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
   try {
     await flushMentionedWards(Array.isArray(payload.ward_ids) ? payload.ward_ids : []);
     if (st.abort !== controller) return;
+    if (live) {
+      const reason = liveRefusal(st, live);
+      if (reason) { live.admit({ accepted: false, reason }); endTurn(st); paint(st); return; }
+      admissionTimer = setTimeout(() => controller.abort(), 30_000);
+    }
     const res = await fetch(`/api/agent/${encodeURIComponent(st.w.i)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
+    clearTimeout(admissionTimer);
     if (st.abort !== controller) { await res.body?.cancel().catch(() => {}); return; }
 
     // Error paths (busy, not-configured) and slash commands answer plain JSON.
@@ -1633,8 +1985,9 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
       const data = await res.json().catch(() => null);
       if (st.abort !== controller) return;
       endTurn(st);
-      if (res.ok && data?.command) {
+      if (!live && res.ok && data?.command) {
         if (data.command === 'clear') {
+          endLive(st);
           st.voice?.dispose(); st.clip?.cancel();
           // The empty log IS the confirmation, and clearThread's ping would
           // wipe a note here anyway. Other clients follow from that ping.
@@ -1655,8 +2008,10 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
             : data?.error === 'not-configured'
               ? 'Provider not configured — see Account → Agent.'
               : (data?.error ?? `Request failed (HTTP ${res.status}).`);
+        live?.admit({ accepted: false, reason: String(msg) });
         fail(st, msg, restore);
       } else {
+        live?.admit({ accepted: false, reason: 'The server did not return a voice request receipt. Check the chat before repeating it.' });
         paint(st);
       }
       return;
@@ -1671,13 +2026,19 @@ async function post(st: State, payload: Record<string, unknown>, back: Restore =
     if (accepted && !completed) { reconnect(); return; }
     endTurn(st);
     if ((err as Error)?.name === 'AbortError') {
-      st.items.push({ k: 'note', icon: 'stop', text: 'Stopped.' });
+      const message = live ? 'Voice request delivery could not be confirmed. It may already be running; check the chat before repeating it.' : 'Stopped.';
+      live?.admit({ accepted: false, reason: message });
+      st.items.push({ k: 'note', icon: 'stop', text: message });
       paint(st);
       void refetch(st); // the server may have finished the turn anyway
       return;
     }
-    fail(st, err instanceof Error ? err.message : 'network error', restore);
+    const message = live ? 'Voice request delivery could not be confirmed. It may already be running; check the chat before repeating it.' : err instanceof Error ? err.message : 'network error';
+    live?.admit({ accepted: false, reason: message });
+    fail(st, message, restore);
   } finally {
+    clearTimeout(admissionTimer);
+    live?.admit({ accepted: false, reason: 'Voice request delivery could not be confirmed. Check the chat; it will not be retried automatically.' });
     if (st.abort === controller) {
       st.abort = null;
       if (!st.remote) reloadHolds.delete(st.w.i);
@@ -1691,7 +2052,21 @@ function submit(st: State, ui: Ui): void {
 }
 
 /** Send text as this ward's next message. Separate from the composer: a voice call outlives its view. */
-function submitText(st: State, text: string): boolean {
+function submitText(st: State, text: string, live?: LiveDispatch): boolean {
+  if (live) {
+    const reason = liveRefusal(st, live);
+    if (reason || text !== live.request.text || !text.trim() || text.length > 8000 ||
+        !text.startsWith('<realtime_delegation>') || !text.endsWith('</realtime_delegation>')) {
+      live.admit({ accepted: false, reason: reason ?? 'The voice request is invalid or too long.' }); return false;
+    }
+    // This path never reads or clears the composer's draft, attachments or mentions.
+    if (live.request.action === 'steer' || st.busy || st.remote) void steer(st, text, [], live);
+    else {
+      st.items.push({ k: 'msg', role: 'user', text });
+      void post(st, livePayload(text, live), {}, live);
+    }
+    return true;
+  }
   if (st.placementBlocked || st.configured === false || st.pending?.question) return false;
   if (text.length > 8000) { toast('Messages are limited to 8,000 characters.'); return false; }
   const mentions = activeMentions(text, st.mentions);
@@ -1738,7 +2113,31 @@ function submitText(st: State, text: string): boolean {
 }
 
 /** Steer the running turn. steered:false = it ended first, so send normally. */
-async function steer(st: State, text: string, mentions: WardMention[] = []): Promise<void> {
+async function steer(st: State, text: string, mentions: WardMention[] = [], live?: LiveDispatch): Promise<void> {
+  if (live) {
+    const reason = liveRefusal(st, live);
+    if (reason) { live.admit({ accepted: false, reason }); return; }
+    try {
+      const { status, data } = await postJson(`/api/agent/${encodeURIComponent(st.w.i)}`, { ...livePayload(text, live), mode: 'steer' }, 'POST', { signal: AbortSignal.timeout(30_000) });
+      const changed = liveRefusal(st, live);
+      if (changed) { live.admit({ accepted: false, reason: `${changed} A request already sent may still be running; check the chat.` }); return; }
+      if (status === 200 && data?.steered === true) { live.admit({ accepted: true }); return; }
+      // Only this explicit refusal proves the steer was not dispatched. Never retry an uncertain send.
+      if (status === 200 && data?.steered === false && !st.busy && !st.remote) {
+        st.items.push({ k: 'msg', role: 'user', text });
+        void post(st, livePayload(text, live), {}, live);
+        return;
+      }
+      const reason = status === 200 && data?.steered === false
+        ? 'The response changed while this request was being sent. Nothing was resubmitted; check the chat before asking again.'
+        : typeof data?.error === 'string' ? data.error : 'Voice request delivery could not be confirmed. It may already be running; check the chat before repeating it.';
+      live.admit({ accepted: false, reason }); fail(st, reason, {});
+    } catch {
+      const reason = 'Voice request delivery could not be confirmed. It may already be running; check the chat before repeating it.';
+      live.admit({ accepted: false, reason }); fail(st, reason, {});
+    }
+    return;
+  }
   const conversation = st.conversation, owner = st.ownerRuntimeId;
   const current = () => !st.clearing && st.conversation === conversation && st.ownerRuntimeId === owner;
   try { await flushMentionedWards(mentions.map(m => m.ward)); }
@@ -2075,7 +2474,9 @@ function openChildSession(st: State, task: AgentTask, tasksDialog: HTMLDialogEle
   const endpoint = `/api/agent/${encodeURIComponent(st.w.i)}`;
   let fetching = false, sending = false, stopping = false, connected = false, canMessage = false;
   let receiptNodes: Ui['rendered'] = [];
-  const childState: State = { ...st, task: task.id, items: [], pending: null, question: null, busy: false, remote: true, voice: undefined, uis: new Set(), frame: undefined, revision: 0 };
+  const childState: State = { ...st, task: task.id, items: [], pending: null, question: null, busy: false, remote: true,
+    voice: undefined, voiceState: undefined, live: undefined, liveState: undefined, liveMode: false, liveFrame: undefined, livePending: undefined,
+    uis: new Set(), frame: undefined, revision: 0 };
   const childUi: LogUi = { root: d, log: transcriptBox, input, rendered: [], jump, follow: true, restored: false, live: false };
   let childRun = newRun(), childFrame = 0;
   childUi.scroll = followLog(log, jump, childUi);
@@ -2223,6 +2624,7 @@ async function clearChat(st: State): Promise<void> {
   st.submitting = undefined;
   st.revision++;
   st.refresh++; // An earlier surface read must not replace the result or a clear failure.
+  endLive(st, 'The conversation changed. Start a new voice session.');
   st.voice?.dispose();
   st.clip?.cancel();
   paint(st);
@@ -2529,6 +2931,7 @@ function wireComposer(ui: Ui, cur: () => State | undefined): void {
   ui.microphone.addEventListener('click', () => {
     const st = cur();
     if (!st) return;
+    if (st.live?.active || st.liveMode) { st.live?.setMuted(!st.liveState?.muted); return; }
     if (st.dictation === 'clip') { void clipFor(st).toggle(); return; }
     if (st.voiceState && st.voiceState.mode !== 'off') void go();
     else if (st.voiceState?.phase === 'speaking') void st.voice?.stop();
@@ -2542,11 +2945,23 @@ function wireComposer(ui: Ui, cur: () => State | undefined): void {
     if (st.dictation === 'clip') st.clip?.cancel();
     else void st.voice?.stop();
   });
-  ui.readResponses.addEventListener('change', () => { const st = cur(); if (st) void voiceFor(st).setReadResponses(ui.readResponses.checked); });
+  ui.readResponses.addEventListener('change', () => {
+    const st = cur();
+    if (st && !st.live?.active && !st.liveMode) void voiceFor(st).setReadResponses(ui.readResponses.checked);
+    else if (st) queueLivePaint(st);
+  });
   ui.conversationMode.addEventListener('change', () => {
     const st = cur();
-    if (st) void voiceFor(st).setConversation(ui.conversationMode.value as ConversationVoiceMode);
+    if (!st || st.task) return;
+    const mode = ui.conversationMode.value;
+    if (mode === 'live') { startLive(st); return; }
+    endLive(st);
+    st.liveState = undefined;
+    if (mode === 'off' || mode === 'finish-send') void voiceFor(st).setConversation(mode as ConversationVoiceMode);
   });
+  ui.liveToggle.addEventListener('click', () => { const st = cur(); if (st) { if (st.live?.active) endLive(st); else startLive(st); } });
+  ui.liveAudio.addEventListener('click', () => cur()?.live?.resumeAudio());
+  ui.liveSafe.addEventListener('change', () => cur()?.live?.setSpeakerSafe(ui.liveSafe.checked));
   ui.picker.provider.addEventListener('change', () => { const st = cur(); if (st) void pickRoute(st, ui.picker.provider.value); });
   ui.picker.model.addEventListener('change', () => {
     const st = cur();
@@ -2705,7 +3120,7 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   readLabel.append(readResponses, document.createTextNode('Read responses')); readLabel.title = 'Read each reply aloud';
   const modeLabel = el('label');
   const conversationMode = el('select'); conversationMode.setAttribute('aria-label', 'Voice conversation mode');
-  for (const [value, label] of [['off', 'Off'], ['finish-send', 'Finish & Send']]) {
+  for (const [value, label] of [['off', 'Off'], ['finish-send', 'Finish & Send'], ['live', 'Live']]) {
     const option = el('option', undefined, label); option.value = value!; conversationMode.append(option);
   }
   modeLabel.append(document.createTextNode('Conversation'), conversationMode); modeLabel.title = 'Voice conversation mode';
@@ -2724,9 +3139,30 @@ function createUi(root: HTMLElement, host: HTMLElement, status: HTMLElement): Ui
   // A bare "Normal" beside Effort's "Medium" would be ambiguous: this word stays in the compact ward.
   picker.permissions.previousElementSibling!.classList.add('ag-picker-word-keep');
   voiceOptions.append(readLabel, pickerRoot, modeLabel);
-  footer.append(placement, questionBox, pendingBox, form, voiceOptions, voiceStatus, help);
+  const liveControls = el('div', 'ag-live-controls');
+  const liveToggle = el('button', 'btn ag-live-toggle', 'Start voice session'); liveToggle.type = 'button';
+  liveToggle.setAttribute('aria-label', 'Start voice session'); liveToggle.disabled = true;
+  const liveSummary = el('span', 'ag-live-summary'); liveSummary.hidden = true;
+  const liveAudio = el('button', 'btn ag-live-audio', 'Enable voice audio'); liveAudio.type = 'button'; liveAudio.hidden = true;
+  const liveSafeLabel = el('label', 'ag-live-safe'); liveSafeLabel.hidden = true;
+  const liveSafe = el('input'); liveSafe.type = 'checkbox';
+  liveSafeLabel.append(liveSafe, document.createTextNode('Speaker-safe'));
+  liveSafeLabel.title = 'Pause the microphone while the voice speaks to reduce speaker echo. Turn off for natural interruptions when echo cancellation works.';
+  liveControls.append(liveToggle, liveSummary, liveAudio, liveSafeLabel);
+  const liveCaptions = el('section', 'ag-live-captions'); liveCaptions.hidden = true;
+  liveCaptions.setAttribute('aria-label', 'Voice session captions'); liveCaptions.setAttribute('aria-live', 'off');
+  const captionInput = el('div', 'ag-live-caption'), liveInput = el('p');
+  const captionOutput = el('div', 'ag-live-caption'), liveOutput = el('p');
+  captionInput.append(el('span', 'ag-live-caption-label', 'You'), liveInput);
+  captionOutput.append(el('span', 'ag-live-caption-label', 'Voice'), liveOutput);
+  liveCaptions.append(captionInput, captionOutput, el('p', 'ag-live-caption-note', 'Captions stay in this voice session. Delegated work appears in chat.'));
+  const liveUsage = el('details', 'ag-live-usage'); liveUsage.hidden = true;
+  const liveUsageText = el('pre'); liveUsage.append(el('summary', undefined, 'Provider usage'), liveUsageText);
+  footer.append(placement, questionBox, pendingBox, form, liveControls, voiceOptions, voiceStatus, liveCaptions, liveUsage, help);
   host.append(stage, footer);
-  return { root, visibility, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus, readResponses, conversationMode, picker, chips, pendingBox, pendingText, pendingDetails, pendingPatch, questionBox, status, location, ownerLabel, context, jump, follow: true, rendered: [] };
+  return { root, visibility, log, input, send, stop, background, tasksButton, microphone, voiceStop, voiceStatus,
+    liveControls, liveToggle, liveSummary, liveAudio, liveSafe, liveCaptions, liveInput, liveOutput, liveUsage, liveUsageText,
+    readResponses, conversationMode, picker, chips, pendingBox, pendingText, pendingDetails, pendingPatch, questionBox, status, location, ownerLabel, context, jump, follow: true, rendered: [] };
 }
 
 // ------------------------------------------------------------ shared dialog
@@ -2808,7 +3244,7 @@ const unread = new Map<string, number>();
 /** In-flight step cards from a remote (headless) turn, keyed per ward. */
 const remoteRuns = new Map<string, Run>();
 window.addEventListener('fd:agent-reconnect', () => {
-  for (const st of states.values()) if (!st.busy && st.uis.size) void refetch(st);
+  for (const st of states.values()) if (!st.busy && (st.uis.size || st.live?.active)) void refetch(st);
 });
 
 function paintBadge(ward: string): void {
@@ -2820,6 +3256,7 @@ function clearUnread(ward: string): void {
   if (!unread.has(ward)) return;
   unread.delete(ward);
   paintBadge(ward);
+  states.get(ward)?.live?.refreshContext();
 }
 
 /** Is this ward's conversation actually in front of the user right now? One
@@ -2897,7 +3334,7 @@ async function openHistory(w:WardInstance) {
         if(chat.model===target.model){submit.textContent='Continue here';note.textContent='Opens a copy here on the same model. The original stays intact.';}
         else{submit.textContent=`Continue on ${chat.model}`;note.textContent=`Opens a copy here on ${chat.model}, the model it ran on, and sets this ward to it (currently ${target.model}). The original stays intact.`;}}
       else{submit.hidden=false;choice={model:target.model,acknowledged:true};submit.textContent=`Continue on ${target.model}`;note.textContent=`The model this conversation ran on was not recorded. It continues on this ward's current model, ${target.model}, only because you choose so here. The original stays intact.`;}
-      form.onsubmit=async(e)=>{e.preventDefault();if(!choice)return;submit.disabled=true;try{const {ok,data}=await postJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}`,{ward:w.i,key,...choice});if(!ok)throw Error(data?.error??'Could not continue chat.');d.close();if(data?.wardModelChanged)toast(`This ward now uses ${data.model}, the model that conversation ran on.`);await renderAgent(w);}catch(e){failure(e);}finally{submit.disabled=false;}};
+      form.onsubmit=async(e)=>{e.preventDefault();if(!choice)return;submit.disabled=true;const st=states.get(w.i);if(st)endLive(st,'The conversation changed. Start a new voice session.');try{const {ok,data}=await postJson(`/api/agent/history?_ward=${encodeURIComponent(w.i)}`,{ward:w.i,key,...choice});if(!ok)throw Error(data?.error??'Could not continue chat.');d.close();if(data?.wardModelChanged)toast(`This ward now uses ${data.model}, the model that conversation ran on.`);await renderAgent(w);}catch(e){failure(e);}finally{submit.disabled=false;}};
     };
     for(const chat of data.chats??[]){const b=el('button','btn ag-history-row');b.type='button';b.title='Open this conversation';b.append(el('strong',undefined,chat.title),el('small','muted',[chat.device,routeOf(chat),chat.model??'model not recorded'].filter(Boolean).join(' · ')));b.onclick=()=>void open(chat.key).catch(failure);list.append(b);}
     if(!data.chats?.length)list.append(el('p','muted','Your conversations will appear here.'));
@@ -2961,7 +3398,11 @@ async function renderAgent(w: WardInstance): Promise<void> {
   }
   st.sharedStatus=data.sync?.server?data.sync.online?'Rime':'Rime · working offline':undefined;
   st.configured = data.configured;
+  if (data.provider) st.provider = data.provider;
   if (data.dictation === 'live' || data.dictation === 'clip' || data.dictation === null) st.dictation = data.dictation;
+  if (st.live?.active && (data.conversation !== st.conversation || (data.ownerRuntimeId ?? data.workspace?.runOwnerRuntimeId) !== st.ownerRuntimeId))
+    endLive(st, 'The conversation or runtime changed. Start a new voice session.');
+  syncLiveContext(st);
   st.context = data.context ?? undefined;
   if (data.permissions && isPermissionMode(data.permissions.effective) && isPermissionMode(data.permissions.inherited)) st.permissions = data.permissions;
   if (!data.configured && !data.transcript?.length && !data.tasks?.length && !st.items.length && !st.busy && !st.remote) {
@@ -2979,9 +3420,11 @@ async function renderAgent(w: WardInstance): Promise<void> {
   // A rerender mid-stream must not clobber the live turn's log.
   st.tasks = data.tasks ?? st.tasks;
   if (!st.busy && st.revision === revision) {
-    restoreSurface(st, data);
+    const running = restoreSurface(st, data);
     st.pending = data.pending ?? null;
     st.question = data.question ?? null;
+    rememberLivePending(st, running, st.pending?.confirmId);
+    rememberLivePending(st, running, st.question?.id);
     st.remote = !!data.busy; // a turn already running when this client loaded
     if (st.remote && !st.items.some(it => it.k === 'thinking' || (it.k === 'step' && it.running))) st.items.push({ k: 'thinking' });
   }
@@ -3041,12 +3484,14 @@ function watchAgent(ward: string): void {
     if (headless && !logVisible(ward) && (p!.toast || p!.summary)) {
       unread.set(ward, (unread.get(ward) ?? 0) + 1);
       paintBadge(ward);
+      live.live?.refreshContext();
     }
     if (headless && p!.toast) announce(live, p!);
     // The turn is over: the stored transcript is the record now.
     remoteRuns.delete(ward);
     live.revision++;
     live.remote = false;
+    syncLiveContext(live);
     if (!live.busy) void refetch(live, true);
   });
 
@@ -3060,14 +3505,17 @@ function watchAgent(ward: string): void {
     if (live && d?.event?.type === 'task') { updateTask(live, d.event.task); return; }
     if (!live || live.busy || !d) return; // this client's own stream owns the log
     let running = remoteRuns.get(ward);
-    if (!running) { running = newRun(); remoteRuns.set(ward, running); }
+    if (!running) { running = newRun(); live.run = undefined; remoteRuns.set(ward, running); }
     if (d.event?.type === 'end') {
       // The turn died without settling — no ping is coming, so release here.
       remoteRuns.delete(ward);
       live.revision++;
       live.remote = false;
       endTurn(live);
-      if (d.event.error) live.items.push({ k: 'note', err: true, text: d.event.error });
+      if (d.event.error) {
+        live.items.push({ k: 'note', err: true, text: d.event.error });
+        live.live?.backend(`Rime reported an error: ${d.event.error} Check the chat before repeating any action.`, `error:${running.seq}`, running.liveSession === live.live?.session ? running.liveDelegations : []);
+      }
       paint(live);
       flushPendingLayout();
       return;
@@ -3083,4 +3531,7 @@ function watchAgent(ward: string): void {
 
 RENDERERS.agent = { render: (w) => renderAgent(w), preserveBody: true, stop: id => {
   const st = states.get(id); st?.voice?.dispose(); st?.clip?.dispose();
+  // Pop-out hiding marks the card away immediately after unbooting. A ward still in this
+  // view was removed; stop before its exit animation or layout save completes.
+  if (st) queueMicrotask(() => { if (inWardView(id)) endLive(st, 'The ward was removed. Voice session ended.'); else syncLiveContext(st); });
 } }; // event-driven — no poll
