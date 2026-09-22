@@ -776,7 +776,7 @@ const TABS = [
                   </div>
                   <div class="grid gap-2">
                     {link && <form method="post" action="/api/connect/disconnect"><input type="hidden" name="provider" value={p.id}/><button class="btn text-xs">Disconnect</button></form>}
-                    <div data-integration={p.id}>{p.id==='microsoft'&&<label class="text-xs">Access<select class="input" data-access><option value="full">Mail and calendar</option><option value="readonly">Read-only mail and calendar</option><option value="teams">Mail, calendar and Teams</option></select></label>}<button type="button" class="btn-primary text-xs">{link?'Reconnect':'Connect'}</button><p role="status" aria-live="polite" class="text-xs"></p><a class="link" hidden target="_blank" rel="noreferrer">Continue in browser</a></div>
+                    <div data-integration={p.id} class="flex flex-col items-end gap-1">{p.id==='microsoft'&&<label class="grid gap-1 text-xs">Access<select class="input" data-access><option value="full">Mail and calendar</option><option value="readonly">Read-only mail and calendar</option><option value="teams">Mail, calendar and Teams</option></select></label>}<button type="button" class="btn-primary text-xs">{link?'Reconnect':'Connect'}</button><p role="status" aria-live="polite" class="text-xs"></p><a class="link" hidden target="_blank" rel="noreferrer">Continue in browser</a></div>
                   </div>
                 </li>
               );
