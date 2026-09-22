@@ -2627,7 +2627,7 @@ function bootDialog(): void {
     // out-of-range value was silently dropped by validateConfig (a typo erased a
     // weather ward's place). Check the visible fields; URLs are normalized later.
     const bad = [...dialog.querySelectorAll<HTMLInputElement>('input')].find((f) =>
-      !f.validity.valid && !f.validity.typeMismatch && f.checkVisibility());
+      !f.validity.valid && !f.validity.typeMismatch && f.getClientRects().length > 0);
     if (bad) { bad.reportValidity(); return; }
     const t = editingId ? state.get(editingId)!.type : type.value;
     if (t === 'workspace') {
