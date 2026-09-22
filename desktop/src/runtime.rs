@@ -514,12 +514,23 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     }
     runtime_diagnostic(&diagnostics, "runtime-disconnected");
     crate::computer::disconnect();
-    super::set_status(&app, "Rimeward stopped; reopen to recover");
-    if app.state::<Startup>().0.lock().unwrap().stage == "ready" {
-        Ok(())
-    } else {
-        Err("Local runtime disconnected before startup completed".into())
+    if app.state::<Startup>().0.lock().unwrap().stage != "ready" {
+        return Err("Local runtime disconnected before startup completed".into());
     }
+    // Quit and update installs take the child before stopping it; a child
+    // still here stopped on its own, under a window that now shows nothing.
+    if state.lock().await.is_some() {
+        super::set_status(&app, "Rimeward stopped; quit and reopen to recover");
+        app.state::<Startup>().0.lock().unwrap().error = Some("runtime-stopped");
+        if let Some(window) = app.get_webview_window("main") {
+            window.navigate(url::Url::parse(if cfg!(windows) {
+                "http://tauri.localhost/index.html"
+            } else {
+                "tauri://localhost/index.html"
+            })?)?;
+        }
+    }
+    Ok(())
 }
 // Only fixed categories reach this rotating owner-only file; never raw stderr.
 pub(crate) fn runtime_diagnostic(file: &std::path::Path, category: &str) {

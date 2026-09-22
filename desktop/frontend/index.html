@@ -48,6 +48,7 @@
         'access-denied': 'The operating system blocked access to a required file or local connection. Check application permissions and your security software.',
         'port-in-use': 'Another program is using Rimeward’s local port. Close it, or wait a moment if Rimeward just restarted, then quit Rimeward from its tray menu and reopen it.',
         'runtime-error': 'The local runtime could not start. Check runtime-diagnostics.jsonl in Rimeward’s application-data folder and share the diagnostic code below.',
+        'runtime-stopped': 'The local runtime stopped unexpectedly. Quit Rimeward from its tray menu and reopen it; if it keeps happening, check runtime-diagnostics.jsonl in Rimeward’s application-data folder.',
       };
       const started = Date.now();
       async function update() {
@@ -56,7 +57,7 @@
           document.querySelector('#detail').textContent = result.error ? (fixes[result.error] ?? fixes['runtime-error']) : (stages[result.stage] ?? stages.initializing);
           if (result.error) {
             document.querySelector('main').classList.add('failed');
-            document.querySelector('#status').textContent = 'Your local environment could not start.';
+            document.querySelector('#status').textContent = result.error === 'runtime-stopped' ? 'Your local environment stopped.' : 'Your local environment could not start.';
             document.querySelector('#diagnostic').hidden = false;
             document.querySelector('code').textContent = `${result.stage} / ${result.error}${result.os_code === null ? '' : ` / OS ${result.os_code}`}`;
             return;
