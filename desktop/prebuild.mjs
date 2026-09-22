@@ -168,6 +168,27 @@ try {
     try { run(process.execPath, [path.join(here, 'media-runtime.mjs')]); break; }
     catch (error) { if (attempt === 2) throw error; console.warn('Media SDK acquisition failed; retrying once'); }
   }
+  if (platform === "win32") {
+    // These consumers dynamically link the Microsoft CRT. CI has it installed,
+    // but a fresh Windows machine needs the redistributable DLLs beside them.
+    const vswhere = path.join(process.env["ProgramFiles(x86)"], "Microsoft Visual Studio/Installer/vswhere.exe");
+    const matches = execFileSync(vswhere, ["-latest", "-products", "*", "-utf8", "-find",
+      `VC\\Redist\\MSVC\\*\\${arch}\\Microsoft.VC*.CRT\\vcruntime140.dll`], { encoding: "utf8" })
+      .trim().split(/\r?\n/).filter(Boolean).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    if (!matches.length) throw new Error(`Visual Studio's ${arch} C++ redistributable files are required.`);
+    const crt = path.dirname(matches[0]);
+    const media = path.join(runtime, "media"), manifestFile = path.join(media, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+    const destinations = [media, path.join(app, "assets/embedding"),
+      path.join(app, `node_modules/@bruits/satteri-win32-${arch}-msvc`)];
+    for (const destination of destinations) if (!fs.existsSync(destination)) throw new Error(`Missing Windows runtime destination: ${destination}`);
+    for (const name of fs.readdirSync(crt).filter(name => name.toLowerCase().endsWith(".dll"))) {
+      const source = path.join(crt, name);
+      for (const destination of destinations) fs.copyFileSync(source, path.join(destination, name));
+      manifest.hashes[name] = crypto.createHash("sha256").update(fs.readFileSync(source)).digest("hex");
+    }
+    fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+  }
   run(process.execPath, [path.join(here, 'cua-runtime.mjs')]);
   // The screen lens's Swift helper and the MobileCLIP-S0 text tower it embeds
   // with: macOS only (the helper needs the macOS 27 SDK), and RIMEWARD_SKIP_LENS=1

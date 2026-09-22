@@ -1,7 +1,7 @@
 # Rimeward (desktop/): signed + notarized macOS DMG, Windows and Linux
 # bundles, attached to a draft GitHub Release. Tag `desktop-vX.Y.Z` to run it.
 # Publish manually only after Windows and Linux packaged startup is verified.
-# Push dev/<version> branches to run the same checks and native builds without a release.
+# Push main or dev/<version> branches to run the same checks and native builds without a release.
 #
 # Secrets (repo settings → Secrets → Actions):
 #   APPLE_CERTIFICATE            base64 of the Developer ID Application .p12
@@ -20,7 +20,7 @@ name: Rimeward desktop
 
 on:
   push:
-    branches: ['dev/**']
+    branches: [main, 'dev/**']
     tags: ['desktop-v*']
   workflow_dispatch:
     inputs:
