@@ -192,7 +192,7 @@ async function readSystemd(units: string[]): Promise<Read<Map<string, string>>> 
   }
 }
 
-function readHost(): HostStats {
+async function readHost(): Promise<HostStats> {
   let disk = { usedPct: 0, freeGb: 0 };
   try {
     // The data directory's filesystem, not "/": in a container the root is the
@@ -209,9 +209,17 @@ function readHost(): HostStats {
     const m = meminfo.match(/^MemAvailable:\s+(\d+) kB/m);
     if (m) available = Number(m[1]) * 1024;
   } catch {}
+  let usedPct = Math.round(((os.totalmem() - available) / os.totalmem()) * 100);
+  if (process.platform === 'darwin') {
+    // macOS: freemem excludes the cache the kernel reclaims at will, so an idle
+    // Mac read ~90% ("High" on the desktop's first dashboard). The kernel's
+    // memory-pressure level is the percentage it considers available.
+    const level = Number((await run('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_level']).catch(() => ({ stdout: '' }))).stdout);
+    if (level > 0 && level <= 100) usedPct = 100 - level;
+  }
   return {
     disk,
-    mem: { usedPct: Math.round(((os.totalmem() - available) / os.totalmem()) * 100) },
+    mem: { usedPct },
     load: process.platform === 'win32' ? null : os.loadavg().map((l) => Math.round(l * 100) / 100),
     cores: os.cpus().length,
   };
@@ -276,7 +284,7 @@ async function tick(): Promise<void> {
     return { id: t.id, label: t.label, group: t.group, kind: t.kind, ...r, since: sinceMap.get(t.id)!.since };
   });
 
-  const host = readHost();
+  const host = await readHost();
   // Host-level only. "N services down" is built on the CLIENT, which is the
   // only side that knows which services this user's dashboard shows —
   // see shownServiceIds + renderAlerts (scripts/app/status.ts).
