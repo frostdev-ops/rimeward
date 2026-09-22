@@ -189,7 +189,15 @@ jobs:
       - name: Validate native application build
         if: github.ref_type != 'tag' || inputs.validation_only
         working-directory: desktop
-        run: npx tauri build ${{ matrix.platform == 'ubuntu-24.04' && '--bundles deb,appimage' || '--no-bundle' }} ${{ env.TAURI_BUILD_ARGS }}
+        run: npx tauri build ${{ matrix.platform == 'ubuntu-24.04' && '--bundles deb,appimage' || matrix.platform == 'windows-latest' && '--bundles nsis' || '--no-bundle' }} ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Save validation installer
+        if: matrix.platform == 'windows-latest' && (github.ref_type != 'tag' || inputs.validation_only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: rimeward-windows-${{ github.sha }}
+          path: desktop/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
 
       - name: App Store Connect key
         if: startsWith(matrix.platform, 'macos-') && github.ref_type == 'tag' && (github.event_name == 'push' || !inputs.validation_only)
