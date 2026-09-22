@@ -1,0 +1,38 @@
+# Homebrew cask bump: when a `desktop-vX.Y.Z` release is PUBLISHED (drafts are
+# published by hand, and a draft's DMG 404s for the public), point
+# frostdev-ops/homebrew-tap's Casks/rimeward.rb at it. The sha256 is the digest
+# GitHub records for the uploaded asset. HOMEBREW_TAP_DEPLOY_KEY is a write
+# deploy key on the tap.
+name: Homebrew cask
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: desktop-vX.Y.Z
+        required: true
+
+jobs:
+  cask:
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'desktop-v')
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: frostdev-ops/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+      - name: Bump Casks/rimeward.rb
+        run: |
+          v="${TAG#desktop-v}"
+          sha=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+            --jq ".assets[] | select(.name == \"Rimeward_${v}_aarch64.dmg\") | .digest | ltrimstr(\"sha256:\")")
+          [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "no sha256 digest for Rimeward_${v}_aarch64.dmg on $TAG"; exit 1; }
+          sed -i -E "s/^  version \".*\"/  version \"$v\"/; s/^  sha256 \".*\"/  sha256 \"$sha\"/" Casks/rimeward.rb
+          git diff --quiet && { echo "cask already at $v"; exit 0; }
+          git -c user.name=rimeward-bot -c user.email=admin@frostdev.io commit -qam "rimeward $v"
+          git push
