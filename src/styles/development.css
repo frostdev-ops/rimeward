@@ -157,6 +157,10 @@ dialog.fd-dialog.dev-project-dialog { border-radius:1.1rem; padding:1.6rem; }
 .setup-local-actions .btn { border-radius:.65rem; min-height:42px; }
 .setup-text-button { font-size:.75rem; color:var(--color-ink-muted); padding:.45rem; cursor:pointer; }
 .setup-text-button:hover { color:var(--color-accent-hi); }
+/* The Remote Desktop and Screen lens settings below the two choices. */
+.desktop-setup > .setup-card { margin-top:1.2rem; }
+#computer-control-form, #lens-form { display:flex; flex-direction:column; align-items:flex-start; gap:.6rem; font-size:.85rem; }
+#computer-control-form label, #lens-form label { display:flex; align-items:center; gap:.5rem; }
 .setup-footnote { font-size:.72rem; text-align:center; color:var(--color-ink-muted); line-height:1.8; margin:1.5rem auto 0; }
 #setup-status:empty { display:none; }
 #setup-status { padding:.9rem 1.1rem; border:1px solid var(--color-line-strong); background:var(--color-surface); border-radius:.75rem; font-size:.85rem; margin-bottom:1rem; }
