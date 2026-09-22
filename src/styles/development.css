@@ -252,11 +252,15 @@ dialog.fd-dialog.dev-project-dialog { border-radius:1.1rem; padding:1.6rem; }
 .term-settings-checks { display:flex; flex-wrap:wrap; gap:.5rem 1.2rem; }
 .term-settings .term-settings-check { flex-direction:row; align-items:center; gap:.5rem; cursor:pointer; }
 @media (max-width:639px) { .term-settings-grid { grid-template-columns:1fr; } }
-.term-empty { background:var(--color-surface); min-height:0; padding:1.1rem .8rem; gap:.65rem; }
+.term-empty { background:var(--color-surface); min-height:0; padding:.75rem .8rem; gap:.65rem; container-type:size; }
 .term-empty > .dev-empty-icon { width:2.5rem; height:2.5rem; display:grid; place-items:center; border:1px solid var(--color-line); border-radius:.75rem; font-size:1.3rem; }
 .term-empty h3 { font-size:.95rem; }
 .term-empty > p { font-size:.76rem; }
 .term-empty > .btn-primary { font-size:.8rem; min-height:36px; border-radius:.6rem; padding:.6rem 1.2rem; margin-top:.25rem; }
+/* A short terminal drops the decoration first, then everything but Open terminal
+   (centred overflow otherwise cut the heading and the button). */
+@container (max-height:14rem) { .term-empty > .dev-empty-icon { display:none; } }
+@container (max-height:9rem) { .term-empty > :not(.btn-primary) { display:none; } .term-empty > .btn-primary { margin-top:0; } }
 .term-agent-choices { display:flex; align-items:center; gap:.4rem; }
 .term-agent-choices .btn { border-color:transparent; background:transparent; color:var(--color-ink-muted); font-size:.75rem; }
 .term-agent-choices .btn:hover { border-color:var(--color-line); background:var(--color-surface-2); color:var(--color-ink); }
