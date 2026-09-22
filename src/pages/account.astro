@@ -879,7 +879,7 @@ const TABS = [
         <p class="mb-3 text-[11px] text-ink-faint">
           Apple has no sign-in that grants calendar access, so this reads your calendars over CalDAV with an
           app-specific password. Generate one at account.apple.com → Sign-In and Security → App-Specific Passwords.
-          Events land in the Agenda ward, the calendar logic triggers and the agent's calendar tool.
+          Events land in the Agenda ward, the calendar Leyline triggers and the agent's calendar tool.
         </p>
         <form method="post" action="/api/connect/icloud" class="space-y-4">
           <div class="acct-grid">
@@ -933,7 +933,7 @@ const TABS = [
                   <label for="calendarDbId" class="label">Calendar database</label>
                   <p class="mb-1 text-[11px] text-ink-faint">
                     Any database with a date column. Its rows show up in the Agenda ward alongside Google, Outlook and
-                    iCloud, and fire the calendar logic triggers. The Date / When / Start / Due column is used, else the first date column.
+                    iCloud, and fire the calendar Leyline triggers. The Date / When / Start / Due column is used, else the first date column.
                   </p>
                   <select id="calendarDbId" name="calendarDbId" class="input">
                     <option value="">— keep current —</option>

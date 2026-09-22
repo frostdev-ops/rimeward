@@ -1535,7 +1535,7 @@ function wardMenu(x: number, y: number, node: HTMLElement, w: WardInstance): voi
       if (!canShare()) { item.disabled = true; item.title = 'Sharing needs a server'; }
       m.append(item);
     }
-    m.append(menuItem('eye', w.hidden ? 'Show on dashboard' : 'Hide (Edit/Logic only)', () => toggleHidden(node, w)));
+    m.append(menuItem('eye', w.hidden ? 'Show on dashboard' : 'Hide (Edit/Leylines only)', () => toggleHidden(node, w)));
     m.append(menuItem('palette', 'Theme…', () => openThemeDialog(node, w)));
     if (!isEditing()) m.append(menuItem('route', 'Leylines…', () => window.dispatchEvent(new CustomEvent('fd:leylines', { detail: { ward: w.i } }))));
     if (CATALOG[w.type]?.multi) m.append(menuItem('copy', 'Duplicate', () => duplicateWard(node, w)));
