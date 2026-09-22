@@ -2623,6 +2623,12 @@ function bootDialog(): void {
       err.classList.remove('hidden');
       return;
     }
+    // The submit is a plain button, so the form's own min/max/step never ran and an
+    // out-of-range value was silently dropped by validateConfig (a typo erased a
+    // weather ward's place). Check the visible fields; URLs are normalized later.
+    const bad = [...dialog.querySelectorAll<HTMLInputElement>('input')].find((f) =>
+      !f.validity.valid && !f.validity.typeMismatch && f.checkVisibility());
+    if (bad) { bad.reportValidity(); return; }
     const t = editingId ? state.get(editingId)!.type : type.value;
     if (t === 'workspace') {
       const name = title.value.trim(); dialog.close();
