@@ -161,7 +161,7 @@ const TABS = [
       <div class="acct-strip">
         <div class="acct-tabs" role="tablist">
           {TABS.map((t, i) => (
-            <button type="button" role="tab" class="acct-tab" data-tab={t.id} aria-controls={t.id} aria-current={i === 0 ? 'page' : undefined}>
+            <button type="button" role="tab" class="acct-tab" data-tab={t.id} aria-controls={t.id} aria-selected={i === 0 ? 'true' : 'false'} aria-current={i === 0 ? 'page' : undefined}>
               {t.label}
             </button>
           ))}
@@ -1388,6 +1388,7 @@ const TABS = [
         for (const t of tabs) {
           if (t.dataset.tab === target) t.setAttribute('aria-current', 'page');
           else t.removeAttribute('aria-current');
+          t.setAttribute('aria-selected', String(t.dataset.tab === target));
         }
         place(push);
         if (push && location.hash.slice(1) !== target) history.replaceState(null, '', '#' + target);
@@ -1425,6 +1426,15 @@ const TABS = [
       };
       show(fromHash(), false);
       for (const t of tabs) t.addEventListener('click', () => show(t.dataset.tab, true));
+      // Arrow keys move along the strip, as a tablist does.
+      strip?.addEventListener('keydown', (e) => {
+        const at = tabs.indexOf(document.activeElement);
+        if (at < 0 || (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft')) return;
+        e.preventDefault();
+        const next = tabs[(at + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+        next.focus();
+        show(next.dataset.tab, true);
+      });
       addEventListener('hashchange', () => show(fromHash(), false));
     })();
   </script>
