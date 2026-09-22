@@ -284,7 +284,13 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
         .and_then(|s| s.trim().parse::<u16>().ok())
         .filter(|p| *p > 0);
     let port = match port {
-        Some(port) => port,
+        // Probe the saved port here: a runtime that fails to bind only dies
+        // with EADDRINUSE on stderr, which reaches the loading page as a
+        // generic runtime error instead of the port-in-use advice.
+        Some(port) => {
+            drop(std::net::TcpListener::bind(("127.0.0.1", port))?);
+            port
+        }
         None => {
             let socket = std::net::TcpListener::bind(("127.0.0.1", 0))?;
             let port = socket.local_addr()?.port();
