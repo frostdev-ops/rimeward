@@ -192,7 +192,7 @@ const TABS = [
               <div class="flex min-h-9 items-center gap-4">
                 {(['dark', 'light', 'system'] as const).map((m) => (
                   <label class="switch">
-                    <input type="radio" name="mode" value={m} checked={m === theme.mode} /> {m}
+                    <input type="radio" name="mode" value={m} checked={m === theme.mode} /> {m[0].toUpperCase() + m.slice(1)}
                   </label>
                 ))}
               </div>
@@ -223,7 +223,7 @@ const TABS = [
               <label for="th-density" class="label">Density</label>
               <select id="th-density" name="density" class="input">
                 {(['compact', 'cozy', 'comfortable'] as const).map((d) => (
-                  <option value={d} selected={d === theme.density}>{d}</option>
+                  <option value={d} selected={d === theme.density}>{d[0].toUpperCase() + d.slice(1)}</option>
                 ))}
               </select>
             </div>
@@ -361,10 +361,10 @@ const TABS = [
           <div class="min-w-40 flex-1">
             <label for="th-bg" class="label">Kind</label>
             <select id="th-bg" name="background" form="theme-form" class="input">
-              <option value="flat" selected={theme.background === 'flat'}>flat — page colour only</option>
-              <option value="aurora" selected={theme.background === 'aurora'}>aurora — accent blobs (CSS)</option>
-              <option value="image" selected={theme.background === 'image'}>photo — your own image</option>
-              <option value="scene" selected={theme.background === 'scene'}>scene — animated (three.js)</option>
+              <option value="flat" selected={theme.background === 'flat'}>Flat — page colour only</option>
+              <option value="aurora" selected={theme.background === 'aurora'}>Aurora — accent blobs (CSS)</option>
+              <option value="image" selected={theme.background === 'image'}>Photo — your own image</option>
+              <option value="scene" selected={theme.background === 'scene'}>Scene — animated (three.js)</option>
             </select>
           </div>
           <div class="min-w-36 flex-1" data-bgpane="image scene" hidden={theme.background === 'flat' || theme.background === 'aurora'}>
@@ -553,7 +553,7 @@ const TABS = [
           <div class="min-w-40 flex-1">
             <label for="th-hscene" class="label">Banner</label>
             <select id="th-hscene" name="hdrScene" form="theme-form" class="input" data-scene-preview>
-              <option value="none" selected={theme.hdrScene === 'none'}>none — flat bar</option>
+              <option value="none" selected={theme.hdrScene === 'none'}>None — flat bar</option>
               {SCENE_GROUPS.map((g) => (
                 <optgroup label={g.label}>
                   {g.ids.map((id) => (
@@ -647,7 +647,7 @@ const TABS = [
             <label for="th-bpos" class="label">Position</label>
             <select id="th-bpos" name="brandPos" form="theme-form" class="input">
               {(['left', 'center', 'right'] as const).map((p) => (
-                <option value={p} selected={p === theme.brandPos}>{p}</option>
+                <option value={p} selected={p === theme.brandPos}>{p[0].toUpperCase() + p.slice(1)}</option>
               ))}
             </select>
           </div>
@@ -740,16 +740,16 @@ const TABS = [
           <div class="min-w-48 flex-1">
             <label for="pf-alerts" class="label">Alert banner</label>
             <select id="pf-alerts" name="alerts" class="input">
-              <option value="visible" selected={alertMode === 'visible'}>only services shown on my dashboard</option>
-              <option value="all" selected={alertMode === 'all'}>every monitored service</option>
-              <option value="off" selected={alertMode === 'off'}>never show it</option>
+              <option value="visible" selected={alertMode === 'visible'}>Only services shown on my dashboard</option>
+              <option value="all" selected={alertMode === 'all'}>Every monitored service</option>
+              <option value="off" selected={alertMode === 'off'}>Never show it</option>
             </select>
           </div>
           <noscript><button type="submit" class="btn">Save</button></noscript>
         </form>
         <p class="mt-2 text-xs text-ink-faint">
           Controls the “N services down” banner above the ward grid. Host warnings (disk nearly full, load spike) are about the
-          machine the dashboard itself runs on, so they keep showing unless you pick “never”.
+          machine the dashboard itself runs on, so they keep showing unless you pick “Never show it”.
         </p>
       </div>
     </section>
