@@ -61,6 +61,8 @@ test('CONNECT status checks close the upgraded socket even when the response bod
   const sockets = new Set<net.Socket>();
   const server = net.createServer(socket => {
     sockets.add(socket);
+    // The client closes after the status line; Windows then resets this side's late write.
+    socket.on('error', () => {});
     closed = once(socket, 'close', { signal: AbortSignal.timeout(2000) });
     socket.once('data', () => {
       socket.write('HTTP/1.1 403 Forbidden\r\ncontent-length: 12\r\n\r\n');
