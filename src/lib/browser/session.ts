@@ -5,7 +5,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { chromium, type BrowserContext, type CDPSession, type Page } from 'playwright-core';
+// Types only: playwright-core costs ~100 ms at import, and the runtime boots
+// through this module (the middleware) long before any ward opens a browser.
+import type { BrowserContext, CDPSession, Page } from 'playwright-core';
 import { DATA_DIR } from '../db.ts';
 import { browserScale, httpUrl, type BrowserConfig } from '../wards.ts';
 import { direct, guardFor, guardPort, type Dial } from './guard.ts';
@@ -258,6 +260,7 @@ async function launchLocal(userId: number, ward: string, cfg: BrowserConfig, dsf
   if (process.getuid?.() === 0 && owner.uid !== 0) fs.chownSync(downloads, owner.uid, owner.gid);
   // These are Chromium's temporary transfers; completed files live outside the profile.
   for (const name of fs.readdirSync(downloads)) fs.rmSync(path.join(downloads, name), { force: true, recursive: true });
+  const { chromium } = await import('playwright-core');
   const context = await chromium.launchPersistentContext(profile, {
     ...(EXE ? { executablePath: EXE } : { channel: 'chromium' }),
     headless: true,

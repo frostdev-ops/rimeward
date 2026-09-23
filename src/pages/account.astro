@@ -103,7 +103,6 @@ const codexLive: ReturnType<typeof codexAttempts> = [];
 // marker that only exists on server-proxied HTML, so an offline desktop could not start a local
 // sign-in at all. A standalone desktop has no server to offer, so it stays implicitly local.
 const localScope = isDesktop();
-const canChooseDestination = localScope && !!sharedAgent;
 const AGENT_KEYS = [
   { id: 'openrouter', name: 'OpenRouter API key', hint: 'powers the openrouter provider — openrouter.ai/keys' },
   { id: 'openai', name: 'OpenAI API key', hint: 'powers the openai provider (the OpenAI API, billed to your key) — platform.openai.com/api-keys' },
@@ -117,6 +116,7 @@ const bbLabel = bbKey ? `${bbKey.slice(0, 4)}••••${bbKey.slice(-4)}` : '
 const agentRoundCap = agentRounds(me.userId);
 const shellNet = getSetting(`agent_shell_network:${me.userId}`) === 'true';
 const agentErr = agentLastError(me.userId);
+const signInConnectors = identityConnectors().filter((c) => c.enabled);
 
 // Panel order = tab order. The id is also the deep-link hash; the API routes
 // redirect to #background / #dashboard / #agent, and a hash naming a card
@@ -161,7 +161,7 @@ const TABS = [
       <div class="acct-strip">
         <div class="acct-tabs" role="tablist">
           {TABS.map((t, i) => (
-            <button type="button" role="tab" class="acct-tab" data-tab={t.id} aria-controls={t.id} aria-current={i === 0 ? 'page' : undefined}>
+            <button type="button" role="tab" class="acct-tab" data-tab={t.id} aria-controls={t.id} aria-selected={i === 0 ? 'true' : 'false'} aria-current={i === 0 ? 'page' : undefined}>
               {t.label}
             </button>
           ))}
@@ -192,7 +192,7 @@ const TABS = [
               <div class="flex min-h-9 items-center gap-4">
                 {(['dark', 'light', 'system'] as const).map((m) => (
                   <label class="switch">
-                    <input type="radio" name="mode" value={m} checked={m === theme.mode} /> {m}
+                    <input type="radio" name="mode" value={m} checked={m === theme.mode} /> {m[0].toUpperCase() + m.slice(1)}
                   </label>
                 ))}
               </div>
@@ -223,7 +223,7 @@ const TABS = [
               <label for="th-density" class="label">Density</label>
               <select id="th-density" name="density" class="input">
                 {(['compact', 'cozy', 'comfortable'] as const).map((d) => (
-                  <option value={d} selected={d === theme.density}>{d}</option>
+                  <option value={d} selected={d === theme.density}>{d[0].toUpperCase() + d.slice(1)}</option>
                 ))}
               </select>
             </div>
@@ -275,7 +275,7 @@ const TABS = [
 
           <div class="acct-grid">
             <div class="min-w-36 flex-1">
-              <label for="th-icontint" class="label">Icon tint <span class="text-ink-faint">(emoji become flat silhouettes; Meteocons keep their colours)</span></label>
+              <label for="th-icontint" class="label">Icon tint</label>
               <div class="flex items-center gap-2">
                 <select id="th-icontint" name="iconTint" class="input">
                   <option value="ink" selected={theme.iconTint === 'ink'}>Text colour</option>
@@ -284,6 +284,7 @@ const TABS = [
                 </select>
                 <input id="th-iconcolor" name="iconColor" type="color" value={theme.iconColor} aria-label="Icon colour" class="h-10 w-14 cursor-pointer rounded-md border border-line-strong bg-surface p-1" />
               </div>
+              <p class="mt-1 text-[11px] text-ink-faint">Emoji become flat silhouettes; Meteocons keep their colours.</p>
             </div>
             <div class="min-w-36 flex-1">
               <label for="th-iconop" class="label">Icon opacity <span data-val="iconOpacity" class="text-ink-faint"></span></label>
@@ -360,10 +361,10 @@ const TABS = [
           <div class="min-w-40 flex-1">
             <label for="th-bg" class="label">Kind</label>
             <select id="th-bg" name="background" form="theme-form" class="input">
-              <option value="flat" selected={theme.background === 'flat'}>flat — page colour only</option>
-              <option value="aurora" selected={theme.background === 'aurora'}>aurora — accent blobs (CSS)</option>
-              <option value="image" selected={theme.background === 'image'}>photo — your own image</option>
-              <option value="scene" selected={theme.background === 'scene'}>scene — animated (three.js)</option>
+              <option value="flat" selected={theme.background === 'flat'}>Flat — page colour only</option>
+              <option value="aurora" selected={theme.background === 'aurora'}>Aurora — accent blobs (CSS)</option>
+              <option value="image" selected={theme.background === 'image'}>Photo — your own image</option>
+              <option value="scene" selected={theme.background === 'scene'}>Scene — animated (three.js)</option>
             </select>
           </div>
           <div class="min-w-36 flex-1" data-bgpane="image scene" hidden={theme.background === 'flat' || theme.background === 'aurora'}>
@@ -552,7 +553,7 @@ const TABS = [
           <div class="min-w-40 flex-1">
             <label for="th-hscene" class="label">Banner</label>
             <select id="th-hscene" name="hdrScene" form="theme-form" class="input" data-scene-preview>
-              <option value="none" selected={theme.hdrScene === 'none'}>none — flat bar</option>
+              <option value="none" selected={theme.hdrScene === 'none'}>None — flat bar</option>
               {SCENE_GROUPS.map((g) => (
                 <optgroup label={g.label}>
                   {g.ids.map((id) => (
@@ -646,7 +647,7 @@ const TABS = [
             <label for="th-bpos" class="label">Position</label>
             <select id="th-bpos" name="brandPos" form="theme-form" class="input">
               {(['left', 'center', 'right'] as const).map((p) => (
-                <option value={p} selected={p === theme.brandPos}>{p}</option>
+                <option value={p} selected={p === theme.brandPos}>{p[0].toUpperCase() + p.slice(1)}</option>
               ))}
             </select>
           </div>
@@ -739,16 +740,16 @@ const TABS = [
           <div class="min-w-48 flex-1">
             <label for="pf-alerts" class="label">Alert banner</label>
             <select id="pf-alerts" name="alerts" class="input">
-              <option value="visible" selected={alertMode === 'visible'}>only services shown on my dashboard</option>
-              <option value="all" selected={alertMode === 'all'}>every monitored service</option>
-              <option value="off" selected={alertMode === 'off'}>never show it</option>
+              <option value="visible" selected={alertMode === 'visible'}>Only services shown on my dashboard</option>
+              <option value="all" selected={alertMode === 'all'}>Every monitored service</option>
+              <option value="off" selected={alertMode === 'off'}>Never show it</option>
             </select>
           </div>
           <noscript><button type="submit" class="btn">Save</button></noscript>
         </form>
         <p class="mt-2 text-xs text-ink-faint">
           Controls the “N services down” banner above the ward grid. Host warnings (disk nearly full, load spike) are about the
-          machine the dashboard itself runs on, so they keep showing unless you pick “never”.
+          machine the dashboard itself runs on, so they keep showing unless you pick “Never show it”.
         </p>
       </div>
     </section>
@@ -776,7 +777,7 @@ const TABS = [
                   </div>
                   <div class="grid gap-2">
                     {link && <form method="post" action="/api/connect/disconnect"><input type="hidden" name="provider" value={p.id}/><button class="btn text-xs">Disconnect</button></form>}
-                    <div data-integration={p.id}>{p.id==='microsoft'&&<label class="text-xs">Access<select class="input" data-access><option value="full">Mail and calendar</option><option value="readonly">Read-only mail and calendar</option><option value="teams">Mail, calendar and Teams</option></select></label>}<button type="button" class="btn-primary text-xs">{link?'Reconnect':'Connect'}</button><p role="status" aria-live="polite" class="text-xs"></p><a class="link" hidden target="_blank" rel="noreferrer">Continue in browser</a></div>
+                    <div data-integration={p.id} class="flex flex-col items-end gap-1">{p.id==='microsoft'&&<label class="grid gap-1 text-xs">Access<select class="input" data-access><option value="full">Mail and calendar</option><option value="readonly">Read-only mail and calendar</option><option value="teams">Mail, calendar and Teams</option></select></label>}<button type="button" class="btn-primary text-xs">{link?'Reconnect':'Connect'}</button><p role="status" aria-live="polite" class="text-xs"></p><a class="link" hidden target="_blank" rel="noreferrer">Continue in browser</a></div>
                   </div>
                 </li>
               );
@@ -879,7 +880,7 @@ const TABS = [
         <p class="mb-3 text-[11px] text-ink-faint">
           Apple has no sign-in that grants calendar access, so this reads your calendars over CalDAV with an
           app-specific password. Generate one at account.apple.com → Sign-In and Security → App-Specific Passwords.
-          Events land in the Agenda ward, the calendar logic triggers and the agent's calendar tool.
+          Events land in the Agenda ward, the calendar Leyline triggers and the agent's calendar tool.
         </p>
         <form method="post" action="/api/connect/icloud" class="space-y-4">
           <div class="acct-grid">
@@ -933,7 +934,7 @@ const TABS = [
                   <label for="calendarDbId" class="label">Calendar database</label>
                   <p class="mb-1 text-[11px] text-ink-faint">
                     Any database with a date column. Its rows show up in the Agenda ward alongside Google, Outlook and
-                    iCloud, and fire the calendar logic triggers. The Date / When / Start / Due column is used, else the first date column.
+                    iCloud, and fire the calendar Leyline triggers. The Date / When / Start / Due column is used, else the first date column.
                   </p>
                   <select id="calendarDbId" name="calendarDbId" class="input">
                     <option value="">— keep current —</option>
@@ -1003,10 +1004,8 @@ const TABS = [
           </div>
           {codexAccount && <form method="post" action="/api/account/agent"><input type="hidden" name="binding" value={agentBinding}/><button name="action" value="codex-disconnect" class="btn">Disconnect</button></form>}
         </div>
-        <section class="space-y-2 py-3"><h3>Sign-in identities</h3>{identityConnectors().filter(c=>c.enabled).map(c=><form method="post" action={`/api/auth/identity/${c.id}/link`}><button class="btn">Link {c.name} for sign-in</button></form>)}</section>
         <section data-codex-connect data-scope="account" data-native={localScope ? '1' : undefined} data-destination="local" data-oauth-binding={oauthRuntimeBinding(me.userId)} class="space-y-2 border-b border-line py-3">
-          <a data-local-settings hidden={!localScope} class="link" href="/desktop/providers">Manage this desktop’s provider connections</a>
-          <label data-destination hidden={!canChooseDestination}>Connect to<select class="input" data-target><option value="default">Connected server</option><option value="local">This desktop only</option></select></label>
+          <a data-local-settings hidden={!localScope} class="link block" href="/desktop/providers">Manage this desktop’s provider connections</a>
           {codexLive.length > 0 && <p class="text-xs text-ink-muted">Sign-in in progress on this installation: {codexLive.map(a => a.destination).join(', ')}.</p>}
           <button type="button" data-start class="btn-primary">{codexAccount?'Reconnect ChatGPT':'Connect ChatGPT'}</button>
           <p role="status" aria-live="polite" class="text-xs">{sharedAgent?'Local connection · This desktop':'Connect to this account'}</p>
@@ -1121,6 +1120,14 @@ const TABS = [
           <button type="submit" class="btn-primary">Save</button>
         </form>
       </div>
+      {signInConnectors.length > 0 && (
+        <div class="card mt-6 p-4">
+          <h2 class="section-title mb-3">Sign-in identities</h2>
+          <div class="flex flex-wrap gap-2">
+            {signInConnectors.map((c) => <form method="post" action={`/api/auth/identity/${c.id}/link`}><button class="btn">Link {c.name} for sign-in</button></form>)}
+          </div>
+        </div>
+      )}
     </section>
   </main>
 
@@ -1328,11 +1335,24 @@ const TABS = [
       outline: 2px solid var(--color-accent);
       outline-offset: 2px;
     }
-    /* Autosave readout. Absent attribute = invisible, so it fades both ways. */
+    /* Autosave readout. Absent attribute = invisible, so it fades both ways.
+       Fixed like the dashboard's toast: most knobs sit far below the page head,
+       which is scrolled away by the time one of them saves. */
     .acct-save {
-      font-size: 0.6875rem;
-      color: var(--color-ink-faint);
+      position: fixed;
+      bottom: calc(1.25rem + env(safe-area-inset-bottom));
+      left: 50%;
+      translate: -50% 0;
+      z-index: 70;
+      padding: 0.35rem 0.8rem;
+      border: 1px solid var(--color-line-strong);
+      border-radius: var(--radius-lg);
+      background: var(--color-surface);
+      box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+      font-size: 0.75rem;
+      color: var(--color-ink-muted);
       opacity: 0;
+      pointer-events: none;
       transition: opacity 0.2s var(--fd-ease);
     }
     .acct-save[data-state] {
@@ -1382,6 +1402,7 @@ const TABS = [
         for (const t of tabs) {
           if (t.dataset.tab === target) t.setAttribute('aria-current', 'page');
           else t.removeAttribute('aria-current');
+          t.setAttribute('aria-selected', String(t.dataset.tab === target));
         }
         place(push);
         if (push && location.hash.slice(1) !== target) history.replaceState(null, '', '#' + target);
@@ -1419,6 +1440,15 @@ const TABS = [
       };
       show(fromHash(), false);
       for (const t of tabs) t.addEventListener('click', () => show(t.dataset.tab, true));
+      // Arrow keys move along the strip, as a tablist does.
+      strip?.addEventListener('keydown', (e) => {
+        const at = tabs.indexOf(document.activeElement);
+        if (at < 0 || (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft')) return;
+        e.preventDefault();
+        const next = tabs[(at + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+        next.focus();
+        show(next.dataset.tab, true);
+      });
       addEventListener('hashchange', () => show(fromHash(), false));
     })();
   </script>
@@ -1447,7 +1477,8 @@ const TABS = [
       readout.textContent = msg;
       readout.dataset.state = state;
       clearTimeout(clearFlash);
-      if (state !== 'busy') clearFlash = window.setTimeout(() => delete readout.dataset.state, 1800);
+      // A failure stays up until the next save attempt; only success fades.
+      if (state === 'ok') clearFlash = window.setTimeout(() => delete readout.dataset.state, 1800);
     }
 
     /** POST a form without leaving the page. The routes answer 303 back to

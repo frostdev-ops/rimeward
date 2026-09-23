@@ -11,7 +11,9 @@ const connect = (port: number, target: string) =>
     http
       .request({ host: '127.0.0.1', port, method: 'CONNECT', path: target })
       .on('connect', (res, socket) => { socket.destroy(); resolve(res.statusCode!); })
-      .on('response', (res) => resolve(res.statusCode!))
+      // Once a response starts, a reset reaches `res`, not the request: Windows resets
+      // the socket when the peer finishes the body after this side has closed.
+      .on('response', (res) => { res.on('error', () => {}); resolve(res.statusCode!); })
       .on('error', reject)
       .end();
   });
@@ -61,6 +63,7 @@ test('CONNECT status checks close the upgraded socket even when the response bod
   const sockets = new Set<net.Socket>();
   const server = net.createServer(socket => {
     sockets.add(socket);
+    socket.on('error', () => {}); // its late body write can meet a reset too
     closed = once(socket, 'close', { signal: AbortSignal.timeout(2000) });
     socket.once('data', () => {
       socket.write('HTTP/1.1 403 Forbidden\r\ncontent-length: 12\r\n\r\n');

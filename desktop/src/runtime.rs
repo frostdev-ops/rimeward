@@ -284,7 +284,13 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
         .and_then(|s| s.trim().parse::<u16>().ok())
         .filter(|p| *p > 0);
     let port = match port {
-        Some(port) => port,
+        // Probe the saved port here: a runtime that fails to bind only dies
+        // with EADDRINUSE on stderr, which reaches the loading page as a
+        // generic runtime error instead of the port-in-use advice.
+        Some(port) => {
+            drop(std::net::TcpListener::bind(("127.0.0.1", port))?);
+            port
+        }
         None => {
             let socket = std::net::TcpListener::bind(("127.0.0.1", 0))?;
             let port = socket.local_addr()?.port();
@@ -508,12 +514,23 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     }
     runtime_diagnostic(&diagnostics, "runtime-disconnected");
     crate::computer::disconnect();
-    super::set_status(&app, "Rimeward stopped; reopen to recover");
-    if app.state::<Startup>().0.lock().unwrap().stage == "ready" {
-        Ok(())
-    } else {
-        Err("Local runtime disconnected before startup completed".into())
+    if app.state::<Startup>().0.lock().unwrap().stage != "ready" {
+        return Err("Local runtime disconnected before startup completed".into());
     }
+    // Quit and update installs take the child before stopping it; a child
+    // still here stopped on its own, under a window that now shows nothing.
+    if state.lock().await.is_some() {
+        super::set_status(&app, "Rimeward stopped; quit and reopen to recover");
+        app.state::<Startup>().0.lock().unwrap().error = Some("runtime-stopped");
+        if let Some(window) = app.get_webview_window("main") {
+            window.navigate(url::Url::parse(if cfg!(windows) {
+                "http://tauri.localhost/index.html"
+            } else {
+                "tauri://localhost/index.html"
+            })?)?;
+        }
+    }
+    Ok(())
 }
 // Only fixed categories reach this rotating owner-only file; never raw stderr.
 pub(crate) fn runtime_diagnostic(file: &std::path::Path, category: &str) {

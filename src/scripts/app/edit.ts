@@ -1535,7 +1535,7 @@ function wardMenu(x: number, y: number, node: HTMLElement, w: WardInstance): voi
       if (!canShare()) { item.disabled = true; item.title = 'Sharing needs a server'; }
       m.append(item);
     }
-    m.append(menuItem('eye', w.hidden ? 'Show on dashboard' : 'Hide (Edit/Logic only)', () => toggleHidden(node, w)));
+    m.append(menuItem('eye', w.hidden ? 'Show on dashboard' : 'Hide (Edit/Leylines only)', () => toggleHidden(node, w)));
     m.append(menuItem('palette', 'Theme…', () => openThemeDialog(node, w)));
     if (!isEditing()) m.append(menuItem('route', 'Leylines…', () => window.dispatchEvent(new CustomEvent('fd:leylines', { detail: { ward: w.i } }))));
     if (CATALOG[w.type]?.multi) m.append(menuItem('copy', 'Duplicate', () => duplicateWard(node, w)));
@@ -2623,6 +2623,12 @@ function bootDialog(): void {
       err.classList.remove('hidden');
       return;
     }
+    // The submit is a plain button, so the form's own min/max/step never ran and an
+    // out-of-range value was silently dropped by validateConfig (a typo erased a
+    // weather ward's place). Check the visible fields; URLs are normalized later.
+    const bad = [...dialog.querySelectorAll<HTMLInputElement>('input')].find((f) =>
+      !f.validity.valid && !f.validity.typeMismatch && f.getClientRects().length > 0);
+    if (bad) { bad.reportValidity(); return; }
     const t = editingId ? state.get(editingId)!.type : type.value;
     if (t === 'workspace') {
       const name = title.value.trim(); dialog.close();

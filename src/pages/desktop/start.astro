@@ -2,12 +2,16 @@
 import ValleyLayout from '../../layouts/ValleyLayout.astro';
 import Icon from '../../components/Icon.astro';
 import {isDesktop} from '../../lib/dev/runtime.ts';
+import {getSetting} from '../../lib/settings.ts';
 if(!isDesktop())return new Response('Desktop setup is available in the app.',{status:404});
 Astro.response.headers.set('cache-control','no-store');
 // First run carries no app header, so the two things AppLayout does for the
 // desktop happen here: consume the one-shot restore cookie a native relaunch
 // set, and stamp the marker desktop-state.ts / macos-permissions.ts read.
 const me = Astro.locals.user!;
+// Every launch lands here; a desktop that finished setup goes straight on
+// rather than flashing the welcome page (?setup=1 is the Connections page).
+if (!Astro.url.searchParams.has('setup') && getSetting(`desktop:onboarded:${me.userId}`) === '1') return Astro.redirect('/dash');
 const restoring = process.platform === 'darwin' && Astro.cookies.get('rimeward_ui_restore')?.value === '1';
 if (restoring) Astro.cookies.delete('rimeward_ui_restore', { path: '/' });
 ---
@@ -61,8 +65,8 @@ if (restoring) Astro.cookies.delete('rimeward_ui_restore', { path: '/' });
       <h2 id="computer-control-title">Remote Desktop access</h2>
       <p>Your signed-in account can view and control this computer when OS permissions allow it. Viewing starts without input control. Rime screenshots join its conversation; human viewing does not.</p>
       <form id="computer-control-form">
-        <label><input type="checkbox" id="computer-control-enabled" /> Enable remote access (resume a local Stop)</label>
-        <p class="setup-help">Stop immediately from the Rimeward tray menu. File and terminal tools keep their existing permissions.</p>
+        <label><input type="checkbox" id="computer-control-enabled" /> Allow remote access to this computer</label>
+        <p class="setup-help">Stop it at any time from the Rimeward tray menu; turning this on again resumes access. File and terminal tools keep their existing permissions.</p>
         <p id="computer-control-permissions" class="setup-help"></p>
         <button type="button" class="btn" data-macos-permissions hidden>Set up Mac permissions…</button>
         <button type="submit" class="btn">Save control settings</button>

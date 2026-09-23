@@ -271,8 +271,23 @@ function store(user: number, key: string, value: unknown) {
     .run(user, key, record.hash, payload);
   return record;
 }
+/** What each chat/work record was last built from, per `${user}:${key}`. Capture runs every 15 s on
+ *  both ends; rebuilding every conversation and re-reading every file each time was O(history). A
+ *  record is rebuilt when its inputs moved OR the stored copy is no longer the one built here (a peer
+ *  installed over it), so the manifest is exactly what a full rebuild would produce. */
+const built = new Map<string, { fp: string; hash: string }>();
+function unchanged(user: number, key: string, fp: string | null, stored: Map<string, string>) {
+  const last = built.get(`${user}:${key}`);
+  return !!fp && last?.fp === fp && stored.get(key) === last.hash;
+}
+function storeBuilt(user: number, key: string, fp: string | null, value: unknown) {
+  const { hash } = store(user, key, value);
+  if (fp) built.set(`${user}:${key}`, { fp, hash });
+  else built.delete(`${user}:${key}`);
+}
 /** Hash only Rime's own work directory and records. No project path is read. */
 export function captureRime(user: number) {
+  const stored = new Map((getDb().prepare("SELECT key,hash FROM agent_sync_records WHERE user_id=? AND (key LIKE 'work/%' OR key LIKE 'chat/%' OR key LIKE 'file/%')").all(user) as { key: string; hash: string }[]).map((r) => [r.key, r.hash]));
   if (!isDesktop() || getSetting(`instance:joined:${user}`)) store(user, INSTANCE_KEY, dashboardForSync(user));
   const images = new Set<string>();
   assetDirectory(BG_DIR);
@@ -310,7 +325,11 @@ export function captureRime(user: number) {
         walk(path.join(dir, entry.name), `${key}/`);
       } else if (entry.isFile()) {
         files.add(key);
-        store(user, key, readFile(workPath(user, key)).toString("base64"));
+        const file = workPath(user, key), st = fs.lstatSync(file);
+        // A change inside the timestamp granularity can keep (size, mtime): only a file untouched for
+        // 2 s is trusted by its stat (git's "racily clean" rule).
+        const fp = Date.now() - st.ctimeMs > 2000 ? `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}` : null;
+        if (!unchanged(user, key, fp, stored)) storeBuilt(user, key, fp, readFile(file).toString("base64"));
       }
     }
   }
@@ -342,7 +361,7 @@ export function captureRime(user: number) {
   }[];
   for (const file of attachments) {
     const key = `file/${origin}/${file.id}`;
-    if (!syncRecord(user, key))
+    if (!stored.has(key))
       store(user, key, {
         name: file.name,
         mime: file.mime,
@@ -351,7 +370,13 @@ export function captureRime(user: number) {
         data: readFile(attachmentPath(file.sha256)).toString("base64"),
       });
   }
-  const wards = getDashboard(user);
+  const wards = getDashboard(user), host = os.hostname();
+  // Rows are appended or (compaction) replaced by a smaller one under the oldest id, never edited in
+  // place: count, last id and total size move on every write. updated_at alone is second-granular.
+  const shape = (table: string, extra = "") => new Map((db.prepare(
+    `SELECT conversation_id AS id, count(*)||':'||max(id)${extra} AS fp FROM ${table} WHERE conversation_id IN (SELECT id FROM agent_conversations WHERE user_id=?) GROUP BY conversation_id`,
+  ).all(user) as { id: number; fp: string }[]).map((r) => [r.id, r.fp]));
+  const messageShape = shape("agent_messages"), itemShape = shape("agent_items", "||':'||sum(chars)");
   for (const conv of db
     .prepare(
       "SELECT id,ward,provider,endpoint,model,endpoint_url,updated_at FROM agent_conversations WHERE user_id=? AND task_id IS NULL",
@@ -365,6 +390,15 @@ export function captureRime(user: number) {
     endpoint_url: string | null;
     updated_at: string;
   }[]) {
+    if (!messageShape.has(conv.id)) continue;
+    const refs = Object.fromEntries(
+      attachments
+        .filter((f) => f.conversation_id === conv.id)
+        .map((f) => [String(f.id), `file/${origin}/${f.id}`]),
+    );
+    const key = `chat/${origin}/${conv.id}`, fp = JSON.stringify([conv, messageShape.get(conv.id),
+      itemShape.get(conv.id) ?? null, refs, wards.find((w) => w.i === conv.ward)?.title ?? null, host]);
+    if (unchanged(user, key, fp, stored)) continue;
     const messages = (
       db
         .prepare(
@@ -392,12 +426,7 @@ export function captureRime(user: number) {
         )
         .all(conv.id) as { json: string }[]
     ).map((i) => JSON.parse(i.json));
-    const refs = Object.fromEntries(
-      attachments
-        .filter((f) => f.conversation_id === conv.id)
-        .map((f) => [String(f.id), `file/${origin}/${f.id}`]),
-    );
-    store(user, `chat/${origin}/${conv.id}`, {
+    storeBuilt(user, key, fp, {
       provider: conv.provider,
       ...(conv.endpoint ? { endpoint: conv.endpoint } : {}),
       // The backend the thread RAN against, as it recorded it — never today's value for that alias:
@@ -410,7 +439,7 @@ export function captureRime(user: number) {
         messages.find((m) => m.role === "user")?.text.slice(0, 120) ||
         wards.find((w) => w.i === conv.ward)?.title ||
         "Rime chat",
-      device: os.hostname(),
+      device: host,
       updated: conv.updated_at,
       messages,
       items,

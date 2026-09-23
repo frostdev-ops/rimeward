@@ -64,7 +64,7 @@ const missing = missingPlugins(sdk);
 if (process.env.RIMEWARD_MEDIA_SDK && missing.length) {
   throw Error(`Incomplete RIMEWARD_MEDIA_SDK ${sdk}: missing required media plugins: ${missing.join(', ')}. Select a full GStreamer ${version} SDK, not a runtime bundle.`);
 }
-if (!process.env.RIMEWARD_MEDIA_SDK && (!fs.existsSync(path.join(sdk, '.rimeward-sdk-complete')) || missing.length)) {
+if (!process.env.RIMEWARD_MEDIA_SDK && (!fs.existsSync(path.join(sdk, '.rimeward-sdk-complete')) || !sdkLibrary(sdk) || missing.length)) {
   // A completion marker can outlive an interrupted or damaged SDK copy.
   fs.rmSync(path.join(sdk, '.rimeward-sdk-complete'), { force: true });
   if (platform === 'darwin') {
@@ -74,7 +74,11 @@ if (!process.env.RIMEWARD_MEDIA_SDK && (!fs.existsSync(path.join(sdk, '.rimeward
     ];
     for (const [name, hash] of packages) {
       const file = await download(`https://gstreamer.freedesktop.org/data/pkg/osx/${version}/${name}`, hash);
-      const expanded = `${file}.expanded`; if (!fs.existsSync(expanded)) run('pkgutil', ['--expand-full', file, expanded]);
+      // Temporary-file cleanup can leave an expanded package's directories and
+      // symlinks after deleting its payload. Rebuild from the verified archive.
+      const expanded = `${file}.expanded`;
+      fs.rmSync(expanded, { recursive: true, force: true });
+      run('pkgutil', ['--expand-full', file, expanded]);
       for (const pkg of fs.readdirSync(expanded)) {
         const payload = path.join(expanded, pkg, 'Payload');
         // Use the flat SDK. The framework facade's Headers symlink collides with

@@ -15,4 +15,4 @@
 - [Remote Desktop screen control](https://github.com/frostdev-ops/rimeward/wiki/Remote-Screen-Control)
 - [Operate and troubleshoot](https://github.com/frostdev-ops/rimeward/wiki/Remote-Operations)
 
-[Downloads](https://github.com/frostdev-ops/rimeward/releases/latest) · [Source](https://github.com/frostdev-ops/rimeward)
+[Downloads](https://github.com/frostdev-ops/rimeward/releases) · [Source](https://github.com/frostdev-ops/rimeward)

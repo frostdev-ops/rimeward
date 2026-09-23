@@ -46,7 +46,7 @@ test('pickReleases: newest PUBLISHED server and desktop release each; drafts, pr
   assert.equal(r.server?.notes, 'notes for v1.0.0');
   assert.equal(r.desktop?.version, '1.0.3');
   assert.equal(r.desktop?.assets['latest.json'], 'https://example.test/desktop-v1.0.3/latest.json');
-  assert.deepEqual(pickReleases({ message: 'rate limited' }), { checkedAt: pickReleases({}).checkedAt, server: null, desktop: null });
+  assert.deepEqual(pickReleases({ message: 'rate limited' }, 7), { checkedAt: 7, server: null, desktop: null });
 });
 
 test('latestReleases: one fetch per TTL, refresh on demand, a failure keeps the last answer and records why', async () => {

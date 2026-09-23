@@ -126,15 +126,15 @@ dialog.fd-dialog.dev-project-dialog { border-radius:1.1rem; padding:1.6rem; }
 .dev-runtime-bar a:hover { color:var(--color-accent-hi); }
 
 /* Desktop welcome and connection flow. */
-.desktop-setup { max-width:65rem; margin:0 auto; padding:3.5rem 1.5rem 2rem; }
+.desktop-setup { max-width:65rem; margin:0 auto; padding:2rem 1.5rem; }
 .desktop-setup [hidden] { display:none; }
-.setup-intro { text-align:center; margin-bottom:2.3rem; }
+.setup-intro { text-align:center; margin-bottom:1.5rem; }
 .setup-eyebrow { display:flex; align-items:center; gap:.5rem; font-size:.62rem; letter-spacing:.12em; font-weight:600; color:var(--color-ink-muted); }
 .setup-intro .setup-eyebrow { justify-content:center; margin-bottom:1rem; }
 .setup-intro h1 { font-size:clamp(2rem,4vw,3rem); font-weight:600; line-height:1.15; letter-spacing:-.045em; }
 .setup-intro > p:last-child { margin-top:1rem; font-size:.95rem; color:var(--color-ink-muted); line-height:1.75; }
 .setup-options { display:grid; grid-template-columns:1fr 1fr; gap:1.2rem; }
-.setup-card { display:flex; flex-direction:column; align-items:flex-start; gap:1.1rem; padding:2rem; border:1px solid var(--color-line-strong); border-radius:1.25rem; background:var(--color-surface); box-shadow:0 4px 24px #00000008; }
+.setup-card { display:flex; flex-direction:column; align-items:flex-start; gap:.85rem; padding:1.5rem; border:1px solid var(--color-line-strong); border-radius:1.25rem; background:var(--color-surface); box-shadow:0 4px 24px #00000008; }
 .setup-card.setup-primary { border-color:color-mix(in srgb,var(--color-accent) 45%,var(--color-line)); }
 .setup-card-icon { display:grid; place-items:center; width:2.7rem; height:2.7rem; border:1px solid var(--color-line); background:var(--color-surface-2); border-radius:.8rem; color:var(--color-accent-hi); font-size:1.15rem; }
 .setup-card h2 { font-size:1.45rem; letter-spacing:-.025em; font-weight:600; margin-top:.45rem; }
@@ -147,7 +147,7 @@ dialog.fd-dialog.dev-project-dialog { border-radius:1.1rem; padding:1.6rem; }
 #setup-form { display:flex; flex-direction:column; gap:.6rem; width:100%; margin-top:auto; }
 #setup-form label { font-size:.78rem; font-weight:500; }
 .setup-help { color:var(--color-ink-muted); font-size:.72rem; line-height:1.6; }
-.setup-features { display:flex; flex-direction:column; gap:1.3rem; padding:.5rem 0; list-style:none; }
+.setup-features { display:flex; flex-direction:column; gap:.9rem; padding:.5rem 0; list-style:none; }
 .setup-features li { display:flex; align-items:center; gap:.85rem; }
 
 .setup-features strong, .setup-features small { display:block; }
@@ -157,6 +157,10 @@ dialog.fd-dialog.dev-project-dialog { border-radius:1.1rem; padding:1.6rem; }
 .setup-local-actions .btn { border-radius:.65rem; min-height:42px; }
 .setup-text-button { font-size:.75rem; color:var(--color-ink-muted); padding:.45rem; cursor:pointer; }
 .setup-text-button:hover { color:var(--color-accent-hi); }
+/* The Remote Desktop and Screen lens settings below the two choices. */
+.desktop-setup > .setup-card { margin-top:1.2rem; }
+#computer-control-form, #lens-form { display:flex; flex-direction:column; align-items:flex-start; gap:.6rem; font-size:.85rem; }
+#computer-control-form label, #lens-form label { display:flex; align-items:center; gap:.5rem; }
 .setup-footnote { font-size:.72rem; text-align:center; color:var(--color-ink-muted); line-height:1.8; margin:1.5rem auto 0; }
 #setup-status:empty { display:none; }
 #setup-status { padding:.9rem 1.1rem; border:1px solid var(--color-line-strong); background:var(--color-surface); border-radius:.75rem; font-size:.85rem; margin-bottom:1rem; }
@@ -248,11 +252,15 @@ dialog.fd-dialog.dev-project-dialog { border-radius:1.1rem; padding:1.6rem; }
 .term-settings-checks { display:flex; flex-wrap:wrap; gap:.5rem 1.2rem; }
 .term-settings .term-settings-check { flex-direction:row; align-items:center; gap:.5rem; cursor:pointer; }
 @media (max-width:639px) { .term-settings-grid { grid-template-columns:1fr; } }
-.term-empty { background:var(--color-surface); min-height:0; padding:1.1rem .8rem; gap:.65rem; }
+.term-empty { background:var(--color-surface); min-height:0; padding:.75rem .8rem; gap:.65rem; container-type:size; }
 .term-empty > .dev-empty-icon { width:2.5rem; height:2.5rem; display:grid; place-items:center; border:1px solid var(--color-line); border-radius:.75rem; font-size:1.3rem; }
 .term-empty h3 { font-size:.95rem; }
 .term-empty > p { font-size:.76rem; }
 .term-empty > .btn-primary { font-size:.8rem; min-height:36px; border-radius:.6rem; padding:.6rem 1.2rem; margin-top:.25rem; }
+/* A short terminal drops the decoration first, then everything but Open terminal
+   (centred overflow otherwise cut the heading and the button). */
+@container (max-height:14rem) { .term-empty > .dev-empty-icon { display:none; } }
+@container (max-height:9rem) { .term-empty > :not(.btn-primary) { display:none; } .term-empty > .btn-primary { margin-top:0; } }
 .term-agent-choices { display:flex; align-items:center; gap:.4rem; }
 .term-agent-choices .btn { border-color:transparent; background:transparent; color:var(--color-ink-muted); font-size:.75rem; }
 .term-agent-choices .btn:hover { border-color:var(--color-line); background:var(--color-surface-2); color:var(--color-ink); }
