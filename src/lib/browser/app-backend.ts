@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { chromium, type BrowserContext } from 'playwright-core';
+import type { BrowserContext } from 'playwright-core';
 import { openStream, tunnelOnline } from '../tunnel.ts';
 import { extensionRegistry, extensionZip } from './extensions.ts';
 import { unzipSync } from 'fflate';
@@ -76,6 +76,7 @@ export async function connectApp(userId: number, ward: string): Promise<{ contex
   };
   try {
     // Chrome only serves a Host that is an IP or localhost; the forwarder is both.
+    const { chromium } = await import('playwright-core');
     const browser = await chromium.connectOverCDP(`ws://127.0.0.1:${port}${wsPath}`, { timeout: 60_000 });
     const context = browser.contexts()[0] ?? (await browser.newContext());
     // close() on a connected-over-CDP browser only disconnects: the app keeps
