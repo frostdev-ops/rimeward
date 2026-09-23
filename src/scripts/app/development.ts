@@ -281,7 +281,9 @@ async function mount(w: WardInstance) {
           } catch (e) {
             listOk = false;
             failure = [401, 403, 404].includes((e as { status?: number }).status ?? 0) ? (e as Error).message : "";
-            if (!stopped) retryList = setTimeout(() => void refreshList(), failure ? 30000 : 3000);
+            // Off stage or hidden it waits, like the mount retry below.
+            const retry = () => { retryList = setTimeout(() => document.hidden || !content.getClientRects().length ? retry() : void refreshList(), failure ? 30000 : 3000); };
+            if (!stopped) retry();
           } finally {
             if (!stopped) render();
           }
