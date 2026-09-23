@@ -1,7 +1,7 @@
 import { sealToken, openToken } from '../crypto.ts';
 import { runtimeNavigation, workspacePath } from "./navigation.ts";
 import type { WorkspaceEntry, WorkspaceNavigation } from "./types.ts";
-import { ensureRimeSync, disconnectRime } from '../agent/sync.ts';
+import { ensureRimeSync, disconnectRime, syncRime } from '../agent/sync.ts';
 import http from "node:http";
 import WebSocket from "ws";
 import fs from "node:fs";
@@ -85,6 +85,34 @@ export async function setPrimaryServer(user: number, id: string) {
 }
 const serverSessions = new Map<string, { id: string; expiresAt: string }>();
 const controls = new Map<string, WebSocket>();
+/** Pairs whose last HTTP attempt got no response at all. Cleared by any response, a pong or the
+ *  control socket opening. */
+const unreachable = new Set<string>();
+const probing = new Set<string>();
+/** Known offline: a request already failed in transport AND the control socket is not open. At boot
+ *  nothing has failed yet, so requests are still attempted while the socket connects. */
+export function pairOffline(id: string) {
+  return unreachable.has(id) && controls.get(id)?.readyState !== WebSocket.OPEN;
+}
+/** The designated server (rimeConnection's choice), without awaiting the vault. */
+export function designatedOffline(user: number) {
+  const chosen = getSetting(primaryKey(user));
+  const id = chosen === NO_PRIMARY ? undefined : chosen || pairs[0]?.id;
+  return !!id && pairOffline(id);
+}
+export function reachability(id: string, answered: boolean) {
+  if (answered) { unreachable.delete(id); return; }
+  unreachable.add(id);
+  // An open control socket can be a dead one the 25 s heartbeat has not caught yet: ask it now.
+  const ws = controls.get(id);
+  if (ws?.readyState !== WebSocket.OPEN || probing.has(id)) return;
+  probing.add(id);
+  const deadline = setTimeout(() => { probing.delete(id); ws.terminate(); }, 5000);
+  deadline.unref();
+  ws.once('pong', () => { clearTimeout(deadline); probing.delete(id); unreachable.delete(id); });
+  ws.ping();
+}
+const OFFLINE = 'The server is not reachable. Nothing was sent; local projects are still available.';
 /** Pairs the server told us it revoked: their socket close must not schedule a reconnect. */
 const revoked = new Set<string>();
 const retries = new Map<string, ReturnType<typeof setTimeout>>();
@@ -337,7 +365,11 @@ export async function instanceRequest(user: number, path: string, request: Reque
  */
 export async function instanceRequestOn(pair: Pair, user: number, path: string, request: Request, oauthSession?: string): Promise<Response> {
   if (!path.startsWith('/') || path.startsWith('//')) throw new DevError('Connection unavailable.', 503);
-  const session = await serverSession(pair);
+  // Without this every proxied call waits out the connect timeout (10 s blackholed) one by one.
+  if (pairOffline(pair.id)) throw new DevError(OFFLINE, 503);
+  let session: { id: string; expiresAt: string };
+  try { session = await serverSession(pair); }
+  catch (e) { if (!(e instanceof DevError)) reachability(pair.id, false); throw e; }
   if (DESTINATION_BOUND.test(path)) {
     const designated = await rimeConnection(user);
     if (designated?.id !== pair.id || designated.server !== pair.server || designated.token !== pair.token)
@@ -372,9 +404,10 @@ export async function instanceRequestOn(pair: Pair, user: number, path: string, 
       signal: AbortSignal.any([request.signal, connect.signal]),
     } as RequestInit);
   } catch (e) {
-    if (!request.signal.aborted) disconnectRime(user);
+    if (!request.signal.aborted) { disconnectRime(user); reachability(pair.id, false); }
     throw e;
   } finally { clearTimeout(timeout); }
+  reachability(pair.id, true);
   // A revoked session answers 401 on /api and a /login redirect on documents; the next call re-creates it.
   if (response.status === 401 || (response.status === 303 && /\/login(?:\?|$)/.test(response.headers.get('location') ?? ''))) { if (serverSessions.get(pair.id)?.id === session.id) serverSessions.delete(pair.id); }
   const out = new Headers(response.headers);
@@ -445,10 +478,14 @@ function connect(pair: Pair) {
       headers: { authorization: `Bearer ${pair.token}`, 'x-rimeward-boot': bootId, 'x-rimeward-remote-desktop': '1' },
       maxPayload: 16_384,
       perMessageDeflate: false,
+      // A blackholed server otherwise holds each attempt in CONNECTING for the OS SYN timeout (~75 s).
+      handshakeTimeout: 15_000,
     },
   );
   controls.set(pair.id, ws);
   channels.set(pair.id, new Set());
+  // Back from a known outage: reconcile now rather than at the next 15 s tick (sync broadcasts the refresh).
+  ws.on("open", () => { if (unreachable.delete(pair.id)) void syncRime(localOwner(), true); });
   let alive = true;
   const heartbeat = setInterval(() => {
     if (!alive) {
