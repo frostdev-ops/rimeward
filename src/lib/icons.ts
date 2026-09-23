@@ -20,8 +20,10 @@ function setJson(pkg: string): IconifyJSON {
 }
 
 /** SVG markup, or null when the set has no such icon. An unknown style — or a
- *  style the icon lacks (Tabler's filled is partial) — falls back to the base. */
-export function iconSvg(set: IconSet, name: string, style = '', stroke?: number): string | null {
+ *  style the icon lacks (Tabler's filled is partial) — falls back to the base.
+ *  `still` drops the SMIL animation (Meteocons): the drops and flakes that
+ *  only fade in while animating are shown at full opacity instead. */
+export function iconSvg(set: IconSet, name: string, style = '', stroke?: number, still = false): string | null {
   const def = ICON_SETS[set];
   if (!def?.pkg) return null;
   const json = setJson(def.pkg);
@@ -31,5 +33,6 @@ export function iconSvg(set: IconSet, name: string, style = '', stroke?: number)
   const r = iconToSVG(data, { height: 'auto' });
   let body = replaceIDs(r.body);
   if (def.stroke && stroke) body = body.replace(/stroke-width="[\d.]+"/g, `stroke-width="${stroke}"`);
+  if (still) body = body.replace(/<animate[A-Za-z]*\b[^>]*\/>/g, '').replace(/ opacity="0"/g, '');
   return iconToHTML(body, r.attributes);
 }
