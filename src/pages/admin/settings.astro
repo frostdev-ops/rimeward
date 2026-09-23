@@ -8,11 +8,14 @@ import { setupTokenPresent } from '../../lib/installation.ts';
 import { setSetting, sweepSettings, takeSetting } from '../../lib/settings.ts';
 import { setupStatus } from '../../lib/setup.ts';
 import { getDb } from '../../lib/db.ts';
+import Icon from '../../components/Icon.astro';
+import type { IconId } from '../../lib/icon-names.ts';
+import { isDesktop } from '../../lib/dev/runtime.ts';
 
 // desktop/settings.astro renders this page AS A COMPONENT, so nothing here may
 // return a Response: every outcome is an `ok` or `error` message instead.
 Astro.response.headers.set('Cache-Control','no-store');
-let error = '', ok = '';
+let error = '', ok = '', postedKey = '';
 if (Astro.request.method === 'POST') {
   try {
     const form = await Astro.request.formData(), action = String(form.get('action') ?? ''), me = Astro.locals.user!;
@@ -26,7 +29,7 @@ if (Astro.request.method === 'POST') {
     else if (action === 'identity') { saveIdentityConnector({id:String(form.get('id')),name:String(form.get('name')),issuer:String(form.get('issuer')),clientId:String(form.get('clientId')),clientSecret:String(form.get('clientSecret')??''),enabled:form.get('enabled')==='on',trustEmail:form.get('trustEmail')==='on'},me.userId,form.get('clearSecret')==='on'); ok = 'Connector saved.'; }
     else if (action === 'identity-delete') { ok = deleteIdentityConnector(String(form.get('id')),me.userId) ? 'Connector removed.' : 'No such connector.'; }
     else {
-      const key = String(form.get('key')) as ConfigKey;
+      const key = String(form.get('key')) as ConfigKey; postedKey = key;
       if (!Object.hasOwn(CONFIG,key)) throw new Error('Unknown setting');
       saveConfig(key,action === 'reset' ? null : action === 'clear' ? '' : String(form.get('value')??''),me.userId);
       ok = 'Setting saved.';
@@ -55,6 +58,20 @@ const SECTIONS: {id:string;title:string;group?:string}[] = [
   { id:'runtime', title:'Runtime', group:'Runtime' },
   { id:'diagnostics', title:'Diagnostics' },
 ];
+// On a desktop the settings that shape this computer come first, on their own tab; the
+// rest configure an installation that serves other people and stay one tab over.
+const desktop = isDesktop();
+const DESKTOP_KEYS = new Set<string>([...fields.filter(f=>f.group==='Runtime').map(f=>f.key), 'OAUTH_BROKER_URL']);
+const desktopFields = fields.filter(f=>DESKTOP_KEYS.has(f.key));
+const serverFields = desktop ? fields.filter(f=>!DESKTOP_KEYS.has(f.key)) : fields;
+const serverSections = desktop ? SECTIONS.filter(s=>s.id!=='runtime') : SECTIONS;
+// A POST re-renders this page, so the tab it came from is chosen here, not by a hash.
+const onServerTab = Astro.request.method === 'POST' && !DESKTOP_KEYS.has(postedKey);
+const DESKTOP_LINKS: [string,IconId,string,string][] = [
+  ['/desktop/start?setup=1','route','Connections','Pair a server, allow remote access to this computer, and set up the screen lens.'],
+  ['/desktop/providers','bot','Provider connections','ChatGPT and model keys this desktop uses, separately from a paired server.'],
+  ['/admin/users','download','Users and updates','Who can sign in here, and this app’s version and updates.'],
+];
 const RERUN: [string,string][] = [['url','Address'],['email','Email'],['policy','Access'],['sso','Sign-in'],['review','Review']];
 const CONNECTOR_FIELDS: [string,string][] = [['id','Connector id'],['name','Name'],['issuer','Issuer URL'],['clientId','Client ID'],['clientSecret','Client secret']];
 const cval = (c: IdentityConnector | null, k: string) => k === 'clientSecret' ? '' : String((c as unknown as Record<string,string>|null)?.[k] ?? '');
@@ -82,15 +99,38 @@ const dot = (state: string) => `inline-block h-2 w-2 shrink-0 rounded-full ${sta
 <BaseLayout title="Administration — Rimeward">
   <main class="mx-auto max-w-3xl px-4 py-10">
     <div class="page-head">
-      <h1 class="page-title">Installation & settings</h1>
+      <h1 class="page-title">{desktop ? 'Settings' : 'Installation & settings'}</h1>
       <AdminNav current="settings" />
     </div>
     {error && <p role="alert" class="banner banner-err">{error}</p>}
     {ok && <p role="status" class="banner banner-ok">{ok}</p>}
 
-    {SECTIONS.map(s=><section class="card p-4 mb-4"><h2 class="section-title">{s.title}</h2>
+    {desktop && <>
+      <div class="seg mb-4" role="radiogroup" aria-label="Settings for">
+        <label><input type="radio" name="settings-tab" id="tab-desktop" checked={!onServerTab}/><span>This desktop</span></label>
+        <label><input type="radio" name="settings-tab" id="tab-server" checked={onServerTab}/><span>Server &amp; sign-in</span></label>
+      </div>
+      <div data-panel="desktop">
+        <section class="card p-4 mb-4"><h2 class="section-title">This desktop</h2>
+          {DESKTOP_LINKS.map(([href,icon,title,hint])=><a href={href} class="flex items-center gap-3 border-b border-line py-3 last:border-b-0 hover:text-accent-hi"><span class="grid w-5 place-items-center"><Icon id={icon}/></span><span class="grid flex-1"><span class="text-sm font-medium">{title}</span><span class="text-xs text-ink-muted">{hint}</span></span><Icon id="right"/></a>)}
+        </section>
+        <section class="card p-4 mb-4"><h2 class="section-title">Runtime</h2>
+          {desktopFields.map(f=><form method="post" class="grid gap-2 border-b border-line py-3">
+            <input type="hidden" name="key" value={f.key}/>
+            <label for={f.key}>{f.label}</label>
+            <input id={f.key} class="input" name="value" type="text" value={f.value} autocomplete="off"/>
+            <p class="text-xs text-ink-muted">Source: {f.source}{f.restart?' · Restart required; saving does not restart the app.':''}</p>
+            <div class="flex flex-wrap gap-2"><button class="btn" name="action" value="save">Save</button><button class="btn" name="action" value="reset" formnovalidate>Use environment value</button></div>
+          </form>)}
+        </section>
+      </div>
+    </>}
 
-      {fields.filter(f=>f.group===s.group).map(f=><form method="post" class="grid gap-2 border-b border-line py-3">
+    <div data-panel="server">
+    {desktop && <p class="mb-4 text-sm text-ink-muted">These settings matter when this installation serves other people over a network. A desktop used on its own does not need them.</p>}
+    {serverSections.map(s=><section class="card p-4 mb-4"><h2 class="section-title">{s.title}</h2>
+
+      {serverFields.filter(f=>f.group===s.group).map(f=><form method="post" class="grid gap-2 border-b border-line py-3">
         <input type="hidden" name="key" value={f.key}/>
         <label for={f.key}>{f.label}</label>
         {f.choices ? <select id={f.key} name="value" class="input">{f.choices.map(v=><option selected={v===f.value}>{v}</option>)}</select> : <input id={f.key} class="input" name="value" type={f.secret?'password':'text'} required={f.secret} value={f.value} autocomplete="off" placeholder={f.secret && f.configured?'Configured — enter replacement':''}/>}
@@ -135,5 +175,11 @@ const dot = (state: string) => `inline-block h-2 w-2 shrink-0 rounded-full ${sta
       </>}
 
     </section>)}
+    </div>
   </main>
+  <style>
+    /* The desktop's two tabs are a radio group: no script, and the checked one is server-rendered. */
+    main:has(#tab-server:checked) [data-panel='desktop'],
+    main:has(#tab-desktop:checked) [data-panel='server'] { display: none; }
+  </style>
 </BaseLayout>
