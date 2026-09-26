@@ -33,9 +33,11 @@ if (native && (!local || base) && !document.querySelector('main[data-popout-ward
       const response = await fetch('/api/instance', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
       if (!response.ok) throw Error('Connection unavailable');
       const status = await response.json();
-      text.textContent = status.connected ? 'Connected' : 'Working offline';
+      // A desktop with no server paired has nothing to be connected to.
+      const alone = status.configured === false;
+      text.textContent = alone ? 'This computer' : status.connected ? 'Connected' : 'Working offline';
       label.dataset.offline = String(!status.connected);
-      label.title = status.connected ? 'Your workspace is connected. Pages, settings and Rime stay in sync.' : 'Local projects remain available. Changes will reconcile when the connection returns.';
+      label.title = alone ? 'Your workspace runs on this computer. Connect a server from Connections to sync pages, settings and Rime.' : status.connected ? 'Your workspace is connected. Pages, settings and Rime stay in sync.' : 'Local projects remain available. Changes will reconcile when the connection returns.';
       window.dispatchEvent(new CustomEvent('fd:instance', { detail: status }));
     } catch {
       text.textContent = 'Reconnecting…';

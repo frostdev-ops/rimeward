@@ -121,7 +121,6 @@ function redrawSparks(id: string): void {
 }
 
 async function seedSparks(services: ServiceStatus[]): Promise<void> {
-  seeded = true;
   // Host metrics ride status_history as host:* rows, so they seed the same way.
   const ids = [...services.filter((s) => s.kind === 'http' || s.kind === 'tcp').map((s) => s.id), ...HOST_SERVICE_IDS];
   for (const id of ids) {
@@ -329,6 +328,19 @@ function renderServiceGroupWard(w: WardInstance, snap: Snapshot): void {
   const cfg = w.config ?? {};
   const members = membersOf(w, snap);
   const [cols, rows] = sizeParts(w.size);
+  if (!members.length) {
+    // A fresh install has no monitors: say so instead of an empty card.
+    // The header's update chip is the page's one admin marker.
+    if (!b.querySelector(':scope > .wd-note')) {
+      b.textContent = '';
+      if (document.querySelector('#update-chip[data-admin]')) {
+        const a = el('a', 'wd-note btn text-xs', 'Add a monitor');
+        a.setAttribute('href', '/admin/monitors');
+        b.append(a);
+      } else b.append(el('p', 'wd-note text-xs text-ink-faint', 'No monitors yet.'));
+    }
+    return;
+  }
   if (cfg.view === 'dots') renderDots(w, members, cols);
   else if (members.length === 1) {
     if (!b.querySelector('[data-ward]')) b.textContent = '';
@@ -471,7 +483,12 @@ function apply(snap: Snapshot): void {
     } catch {}
   }
   document.querySelectorAll('.ward').forEach((t) => (t as HTMLElement).removeAttribute('data-stale'));
-  if (!seeded) requestIdleCallback ? requestIdleCallback(() => void seedSparks(snap.services)) : void seedSparks(snap.services);
+  // Flag before the idle callback: the first /api/status and the stream's first
+  // frame both land before idle, and each would otherwise seed every history.
+  if (!seeded) {
+    seeded = true;
+    requestIdleCallback ? requestIdleCallback(() => void seedSparks(snap.services)) : void seedSparks(snap.services);
+  }
 }
 
 export function bootStatus(): void {

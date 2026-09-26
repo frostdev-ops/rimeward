@@ -167,13 +167,23 @@ function renderMessages(id: string, account: Account, data: any, refresh: () => 
   b.append(bar);
 }
 
+/** No mailbox at all: the same connect chip the Agenda and Notion wards show. */
+function connectMail(id: string): void {
+  const b = body(id);
+  if (!b) return;
+  b.textContent = '';
+  const a = el('a', 'wd-note btn text-xs', 'Connect mail');
+  a.setAttribute('href', '/account#accounts');
+  b.append(a);
+}
+
 const accountOf = (w: WardInstance): Account | 'all' => (w.config?.account as Account | 'all' | undefined) ?? 'all';
 
 /** 1x1: the unread count, per account underneath; a tap opens the fullest inbox. */
 async function renderBadge(w: WardInstance, account: Account | 'all'): Promise<void> {
   const { status, data } = await getJson(`/api/mail/unread?account=${account}`);
   if (account !== 'all' ? handled(w.i, account, status) : status === 404) {
-    if (account === 'all') note(w.i, 'No mail account linked — see Account.');
+    if (account === 'all') connectMail(w.i);
     return;
   }
   const b = body(w.i);
@@ -207,7 +217,7 @@ async function renderInbox(w: WardInstance): Promise<void> {
   const limit = w.config?.unreadOnly ? 25 : Math.min(25, rowsOf(w) * 5);
   const { status, data } = await getJson(`/api/mail?account=${account}&limit=${limit}`);
   if (account !== 'all' ? handled(w.i, account, status) : status === 404) {
-    if (account === 'all') note(w.i, 'No mail account linked — see Account.');
+    if (account === 'all') connectMail(w.i);
     return;
   }
   if (status !== 200) {

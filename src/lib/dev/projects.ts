@@ -670,6 +670,9 @@ export async function gitView(user: number, project: string, file?: string, limi
           .join("/"),
       ]
     : [];
+  // Outside a repository `git diff --cached` falls back to --no-index and prints its usage text.
+  const inside = await git(user, project, ["rev-parse", "--is-inside-work-tree"]).then((out) => out.trim() === "true", () => false);
+  if (!inside) throw new DevError("This workspace folder is not a Git worktree.", 409);
   const base = await git(user, project, ["rev-parse", "--verify", "HEAD"]).then(() => "HEAD", () => "--cached");
   // Only an unborn HEAD uses the staged diff. Output limits/errors must not silently drop working changes.
   const diff = await git(user, project, ["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", base, "--", ...scope]);

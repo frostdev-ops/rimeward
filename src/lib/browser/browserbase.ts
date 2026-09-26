@@ -1,4 +1,4 @@
-import { chromium, type BrowserContext } from 'playwright-core';
+import type { BrowserContext } from 'playwright-core';
 import { openToken, sealToken } from '../crypto.ts';
 import { deleteSetting, getSetting, setSetting } from '../settings.ts';
 import { createHash } from 'node:crypto';
@@ -59,6 +59,7 @@ export async function connectBrowserbase(userId: number, ward: string): Promise<
     extensionId: await browserbaseExtension(userId, ward, key),
     browserSettings: { context: { id: ctxId, persist: true } },
   });
+  const { chromium } = await import('playwright-core');
   const browser = await chromium.connectOverCDP(session.connectUrl);
   const context = browser.contexts()[0] ?? (await browser.newContext());
   // Disconnecting ends the session on their side (no keepAlive requested).

@@ -11,7 +11,7 @@ const server=configuredOrigin()??Astro.url.origin;
     <p class="mb-4">In the Rimeward desktop app, choose <strong>Connect to my server</strong> and enter this server’s address. Sign in and approve the desktop when your browser opens.</p>
     <label class="flex flex-col gap-2 mb-4">Server address<input class="input" id="server-address" value={server} readonly /></label>
     <p class="mb-4">Your pages, appearance, and Rime stay in sync. Project tools connect to the computer that owns the files automatically.</p>
-    <p class="mb-4">Ask Rime to list your computers and choose one by name for files, commands, or app control. Screen control is enabled on each computer in its desktop connections page and can be stopped from its tray menu. You can direct Rime here from an iPhone or iPad too.</p>
+    <p class="mb-4">Ask Rime to list your computers and choose one by name for files, commands, or app control. Remote access is turned on for each computer on its Connections page and can be stopped from its tray menu. You can direct Rime here from an iPhone or iPad too.</p>
     <p id="device-message" class="my-4" role="status"></p>
     <div id="device-list" class="flex flex-col gap-3"></div>
     <details id="remote-health" class="mt-6"><summary class="btn">Remote Desktop diagnostics</summary><p id="remote-health-values" class="my-3" role="status"></p></details>

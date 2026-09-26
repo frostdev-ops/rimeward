@@ -58,6 +58,7 @@ for (const host of document.querySelectorAll<HTMLElement>(
 			const data = await call("start");
 			id = data.id;
 			sessionStorage.setItem(key, id);
+			cancel.hidden = false;
 			status.textContent = note(data);
 			link.href = data.verificationUrl;
 			link.hidden = false;
@@ -89,9 +90,6 @@ for (const host of document.querySelectorAll<HTMLElement>(
 			button.disabled = false;
 		}
 	};
-	button.addEventListener("click", () => {
-		cancel.hidden = false;
-	});
 	document.addEventListener("visibilitychange", () => {
 		clearTimeout(timer);
 		if (!document.hidden && id) void poll();

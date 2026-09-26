@@ -163,6 +163,10 @@
     syncTrigger(field);
 
     trigger.addEventListener('click', () => open(field, trigger));
+    // A native select opens on the arrow keys too.
+    trigger.addEventListener('keydown', (e) => {
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.altKey && !openState) { e.preventDefault(); open(field, trigger); }
+    });
   }
 
   function rowsOf(field: Field): Row[] {
@@ -360,10 +364,13 @@
       // -1 is the "Use <what you typed>" row.
       const value = index < 0 ? (st.input?.value.trim() ?? '') : (st.rows[index]?.value ?? '');
       if (index >= 0 && !st.rows[index]) return;
+      // Re-picking the current value is no change: a native select fires nothing.
+      if (field.value === value) { close(); return; }
       field.value = value;
     } else {
       const option = field.options[index];
       if (!option || option.disabled) return;
+      if (field.selectedIndex === index) { close(); return; }
       field.selectedIndex = index;
     }
     close();

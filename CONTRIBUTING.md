@@ -79,6 +79,11 @@ version's existing tag; every build verifies that tag against its checked-out co
 DMGs use Tauri's CI mode to avoid opening Finder during packaging; they retain the
 application and Applications link without customized icon positioning.
 
+Windows staging copies the installed Visual Studio C++ redistributable DLLs beside
+the media helper, llama.cpp, and the Satteri native module. This keeps those bundled
+features usable on machines without a system-wide Visual C++ runtime; the media
+manifest includes the copied DLLs in its hashes.
+
 Install-script permissions are pinned in `package.json` for native dependencies. The SDK's
 network-based model-type freshness check is disabled; models are discovered at runtime.
 The current `just-bash` dependency emits Node's experimental `stripTypeScriptTypes` notice

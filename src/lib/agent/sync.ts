@@ -8,7 +8,7 @@ import { cached } from '../cache.ts';
 import type { VoiceAction, VoiceReply } from './voice.ts';
 import { getSetting, setSetting } from "../settings.ts";
 import { isDesktop } from "../dev/runtime.ts";
-import { rimeConnection } from "../dev/remote.ts";
+import { rimeConnection, designatedOffline, reachability } from "../dev/remote.ts";
 import { INSTANCE_KEY, instanceDashboard, mergeInstance, moveLocalWardState, localWardsWithContent } from '../dev/instance.ts';
 import { createHash } from 'node:crypto';
 import {
@@ -23,6 +23,7 @@ import {
 import { NOTE_KEY, resolveNoteConflict, validateNoteRecord } from '../note-sync.ts';
 import { NOTE_FORMAT, NOTE_FORMAT_HEADER, noteRecordNeedsFormat } from '../notebook-pages.ts';
 import { CHAT_FORMAT, CHAT_FORMAT_HEADER, chatRecordNeedsFormat, peerFormat } from './chat-format.ts';
+import { COMMS_TYPES } from '../comms/types.ts';
 import type {
   AgentProviderId,
   ProviderCall,
@@ -157,17 +158,22 @@ export async function sharedVoice(user: number, ward: string, action: VoiceActio
 }
 export function syncRime(user: number, force = false): Promise<void> {
   if (!isDesktop()) return Promise.resolve();
+  // A server already known to be unreachable is not worth waiting for (the dashboard awaits this):
+  // the pass still runs in the background as the probe that notices it coming back.
+  const offline = designatedOffline(user);
   const running = pending.get(user);
-  if (running) return running;
+  if (running) return offline ? Promise.resolve() : running;
   const last = statuses.get(user);
   if (!force && last && Date.now() - last.at < 15000) return Promise.resolve();
   let answered = false;
   // Its identity, separately from its reachability: only a round that read a matching profile
   // re-establishes it, and a round that read a WRONG one destroys it.
   let identified = false;
+  let pair: string | undefined;
   const promise = (async () => {
     try {
       const connection = await rimeConnection(user);
+      pair = connection?.id;
       if (!connection) {
         disconnectRime(user);
         return;
@@ -182,6 +188,7 @@ export function syncRime(user: number, force = false): Promise<void> {
       const response = await request(connection.server, connection.token);
       // From here the server has answered: everything after this is OUR payload's business.
       answered = true;
+      reachability(connection.id, true);
       const remote = (await response.json()) as {
         profile: string;
         runtime?: string;
@@ -383,10 +390,17 @@ export function syncRime(user: number, force = false): Promise<void> {
           broadcast(user, 'layout', { layout: dashboard.layout, pages: dashboard.pages });
           broadcast(user, 'theme', dashboard.theme ? JSON.parse(dashboard.theme) : {});
         }
+        // Back from an outage: wards the server feeds still show its error until their next poll
+        // (up to 15 min). Repaint them now; a focused card is skipped client-side.
+        if (last && !last.online) {
+          broadcast(user, 'refresh', { link: 'notion' });
+          for (const type of ['weather', 'mail', 'calendar', 'next-up', ...COMMS_TYPES]) broadcast(user, 'refresh', { type });
+        }
       }
     } catch (e) {
       // 426 is the peer refusing OUR format - it answered, so it is reachable.
       const spoke = answered || typeof (e as { status?: number }).status === 'number';
+      if (pair) reachability(pair, spoke);
       statuses.set(user, {
         online: false,
         reachable: spoke,
@@ -403,7 +417,7 @@ export function syncRime(user: number, force = false): Promise<void> {
     }
   })().finally(() => pending.delete(user));
   pending.set(user, promise);
-  return promise;
+  return offline ? Promise.resolve() : promise;
 }
 let timer: ReturnType<typeof setInterval> | undefined;
 export function ensureRimeSync(user: number) {
@@ -439,6 +453,11 @@ export async function sharedModel(
     return null;
   const requestId = randomUUID();
   let accepted = false;
+  // The server writes at least every 15 s once it answers: a longer silence is a dead link, not a slow
+  // model. Without this a dropped network held the turn until MODEL_TIMEOUT_MS (5.5 min).
+  const stalled = new AbortController();
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const alive = () => { clearTimeout(watchdog); watchdog = setTimeout(() => stalled.abort(new Error('The server stopped responding during the model request.')), 60_000); };
   try {
     const response = await request(
       connection.server,
@@ -467,23 +486,23 @@ export async function sharedModel(
           tools: call.tools,
           cacheKey: call.cacheKey,
         }),
-        signal: call.signal
-          ? AbortSignal.any([call.signal, AbortSignal.timeout(MODEL_TIMEOUT_MS)])
-          : AbortSignal.timeout(MODEL_TIMEOUT_MS),
+        signal: AbortSignal.any([...(call.signal ? [call.signal] : []), AbortSignal.timeout(MODEL_TIMEOUT_MS), stalled.signal]),
       },
     );
     accepted = true;
+    alive();
     if (!response.body) throw new SyntaxError("Missing model response.");
     let parsed: ProviderResult | { error: string; status?: number; category?: string } | undefined;
     if (response.headers.get('content-type')?.includes('text/event-stream')) {
       await readSse(response.body, payload => {
+        alive();
         if (payload === '[DONE]') return;
         const event = JSON.parse(payload);
         if (event.type === 'text_delta' && typeof event.delta === 'string') call.onTextDelta?.(event.delta);
         else if (event.type === 'thinking') call.onThinking?.(event.progress);
         else if (event.type === 'result') parsed = event.result;
         else if (event.type === 'error') parsed = event;
-      }, call.onProgress, call.signal);
+      }, () => { alive(); call.onProgress?.(); }, AbortSignal.any([...(call.signal ? [call.signal] : []), stalled.signal]));
       if (!parsed) throw Error('Model relay ended before completion.');
     } else {
       // Older servers send whitespace heartbeats and one final JSON document.
@@ -493,7 +512,7 @@ export async function sharedModel(
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
-          call.onProgress?.(); text += decoder.decode(value, { stream: true });
+          alive(); call.onProgress?.(); text += decoder.decode(value, { stream: true });
         }
         parsed = JSON.parse(text + decoder.decode());
       } finally { reader.releaseLock(); }
@@ -508,8 +527,9 @@ export async function sharedModel(
   } catch (e) {
     const failure = modelFailure(user, e, requestId, call.signal?.aborted);
     if (failure.category === 'connection-lost' || (!accepted && (failure.status === 401 || failure.status === 403))) disconnectRime(user);
+    if (failure.category === 'connection-lost') reachability(connection.id, false);
     throw failure;
-  }
+  } finally { clearTimeout(watchdog); }
 }
 
 /** The connected server's ChatGPT catalog, with ENVELOPE provenance - live or cache, and when. Keyed

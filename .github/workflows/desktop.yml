@@ -1,7 +1,7 @@
 # Rimeward (desktop/): signed + notarized macOS DMG, Windows and Linux
 # bundles, attached to a draft GitHub Release. Tag `desktop-vX.Y.Z` to run it.
 # Publish manually only after Windows and Linux packaged startup is verified.
-# Push dev/<version> branches to run the same checks and native builds without a release.
+# Push main or dev/<version> branches to run the same checks and native builds without a release.
 #
 # Secrets (repo settings → Secrets → Actions):
 #   APPLE_CERTIFICATE            base64 of the Developer ID Application .p12
@@ -20,7 +20,7 @@ name: Rimeward desktop
 
 on:
   push:
-    branches: ['dev/**']
+    branches: [main, 'dev/**']
     tags: ['desktop-v*']
   workflow_dispatch:
     inputs:
@@ -94,11 +94,23 @@ jobs:
           components: rustfmt, clippy
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
+      - name: Identify Xcode for Rust cache
+        if: startsWith(matrix.platform, 'macos-')
+        id: xcode
+        shell: bash
+        run: |
+          developer_dir=$(realpath "$(xcode-select -p)")
+          xcode_version=$(xcodebuild -version)
+          printf '%s\n%s\n' "$developer_dir" "$xcode_version" |
+            shasum -a 256 | awk '{ print "key=" $1 }' >> "$GITHUB_OUTPUT"
+
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: |
             desktop
             desktop/media-helper
+          # Native dependencies retain absolute Xcode SDK and Swift library paths.
+          key: ${{ steps.xcode.outputs.key }}
 
       - name: Cache the media SDK
         uses: actions/cache@v4
@@ -189,7 +201,15 @@ jobs:
       - name: Validate native application build
         if: github.ref_type != 'tag' || inputs.validation_only
         working-directory: desktop
-        run: npx tauri build ${{ matrix.platform == 'ubuntu-24.04' && '--bundles deb,appimage' || '--no-bundle' }} ${{ env.TAURI_BUILD_ARGS }}
+        run: npx tauri build ${{ matrix.platform == 'ubuntu-24.04' && '--bundles deb,appimage' || matrix.platform == 'windows-latest' && '--bundles nsis' || '--no-bundle' }} ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Save validation installer
+        if: matrix.platform == 'windows-latest' && (github.ref_type != 'tag' || inputs.validation_only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: rimeward-windows-${{ github.sha }}
+          path: desktop/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
 
       - name: App Store Connect key
         if: startsWith(matrix.platform, 'macos-') && github.ref_type == 'tag' && (github.event_name == 'push' || !inputs.validation_only)

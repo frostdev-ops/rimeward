@@ -374,7 +374,7 @@ test("file reads page under the tool cap and the diff scopes to a path", async (
   } while (cursor !== undefined);
   assert.equal(recovered, JSON.stringify(longLine), "a long escaped line remains fully readable");
 
-
+  await assert.rejects(gitView(1, p.id), /not a Git worktree/, "a plain folder says so, not git's --no-index usage");
   await git(1, p.id, ["init", "-q", "-b", "main"]);
   await git(1, p.id, ["add", "big.txt"]);
   await git(1, p.id, ["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "-m", "big"]);

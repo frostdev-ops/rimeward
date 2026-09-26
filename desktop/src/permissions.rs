@@ -157,6 +157,11 @@ pub async fn macos_permissions(
         "checkpoint" => checkpoint(&app, &window)?,
         "relaunch" => {
             checkpoint(&app, &window)?;
+            // A restart cannot be held open by ExitRequested the way Quit is,
+            // so the graceful teardown runs first: otherwise Chromium outlives
+            // the app holding its profiles, and the old runtime can still hold
+            // the saved port when the new one starts.
+            crate::teardown(&app).await;
             app.request_restart();
         }
         "screen" | "input" => {

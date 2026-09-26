@@ -379,11 +379,26 @@ pub fn tray_action(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let phase = app.state::<Updates>().phase();
-        let _ = if matches!(phase, Phase::Available | Phase::Ready) {
+        let installing = matches!(phase, Phase::Available | Phase::Ready);
+        let result = if installing {
             install_now(&app).await
         } else {
             check(&app, true).await
         };
+        // The tray has no other place to answer a click that found nothing.
+        match result {
+            Err(error) if installing => notify(&app, "Rimeward could not update", &error),
+            Err(error) => notify(&app, "Rimeward could not check for updates", &error),
+            Ok(()) if !installing && app.state::<Updates>().phase() == Phase::Idle => notify(
+                &app,
+                "Rimeward is up to date",
+                &format!(
+                    "You have the latest version, {}.",
+                    app.package_info().version
+                ),
+            ),
+            Ok(()) => {}
+        }
     });
 }
 pub fn tray_toggle_auto(app: &AppHandle) {

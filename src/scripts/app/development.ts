@@ -281,7 +281,9 @@ async function mount(w: WardInstance) {
           } catch (e) {
             listOk = false;
             failure = [401, 403, 404].includes((e as { status?: number }).status ?? 0) ? (e as Error).message : "";
-            if (!stopped) retryList = setTimeout(() => void refreshList(), failure ? 30000 : 3000);
+            // Off stage or hidden it waits, like the mount retry below.
+            const retry = () => { retryList = setTimeout(() => document.hidden || !content.getClientRects().length ? retry() : void refreshList(), failure ? 30000 : 3000); };
+            if (!stopped) retry();
           } finally {
             if (!stopped) render();
           }
@@ -1269,6 +1271,7 @@ async function mount(w: WardInstance) {
               output.textContent = e.message;
             }),
           5000,
+          () => !content.getClientRects().length, // off stage: no git run every 5 s
         ),
       );
     }
@@ -1278,7 +1281,16 @@ async function mount(w: WardInstance) {
     // A single owned timer. poll() ticks synchronously, so its stop would land in THIS (already
     // run) cleanup list and the poller would remount the ward every 5 s for the rest of the page.
     const slow = [401, 403, 404].includes((err as { status?: number }).status ?? 0);
-    const retry = setTimeout(() => { states.get(w.i)?.stop(); void mount(w); }, slow ? 30000 : 5000);
+    // Off stage or in a hidden tab it waits: a ward whose runtime is offline
+    // would otherwise remount (a workspace resolve + view read) every 5 s.
+    let retry: ReturnType<typeof setTimeout>;
+    const again = () => {
+      retry = setTimeout(() => {
+        if (document.hidden || !content.getClientRects().length) again();
+        else { states.get(w.i)?.stop(); void mount(w); }
+      }, slow ? 30000 : 5000);
+    };
+    again();
     cleanup.push(() => clearTimeout(retry));
   }
 }

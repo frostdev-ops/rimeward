@@ -94,6 +94,11 @@ const { httpServer } = await import("./server.mjs");
 if (!httpServer.listening)
   await new Promise((resolve) => httpServer.once("listening", resolve));
 process.env.PUBLIC_BASE_URL = `http://127.0.0.1:${httpServer.address().port}`;
+// The first request loads middleware, migrations and native services. Finish
+// that work before telling the shell to replace its loading page.
+const warm = await fetch(`${process.env.PUBLIC_BASE_URL}/login`);
+if (!warm.ok) throw new Error("Local runtime failed to initialize");
+await warm.arrayBuffer();
 process.stdout.write(
   `${JSON.stringify({
     type: "ready",

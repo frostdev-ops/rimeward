@@ -58,8 +58,9 @@ mod linux {
             let _ = BufReader::new(output).read_line(&mut line);
             let _ = send.send(line);
         });
+        // Startup only: a loaded CI runner's X server can take seconds to hand out a keymap.
         receive
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(30))
             .expect("Native fixture did not start")
     }
     fn parent(mode: &str) {

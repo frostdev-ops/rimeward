@@ -173,7 +173,7 @@ controlForm.onsubmit = event => {
   const submit = required<HTMLButtonElement>('button[type="submit"]', controlForm); submit.disabled = true;
   void settings({ enabled: enabled.checked, generation: controlGeneration }).then(data => {
     controlGeneration = data.generation; enabled.checked = data.enabled;
-    controlStatus.textContent = data.enabled ? 'Screen control enabled. Stop it at any time from the tray menu.' : 'Screen control is off.';
+    controlStatus.textContent = data.enabled ? 'Remote access is on. Stop it at any time from the tray menu.' : 'Remote access is off.';
   }).catch(async e => {
     controlStatus.textContent = e.message;
     const current = await settings().catch(() => null);
@@ -183,7 +183,7 @@ controlForm.onsubmit = event => {
 void settings().then(data => {
   controlGeneration = data.generation; enabled.checked = data.enabled;
   required<HTMLElement>('#computer-control-permissions').textContent = data.permissions ?? '';
-  controlStatus.textContent = data.enabled ? 'Screen control is enabled.' : 'Screen control is off.';
+  controlStatus.textContent = data.enabled ? 'Remote access is on.' : 'Remote access is off.';
 }).catch(e => { controlStatus.textContent = e.message; });
 
 // The Screen lens switch: consent is a local setting too (plan D7), and the

@@ -357,12 +357,16 @@ function renderTimer(w: WardInstance): void {
   b.classList.add('flex');
   const steps = timerSteps(w.config);
   const rounds = steps.filter((s) => s.label === 'Focus').length;
-  const wrap = el('div', 'flex h-full w-full flex-col items-center justify-center gap-1.5');
-  const label = el('div', 'text-[10px] uppercase tracking-wide text-ink-faint');
-  const time = el('div', 'text-2xl leading-none font-semibold tabular-nums');
+  // A one-row ward's body is 40px: a smaller face (time, then the step) over
+  // smaller buttons, or it clips. Taller: safe-centred, so a long routine
+  // list scrolls from its top instead of cutting the time off.
+  const oneRow = rowsOf(w) === 1;
+  const wrap = el('div', `flex h-full w-full flex-col items-center justify-center-safe ${oneRow ? 'gap-0.5' : 'gap-1.5'}`);
+  const label = el('div', 'text-[10px] leading-3 uppercase tracking-wide text-ink-faint');
+  const time = el('div', `${oneRow ? 'text-lg' : 'text-2xl'} leading-none font-semibold tabular-nums`);
   const bar = el('div', 'flex gap-1');
   const mkBtn = (label: string, op: 'start' | 'pause' | 'reset' | 'skip') => {
-    const btn = el('button', 'btn min-h-0 px-2 py-1 text-xs', label);
+    const btn = el('button', oneRow ? 'btn min-h-0 px-1.5 py-0 text-[11px] leading-4' : 'btn min-h-0 px-2 py-1 text-xs', label);
     btn.type = 'button';
     btn.addEventListener('click', () => {
       void postJson(`/api/timers/${encodeURIComponent(w.i)}`, { op });
@@ -374,8 +378,15 @@ function renderTimer(w: WardInstance): void {
   const reset = mkBtn('Reset', 'reset');
   const skip = mkBtn('Skip', 'skip');
   bar.append(start, pause, skip, reset);
-  if (steps.length) wrap.append(label);
-  wrap.append(time, bar);
+  if (oneRow) {
+    const face = el('div', 'flex items-baseline gap-1.5');
+    face.append(time);
+    if (steps.length) face.append(label);
+    wrap.append(face, bar);
+  } else {
+    if (steps.length) wrap.append(label);
+    wrap.append(time, bar);
+  }
   // A tall routine ward lists its steps; the current one is bold.
   const list = steps.length && rowsOf(w) >= 2 ? el('div', 'flex flex-col text-xs') : null;
   const rowsEl = steps.map((s) => el('div', 'text-ink-faint', `${s.label} ${s.min}m`));

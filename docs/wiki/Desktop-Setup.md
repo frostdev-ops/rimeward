@@ -18,7 +18,7 @@ Use this path to run Rimeward entirely as a desktop application. You do not need
 | Windows | Use the Windows installer from the release assets. The release workflow targets x86-64 Windows. |
 | Linux | Use the DEB or AppImage. Current packages target Ubuntu 24.04 or newer, or an equivalent system with glibc 2.39, WebKitGTK 4.1, and PipeWire 0.3.65 or newer. |
 
-Download from [Rimeward Releases](https://github.com/frostdev-ops/rimeward/releases/latest) and check that release's notes. You do not need to install Node or Rust to run a published installer. Local development tools for your own projects, Git, and optional CLI agents remain separate installations.
+Open [Rimeward Releases](https://github.com/frostdev-ops/rimeward/releases), select the newest **Rimeward desktop** release, and check its notes before downloading an installer. You do not need to install Node or Rust to run a published installer. Local development tools for your own projects, Git, and optional CLI agents remain separate installations.
 
 For a downloaded AppImage, make it executable in your file manager or with `chmod +x <downloaded-file>.AppImage`, then launch it. On Debian/Ubuntu, install the downloaded DEB with `sudo apt install ./<downloaded-file>.deb`, substituting the actual filename.
 

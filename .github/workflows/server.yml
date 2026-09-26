@@ -2,12 +2,12 @@
 # image per `vX.Y.Z` tag — what `rimeward update` and `docker compose pull`
 # install. Published straight away: the same job type-checked, tested and
 # built the exact bytes it uploads.
-# dev/<version> pushes build and validate without publishing images or releases.
+# main and dev/<version> pushes build and validate without publishing images or releases.
 name: Rimeward server
 
 on:
   push:
-    branches: ['dev/**']
+    branches: [main, 'dev/**']
     tags: ['v[0-9]*']
   workflow_dispatch:
 

@@ -64,7 +64,10 @@ export function icon(id: string, cls = '', title?: string): HTMLElement {
   } else if (r.kind === 'img') {
     const i = document.createElement('img');
     i.className = 'fd-ic-img';
-    i.src = r.url;
+    // The colour weather art animates with SMIL, and one animated <img> keeps
+    // the whole page rendering at display rate (WebKit: ~19% of a core per
+    // weather ward, 0.2% still). The dashboard draws its still frame.
+    i.src = `${r.url}${r.url.includes('?') ? '&' : '?'}still=1`;
     i.alt = '';
     n = i;
   } else {

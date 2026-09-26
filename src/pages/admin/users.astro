@@ -7,6 +7,7 @@ import { sessionId } from '../../lib/auth.ts';
 import { takeSetting } from '../../lib/settings.ts';
 import { cardsToLines, siteInfo } from '../../lib/site.ts';
 import { updateState } from '../../lib/updates.ts';
+import { isDesktop } from '../../lib/dev/runtime.ts';
 
 const me = Astro.locals.user!;
 const users = listUsers();
@@ -17,6 +18,8 @@ const signIn = (u: { id: number; has_password: unknown }) =>
   [u.has_password ? 'password' : null, ...identities.filter((i) => i.user_id === u.id).map((i) => i.connector)].filter(Boolean).join(' + ');
 const site = siteInfo();
 const updates = await updateState();
+// The desktop owner signs in through the app itself, not a password or an identity.
+const desktop = isDesktop();
 
 const ok = Astro.url.searchParams.get('ok');
 const err = Astro.url.searchParams.get('err');
@@ -100,7 +103,7 @@ const OK_MESSAGES: Record<string, string> = {
                 <td>
                   <span class="pill" data-status={u.role}>{u.role}</span>
                 </td>
-                <td class="hidden text-ink-muted sm:table-cell">{signIn(u) || (u.status === 'pending' ? 'invitation pending' : <span class="text-err">no sign-in method</span>)}</td>
+                <td class="hidden text-ink-muted sm:table-cell">{signIn(u) || (u.status === 'pending' ? 'invitation pending' : desktop && u.id === me.userId ? 'this desktop app' : <span class="text-err">no sign-in method</span>)}</td>
                 <td class="text-right">
                   <details class="relative inline-block text-left">
                     <summary class="btn cursor-pointer list-none px-2 py-1 text-xs">Manage</summary>
@@ -175,7 +178,8 @@ const OK_MESSAGES: Record<string, string> = {
     <div class="card mt-8 p-4">
       <h2 class="section-title mb-3">Updates</h2>
       <p class="text-sm text-ink-muted">
-        Server v{updates.server?.current}{updates.server?.available ? ` — v${updates.server.latest} is available` : ' — up to date'}
+        {/* A desktop runtime has no server release of its own (lib/updates.ts): show the app's. */}
+        {(() => { const app = updates.server ?? updates.desktop; const name = updates.server ? 'Server' : 'Rimeward'; return app ? `${name} v${app.current}${app.available ? ` — v${app.latest} is available` : ' — up to date'}` : 'Version unknown'; })()}
         {updates.error && <span> · last check failed: {updates.error}</span>}
         {updates.previous && <span> · v{updates.previous} kept for a rollback</span>}
         {updates.job && !updates.job.done && <span> · installing v{updates.job.version}: {updates.job.log.at(-1)}</span>}

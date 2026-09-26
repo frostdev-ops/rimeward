@@ -127,6 +127,7 @@ export function createBgScene(canvas: HTMLCanvasElement, cfg: SceneConfig): BgHa
   let speed = cfg.speed;
   let t = reduced ? 12 : 0; // still frame: far enough in to have shapes
   let raf = 0;
+  let timer = 0;
   let lastT = 0;
   let acc = 0;
   let visible = document.visibilityState === 'visible';
@@ -136,29 +137,49 @@ export function createBgScene(canvas: HTMLCanvasElement, cfg: SceneConfig): BgHa
     renderer.render(scene, camera);
   }
 
+  // At 24fps and under the loop sleeps on a timer and asks for ONE animation
+  // frame per render: a frame requested every vsync keeps the page's display
+  // link running, which cost more than the renders (WebKit, % of a core:
+  // 15fps 11.5 → 5.7, 24fps 12 → 9). At 30 the link never idles: no gain.
+  const paced = () => minFrame > 0.035;
+  function next() {
+    if (!paced()) raf = requestAnimationFrame(frame);
+    else timer = window.setTimeout(() => {
+      timer = 0;
+      raf = requestAnimationFrame(frame);
+    }, minFrame * 1000); // the vsync after the cap renders
+  }
+
   function frame(now: number) {
-    raf = requestAnimationFrame(frame);
-    const dt = lastT ? Math.min((now - lastT) / 1000, 0.05) : 1 / 60;
+    raf = 0;
+    const pace = paced();
+    const dt = lastT ? Math.min((now - lastT) / 1000, pace ? 0.25 : 0.05) : 1 / 60;
     lastT = now;
-    throttle(dt); // raw frame time — the skipped frames are the cheap ones
     acc += dt;
-    if (acc < minFrame) return;
+    if (!pace) throttle(dt); // raw frame time — the skipped frames are the cheap ones
+    if (acc < minFrame) {
+      raf = requestAnimationFrame(frame);
+      return;
+    }
+    // A paced frame is one render: it reports how far past the cap it landed,
+    // in 60Hz frame terms, so the governor keeps its threshold.
+    if (pace) throttle(acc / (minFrame * 60));
     const step = acc; // the whole skipped stretch, or the clock runs slow
     acc = 0;
     t += step * speed;
     mouse.lerp(target, 1 - Math.exp(-3 * step));
     uniforms.uMouse.value.copy(mouse).multiplyScalar(parallax);
     render();
+    next();
   }
 
   function pause() {
-    if (raf) {
-      cancelAnimationFrame(raf);
-      raf = 0;
-    }
+    if (raf) cancelAnimationFrame(raf);
+    clearTimeout(timer);
+    raf = timer = 0;
   }
   function resume() {
-    if (!raf && visible && !reduced) {
+    if (!raf && !timer && visible && !reduced) {
       lastT = 0; // clock reset — no dt spike after a hidden stretch
       raf = requestAnimationFrame(frame);
     }
@@ -206,7 +227,7 @@ export function createBgScene(canvas: HTMLCanvasElement, cfg: SceneConfig): BgHa
       speed = next.speed;
       parallax = next.parallax;
       uniforms.uMouse.value.copy(mouse).multiplyScalar(parallax);
-      if (reduced || !raf) render(); // frozen scenes still show the new knobs
+      if (reduced || (!raf && !timer)) render(); // frozen scenes still show the new knobs
     },
     destroy() {
       pause();

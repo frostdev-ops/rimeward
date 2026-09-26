@@ -54,7 +54,11 @@ pub fn run() {
         std::process::exit(input_guardian::run());
     }
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
+        // Launching the app again (Start menu, launcher, a deep link) while its
+        // window is hidden in the tray brings the running window back.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            show_main(app)
+        }))
         .plugin(tauri_plugin_deep_link::init());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_autostart::init(

@@ -588,6 +588,7 @@ export const RENDERERS: Record<string, Renderer> = {
   // mail from mail.ts, service-group / incidents from status.ts, chart from
   // charts.ts, the notion page wards (capture included) from notion.ts, note from note.ts.
 };
+export const RENDERER_LOADERS: Record<string, () => Promise<unknown>> = {};
 
 // ------------------------------------------------------------------- boot
 
@@ -615,6 +616,17 @@ export function bootInstance(w: WardInstance): void {
   booted.set(w.i, () => {});
   const r = RENDERERS[w.type];
   if (!r) {
+    const load = RENDERER_LOADERS[w.type];
+    if (load) {
+      const marker = booted.get(w.i);
+      void load().then(() => {
+        if (booted.get(w.i) !== marker) return;
+        if (!RENDERERS[w.type]) { note(w.i, 'Unavailable.'); return; }
+        booted.delete(w.i);
+        bootInstance(w);
+      }).catch(() => { if (booted.get(w.i) === marker) note(w.i, 'Unavailable.'); });
+      return;
+    }
     note(w.i, 'Unavailable.');
     return;
   }
@@ -650,6 +662,7 @@ export function rerenderInstance(w: WardInstance): void {
   if (!inWardView(w.i)) return;
   if (w.type === 'container') return; // its body holds live wards, not a paint
   const r = RENDERERS[w.type];
+  if (!r && RENDERER_LOADERS[w.type]) { unbootInstance(w.i); bootInstance(w); return; }
   const b = body(w.i);
   if (b && !r?.preserveBody) {
     b.textContent = '';
