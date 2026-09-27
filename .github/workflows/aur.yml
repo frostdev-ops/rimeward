@@ -1,0 +1,46 @@
+# AUR bump: when a `desktop-vX.Y.Z` release is PUBLISHED, push packaging/aur
+# (PKGBUILD + .SRCINFO, version and .deb sha256 filled in) to
+# aur.archlinux.org/rimeward-bin. The first push creates the package.
+# AUR_SSH_PRIVATE_KEY is a key registered on the maintainer's AUR account.
+name: AUR package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: desktop-vX.Y.Z
+        required: true
+
+jobs:
+  aur:
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'desktop-v')
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Push rimeward-bin
+        env:
+          AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          v="${TAG#desktop-v}"
+          sha=$(gh release view "$TAG" --json assets \
+            --jq ".assets[] | select(.name == \"Rimeward_${v}_amd64.deb\") | .digest | ltrimstr(\"sha256:\")")
+          [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "no sha256 digest for Rimeward_${v}_amd64.deb on $TAG"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$AUR_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
+          git clone -q ssh://aur@aur.archlinux.org/rimeward-bin.git aur
+          cp packaging/aur/PKGBUILD packaging/aur/.SRCINFO aur/
+          cd aur
+          old=$(git show HEAD:PKGBUILD 2>/dev/null | sed -n 's/^pkgver=//p') || true
+          sed -i -E "s/^pkgver=.*/pkgver=$v/; s/^pkgrel=.*/pkgrel=1/; s/^sha256sums=.*/sha256sums=('$sha')/" PKGBUILD
+          sed -i -E "s/(pkgver = ).*/\1$v/; s/(pkgrel = ).*/\11/; s/(sha256sums = ).*/\1$sha/; s#desktop-v[^/]+/Rimeward_[^_]+_amd64#desktop-v$v/Rimeward_${v}_amd64#" .SRCINFO
+          [ "$old" = "$v" ] && git diff --quiet && { echo "rimeward-bin already at $v"; exit 0; }
+          git add PKGBUILD .SRCINFO
+          git -c user.name=rimeward-bot -c user.email=admin@frostdev.io commit -qm "rimeward-bin $v"
+          git push origin HEAD:master

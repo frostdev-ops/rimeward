@@ -1,0 +1,20 @@
+# Maintainer: frostdev <admin@frostdev.io>
+# Repackages the release .deb. .github/workflows/aur.yml bumps pkgver/sha256sums here and in .SRCINFO.
+pkgname=rimeward-bin
+pkgver=1.0.17
+pkgrel=1
+pkgdesc='Rimeward — standalone development workspaces with live remote access'
+arch=('x86_64')
+url='https://github.com/frostdev-ops/rimeward'
+license=('MIT')
+depends=('glibc' 'unzip' 'libxcb' 'libxrandr' 'dbus' 'libpipewire' 'wayland' 'libglvnd' 'mesa'
+         'libappindicator-gtk3' 'webkit2gtk-4.1' 'gtk3')
+provides=('rimeward')
+conflicts=('rimeward')
+options=('!strip' '!debug')
+source=("https://github.com/frostdev-ops/rimeward/releases/download/desktop-v${pkgver}/Rimeward_${pkgver}_amd64.deb")
+sha256sums=('45dcf8462eb9f077b623b29dcacea420fa8db7ace6745c07ed6dffa1e7b6c601')
+
+package() {
+  bsdtar -xf data.tar.* -C "$pkgdir"
+}

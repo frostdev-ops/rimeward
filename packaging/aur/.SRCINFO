@@ -1,0 +1,27 @@
+pkgbase = rimeward-bin
+	pkgdesc = Rimeward — standalone development workspaces with live remote access
+	pkgver = 1.0.17
+	pkgrel = 1
+	url = https://github.com/frostdev-ops/rimeward
+	arch = x86_64
+	license = MIT
+	depends = glibc
+	depends = unzip
+	depends = libxcb
+	depends = libxrandr
+	depends = dbus
+	depends = libpipewire
+	depends = wayland
+	depends = libglvnd
+	depends = mesa
+	depends = libappindicator-gtk3
+	depends = webkit2gtk-4.1
+	depends = gtk3
+	provides = rimeward
+	conflicts = rimeward
+	options = !strip
+	options = !debug
+	source = https://github.com/frostdev-ops/rimeward/releases/download/desktop-v1.0.17/Rimeward_1.0.17_amd64.deb
+	sha256sums = 45dcf8462eb9f077b623b29dcacea420fa8db7ace6745c07ed6dffa1e7b6c601
+
+pkgname = rimeward-bin
