@@ -67,7 +67,7 @@ A **ward** is a tool on a page: an editor, an inbox, a notepad, an agent. **Page
 
 ### Desktop: get started in a few steps
 
-1. Open [Releases](https://github.com/frostdev-ops/rimeward/releases) and download an installer from the newest **Rimeward desktop** release: **Apple Silicon macOS**, **Windows**, or **Linux**. See the [platform requirements](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup#requirements). On an Apple Silicon Mac you can instead run `brew install --cask frostdev-ops/tap/rimeward`.
+1. Open [Releases](https://github.com/frostdev-ops/rimeward/releases) and download an installer from the newest **Rimeward desktop** release: **Apple Silicon macOS**, **Windows**, or **Linux**. See the [platform requirements](https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup#requirements). On an Apple Silicon Mac you can instead run `brew install --cask frostdev-ops/tap/rimeward`. On Arch Linux, run `makepkg -si` in [`packaging/aur`](packaging/aur).
 2. Launch Rimeward. Under **Start right here**, choose **Continue without connecting** or **Add a Workspace**.
 3. Open **Account → Agent** to connect a model provider when you're ready to use Rime.
 4. Open a project, or edit a page and add the wards you want.
