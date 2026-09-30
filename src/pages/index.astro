@@ -1,90 +1,115 @@
 ---
-import BaseLayout from '../layouts/BaseLayout.astro';
-import { RimewardLockup, RimewardMark, brandSrc } from '../lib/brand.ts';
-import { siteInfo } from '../lib/site.ts';
-
-// Everything this page says is a setting (lib/site.ts) and every picture a
-// brand slot (lib/brand.ts): the repo ships Rimeward, an instance its own.
-const site = siteInfo();
-const wordmark = brandSrc('wordmark');
-const emblem = brandSrc('emblem');
+import MarketingLayout from '../layouts/MarketingLayout.astro';
+import { RimewardLockup, RimewardMark } from '../lib/brand.ts';
 ---
 
-<BaseLayout title={site.name} description={`${site.name} — ${site.tagline}`} index>
-  <meta slot="head" name="google-adsense-account" content="ca-pub-1806642805052030" />
-  <div class="splash-ground">
-    {emblem ? <img src={emblem} alt="" class="emblem" loading="eager" /> : <RimewardMark class="emblem" aria-hidden="true" />}
-  </div>
-  <canvas id="splash-canvas" aria-hidden="true"></canvas>
-
-  <section class="splash-overlay">
-    {
-      wordmark ? (
-        <img src={wordmark} alt={site.name} class="splash-wordmark" loading="eager" />
-      ) : (
-        <RimewardLockup class="splash-wordmark" aria-label={site.name} />
-      )
-    }
-    <p class="splash-tagline">{site.tagline}</p>
-    <a id="enter" href="/login" class="splash-enter">Enter</a>
+<MarketingLayout title="Frostdev" description="Rimeward, Frostsim, and Loothing. Projects by Frostdev.">
+  <section class="hub-hero splash-overlay">
+    <h1><img src="/projects/frostdev.webp" alt="Frostdev" width="1280" height="269" class="splash-wordmark" /></h1>
+    <p class="splash-tagline">Work · Play · Create</p>
   </section>
 
-  <section class="splash-band">
-    {
-      site.cards.length > 0 && (
-        <div class="mx-auto w-full max-w-4xl">
-          <h2 class="section-title mb-4 text-center">What runs here</h2>
-          <div class="grid gap-4 sm:grid-cols-3">
-            {site.cards.map((c) => (
-              <article class="card p-5">
-                <h3 class="text-base font-semibold">{c.title}</h3>
-                {c.blurb && <p class="mt-1 text-sm text-ink-muted">{c.blurb}</p>}
-              </article>
-            ))}
-          </div>
-        </div>
-      )
-    }
-    {site.footer && <footer class="splash-foot">{site.footer}</footer>}
+  <section class="projects" aria-label="Frostdev projects">
+    <a class="project rimeward" href="/rimeward">
+      <div class="project-art">
+        <RimewardMark class="crystal" aria-hidden="true" />
+        <RimewardLockup class="project-logo" aria-hidden="true" />
+      </div>
+      <div class="project-copy">
+        <h2>Rimeward <span aria-hidden="true">↗</span></h2>
+        <p>Your workspace, connected.</p>
+        <span class="project-destination">Explore Rimeward</span>
+      </div>
+    </a>
+    <a class="project frostsim" href="https://sim.frostdev.io">
+      <div class="project-art">
+        <img class="project-logo" src="/projects/frostsim.webp" width="720" height="178" alt="" />
+      </div>
+      <div class="project-copy">
+        <h2>Frostsim <span aria-hidden="true">↗</span></h2>
+        <p>World of Warcraft simulations.</p>
+        <span class="project-destination">sim.frostdev.io</span>
+      </div>
+    </a>
+    <a class="project loothing" href="https://loothing.xyz">
+      <div class="project-art">
+        <img class="loothing-mascot" src="/projects/loothing.webp" width="320" height="315" alt="" />
+      </div>
+      <div class="project-copy">
+        <h2>Loothing <span aria-hidden="true">↗</span></h2>
+        <p>Loot, raids, and your guild.</p>
+        <span class="project-destination">loothing.xyz</span>
+      </div>
+    </a>
   </section>
-</BaseLayout>
+</MarketingLayout>
 
 <style>
-  /* The terrain fills the frame with mid-tones; a soft dark pool behind the
-     brand block keeps the wordmark legible over any part of the landscape. */
-  .splash-overlay::before {
+  .hub-hero {
+    min-height: 0;
+    padding: clamp(4rem, 12vh, 8rem) 1.5rem clamp(4rem, 10vh, 7rem);
+    gap: 1.75rem;
+  }
+  .hub-hero::before {
     content: '';
     position: absolute;
-    inset: 50% auto auto 50%;
-    width: min(92vw, 56rem);
-    height: 24rem;
-    transform: translate(-50%, -50%);
-    background: radial-gradient(closest-side, rgb(2 8 16 / 0.55), transparent 72%);
-    pointer-events: none;
+    inset: 0;
     z-index: -1;
+    background: radial-gradient(ellipse at center, rgb(2 8 16 / 0.7), transparent 68%);
   }
-
-  /* Hero is 100vh (.splash-overlay); this band adds ~120vh so the page totals
-     ~220vh and scroll drives the scene. */
-  .splash-band {
+  .hub-hero .splash-wordmark { width: min(78vw, 36rem); }
+  .splash-tagline { font-size: 0.75rem; letter-spacing: 0.3em; color: #b3c8dc; }
+  .projects {
     position: relative;
     z-index: 1;
-    min-height: 120vh;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.25rem;
+    max-width: 76rem;
+    padding: 0 2rem 2rem;
+    margin: auto;
+  }
+  .project {
+    --project-color: #17c8f4;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    gap: 4rem;
-    padding: 24vh 1.5rem 2rem;
-    background: linear-gradient(to bottom, transparent, rgb(6 13 24 / 0.9) 35%);
+    overflow: hidden;
+    border: 1px solid rgb(143 168 192 / 0.22);
+    border-radius: 1rem;
+    background: rgb(6 13 24 / 0.88);
+    backdrop-filter: blur(12px);
+    transition: border-color 0.25s, transform 0.25s;
   }
-  .splash-foot {
-    text-align: center;
-    font-size: 0.8rem;
-    letter-spacing: 0.08em;
-    color: #5c7189;
+  .project:hover { border-color: var(--project-color); transform: translateY(-4px); }
+  .project:focus-visible { outline: 2px solid var(--project-color); outline-offset: 5px; }
+  .project-art {
+    position: relative;
+    display: grid;
+    place-items: center;
+    height: 12rem;
+    padding: 2rem;
+    overflow: hidden;
+    background: radial-gradient(ellipse at 50% 90%, color-mix(in srgb, var(--project-color) 12%, transparent), transparent 75%);
+  }
+  .project-logo { position: relative; width: 100%; height: auto; max-width: 17rem; }
+  .crystal { position: absolute; width: 14rem; height: 14rem; right: -3rem; top: -3rem; opacity: 0.1; transform: rotate(15deg); }
+  .loothing { --project-color: #a78bfa; }
+  .loothing-mascot { width: 8.5rem; height: auto; }
+  .project-copy { padding: 1.5rem; border-top: 1px solid rgb(143 168 192 / 0.12); }
+  h2 { display: flex; justify-content: space-between; align-items: center; font-size: 1.3rem; font-weight: 600; letter-spacing: -0.03em; }
+  h2 span { color: #8fa8c0; font-size: 1.1rem; transition: color 0.25s; }
+  .project:hover h2 span { color: var(--project-color); }
+  .project-copy p { color: #b3c8dc; font-size: 0.9rem; margin-top: 0.5rem; }
+  .project-destination { display: block; color: #8fa8c0; font-size: 0.75rem; margin-top: 1.75rem; }
+  @media (max-width: 760px) {
+    .projects { grid-template-columns: 1fr; max-width: 32rem; padding: 0 1.25rem 1rem; }
+    .hub-hero { padding-top: 4rem; padding-bottom: 4rem; }
+    .project-art { height: 10rem; }
+    .project-logo { max-width: 18rem; }
+    .project-destination { margin-top: 1.25rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .project, h2 span { transition: none; }
+    .project:hover { transform: none; }
   }
 </style>
-
-<script>
-  import '../scripts/splash/index.ts';
-</script>

@@ -25,6 +25,8 @@
 
 ## Make room for the way you work
 
+The public [Frostdev hub](https://frostdev.io) links to Rimeward, Frostsim, and Loothing. [Explore Rimeward](https://frostdev.io/rimeward) for a quick introduction and desktop downloads.
+
 Rimeward brings an AI agent, a development workspace, and your everyday tools into a place you can shape. Write code beside a live terminal. Keep your notes, calendar, inbox, and browser within reach. Give your agent context from the things you're looking at, then keep working while it handles a task.
 
 It's an **agentic harness**: the environment around a model that gives it tools, context, memory, approvals, and a way to do useful work. The built-in agent, **Rime**, can work with your projects and dashboard, use a browser, coordinate other agents, and follow automations you set up. You choose its provider and model, what it can access, and when it needs your approval.

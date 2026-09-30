@@ -8,7 +8,7 @@ import { siteInfo } from '../lib/site.ts';
 interface Props {
   title: string;
   description?: string;
-  /** Splash sets this: index is the only page meant for crawlers. */
+  /** Public marketing pages opt in to search indexing. */
   index?: boolean;
   wardWindow?: boolean;
 }

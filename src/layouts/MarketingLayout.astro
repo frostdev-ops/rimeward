@@ -1,0 +1,75 @@
+---
+import BaseLayout from './BaseLayout.astro';
+
+interface Props {
+  title: string;
+  description: string;
+  path?: string;
+}
+const { title, description, path = '/' } = Astro.props;
+---
+
+<BaseLayout title={title} description={description} index>
+  <link slot="head" rel="canonical" href={`https://frostdev.io${path}`} />
+  <link slot="head" rel="icon" href="/projects/frostdev-favicon.png" type="image/png" />
+  <meta slot="head" property="og:title" content={title} />
+  <meta slot="head" property="og:description" content={description} />
+  <meta slot="head" property="og:url" content={`https://frostdev.io${path}`} />
+  <meta slot="head" property="og:type" content="website" />
+  <meta slot="head" name="google-adsense-account" content="ca-pub-1806642805052030" />
+
+  <div class="splash-ground"></div>
+  <canvas id="splash-canvas" aria-hidden="true"></canvas>
+
+  <div class="marketing">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="marketing-nav">
+      <a href="/" aria-label="Frostdev home">
+        <img src="/projects/frostdev.webp" width="1280" height="269" alt="Frostdev" />
+      </a>
+      <nav aria-label="Main navigation">
+        <a href="https://github.com/frostdev-ops">GitHub</a>
+        <a href="/login">Sign in <span aria-hidden="true">↗</span></a>
+      </nav>
+    </header>
+    <main id="main"><slot /></main>
+    <footer class="marketing-footer">
+      <span>© {new Date().getFullYear()} Frostdev</span>
+      <a href="mailto:admin@frostdev.io">Get in touch <span aria-hidden="true">↗</span></a>
+    </footer>
+  </div>
+</BaseLayout>
+
+<style>
+  .marketing { color: #e8f2fa; min-height: 100dvh; background: linear-gradient(180deg, rgb(6 13 24 / 0.65), rgb(6 13 24 / 0.3) 28rem, #060d18 62rem); }
+  .marketing-nav, .marketing-footer {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    max-width: 76rem;
+    margin: auto;
+    padding: 1.75rem 2rem;
+    font-size: 0.8rem;
+    color: #b3c8dc;
+  }
+  .marketing-nav img { width: 8rem; height: auto; }
+  nav { display: flex; gap: 1.75rem; }
+  a { transition: color 0.2s; }
+  a:hover { color: #9be7ff; }
+  a:focus-visible { outline: 2px solid #9be7ff; outline-offset: 6px; border-radius: 3px; }
+  .marketing-footer { padding-top: 2.5rem; padding-bottom: 2rem; color: #8fa8c0; }
+  .skip-link { position: absolute; left: 1rem; top: -5rem; z-index: 10; background: #060d18; padding: 0.75rem; }
+  .skip-link:focus { top: 1rem; }
+  @media (max-width: 600px) {
+    .marketing-nav, .marketing-footer { padding-left: 1.25rem; padding-right: 1.25rem; }
+    nav { gap: 1.25rem; }
+  }
+  @media (prefers-reduced-motion: reduce) { a { transition: none; } }
+</style>
+
+<script>
+  import '../scripts/splash/index.ts';
+</script>

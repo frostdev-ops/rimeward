@@ -1,0 +1,74 @@
+---
+import MarketingLayout from '../layouts/MarketingLayout.astro';
+import { RimewardLockup, RimewardMark } from '../lib/brand.ts';
+import Icon from '../components/Icon.astro';
+---
+
+<MarketingLayout title="Rimeward — Your workspace, connected" description="Projects, notes, and AI in one workspace. Rimeward by Frostdev." path="/rimeward">
+  <section class="rimeward-hero splash-overlay">
+    <RimewardMark class="hero-crystal" aria-hidden="true" />
+    <h1><RimewardLockup class="splash-wordmark" aria-label="Rimeward by Frostdev" /></h1>
+    <p class="splash-tagline">The rime remembers</p>
+    <p class="hero-description">Projects, notes, and AI. One connected workspace.</p>
+    <div class="hero-actions">
+      <a class="splash-enter" href="https://github.com/frostdev-ops/rimeward/releases/latest">Download desktop <span aria-hidden="true">↗</span></a>
+      <a id="enter" class="open-rimeward" href="/login">Open Rimeward <span aria-hidden="true">→</span></a>
+    </div>
+    <p class="platforms">macOS · Windows · Linux</p>
+  </section>
+
+  <section class="workspace" aria-label="Inside Rimeward">
+    <div class="features">
+      <article>
+        <Icon id="rime" class="feature-icon" />
+        <h2>Meet Rime</h2>
+        <p>An AI agent with your workspace in reach.</p>
+      </article>
+      <article>
+        <Icon id="folders" class="feature-icon" />
+        <h2>Make it yours</h2>
+        <p>Notes, mail, calendars, and tools. Your own layout.</p>
+      </article>
+      <article>
+        <Icon id="host" class="feature-icon" />
+        <h2>Keep it local</h2>
+        <p>Your project files stay on your desktop.</p>
+      </article>
+    </div>
+    <figure>
+      <img src="/projects/rimeward-workspace.webp" width="1360" height="900" alt="Rimeward’s browser workspace with two pages open side by side" loading="lazy" />
+      <figcaption>Browser workspace</figcaption>
+    </figure>
+    <a class="source-link" href="https://github.com/frostdev-ops/rimeward">View on GitHub <span aria-hidden="true">↗</span></a>
+  </section>
+</MarketingLayout>
+
+<style>
+  .rimeward-hero { min-height: 0; padding: 7rem 1.5rem 5rem; gap: 1.5rem; overflow: hidden; }
+  .rimeward-hero::before { content: ''; position: absolute; inset: 0; z-index: -1; background: radial-gradient(ellipse at center, rgb(2 8 16 / 0.8), transparent 75%); }
+  .hero-crystal { position: absolute; width: 34rem; height: 34rem; right: -10rem; top: 1rem; opacity: 0.07; z-index: -1; transform: rotate(15deg); }
+  .splash-wordmark { width: min(85vw, 38rem); }
+  .splash-tagline { color: #b3c8dc; font-size: 0.75rem; letter-spacing: 0.3em; }
+  .hero-description { color: #c4d6e6; font-size: clamp(1rem, 2vw, 1.2rem); text-wrap: balance; }
+  .hero-actions { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 1.5rem; margin-top: 0.75rem; }
+  .splash-enter { padding: 0.85rem 1.5rem; font-size: 0.8rem; letter-spacing: 0.06em; text-transform: none; }
+  .open-rimeward { color: #c4d6e6; font-size: 0.85rem; padding: 0.75rem 0; }
+  .platforms { color: #8fa8c0; font-size: 0.75rem; }
+  .workspace { position: relative; z-index: 1; max-width: 72rem; margin: auto; padding: 0 2rem 2rem; }
+  .features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; margin-bottom: 3rem; }
+  article { border-top: 1px solid rgb(143 168 192 / 0.3); padding-top: 1.5rem; }
+  article :global(.feature-icon) { color: #6fdcff; width: 1.25rem; height: 1.25rem; margin-bottom: 1rem; }
+  h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
+  article p { color: #b3c8dc; font-size: 0.9rem; line-height: 1.6; text-wrap: balance; }
+  figure img { width: 100%; height: auto; border: 1px solid #24405f; border-radius: 0.75rem; box-shadow: 0 2rem 5rem rgb(0 0 0 / 0.3); }
+  figcaption { text-align: center; color: #8fa8c0; font-size: 0.8rem; padding-top: 1rem; }
+  .source-link { display: block; width: fit-content; margin: 3rem auto 0; color: #b3c8dc; font-size: 0.85rem; text-align: center; }
+  a:focus-visible { outline: 2px solid #9be7ff; outline-offset: 5px; }
+  .source-link:hover, .open-rimeward:hover { color: #9be7ff; }
+  @media (max-width: 600px) {
+    .rimeward-hero { padding-top: 4rem; padding-bottom: 3.5rem; }
+    .workspace { padding-left: 1.25rem; padding-right: 1.25rem; }
+    .features { grid-template-columns: 1fr; gap: 1.5rem; margin-bottom: 2rem; }
+    article :global(.feature-icon) { margin-bottom: 0.75rem; }
+  }
+</style>

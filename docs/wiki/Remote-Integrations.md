@@ -62,7 +62,7 @@ If needed, `PM2_BIN`, `DOCKER_BIN`, and `SYSTEMCTL_BIN` supply explicit executab
 
 ## Brand your instance
 
-The admin settings and CLI control the site name, tagline, splash cards, footer, and brand assets. For example:
+The admin settings and CLI control the instance name and brand assets used by sign-in and setup. The public `/` page is the Frostdev project hub; `/rimeward` introduces Rimeward. These marketing pages use their own artwork and copy rather than the instance's splash text, cards, and footer. For example:
 
 ```sh
 node bin/rimeward.mjs splash --name "My workspace" --tagline "A place to get things done"
