@@ -11,6 +11,7 @@ const emblem = brandSrc('emblem');
 ---
 
 <BaseLayout title={site.name} description={`${site.name} — ${site.tagline}`} index>
+  <meta slot="head" name="google-adsense-account" content="ca-pub-1806642805052030" />
   <div class="splash-ground">
     {emblem ? <img src={emblem} alt="" class="emblem" loading="eager" /> : <RimewardMark class="emblem" aria-hidden="true" />}
   </div>
