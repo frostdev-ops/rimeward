@@ -78,12 +78,12 @@ checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 ap
 - RIME-27 retires optional local-chat D2: composition comments and assertion
   wording now match configured embeddings/helper triage/opted-in cloud triage.
   Scoped decider tests pass and emitted logic matches the prior revision.
-- RIME-42 is existing unmerged documentation. RIME-43 needs publishing access,
-  successful publication and real Arch acceptance. Repository secrets contain no
-  AUR_SSH_PRIVATE_KEY; effective organization access and maintainer identity remain
-  unverified. The public RPC still returns zero packages. Native SSH aliases
-  `desktop` and `berry-view` timed out; interactive Windows/Linux/Arch hosts remain
-  required rather than assumed available.
+- Initial execution audit: RIME-42 documentation was unmerged and RIME-43 lacked
+  publication access. The repository has no AUR_SSH_PRIVATE_KEY, its owner is a
+  User (no inherited organization secret), local AUR SSH authentication failed,
+  and the public RPC returned zero packages. RIME-42 is now integrated/published;
+  RIME-43 is explicitly retired. Native SSH aliases `desktop` and `berry-view`
+  timed out; installed Windows/Linux checks remain user-run.
 - RIME-46 records the 1.0.18 source/release gap and the existing authorized-release
   procedure's exit gates. The accepted implementation request authorizes the
   sequence, but external account/provider acceptance remains human-run.
