@@ -571,6 +571,19 @@ fn document_url(element: AxRef) -> Option<String> {
     string_attribute(element, "AXDocument")
 }
 
+fn window_id(element: AxRef) -> Option<u32> {
+    let mut id = 0;
+    (unsafe { _AXUIElementGetWindow(element, &mut id) } == AX_SUCCESS && id != 0).then_some(id)
+}
+
+fn element_window_id(element: AxRef) -> Option<u32> {
+    // shortcut: AX without an exact native window id stays OCR-only; upgrade
+    // only when another exact window association is available.
+    attribute(element, "AXWindow")
+        .and_then(|window| window_id(raw(&window)))
+        .or_else(|| window_id(element))
+}
+
 // ---------------------------------------------------------------------------
 // Window server
 // ---------------------------------------------------------------------------
@@ -645,7 +658,84 @@ struct Shared {
     changed_at: Mutex<Instant>,
 }
 
+struct Read {
+    target: Target,
+    epoch: u64,
+    generation: u64,
+}
+
+fn window_matches(target: &Target, id: Option<u32>, bounds: Option<Rect>) -> bool {
+    id == Some(target.window_id) && bounds == Some(target.bounds)
+}
+
 impl Shared {
+    fn pin(&self, pid: i32) -> Option<Read> {
+        let target = self.lens.target.read().unwrap();
+        let target = target.as_ref()?;
+        if self.stop.load(Ordering::Acquire)
+            || target.pid != pid
+            || self.lens.state.lock().unwrap().run != super::Run::Running
+        {
+            return None;
+        }
+        Some(Read {
+            target: target.clone(),
+            epoch: self.lens.bridge.epoch(),
+            generation: self.lens.capture_generation.load(Ordering::Acquire),
+        })
+    }
+
+    fn publish(&self, read: &Read, kind: Kind) -> Option<()> {
+        self.lens
+            .with_target(&read.target, read.epoch, read.generation, || {
+                if self.stop.load(Ordering::Acquire)
+                    || self.lens.state.lock().unwrap().run != super::Run::Running
+                {
+                    return None;
+                }
+                let mut known = self.lens.known.write().unwrap();
+                match &kind {
+                    Kind::AxText { lines, .. } => known.ax = lines.clone(),
+                    Kind::AxFocus { .. } => known.focus = Some(kind.clone()),
+                    Kind::AxSheet { .. } => known.sheet = Some(kind.clone()),
+                    _ => (),
+                }
+                drop(known);
+                self.lens.bridge.emit(kind);
+                Some(())
+            })
+            .flatten()
+    }
+
+    fn window(&self, read: &Read, title: String, bounds: Rect) -> Option<Target> {
+        let mut target = self.lens.target.write().unwrap();
+        if self.stop.load(Ordering::Acquire)
+            || self.lens.state.lock().unwrap().run != super::Run::Running
+            || !self.lens.target_is_current(
+                target.as_ref(),
+                &read.target,
+                read.epoch,
+                read.generation,
+            )
+        {
+            return None;
+        }
+        let target = target.as_mut()?;
+        if target.bounds != bounds {
+            self.lens.capture_generation.fetch_add(1, Ordering::AcqRel);
+            self.lens
+                .known
+                .write()
+                .unwrap()
+                .ocr
+                .retain(|line| within(line.bbox, bounds));
+        }
+        target.bounds = bounds;
+        target.title = title.clone();
+        self.lens.bridge.emit(Kind::AxWindow { title, bounds });
+        Some(target.clone())
+    }
+
     fn mark_change(&self) {
         *self.changed_at.lock().unwrap() = Instant::now();
     }
@@ -716,9 +806,7 @@ impl Shared {
         let screens = self.screens.read().unwrap().clone();
         if let Some(window) = window {
             let element = raw(window);
-            let mut id = 0u32;
-            let ok = unsafe { _AXUIElementGetWindow(element, &mut id) } == AX_SUCCESS && id != 0;
-            if let (true, Some(bounds)) = (ok, element_rect(element)) {
+            if let (Some(id), Some(bounds)) = (window_id(element), element_rect(element)) {
                 return Some(target_from(
                     &app,
                     id,
@@ -751,12 +839,20 @@ impl Shared {
         }
         self.want_pid.store(pid, Ordering::Release);
         self.mark_change();
+        let (epoch, generation) = {
+            let _target = self.lens.target.read().unwrap();
+            (
+                self.lens.bridge.epoch(),
+                self.lens.capture_generation.load(Ordering::Acquire),
+            )
+        };
         let Some(target) = self.build_target(pid, None) else {
             return;
         };
         let current = self.lens.target.read().unwrap().clone();
         if needs_retarget(current.as_ref(), &target) {
-            self.lens.retarget(target);
+            self.lens
+                .retarget(target, Some((epoch, generation, &self.stop)));
         }
     }
 }
@@ -764,6 +860,7 @@ impl Shared {
 /// The activation observer and the AX thread.
 pub struct Signals {
     stop: Arc<AtomicBool>,
+    lens: Arc<Lens>,
 }
 
 // Observer tokens stay on the main thread, where they are installed and removed.
@@ -788,7 +885,7 @@ impl Signals {
     pub fn start(lens: Arc<Lens>) -> Result<Signals, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
-            lens,
+            lens: lens.clone(),
             stop: stop.clone(),
             want_pid: AtomicI32::new(0),
             screens: RwLock::new(Vec::new()),
@@ -826,11 +923,14 @@ impl Signals {
                 })
                 .map_err(|error| error.to_string())?;
         }
-        Ok(Signals { stop })
+        Ok(Signals { stop, lens })
     }
 
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::Release);
+        {
+            let _target = self.lens.target.write().unwrap();
+            self.stop.store(true, Ordering::Release);
+        }
         let id = Arc::as_ptr(&self.stop) as usize;
         on_main(move || {
             ACTIVATION_OBSERVERS.with(|observers| {
@@ -931,6 +1031,7 @@ struct Ax {
     source_added: bool,
     text_due: bool,
     last_text: Instant,
+    generation: u64,
 }
 
 fn ax_loop(shared: Arc<Shared>) {
@@ -944,6 +1045,7 @@ fn ax_loop(shared: Arc<Shared>) {
         source_added: false,
         text_due: false,
         last_text: Instant::now() - TEXT_EVERY,
+        generation: 0,
     }));
     let refcon = (&*state as *const RefCell<Ax>) as *mut c_void;
     state.borrow_mut().refcon = refcon;
@@ -974,6 +1076,9 @@ impl Ax {
     }
 
     fn tick(&mut self, run_loop: &Option<CFRetained<CFRunLoop>>, mode: Option<&CFRunLoopMode>) {
+        if self.shared.stop.load(Ordering::Acquire) {
+            return;
+        }
         // The activation notification is the fast path, not the only one.
         // Nothing else writes `want_pid`, and an `AXObserver` is scoped to one
         // process, so a notification this app never received would pin the
@@ -997,6 +1102,13 @@ impl Ax {
             return;
         }
         self.poll_window();
+        let generation = self.lens().capture_generation.load(Ordering::Acquire);
+        // A fresh stream or Resume needs AX even when focus/value did not change.
+        if self.generation != generation {
+            self.generation = generation;
+            self.text_due = true;
+            self.seed_focus();
+        }
         if self.text_due {
             self.text_due = false;
             self.snapshot_text();
@@ -1041,9 +1153,6 @@ impl Ax {
         self.app = Some(app);
         self.observer = Some(observer);
         self.text_due = true;
-        // `AXFocusedUIElementChanged` only fires on a change; the element that
-        // is already focused when we attach has to be read.
-        self.seed_focus();
     }
 
     fn seed_focus(&mut self) {
@@ -1074,48 +1183,41 @@ impl Ax {
     /// The focused window every poll: a different window id is a retarget, a
     /// different rectangle or title is an `ax-window`.
     fn poll_window(&mut self) {
+        let Some(read) = self.shared.pin(self.pid) else {
+            return;
+        };
         let Some(app) = self.app.as_ref().map(|app| raw(app)) else {
             return;
         };
         let Some(window) = attribute(app, "AXFocusedWindow") else {
             return;
         };
-        let current = self.lens().target.read().unwrap().clone();
-        let mut id = 0u32;
-        let same = unsafe { _AXUIElementGetWindow(raw(&window), &mut id) } == AX_SUCCESS
-            && current
-                .as_ref()
-                .is_some_and(|target| target.pid == self.pid && target.window_id == id);
+        let same = window_id(raw(&window)) == Some(read.target.window_id);
         if !same {
             let Some(target) = self.shared.build_target(self.pid, Some(&window)) else {
                 return;
             };
-            if needs_retarget(current.as_ref(), &target) {
-                self.lens().retarget(target);
+            if needs_retarget(Some(&read.target), &target) {
+                self.lens().retarget(
+                    target,
+                    Some((read.epoch, read.generation, &self.shared.stop)),
+                );
                 self.shared.mark_change();
                 self.text_due = true;
             }
             return;
         }
-        let current = current.expect("same implies a target");
         let Some(bounds) = element_rect(raw(&window)) else {
             return;
         };
         let title = string_attribute(raw(&window), "AXTitle").unwrap_or_default();
-        if bounds == current.bounds && title == current.title {
+        if bounds == read.target.bounds && title == read.target.title {
             return;
         }
-        let moved = bounds != current.bounds;
-        let target = {
-            let mut guard = self.lens().target.write().unwrap();
-            let Some(target) = guard.as_mut() else {
-                return;
-            };
-            target.bounds = bounds;
-            target.title = title.clone();
-            target.clone()
+        let moved = bounds != read.target.bounds;
+        let Some(target) = self.shared.window(&read, title, bounds) else {
+            return;
         };
-        self.lens().bridge.emit(Kind::AxWindow { title, bounds });
         if moved {
             // The display filter's source rect and every frame's geometry
             // come from the stream, not from this thread's copy of the bounds.
@@ -1134,43 +1236,65 @@ impl Ax {
     }
 
     fn snapshot_text(&mut self) {
-        let Some(bounds) = self
-            .lens()
-            .target
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|target| target.bounds)
-        else {
-            return;
-        };
-        let Some(app) = self.app.as_ref().map(|app| raw(app)) else {
-            return;
-        };
-        let Some(window) = attribute(app, "AXFocusedWindow") else {
+        let Some((read, window)) = self.read_window() else {
             return;
         };
         let started = Instant::now();
         let lines = walk(
-            window,
+            window.clone(),
             ax_children,
-            |element| ax_line(element, bounds),
+            |element| ax_line(element, read.target.bounds),
             || started.elapsed(),
         );
-        self.last_text = Instant::now();
         let rect = union_rect(&lines);
-        self.lens().known.write().unwrap().ax = lines.clone();
-        self.lens().bridge.emit(Kind::AxText { rect, lines });
+        if self.still_window(&read, &window)
+            && self
+                .shared
+                .publish(&read, Kind::AxText { rect, lines })
+                .is_some()
+        {
+            self.last_text = Instant::now();
+            if self.focused.is_none() {
+                self.seed_focus();
+            }
+        } else {
+            self.text_due = true;
+        }
     }
 
-    /// Window points for anything inside the target, `None` when there is no
-    /// target to be relative to.
-    fn in_window(&self, rect: Option<Rect>) -> Option<Rect> {
-        let bounds = self.lens().target.read().unwrap().as_ref()?.bounds;
-        rect.map(|rect| screen_to_window(rect, bounds))
+    fn read_window(&self) -> Option<(Read, CFRetained<CFType>)> {
+        let read = self.shared.pin(self.pid)?;
+        let window = attribute(raw(self.app.as_ref()?), "AXFocusedWindow")?;
+        window_matches(
+            &read.target,
+            window_id(raw(&window)),
+            element_rect(raw(&window)),
+        )
+        .then_some((read, window))
+    }
+
+    fn read_element(&self, element: AxRef) -> Option<(Read, CFRetained<CFType>)> {
+        let (read, window) = self.read_window()?;
+        (element_window_id(element) == Some(read.target.window_id)).then_some((read, window))
+    }
+
+    fn still_window(&self, read: &Read, window: &CFRetained<CFType>) -> bool {
+        let focused = self
+            .app
+            .as_ref()
+            .and_then(|app| attribute(raw(app), "AXFocusedWindow"));
+        focused.as_ref().and_then(|focused| window_id(raw(focused))) == Some(read.target.window_id)
+            && window_matches(
+                &read.target,
+                window_id(raw(window)),
+                element_rect(raw(window)),
+            )
     }
 
     fn on_focus(&mut self, element: AxRef) {
+        let Some((read, window)) = self.read_element(element) else {
+            return;
+        };
         let Some(element) = NonNull::new(element.cast::<CFType>()) else {
             return;
         };
@@ -1185,35 +1309,47 @@ impl Ax {
             let name = CFString::from_str(VALUE_CHANGED);
             unsafe { AXObserverAddNotification(raw(observer), raw(&element), &name, self.refcon) };
         }
-        let kind = self.describe(raw(&element), true);
+        let kind = self.describe(raw(&element), true, read.target.bounds);
+        if !self.still_window(&read, &window) || self.shared.publish(&read, kind).is_none() {
+            return;
+        }
         self.focused = Some(element);
-        self.lens().known.write().unwrap().focus = Some(kind.clone());
-        self.lens().bridge.emit(kind);
         self.shared.mark_change();
         self.text_due = true;
     }
 
     fn on_value(&mut self, element: AxRef) {
-        let kind = self.describe(element, false);
-        self.lens().bridge.emit(kind);
+        let Some((read, window)) = self.read_element(element) else {
+            return;
+        };
+        let kind = self.describe(element, false, read.target.bounds);
+        if !self.still_window(&read, &window) || self.shared.publish(&read, kind).is_none() {
+            return;
+        }
         self.shared.mark_change();
         self.due_for_text();
     }
 
     fn on_sheet(&mut self, element: AxRef) {
+        let Some((read, window)) = self.read_element(element) else {
+            return;
+        };
         let title = label_of(element);
-        let bounds = self.in_window(element_rect(element)).unwrap_or_default();
+        let bounds = element_rect(element)
+            .map(|rect| screen_to_window(rect, read.target.bounds))
+            .unwrap_or_default();
         let kind = Kind::AxSheet { title, bounds };
-        self.lens().known.write().unwrap().sheet = Some(kind.clone());
-        self.lens().bridge.emit(kind);
+        if !self.still_window(&read, &window) || self.shared.publish(&read, kind).is_none() {
+            return;
+        }
         self.shared.mark_change();
     }
 
-    fn describe(&self, element: AxRef, focus: bool) -> Kind {
+    fn describe(&self, element: AxRef, focus: bool, bounds: Rect) -> Kind {
         let role = string_attribute(element, "AXRole").unwrap_or_default();
         let label = label_of(element);
         let value = truncate_value(&value_text(element), VALUE_CAP);
-        let bounds = self.in_window(element_rect(element));
+        let bounds = element_rect(element).map(|rect| screen_to_window(rect, bounds));
         if focus {
             Kind::AxFocus {
                 role,
@@ -1246,6 +1382,9 @@ unsafe extern "C" fn ax_notify(
     let Ok(mut ax) = state.try_borrow_mut() else {
         return;
     };
+    if ax.shared.stop.load(Ordering::Acquire) {
+        return;
+    }
     let Some(name) = (unsafe { notification.as_ref() }).map(CFString::to_string) else {
         return;
     };
@@ -1263,6 +1402,239 @@ unsafe extern "C" fn ax_notify(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ax_walk_that_outlives_its_target_cannot_repopulate_known() {
+        let (writer, _reader) = tokio::sync::mpsc::unbounded_channel();
+        let lens = Lens::new(super::super::Config::default(), writer);
+        let target = target_from(
+            &app(),
+            9,
+            "Old".into(),
+            [0.0, 0.0, 200.0, 100.0],
+            None,
+            &screens(),
+        );
+        lens.set_state(super::super::Run::Running, None);
+        *lens.target.write().unwrap() = Some(target.clone());
+        let shared = Shared {
+            lens: lens.clone(),
+            stop: Arc::new(AtomicBool::new(false)),
+            want_pid: AtomicI32::new(target.pid),
+            screens: RwLock::new(screens()),
+            changed_at: Mutex::new(Instant::now()),
+        };
+        let lines = walk(
+            0,
+            |_| Vec::new(),
+            |_| Some(line([1.0, 1.0, 20.0, 10.0], "old AX window")),
+            || Duration::ZERO,
+        );
+        let read = shared.pin(target.pid).unwrap();
+        lens.retarget(
+            Target {
+                window_id: target.window_id + 1,
+                ..target
+            },
+            None,
+        );
+        shared.publish(
+            &read,
+            Kind::AxText {
+                rect: union_rect(&lines),
+                lines,
+            },
+        );
+        assert_eq!(lens.snapshot()["axText"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn delayed_ax_text_focus_sheet_value_and_geometry_never_cross_a_lifecycle_boundary() {
+        for action in ["stop", "pause", "geometry", "replacement", "observer stop"] {
+            let (writer, _reader) = tokio::sync::mpsc::unbounded_channel();
+            let lens = Lens::new(super::super::Config::default(), writer);
+            lens.set_state(super::super::Run::Running, None);
+            let target = target_from(
+                &app(),
+                9,
+                "Old".into(),
+                [0.0, 0.0, 200.0, 100.0],
+                None,
+                &screens(),
+            );
+            *lens.target.write().unwrap() = Some(target.clone());
+            let shared = Shared {
+                lens: lens.clone(),
+                stop: Arc::new(AtomicBool::new(false)),
+                want_pid: AtomicI32::new(target.pid),
+                screens: RwLock::new(screens()),
+                changed_at: Mutex::new(Instant::now()),
+            };
+            let read = shared.pin(target.pid).unwrap();
+            let lines = vec![line([1.0, 1.0, 20.0, 10.0], "late AX")];
+            match action {
+                "stop" => lens.stop(Some("idle")),
+                "pause" => {
+                    lens.pause();
+                    lens.set_state(super::super::Run::Running, None);
+                }
+                "geometry" => {
+                    shared
+                        .window(&read, "Moved".into(), [50.0, 50.0, 100.0, 50.0])
+                        .unwrap();
+                }
+                "replacement" => lens.reframe(&target),
+                "observer stop" => {
+                    Signals {
+                        stop: shared.stop.clone(),
+                        lens: lens.clone(),
+                    }
+                    .stop();
+                }
+                _ => unreachable!(),
+            }
+            let before = lens.snapshot();
+            for kind in [
+                Kind::AxText {
+                    rect: union_rect(&lines),
+                    lines,
+                },
+                Kind::AxFocus {
+                    role: "AXTextField".into(),
+                    label: "Late focus".into(),
+                    value: "late".into(),
+                    bounds: None,
+                },
+                Kind::AxValue {
+                    role: "AXTextField".into(),
+                    label: "Late value".into(),
+                    value: "late".into(),
+                    bounds: None,
+                },
+                Kind::AxSheet {
+                    title: "Late sheet".into(),
+                    bounds: [0.0, 0.0, 20.0, 10.0],
+                },
+            ] {
+                assert!(shared.publish(&read, kind).is_none(), "{action}");
+                assert_eq!(lens.snapshot(), before, "{action}");
+            }
+            assert!(
+                shared
+                    .window(&read, "Late title".into(), target.bounds)
+                    .is_none(),
+                "{action}"
+            );
+            lens.retarget(
+                Target {
+                    window_id: target.window_id + 1,
+                    ..target
+                },
+                Some((read.epoch, read.generation, &shared.stop)),
+            );
+            assert_eq!(
+                lens.snapshot(),
+                before,
+                "{action}: delayed activation cannot retarget"
+            );
+        }
+    }
+
+    #[test]
+    fn ax_requires_the_exact_selected_window_and_geometry() {
+        let target = target_from(
+            &app(),
+            9,
+            "Old".into(),
+            [0.0, 0.0, 200.0, 100.0],
+            None,
+            &screens(),
+        );
+        assert!(window_matches(&target, Some(9), Some(target.bounds)));
+        assert!(
+            !window_matches(&target, Some(10), Some(target.bounds)),
+            "focus changed before Lens poll"
+        );
+        assert!(
+            !window_matches(&target, None, Some(target.bounds)),
+            "unproved AX window"
+        );
+        assert!(
+            !window_matches(&target, Some(9), None),
+            "unproved AX geometry"
+        );
+        assert!(
+            !window_matches(&target, Some(9), Some([1.0, 0.0, 200.0, 100.0])),
+            "AX moved before Lens poll"
+        );
+    }
+
+    #[tokio::test]
+    async fn current_ax_publication_updates_known_and_emits_the_same_control_signals() {
+        let (writer, mut reader) = tokio::sync::mpsc::unbounded_channel();
+        let lens = Lens::new(super::super::Config::default(), writer);
+        lens.set_state(super::super::Run::Running, None);
+        let target = target_from(
+            &app(),
+            9,
+            "Current".into(),
+            [0.0, 0.0, 200.0, 100.0],
+            None,
+            &screens(),
+        );
+        *lens.target.write().unwrap() = Some(target.clone());
+        let shared = Shared {
+            lens: lens.clone(),
+            stop: Arc::new(AtomicBool::new(false)),
+            want_pid: AtomicI32::new(target.pid),
+            screens: RwLock::new(screens()),
+            changed_at: Mutex::new(Instant::now()),
+        };
+        assert!(
+            shared.pin(target.pid + 1).is_none(),
+            "another AX process cannot adopt this target"
+        );
+        let read = shared.pin(target.pid).unwrap();
+        let lines = vec![line([1.0, 1.0, 20.0, 10.0], "current AX")];
+        let kinds = [
+            Kind::AxText {
+                rect: union_rect(&lines),
+                lines,
+            },
+            Kind::AxFocus {
+                role: "AXTextField".into(),
+                label: "Current focus".into(),
+                value: "current".into(),
+                bounds: None,
+            },
+            Kind::AxValue {
+                role: "AXTextField".into(),
+                label: "Current value".into(),
+                value: "current".into(),
+                bounds: None,
+            },
+            Kind::AxSheet {
+                title: "Current sheet".into(),
+                bounds: [0.0, 0.0, 20.0, 10.0],
+            },
+        ];
+        for kind in &kinds {
+            assert!(shared.publish(&read, kind.clone()).is_some());
+        }
+        let snapshot = lens.snapshot();
+        assert_eq!(snapshot["axText"][0]["text"], "current AX");
+        assert_eq!(snapshot["focus"]["label"], "Current focus");
+        assert_eq!(snapshot["sheet"]["title"], "Current sheet");
+        let writer_task = tokio::spawn(lens.bridge.clone().run_writer());
+        reader.recv().await.unwrap(); // The existing running status.
+        for kind in &kinds {
+            let wire: super::super::bridge::Signal =
+                serde_json::from_str(&reader.recv().await.unwrap()).unwrap();
+            assert_eq!(&wire.kind, kind);
+            assert_eq!(wire.epoch, read.epoch);
+        }
+        writer_task.abort();
+    }
 
     #[test]
     fn the_poll_speeds_up_for_a_second_after_a_change() {
@@ -1875,6 +2247,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1500));
 
         let (lens, mut lines) = channel_backed();
+        lens.set_state(super::super::Run::Running, None);
         let signals = Signals::start(lens.clone()).expect("signals start");
         std::thread::sleep(Duration::from_secs(3));
         signals.stop();
@@ -1912,6 +2285,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1500));
 
         let (lens, mut lines) = channel_backed();
+        lens.set_state(super::super::Run::Running, None);
         let signals = Signals::start(lens.clone()).expect("signals start");
         std::thread::sleep(Duration::from_secs(3));
         signals.stop();

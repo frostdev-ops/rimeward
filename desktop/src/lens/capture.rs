@@ -350,13 +350,13 @@ fn jpeg(rgb: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
 /// holds across a capture call.
 struct Shared {
     lens: Arc<Lens>,
-    /// As of the last (re)configure: what each frame's geometry records, so a
-    /// crop maps through the window the frame came from.
-    placement: Mutex<Placement>,
+    /// Immutable for this stream: queued samples never inherit a later source
+    /// or a later source rectangle.
+    target: Target,
+    epoch: u64,
+    generation: u64,
+    placement: Placement,
     filter: Filter,
-    /// Whether the content filter in force keeps the overlay pool out of every
-    /// frame it produces.
-    excluded: AtomicBool,
     paused: AtomicBool,
     /// The previous frame's FeaturePrint per merged dirty-rectangle index.
     prints: Mutex<Vec<Option<Print>>>,
@@ -377,30 +377,34 @@ struct Shared {
     recovered: AtomicBool,
 }
 
-/// One `SCStream` on one target.
-pub struct Capture {
-    /// `SCStream` is a reference wrapper: the clone in `stop` names the same
-    /// stream.
-    stream: SCStream,
-    shared: Arc<Shared>,
-    display_id: u32,
-    stopped: AtomicBool,
-}
-
-impl Capture {
-    pub fn start(lens: Arc<Lens>, target: &Target, filter: Filter) -> Result<Capture, String> {
-        let content = SCShareableContent::get().map_err(|error| error.to_string())?;
-        let (content_filter, excluded) =
-            content_filter(&content, target, filter, &lens.overlay_windows())?;
-        let display = display_frame(&content, target)?;
-        let configuration = configuration(target, filter, display);
-        let shared = Arc::new(Shared {
+impl Shared {
+    fn new(
+        lens: Arc<Lens>,
+        target: &Target,
+        filter: Filter,
+        display: Rect,
+        expected: u64,
+    ) -> Result<Self, String> {
+        let current = lens.target.write().unwrap();
+        if lens.capture_generation.load(Ordering::Acquire) != expected
+            || !current
+                .as_ref()
+                .is_some_and(|current| same_source(current, target))
+        {
+            return Err("capture-stale".into());
+        }
+        let epoch = lens.bridge.epoch();
+        let generation = lens.capture_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        drop(current);
+        Ok(Self {
             lens,
-            excluded: AtomicBool::new(excluded),
-            placement: Mutex::new(Placement {
+            target: target.clone(),
+            epoch,
+            generation,
+            placement: Placement {
                 bounds: target.bounds,
                 display,
-            }),
+            },
             filter,
             paused: AtomicBool::new(false),
             prints: Mutex::new(Vec::new()),
@@ -408,7 +412,68 @@ impl Capture {
             in_flight: AtomicUsize::new(0),
             intentional: AtomicBool::new(false),
             recovered: AtomicBool::new(false),
-        });
+        })
+    }
+
+    fn current(&self, target: Option<&Target>) -> bool {
+        !self.paused.load(Ordering::Acquire)
+            && !self.intentional.load(Ordering::Acquire)
+            && self
+                .lens
+                .target_is_current(target, &self.target, self.epoch, self.generation)
+    }
+
+    /// Retarget/resize/Stop/Pause take the write side of this same lock.
+    /// Only publication runs here; Vision and capture calls stay outside it.
+    fn with_current<T>(&self, publish: impl FnOnce() -> T) -> Option<T> {
+        self.lens
+            .with_target(&self.target, self.epoch, self.generation, || {
+                (!self.paused.load(Ordering::Acquire) && !self.intentional.load(Ordering::Acquire))
+                    .then(publish)
+            })
+            .flatten()
+    }
+
+    fn cover(&self, cover: &Option<super::bridge::Cover>) -> Option<()> {
+        self.with_current(|| {
+            let mut known = self.lens.known.write().unwrap();
+            let changed = !super::bridge::Cover::same(known.covered.as_ref(), cover.as_ref());
+            known.covered.clone_from(cover);
+            if changed {
+                self.lens.bridge.emit(Kind::Covered {
+                    over: cover.clone(),
+                });
+            }
+        })
+    }
+}
+
+pub(super) fn same_source(a: &Target, b: &Target) -> bool {
+    a.pid == b.pid && a.window_id == b.window_id && a.bounds == b.bounds && a.display == b.display
+}
+
+/// One `SCStream` on one target.
+pub struct Capture {
+    /// `SCStream` is a reference wrapper: the clone in `stop` names the same
+    /// stream.
+    stream: SCStream,
+    shared: Arc<Shared>,
+    stopped: AtomicBool,
+}
+
+impl Capture {
+    pub fn start(
+        lens: Arc<Lens>,
+        target: &Target,
+        filter: Filter,
+        expected: u64,
+    ) -> Result<Capture, String> {
+        let content = SCShareableContent::get().map_err(|error| error.to_string())?;
+        let (content_filter, _) =
+            content_filter(&content, target, filter, &lens.overlay_windows())?;
+        let display = display_frame(&content, target)?;
+        let configuration = configuration(target, filter, display);
+        let shared = Arc::new(Shared::new(lens, target, filter, display, expected)?);
         let (on_stop, on_error) = (shared.clone(), shared.clone());
         let delegate = StreamCallbacks::new()
             .on_stop(move |error| recover(&on_stop, error))
@@ -431,69 +496,32 @@ impl Capture {
         Ok(Capture {
             stream,
             shared,
-            display_id: target.display.id,
             stopped: AtomicBool::new(false),
         })
     }
 
-    /// Same display and same filter mode reconfigures in place; anything else
-    /// rebuilds. Never bumps the epoch — [`super::Lens::retarget`] owns that.
-    pub fn retarget(&self, target: &Target) -> Result<(), String> {
-        let started = Instant::now();
-        if target.display.id != self.display_id {
-            return Err("display-changed".into());
-        }
-        let content = SCShareableContent::get().map_err(|error| error.to_string())?;
-        let filter = self.shared.filter;
-        let (content_filter, excluded) = content_filter(
-            &content,
-            target,
-            filter,
-            &self.shared.lens.overlay_windows(),
-        )?;
-        self.shared.excluded.store(excluded, Ordering::Release);
-        let display = display_frame(&content, target)?;
-        self.stream
-            .update_configuration(&configuration(target, filter, display))
-            .map_err(|error| error.to_string())?;
-        self.stream
-            .update_content_filter(&content_filter)
-            .map_err(|error| error.to_string())?;
-        *self.shared.placement.lock().unwrap() = Placement {
-            bounds: target.bounds,
-            display,
-        };
-        // The prints describe the old window's pixels at the old indexes.
-        self.shared.prints.lock().unwrap().clear();
-        self.shared
-            .lens
-            .counters
-            .record_retarget(started.elapsed().as_millis() as u32);
-        Ok(())
-    }
-
-    /// The same window moved or resized: the source rect and the planned size
-    /// follow it, and the next frame's geometry records the new bounds. No
-    /// filter rebuild, and never an epoch bump.
-    pub fn reframe(&self, target: &Target) -> Result<(), String> {
-        let display = self.shared.placement.lock().unwrap().display;
-        self.stream
-            .update_configuration(&configuration(target, self.shared.filter, display))
-            .map_err(|error| error.to_string())?;
-        self.shared.placement.lock().unwrap().bounds = target.bounds;
-        // The prints describe the old rectangle's pixels.
-        self.shared.prints.lock().unwrap().clear();
-        Ok(())
+    pub(super) fn current(&self, target: Option<&Target>) -> bool {
+        self.shared.current(target)
     }
 
     pub fn stop(&self) {
         if self.stopped.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.shared.intentional.store(true, Ordering::Release);
         // `stop_capture` is asynchronous; a frame that arrives while it lands
         // would be emitted after the caller has already reported the state.
-        self.shared.paused.store(true, Ordering::Release);
+        {
+            let _target = self.shared.lens.target.write().unwrap();
+            self.shared.intentional.store(true, Ordering::Release);
+            self.shared.paused.store(true, Ordering::Release);
+            if self.shared.lens.capture_generation.load(Ordering::Acquire) == self.shared.generation
+            {
+                self.shared
+                    .lens
+                    .capture_generation
+                    .fetch_add(1, Ordering::AcqRel);
+            }
+        }
         // `stop_capture` blocks on a completion that can land on the main
         // queue, so the caller — often the main thread — never waits for it.
         let stream = self.stream.clone();
@@ -533,12 +561,6 @@ impl Capture {
                 std::mem::forget(stream);
             }
         });
-    }
-
-    /// Paused keeps the stream built and drops the frames, so resuming costs
-    /// nothing and the exclusion filter is never rebuilt.
-    pub fn set_paused(&self, on: bool) {
-        self.shared.paused.store(on, Ordering::Release);
     }
 }
 
@@ -705,7 +727,7 @@ fn recover(shared: &Arc<Shared>, reason: Option<String>) {
     }
     // Both delegate callbacks describe the same stop. Dedupe here, before the
     // thread, or one stop schedules two restarts.
-    if shared.recovered.swap(true, Ordering::AcqRel) {
+    if shared.with_current(|| shared.recovered.swap(true, Ordering::AcqRel)) != Some(false) {
         return;
     }
     let shared = shared.clone();
@@ -714,7 +736,11 @@ fn recover(shared: &Arc<Shared>, reason: Option<String>) {
     std::thread::spawn(move || {
         if !crate::permissions::preflight().0 {
             shared.lens.diag("lens-stream-stopped", "permission");
-            shared.lens.stop(Some("permission"));
+            shared.lens.stop_in(
+                Some("permission"),
+                Some((shared.generation, &shared.target)),
+                false,
+            );
             return;
         }
         let reason = reason.unwrap_or_default();
@@ -725,27 +751,40 @@ fn recover(shared: &Arc<Shared>, reason: Option<String>) {
         // capture again, and a reader still waiting is told the source is off.
         if user_stopped(&reason) {
             shared.lens.diag("lens-stream-stopped", "user-stopped");
-            shared.lens.stop(Some("user-stopped"));
+            shared.lens.stop_in(
+                Some("user-stopped"),
+                Some((shared.generation, &shared.target)),
+                false,
+            );
             return;
         }
-        if !rebuild_allowed() {
+        let Some(allowed) = shared.with_current(rebuild_allowed) else {
+            return;
+        };
+        if !allowed {
             // Not on the spot, then: `stream_lost` comes back on a backoff.
-            shared
-                .lens
-                .stream_lost(&format!("{reason} (not rebuilt on the spot)"));
+            shared.lens.stream_lost(
+                &format!("{reason} (not rebuilt on the spot)"),
+                Some((shared.generation, &shared.target)),
+            );
             return;
         }
         shared.lens.diag("lens-stream-stopped", &reason);
         let target = shared.lens.target.read().unwrap().clone();
         let rebuilt = match target.as_ref() {
-            Some(target) => shared.lens.build_capture(target).map_err(Some),
+            Some(target) => shared
+                .lens
+                .build_capture(target, Some(shared.generation))
+                .map_err(Some),
             None => Err(None),
         };
         match rebuilt {
-            Ok(()) => shared.lens.diag("lens-stream-rebuilt", ""),
-            Err(error) => shared
-                .lens
-                .stream_lost(error.as_deref().unwrap_or("no target to rebuild on")),
+            Ok(true) => shared.lens.diag("lens-stream-rebuilt", ""),
+            Ok(false) => (),
+            Err(error) => shared.lens.stream_lost(
+                error.as_deref().unwrap_or("no target to rebuild on"),
+                Some((shared.generation, &shared.target)),
+            ),
         }
     });
 }
@@ -781,13 +820,18 @@ fn rebuild_allowed() -> bool {
 fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
     let lens = &shared.lens;
     let counters = &lens.counters;
-    counters.frames.fetch_add(1, Ordering::Relaxed);
+    if shared
+        .with_current(|| counters.frames.fetch_add(1, Ordering::Relaxed))
+        .is_none()
+    {
+        return;
+    }
     let info = sample.frame_info().unwrap_or_default();
     // A missing status attachment means a macOS key changed, not that the
     // frame is empty: keep looking rather than going quietly blind.
     let status = frame_status(sample).or(Some(SCFrameStatus::Complete));
     if status != Some(SCFrameStatus::Complete) {
-        counters.idle.fetch_add(1, Ordering::Relaxed);
+        shared.with_current(|| counters.idle.fetch_add(1, Ordering::Relaxed));
         return;
     }
     let paused = shared.paused.load(Ordering::Acquire);
@@ -797,20 +841,23 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
     let Some(pixels) = sample.image_buffer() else {
         return;
     };
-    counters.complete.fetch_add(1, Ordering::Relaxed);
-    // A frame is proof the capture works: the restart backoff starts over.
-    lens.retry.store(0, Ordering::Relaxed);
-    // The stamp is taken before any recognition, so everything this frame
-    // produces carries the epoch the frame was captured in.
-    let stamp = lens.bridge.stamp();
-
-    let Placement { bounds, display } = *shared.placement.lock().unwrap();
-    let target = lens
-        .target
-        .read()
-        .unwrap()
-        .as_ref()
-        .map(|target| (target.window_id, target.pid));
+    let Some((stamp, known, ax)) = shared.with_current(|| {
+        counters.complete.fetch_add(1, Ordering::Relaxed);
+        // Only the current stream can prove capture works and reset backoff.
+        lens.retry.store(0, Ordering::Relaxed);
+        let stamp = lens.bridge.stamp();
+        let known = lens.known.read().unwrap();
+        let rects = known
+            .ax
+            .iter()
+            .chain(&known.ocr)
+            .map(|line| line.bbox)
+            .collect::<Vec<_>>();
+        (stamp, rects, ocr::ax_coverage(&known.ax))
+    }) else {
+        return;
+    };
+    let Placement { bounds, display } = shared.placement;
     let (width, height) = (pixels.width() as u32, pixels.height() as u32);
     let content =
         info.content_rect
@@ -850,8 +897,6 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
         })
         .collect();
     let full = [0.0, 0.0, bounds[2], bounds[3]];
-    let known = lens.known_rects();
-    let ax: Vec<Rect> = ocr::ax_coverage(&lens.known.read().unwrap().ax);
     let Decision::Process {
         merged,
         roi,
@@ -876,40 +921,25 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
     // overlapped part of it. Recognizing around the cover is the upgrade, and
     // it wants the cover's rectangle subtracted from the region of interest
     // rather than a flag.
-    let cover = target.and_then(|(window_id, target_pid)| {
-        // A window filter composites the target's own window, so nothing drawn
-        // on top of it is in the frame to begin with.
-        (shared.filter == Filter::Display)
-            .then(|| signals::cover_now(window_id, target_pid, bounds))
-            .flatten()
-    });
+    let cover = (shared.filter == Filter::Display)
+        .then(|| signals::cover_now(shared.target.window_id, shared.target.pid, bounds))
+        .flatten();
     // Edge-triggered on the covering window's IDENTITY, and only while the
     // frame's own epoch still stands: a cover read for the old target must not
     // be filed against the new one. The stored cover is refreshed either way,
     // so `lens-snapshot` reports where the window is now; what is not worth a
     // signal — and a header a consumer is told about — is the same window
     // twice a second as somebody drags it across the target.
-    let changed = lens.bridge.epoch() == stamp.epoch && {
-        let mut known = lens.known.write().unwrap();
-        let news = !super::bridge::Cover::same(known.covered.as_ref(), cover.as_ref());
-        known.covered.clone_from(&cover);
-        news
-    };
-    if changed {
-        if let Some(at) = lens.bridge.stamp_in(stamp.epoch) {
-            lens.bridge.emit_stamped(
-                at,
-                Kind::Covered {
-                    over: cover.clone(),
-                },
-            );
-        }
+    if shared.cover(&cover).is_none() {
+        return;
     }
 
-    let scored = score(shared, &pixels, &transform, &merged, width, height);
+    let Some(scored) = score(shared, &pixels, &transform, &merged, width, height) else {
+        return;
+    };
     let nothing_new = unchanged(&scored);
     if nothing_new {
-        counters.ocr_unchanged.fetch_add(1, Ordering::Relaxed);
+        shared.with_current(|| counters.ocr_unchanged.fetch_add(1, Ordering::Relaxed));
     }
     let (lines, ocr_ms, recognized) = if cover.is_some() {
         // Another window is over the target. The `covered` signal says so; an
@@ -939,22 +969,10 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
             .collect();
         (kept, ms, ran)
     };
-    // A read straddles a resize: this frame was captured under the geometry
-    // the window had, and the window may have shrunk while it was recognised.
-    // Lines past its size NOW would stand until the next resize — nothing
-    // reads outside the window to claim them — so they go here, and the
-    // consumer checks the same on adoption.
-    let lines: Vec<Line> = match lens.target.read().unwrap().as_ref().map(|t| t.bounds) {
-        Some(now) => lines
-            .into_iter()
-            .filter(|line| signals::within(line.bbox, now))
-            .collect(),
-        None => lines,
-    };
-    if recognized && !lines.is_empty() {
-        lens.known.write().unwrap().ocr = lines.clone();
-    }
-
+    let lines = lines
+        .into_iter()
+        .filter(|line| signals::within(line.bbox, bounds))
+        .collect();
     let packed = lock_and_pack(&pixels, width, height);
     let Some(jpeg) = packed
         .as_ref()
@@ -962,7 +980,7 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
     else {
         return;
     };
-    lens.ring.push(ring::Frame {
+    let frame = ring::Frame {
         frame_ref: stamp.frame_ref(),
         epoch: stamp.epoch,
         seq: stamp.seq,
@@ -972,43 +990,60 @@ fn on_frame(shared: &Shared, sample: &CMSampleBuffer) {
         geometry,
         jpeg: jpeg.into(),
         pixels: packed.map(Arc::from),
-    });
+    };
     let covered: f64 = scored.iter().map(|dirty| area(dirty.bbox)).sum();
-    lens.bridge.emit_stamped(
-        stamp,
-        Kind::Frame {
-            frame_ref: stamp.frame_ref(),
-            w: width,
-            h: height,
-            ratio: ratio(covered, area(full)),
-            dirty: scored,
-            geometry,
-        },
-    );
-    if !recognized {
-        // Latest wins: this frame has no recognition to report, and claiming
-        // an empty result would erase the text the last one found.
-        return;
-    }
-    if lens.slow_ocr.load(Ordering::Acquire) {
+    let frame_signal = Kind::Frame {
+        frame_ref: stamp.frame_ref(),
+        w: width,
+        h: height,
+        ratio: ratio(covered, area(full)),
+        dirty: scored,
+        geometry,
+    };
+    if recognized && lens.slow_ocr.load(Ordering::Acquire) {
         std::thread::sleep(SLOW_OCR);
     }
-    // The epoch may have moved while this frame was recognized, in which case
-    // the text describes a window nobody is looking at any more.
-    let Some(ocr_stamp) = lens.bridge.stamp_in(stamp.epoch) else {
-        counters.ocr_dropped_stale.fetch_add(1, Ordering::Relaxed);
-        return;
+    let ocr_signal = recognized.then_some(Kind::Ocr {
+        frame_ref: stamp.frame_ref(),
+        rect: roi,
+        lines,
+        ms: ocr_ms,
+        ax_covered,
+    });
+    publish(shared, frame, frame_signal, ocr_signal);
+}
+
+fn publish(shared: &Shared, frame: ring::Frame, frame_signal: Kind, ocr_signal: Option<Kind>) {
+    let lens = &shared.lens;
+    let stamp = super::bridge::Stamp {
+        epoch: frame.epoch,
+        seq: frame.seq,
     };
-    lens.bridge.emit_stamped(
-        ocr_stamp,
-        Kind::Ocr {
-            frame_ref: stamp.frame_ref(),
-            rect: roi,
-            lines,
-            ms: ocr_ms,
-            ax_covered,
-        },
-    );
+    let recognized = ocr_signal.is_some();
+    let stale = frame.epoch != shared.epoch
+        || shared
+            .with_current(|| {
+                if let Some(Kind::Ocr { lines, .. }) = &ocr_signal {
+                    if !lines.is_empty() {
+                        lens.known.write().unwrap().ocr = lines.clone();
+                    }
+                }
+                lens.ring.push(frame);
+                lens.bridge.emit_stamped(stamp, frame_signal);
+                if let Some(ocr_signal) = ocr_signal {
+                    let ocr_stamp = lens
+                        .bridge
+                        .stamp_in(stamp.epoch)
+                        .expect("target lock pins the epoch");
+                    lens.bridge.emit_stamped(ocr_stamp, ocr_signal);
+                }
+            })
+            .is_none();
+    if recognized && stale {
+        lens.counters
+            .ocr_dropped_stale
+            .fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// A FeaturePrint per merged dirty rectangle, scored against the previous
@@ -1021,7 +1056,7 @@ fn score(
     merged: &[Rect],
     width: u32,
     height: u32,
-) -> Vec<Dirty> {
+) -> Option<Vec<Dirty>> {
     let current: Vec<Option<Print>> = merged
         .iter()
         .map(|rect| {
@@ -1029,10 +1064,12 @@ fn score(
             ocr::feature_print(pixels, Some(roi))
         })
         .collect();
-    let mut previous = shared.prints.lock().unwrap();
-    let scored = pair(merged, &previous, &current, Print::distance);
-    *previous = current;
-    scored
+    shared.with_current(|| {
+        let mut previous = shared.prints.lock().unwrap();
+        let scored = pair(merged, &previous, &current, Print::distance);
+        *previous = current;
+        scored
+    })
 }
 
 /// The pairing rule on its own: rectangle `i` of this frame is scored against
@@ -1144,6 +1181,209 @@ mod tests {
                 scale,
             },
         }
+    }
+
+    #[test]
+    fn a_retarget_during_recognition_cannot_repopulate_the_snapshot_or_ring() {
+        let (writer, _reader) = mpsc::unbounded_channel();
+        let lens = Lens::new(crate::lens::Config::default(), writer);
+        let old = target(200.0, 100.0, 1.0);
+        *lens.target.write().unwrap() = Some(old.clone());
+        let shared = Shared::new(
+            lens.clone(),
+            &old,
+            Filter::Display,
+            [0.0, 0.0, 500.0, 500.0],
+            0,
+        )
+        .unwrap();
+        let (frame, signal, ocr) = observation(&shared, "old target");
+        let next = Target {
+            window_id: old.window_id + 1,
+            ..old
+        };
+        lens.retarget(next, None);
+        publish(&shared, frame, signal, ocr);
+        let snapshot = lens.snapshot();
+        assert_eq!(snapshot["ocr"], serde_json::json!([]));
+        assert!(snapshot["latest"].is_null());
+        assert_eq!(lens.ring.stats().n, 0);
+        assert_eq!(snapshot["seq"], 2);
+        assert!(
+            shared.with_current(|| lens.bridge.stamp()).is_none(),
+            "a late callback cannot obtain the new epoch"
+        );
+    }
+
+    fn stream(lens: Arc<Lens>, target: &Target) -> Arc<Shared> {
+        let expected = lens.capture_generation.load(Ordering::Acquire);
+        Arc::new(
+            Shared::new(
+                lens,
+                target,
+                Filter::Display,
+                [0.0, 0.0, 500.0, 500.0],
+                expected,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn observation(shared: &Shared, text: &str) -> (ring::Frame, Kind, Option<Kind>) {
+        let stamp = shared
+            .with_current(|| shared.lens.bridge.stamp_in(shared.epoch).unwrap())
+            .unwrap();
+        let (w, h) = (
+            shared.target.bounds[2] as u32,
+            shared.target.bounds[3] as u32,
+        );
+        let full = [0.0, 0.0, f64::from(w), f64::from(h)];
+        let geometry = FrameGeometry {
+            window: shared.target.bounds,
+            scale: 1.0,
+            content_rect: full,
+            content_scale: 1.0,
+            captured: full,
+        };
+        let pixels = vec![0; w as usize * h as usize * 4];
+        let frame = ring::Frame {
+            frame_ref: stamp.frame_ref(),
+            epoch: stamp.epoch,
+            seq: stamp.seq,
+            at: super::super::bridge::now_ms(),
+            w,
+            h,
+            geometry,
+            jpeg: jpeg(&bgra_to_rgb(&pixels), w, h).unwrap().into(),
+            pixels: Some(pixels.into()),
+        };
+        let signal = Kind::Frame {
+            frame_ref: stamp.frame_ref(),
+            w,
+            h,
+            ratio: 1.0,
+            dirty: Vec::new(),
+            geometry,
+        };
+        let ocr = Kind::Ocr {
+            frame_ref: stamp.frame_ref(),
+            rect: full,
+            lines: vec![Line {
+                bbox: [1.0, 1.0, 20.0, 10.0],
+                text: text.into(),
+                conf: None,
+            }],
+            ms: 1,
+            ax_covered: false,
+        };
+        (frame, signal, Some(ocr))
+    }
+
+    #[test]
+    fn replaced_paused_and_stopped_callbacks_cannot_change_current_state() {
+        for action in ["replace", "pause", "stop"] {
+            let (writer, _reader) = mpsc::unbounded_channel();
+            let lens = Lens::new(crate::lens::Config::default(), writer);
+            let target = target(200.0, 100.0, 1.0);
+            *lens.target.write().unwrap() = Some(target.clone());
+            let old = stream(lens.clone(), &target);
+            let (frame, signal, ocr) = observation(&old, "stale");
+            let epoch = lens.bridge.epoch();
+            match action {
+                "replace" => {
+                    let replacement = stream(lens.clone(), &target);
+                    let (frame, signal, ocr) = observation(&replacement, "current");
+                    publish(&replacement, frame, signal, ocr);
+                }
+                "pause" => {
+                    lens.pause();
+                    // Resume's state transition alone must not revive the old
+                    // stream, even before its replacement is installed.
+                    lens.set_state(super::super::Run::Running, None);
+                }
+                "stop" => lens.stop(Some("idle")),
+                _ => unreachable!(),
+            }
+            let before = lens.snapshot();
+            let cover = Some(super::super::bridge::Cover {
+                by: "old cover".into(),
+                pid: 7,
+                id: 8,
+                bounds: None,
+            });
+            assert!(old.cover(&cover).is_none(), "{action}");
+            assert!(
+                old.with_current(|| lens.bridge.stamp()).is_none(),
+                "{action}"
+            );
+            publish(&old, frame, signal, ocr);
+            recover(&old, Some("The user stopped the stream".into()));
+            assert!(
+                !old.recovered.load(Ordering::Acquire),
+                "{action}: recovery was not started"
+            );
+            assert_eq!(lens.snapshot(), before, "{action}");
+            assert_eq!(
+                lens.bridge.epoch(),
+                epoch,
+                "{action}: lifecycle changes preserve the epoch"
+            );
+            assert_eq!(
+                lens.counters.ocr_dropped_stale.load(Ordering::Acquire),
+                1,
+                "{action}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_geometry_replacement_keeps_old_refs_and_rejects_old_work_in_the_same_epoch() {
+        let (writer, _reader) = mpsc::unbounded_channel();
+        let lens = Lens::new(crate::lens::Config::default(), writer);
+        let target = target(200.0, 100.0, 1.0);
+        *lens.target.write().unwrap() = Some(target.clone());
+        let old = stream(lens.clone(), &target);
+        let (frame, signal, ocr) = observation(&old, "before resize");
+        let old_ref = frame.frame_ref.clone();
+        let old_geometry = frame.geometry;
+        publish(&old, frame, signal, ocr);
+        let (stale_frame, stale_signal, stale_ocr) = observation(&old, "late resize");
+        let epoch = lens.bridge.epoch();
+        let moved = Target {
+            bounds: [150.0, 250.0, 100.0, 50.0],
+            ..target
+        };
+        *lens.target.write().unwrap() = Some(moved.clone());
+        lens.reframe(&moved);
+        let replacement = stream(lens.clone(), &moved);
+        let (frame, signal, ocr) = observation(&replacement, "after resize");
+        let new_ref = frame.frame_ref.clone();
+        publish(&replacement, frame, signal, ocr);
+        let before = lens.snapshot();
+        publish(&old, stale_frame, stale_signal, stale_ocr);
+        assert_eq!(lens.snapshot(), before);
+        assert_eq!(lens.bridge.epoch(), epoch);
+        assert_eq!(lens.ring.latest().unwrap().frame_ref, new_ref);
+        assert_eq!(lens.ring.get(&old_ref).unwrap().geometry, old_geometry);
+        let crop = lens
+            .ring
+            .crop(&old_ref, Some([100.0, 0.0, 100.0, 100.0]), 0)
+            .unwrap();
+        assert_eq!(
+            (crop.w, crop.h),
+            (100, 100),
+            "the old ref still uses its captured size"
+        );
+        assert!(lens.ring.get(&old_ref).unwrap().pixels.is_none());
+        assert!(lens.ring.latest().unwrap().pixels.is_some());
+        replacement
+            .with_current(|| {
+                assert!(
+                    lens.target.try_write().is_err(),
+                    "publication holds the retarget lock"
+                )
+            })
+            .unwrap();
     }
 
     /// Both delegate callbacks word the same click differently, and one of
@@ -1464,14 +1704,22 @@ mod tests {
         let target = display_target();
         *lens.target.write().unwrap() = Some(target.clone());
         let capture =
-            Capture::start(lens.clone(), &target, Filter::Display).expect("the stream starts");
+            Capture::start(lens.clone(), &target, Filter::Display, 0).expect("the stream starts");
         std::thread::sleep(Duration::from_millis(1500));
-        // Reconfigure in place: same display, same filter mode.
+        // A geometry change replaces the stream, retaining the same epoch.
         let mut moved = target.clone();
         moved.bounds[0] += 40.0;
         moved.bounds[1] += 40.0;
         let started = std::time::Instant::now();
-        capture.retarget(&moved).expect("the stream reconfigures");
+        capture.stop();
+        *lens.target.write().unwrap() = Some(moved.clone());
+        let capture = Capture::start(
+            lens.clone(),
+            &moved,
+            Filter::Display,
+            lens.capture_generation.load(Ordering::Acquire),
+        )
+        .expect("the stream follows the moved window");
         eprintln!("retarget took {} ms", started.elapsed().as_millis());
         std::thread::sleep(Duration::from_millis(1500));
         capture.stop();
@@ -1570,14 +1818,14 @@ mod tests {
         let target = display_target();
         *lens.target.write().unwrap() = Some(target.clone());
         let capture =
-            Capture::start(lens.clone(), &target, Filter::Display).expect("the stream starts");
+            Capture::start(lens.clone(), &target, Filter::Display, 0).expect("the stream starts");
         // Long enough for a frame to be inside its two-second delay.
         std::thread::sleep(Duration::from_millis(1200));
         let mut moved = target.clone();
         moved.window_id += 1;
         // The lens is not running, so this bumps the epoch and announces the
         // new window without touching the stream.
-        lens.retarget(moved);
+        lens.retarget(moved, None);
         assert_eq!(lens.bridge.epoch(), 2);
         std::thread::sleep(Duration::from_millis(2600));
         capture.stop();
@@ -1611,7 +1859,7 @@ mod tests {
         target.bounds = [target.display.w - 630.0, 100.0, 900.0, 600.0];
         *lens.target.write().unwrap() = Some(target.clone());
         let capture =
-            Capture::start(lens.clone(), &target, Filter::Display).expect("the stream starts");
+            Capture::start(lens.clone(), &target, Filter::Display, 0).expect("the stream starts");
         std::thread::sleep(Duration::from_millis(1500));
         capture.stop();
         std::thread::sleep(Duration::from_millis(500));

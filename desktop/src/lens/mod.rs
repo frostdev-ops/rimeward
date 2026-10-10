@@ -116,8 +116,8 @@ pub struct Counters {
     /// because an atomic cannot hold an f64.
     pub roi_ratio_ppm: AtomicU64,
     pub ocr_ms: Mutex<Vec<u32>>,
-    /// How long each `Capture::retarget` took, in milliseconds. The probe
-    /// reports p50 and max against the 300 ms reconfigure budget.
+    /// How long each target's replacement stream took, in milliseconds. The
+    /// probe reports p50 and max against the 300 ms retarget budget.
     pub retarget_ms: Mutex<Vec<u32>>,
 }
 
@@ -213,6 +213,9 @@ pub struct Lens {
     /// test, where the `overlay-*` ops answer `unavailable`.
     overlay: Mutex<Option<Arc<overlay::Overlay>>>,
     capture: Mutex<Option<Capture>>,
+    /// Each stream owns one generation; replacement and Pause/Stop invalidate
+    /// it under the target lock before any queued callback can publish.
+    capture_generation: AtomicU64,
     signals: Mutex<Option<Signals>>,
     /// `<data>/runtime-diagnostics.jsonl`, the file the app already keeps for
     /// its own start-up trouble. The lens writes its stream events there —
@@ -291,17 +294,14 @@ impl Lens {
 
     /// The pool's `CGWindowID`s, handed over by [`overlay::Overlay::build`].
     /// A capture built before the pool existed holds a filter that names none
-    /// of them, so it is rebuilt here through the same path a retarget takes:
-    /// the filter changes, the epoch does not.
-    pub fn set_overlay_windows(&self, windows: Vec<u32>) {
+    /// of them, so it is replaced here; the epoch does not change.
+    pub fn set_overlay_windows(self: &Arc<Self>, windows: Vec<u32>) {
         *self.overlay_windows.lock().unwrap() = windows;
         let Some(target) = self.target.read().unwrap().clone() else {
             return;
         };
-        if let Some(capture) = self.capture.lock().unwrap().as_ref() {
-            if let Err(error) = capture.retarget(&target) {
-                self.diag("lens-overlay-filter", &error);
-            }
+        if let Err(error) = self.build_capture(&target, None) {
+            self.diag("lens-overlay-filter", &error);
         }
     }
 
@@ -340,6 +340,7 @@ impl Lens {
             helper: Mutex::new(None),
             overlay: Mutex::new(None),
             capture: Mutex::new(None),
+            capture_generation: AtomicU64::new(0),
             signals: Mutex::new(None),
             diagnostics: None,
             retry: AtomicU32::new(0),
@@ -375,7 +376,7 @@ impl Lens {
     /// as consent stands and nothing else has claimed the lens since (a reader
     /// leaving marks it `idle`, the user `not-consented` or `paused`; those
     /// are not retried, the next `lens-start` is theirs).
-    pub fn stream_lost(self: &Arc<Self>, detail: &str) {
+    pub fn stream_lost(self: &Arc<Self>, detail: &str, generation: Option<(u64, &Target)>) {
         // One loss can be reported more than once — two delegate callbacks for
         // one stop, or a `start` that fails while the backoff is already
         // sleeping. A restart is already on its way, so it gets no second line
@@ -383,16 +384,13 @@ impl Lens {
         // is live: a `lens-start` can have brought it back during the wait, and
         // a state that reads `running` with nothing capturing is dark for good.
         // The sleeping thread finds it stopped for `stream` and restarts it.
-        if self.retry_pending.swap(true, Ordering::AcqRel) {
-            // Bound the guard to this statement: `stop` takes the same lock.
-            let live = self.state.lock().unwrap().run.live();
-            if live {
-                self.stop(Some("stream"));
-            }
+        let Some(pending) = self.stop_in(Some("stream"), generation, true) else {
+            return;
+        };
+        if pending {
             return;
         }
         self.diag("lens-stream-lost", detail);
-        self.stop(Some("stream"));
         let attempt = self.retry.fetch_add(1, Ordering::AcqRel);
         let lens = self.clone();
         std::thread::spawn(move || {
@@ -465,13 +463,9 @@ impl Lens {
         let target = self.target.read().unwrap().clone();
         if self.capture.lock().unwrap().is_none() {
             if let Some(target) = target {
-                if let Err(error) = self.build_capture(&target) {
-                    // Left as it was, the state read `running` with nothing
-                    // capturing, and every later `lens-start` saw a live lens
-                    // and returned early: dark for good.
-                    self.stream_lost(&error);
-                    return Err("stream".into());
-                }
+                // A failed build reports the loss before returning: a running
+                // lens with no stream must not make the next start a no-op.
+                self.build_capture(&target, None)?;
             }
         }
         Ok(())
@@ -489,45 +483,121 @@ impl Lens {
     }
 
     pub fn stop(&self, reason: Option<&str>) {
-        self.set_state(Run::Stopped, reason);
-        if let Some(capture) = self.capture.lock().unwrap().take() {
+        self.stop_in(reason, None, false);
+    }
+
+    /// Lock order is capture, then target. Callbacks never take capture;
+    /// native Stop runs only after both guards have been released.
+    fn stop_in(
+        &self,
+        reason: Option<&str>,
+        generation: Option<(u64, &Target)>,
+        lost: bool,
+    ) -> Option<bool> {
+        let (capture, pending) = {
+            let mut capture = self.capture.lock().unwrap();
+            let mut target = self.target.write().unwrap();
+            if generation.is_some_and(|(generation, source)| {
+                generation != self.capture_generation.load(Ordering::Acquire)
+                    || !target
+                        .as_ref()
+                        .is_some_and(|current| capture::same_source(current, source))
+            }) {
+                return None;
+            }
+            let pending = lost && self.retry_pending.swap(true, Ordering::AcqRel);
+            if pending && !self.state.lock().unwrap().run.live() {
+                return Some(true);
+            }
+            self.capture_generation.fetch_add(1, Ordering::AcqRel);
+            self.ring.clear();
+            *target = None;
+            *self.known.write().unwrap() = Known::default();
+            self.set_state(Run::Stopped, reason);
+            (capture.take(), pending)
+        };
+        if let Some(capture) = capture {
             capture.stop();
         }
         if let Some(signals) = self.signals.lock().unwrap().take() {
             signals.stop();
         }
-        self.ring.clear();
-        // A later reader must start a fresh epoch, even in the same window:
-        // its contents may have changed while nobody was observing it.
-        *self.target.write().unwrap() = None;
-        *self.known.write().unwrap() = Known::default();
+        Some(pending)
     }
 
-    /// The stream stays built; frames are dropped. Resuming costs nothing.
+    /// A resumed stream gets a fresh generation: samples queued before Pause
+    /// must never be relabelled as newly captured content.
     pub fn pause(&self) {
-        if let Some(capture) = self.capture.lock().unwrap().as_ref() {
-            capture.set_paused(true);
+        let capture = {
+            let mut capture = self.capture.lock().unwrap();
+            let _target = self.target.write().unwrap();
+            self.capture_generation.fetch_add(1, Ordering::AcqRel);
+            self.set_state(Run::Paused, None);
+            capture.take()
+        };
+        if let Some(capture) = capture {
+            capture.stop();
         }
-        self.set_state(Run::Paused, None);
     }
 
-    pub fn resume(&self) {
-        if let Some(capture) = self.capture.lock().unwrap().as_ref() {
-            capture.set_paused(false);
-        }
+    pub fn resume(self: &Arc<Self>) {
         self.set_state(Run::Running, None);
+        let target = self.target.read().unwrap().clone();
+        if let Some(target) = target {
+            let _ = self.build_capture(&target, None);
+        }
     }
 
-    fn build_capture(self: &Arc<Self>, target: &Target) -> Result<(), String> {
+    fn build_capture(
+        self: &Arc<Self>,
+        target: &Target,
+        generation: Option<u64>,
+    ) -> Result<bool, String> {
         // The target rides in the error, because every caller hands it to
         // `stream_lost` and the diagnostics line is all the field ever sees:
         // "Failed to start capture: … Failed due to an invalid parameter" named
         // neither the window it was refused on nor the display it sits on
         // (field, 2026-09-20), and that failure cannot be read without them.
-        let capture = Capture::start(self.clone(), target, self.filter)
-            .map_err(|error| format!("{error} on {}", describe_target(target)))?;
-        *self.capture.lock().unwrap() = Some(capture);
-        Ok(())
+        let mut slot = self.capture.lock().unwrap();
+        if self.state.lock().unwrap().run != Run::Running || !self.consented.load(Ordering::Acquire)
+        {
+            return Ok(false);
+        }
+        let expected =
+            generation.unwrap_or_else(|| self.capture_generation.load(Ordering::Acquire));
+        // shortcut: rebuilds pin queued samples to one geometry; reuse a stream
+        // only when ScreenCaptureKit exposes an exact sample/config identity.
+        let capture = match Capture::start(self.clone(), target, self.filter, expected) {
+            Ok(capture) => capture,
+            Err(error) => {
+                let failed = self.capture_generation.load(Ordering::Acquire);
+                drop(slot);
+                if error == "capture-stale" {
+                    return Ok(false);
+                }
+                if failed == expected || failed == expected + 1 {
+                    self.stream_lost(
+                        &format!("{error} on {}", describe_target(target)),
+                        Some((failed, target)),
+                    );
+                }
+                return Err("stream".into());
+            }
+        };
+        let current = self.target.read().unwrap();
+        if !capture.current(current.as_ref()) {
+            drop(current);
+            drop(slot);
+            capture.stop();
+            return Ok(false);
+        }
+        let previous = slot.replace(capture);
+        drop(current);
+        drop(slot);
+        if let Some(previous) = previous {
+            previous.stop();
+        }
+        Ok(true)
     }
 
     /// App switch, or a window switch inside the same app. Everything the old
@@ -535,11 +605,19 @@ impl Lens {
     /// in front, and the text describes content nobody is looking at. A target
     /// that is not a different thing to look at is not a switch, and answers
     /// nothing.
-    pub fn retarget(self: &Arc<Self>, target: Target) {
+    pub fn retarget(self: &Arc<Self>, target: Target, expected: Option<(u64, u64, &AtomicBool)>) {
         {
             // Held across the bump and the announcements, so a snapshot taken
             // meanwhile sees either the old epoch whole or the new one whole.
             let mut current = self.target.write().unwrap();
+            if expected.is_some_and(|(epoch, generation, stopped)| {
+                stopped.load(Ordering::Acquire)
+                    || self.bridge.epoch() != epoch
+                    || self.capture_generation.load(Ordering::Acquire) != generation
+                    || self.state.lock().unwrap().run != Run::Running
+            }) {
+                return;
+            }
             // Two activations can describe one switch — the NSWorkspace
             // notification and the frontmost poll in signals.rs — and each
             // caller decides outside this lock. Deciding again under it is
@@ -548,6 +626,7 @@ impl Lens {
             if !signals::needs_retarget(current.as_ref(), &target) {
                 return;
             }
+            self.capture_generation.fetch_add(1, Ordering::AcqRel);
             self.bridge.bump_epoch();
             self.ring.clear();
             *self.known.write().unwrap() = Known::default();
@@ -570,25 +649,18 @@ impl Lens {
         if let Some(overlay) = self.overlay() {
             overlay.retarget();
         }
-        if !self.state.lock().unwrap().run.live() {
+        if self.state.lock().unwrap().run != Run::Running {
             return;
         }
-        let reconfigured = self
-            .capture
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|capture| capture.retarget(&target).is_ok());
-        if !reconfigured {
-            if let Err(error) = self.build_capture(&target) {
-                self.stream_lost(&error);
-            }
-        }
+        let started = std::time::Instant::now();
+        let _ = self.build_capture(&target, None);
+        self.counters
+            .record_retarget(started.elapsed().as_millis() as u32);
     }
 
     /// The target moved or resized, same window: the stream follows it and the
     /// next frame's geometry records the new bounds. No epoch bump.
-    pub fn reframe(&self, target: &Target) {
+    pub fn reframe(self: &Arc<Self>, target: &Target) {
         // A window that shrank: the OCR lines outside it now describe pixels
         // the stream no longer captures, no read can claim them back — a region
         // of interest never reaches past the window — and a snapshot would
@@ -598,22 +670,52 @@ impl Lens {
         // against the current bounds, and an element scrolled out of view sits
         // outside the window on purpose. The consumer prunes its document on
         // the same `ax-window`; this is the copy a snapshot answers from,
-        // pruned before the stream reconfigures so the gap a snapshot can land
+        // pruned before the stream is replaced so the gap a snapshot can land
         // in is short.
+        let current = self.target.write().unwrap();
+        if !current
+            .as_ref()
+            .is_some_and(|current| capture::same_source(current, target))
+        {
+            return;
+        }
+        self.capture_generation.fetch_add(1, Ordering::AcqRel);
         self.known
             .write()
             .unwrap()
             .ocr
             .retain(|line| signals::within(line.bbox, target.bounds));
-        if let Some(capture) = self.capture.lock().unwrap().as_ref() {
-            if let Err(error) = capture.reframe(target) {
-                eprintln!("lens: reframe failed: {error}");
-            }
-        }
+        drop(current);
+        let _ = self.build_capture(target, None);
         // Every anchor is relative to the target, so the slots follow it.
         if let Some(overlay) = self.overlay() {
             overlay.reposition(self.place(target));
         }
+    }
+
+    fn target_is_current(
+        &self,
+        current: Option<&Target>,
+        target: &Target,
+        epoch: u64,
+        generation: u64,
+    ) -> bool {
+        self.bridge.epoch() == epoch
+            && self.capture_generation.load(Ordering::Acquire) == generation
+            && current.is_some_and(|current| capture::same_source(current, target))
+    }
+
+    /// Capture and AX commit under the same boundary as retarget/resize/Stop.
+    fn with_target<T>(
+        &self,
+        target: &Target,
+        epoch: u64,
+        generation: u64,
+        publish: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let current = self.target.read().unwrap();
+        self.target_is_current(current.as_ref(), target, epoch, generation)
+            .then(publish)
     }
 
     /// Every known line's box, for widening a region of interest.
@@ -709,7 +811,7 @@ impl Lens {
     /// with; it is passed to the helper unchanged, so one clock governs the
     /// whole chain.
     pub async fn desktop_request(
-        &self,
+        self: &Arc<Self>,
         op: &str,
         value: &Value,
         deadline: Option<i64>,
@@ -1138,7 +1240,7 @@ mod tests {
             text: "stale".into(),
             conf: None,
         }];
-        lens.retarget(target());
+        lens.retarget(target(), None);
         assert_eq!(lens.bridge.epoch(), 2);
         assert!(lens.known_rects().is_empty(), "known text is epoch-scoped");
         let snapshot = lens.snapshot();
@@ -1160,7 +1262,7 @@ mod tests {
             let current = lens.target.read().unwrap().clone();
             let changed = signals::needs_retarget(current.as_ref(), &next);
             if changed {
-                lens.retarget(next);
+                lens.retarget(next, None);
             }
             changed
         };
@@ -1206,7 +1308,7 @@ mod tests {
         // frontmost poll both reach `retarget` — is still one epoch. The
         // callers decide outside the lock, so `retarget` decides again inside
         // it.
-        lens.retarget(second.clone());
+        lens.retarget(second.clone(), None);
         assert_eq!(lens.bridge.epoch(), 4, "the second activation is not news");
 
         // A move and a retitle of the same window are not: they reach the
@@ -1418,7 +1520,7 @@ mod tests {
         let (lens, mut rx) = lens();
         // The wire needs its drain, which lib.rs spawns in the app.
         tokio::spawn(lens.bridge.clone().run_writer());
-        lens.stream_lost("SCStreamErrorUserStopped");
+        lens.stream_lost("SCStreamErrorUserStopped", None);
         let state = lens.state.lock().unwrap().clone();
         assert_eq!(state.run, Run::Stopped);
         assert_eq!(state.reason.as_deref(), Some("stream"));
@@ -1438,8 +1540,8 @@ mod tests {
     async fn one_loss_reported_twice_schedules_one_restart() {
         let (lens, mut rx) = lens();
         tokio::spawn(lens.bridge.clone().run_writer());
-        lens.stream_lost("The user stopped the stream");
-        lens.stream_lost("SCStream error: the same stop, the other callback");
+        lens.stream_lost("The user stopped the stream", None);
+        lens.stream_lost("SCStream error: the same stop, the other callback", None);
         assert_eq!(lens.retry.load(Ordering::Acquire), 1);
         let first: Value =
             serde_json::from_str(&rx.recv().await.expect("a status signal")).unwrap();
@@ -1458,12 +1560,12 @@ mod tests {
     async fn a_second_loss_during_the_backoff_still_stops_the_lens() {
         let (lens, mut rx) = lens();
         tokio::spawn(lens.bridge.clone().run_writer());
-        lens.stream_lost("the first loss");
+        lens.stream_lost("the first loss", None);
         rx.recv().await.expect("the first status");
         // What a `lens-start` during the wait leaves behind.
         lens.set_state(Run::Running, None);
         rx.recv().await.expect("the running status");
-        lens.stream_lost("the rebuilt stream died too");
+        lens.stream_lost("the rebuilt stream died too", None);
         let state = lens.state.lock().unwrap().clone();
         assert_eq!(state.run, Run::Stopped);
         assert_eq!(state.reason.as_deref(), Some("stream"));
