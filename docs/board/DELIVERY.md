@@ -78,7 +78,10 @@ human results block their gates while independent preparation continues.
 
 ## Portable native Lens: 1.0.19
 
-Use dev/1.0.19 after baseline closure. RIME-49 lands first, then Windows and Linux
+Use dev/1.0.19 after baseline distribution verification. With 1.0.18 published,
+independent implementation can proceed while the locked Mac installation gate
+remains pending; RIME-46 stays open until its full exit criteria pass.
+RIME-49 lands first, then Windows and Linux
 owners work concurrently. Linux completes X11 before Wayland integration. One
 integration owner controls shared native runtime/contracts/Cargo/prebuild edits.
 Each implementation phase uses lens-impl at xhigh; each commit gets independent

@@ -9,21 +9,21 @@ human-run provider acceptance.
 
 | Surface | Observed state | Evidence |
 |---|---|---|
-| Local and GitHub main | `82abf2c`; source version **1.0.18**; execution reuses `dev/1.0.18` | [PR #15](https://github.com/frostdev-ops/rimeward/pull/15), package.json, desktop/Cargo.toml, desktop/tauri.conf.json |
-| Main Tests workflow | Passed on `82abf2c` | [Tests run](https://github.com/frostdev-ops/rimeward/actions/runs/38056828919) |
-| Main server workflow | Passed on `82abf2c` | [Server run](https://github.com/frostdev-ops/rimeward/actions/runs/38056828905) |
-| Main desktop workflow | Linux and Windows passed; macOS Runtime validation failed browser-live input-release/signaling checks | [Main desktop run](https://github.com/frostdev-ops/rimeward/actions/runs/38056828904); macOS job 114226923170 |
-| Development desktop workflow | `3e353fc`: macOS/Linux passed; Windows browser hello timed out and the test process remained open; cancelled after capturing the failure | [Development run](https://github.com/frostdev-ops/rimeward/actions/runs/38063079715); Windows job 114245199841; final corrected candidate pending |
-| Published server | **1.0.17** | [Server release](https://github.com/frostdev-ops/rimeward/releases/tag/v1.0.17) |
-| Published desktop | **1.0.17**, updater and platform installers present | [Desktop release](https://github.com/frostdev-ops/rimeward/releases/tag/desktop-v1.0.17) |
-| Installed Mac app | **1.0.17**; deep strict signature passes, team `22AAZFMTV8`; live health unproved | Local `/Applications/Rimeward.app/Contents/Info.plist` and read-only codesign checks |
-| Homebrew cask | **1.0.17** | Live tap/cask and [publication run](https://github.com/frostdev-ops/rimeward/actions/runs/36299392704) |
-| Deployed website and public pages | **1.0.18**, `82abf2c`; hub/product pages and actual-interface examples published | RIME-44 ready journal 2026-10-10; [PR #15](https://github.com/frostdev-ops/rimeward/pull/15) |
-| AUR package | `rimeward-bin` absent; RPC HTTP 200, resultcount 0 | [AUR RPC](https://aur.archlinux.org/rpc/v5/info/rimeward-bin); no aur.yml workflow runs found |
+| Local and GitHub main | `5ae7ea0`, source **1.0.18**; PR #16 merged without changing candidate | [PR #16](https://github.com/frostdev-ops/rimeward/pull/16) |
+| Active development | `dev/1.0.19`, source **1.0.19**; immutable-artifact validation correction `f723d30` starts the follow-up release | [Draft PR #17](https://github.com/frostdev-ops/rimeward/pull/17) |
+| Final 1.0.18 development workflows | Tests, server and all desktop platforms passed at `5ae7ea0` | [Tests](https://github.com/frostdev-ops/rimeward/actions/runs/38068411399), [server](https://github.com/frostdev-ops/rimeward/actions/runs/38068411406), [desktop](https://github.com/frostdev-ops/rimeward/actions/runs/38068411467) |
+| Main workflows | Tests, server and all desktop platforms passed at the same `5ae7ea0` | [Tests](https://github.com/frostdev-ops/rimeward/actions/runs/38071140635), [server](https://github.com/frostdev-ops/rimeward/actions/runs/38071140666), [desktop](https://github.com/frostdev-ops/rimeward/actions/runs/38071140612) |
+| Tagged desktop checks | Windows NSIS/MSI and Linux DEB/AppImage passed. Original Mac signer predicate failed; corrected audit passed on the unchanged DMG and frozen source | [Original tagged run](https://github.com/frostdev-ops/rimeward/actions/runs/38074080663), [corrected immutable-DMG audit](https://github.com/frostdev-ops/rimeward/actions/runs/38077738647) |
+| Published server | **1.0.18**, exact `5ae7ea0` | [Server release](https://github.com/frostdev-ops/rimeward/releases/tag/v1.0.18), [tag workflow](https://github.com/frostdev-ops/rimeward/actions/runs/38074080686) |
+| Published desktop | **1.0.18**, twelve unchanged platform/updater assets; published 2026-10-10T18:58:23Z | [Desktop release](https://github.com/frostdev-ops/rimeward/releases/tag/desktop-v1.0.18) |
+| Installed Mac app | **1.0.17**, strict signature/team valid; authenticated native runtime healthy with nine pages/fifty wards. Mac locked, installation pending | Existing-profile read and updater offer **1.0.17 → 1.0.18**; no unsolicited model calls |
+| Homebrew cask | **1.0.18**, public and refreshed local URL/hash match accepted DMG | [Publication run](https://github.com/frostdev-ops/rimeward/actions/runs/38077925212) |
+| Production | **1.0.18**, `5ae7ea0`; PM2/Node 26.10.0/SQLite, origin/public HTTP and authenticated build stamp passed | Supported online DB plus application/config rollback backup before clean deployment; authenticated production-to-installed-1.0.17 relay passed |
+| AUR package | Publication and installation acceptance explicitly retired; fallback retained | User decision **Skip AUR**, RIME-43 |
 
 Passing build workflows establish the recorded revision's CI result. They do not
-replace feature-specific live acceptance, installer publication or installed-app
-checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 app.
+replace feature-specific live acceptance or installed-app checks. Published
+1.0.18 is not evidence of an installed 1.0.18 app or live provider acceptance.
 
 ## Branch and worktree disposition
 
@@ -34,9 +34,9 @@ checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 ap
   [73d3e70](https://github.com/frostdev-ops/rimeward/commit/73d3e70), for Arch fallback
   README/wiki-source guidance. Its reviewed two-file change is integrated on
   `dev/1.0.18` for RIME-42; the stale branch is not merged wholesale.
-- No open GitHub PR was found at initial refresh. Draft [PR #16](https://github.com/frostdev-ops/rimeward/pull/16)
-  now tracks `dev/1.0.18` baseline preparation and reproduced native/browser fixes.
-  `dev/1.0.19` remains the planned portable release after baseline publication.
+- No open GitHub PR was found at initial refresh. [PR #16](https://github.com/frostdev-ops/rimeward/pull/16)
+  is now merged at the validated `5ae7ea0`. Draft [PR #17](https://github.com/frostdev-ops/rimeward/pull/17)
+  tracks `dev/1.0.19`; portable implementation follows baseline distribution verification.
 - Desktop 1.0.16 remains a historical draft superseded by published 1.0.17.
   It is not recorded as a current release blocker.
 
@@ -112,10 +112,13 @@ checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 ap
   result. Current Mac CLI tests pass; the assertion now checks subprocess exit
   status and stderr before interpreting restored output. It does not claim a
   root cause or Windows fix.
-- Current main Windows CI passes on `82abf2c`; the older restore assertion remains
+- Initial main Windows CI passed on `82abf2c`; the older restore assertion remains
   historical. Browser-live's extra mouseup was reproduced as fixture cleanup
   crossing its log reset and fixed by awaiting that worker. The separate macOS
-  RTC timeout has diagnostics and still requires final-candidate CI clearance.
+  RTC timeout gained diagnostics. Final `5ae7ea0` development/main CI passed;
+  the older failed [main run](https://github.com/frostdev-ops/rimeward/actions/runs/38056828904)
+  and cancelled [development run](https://github.com/frostdev-ops/rimeward/actions/runs/38063079715)
+  remain historical evidence.
 - Full local preparation checks pass: 871 unit tests, typecheck, desktop lint and
   production build. Final installer/runtime CI coverage is being extended to Mac
   app contents and Windows installer extraction; manual GUI startup stays open.
@@ -127,8 +130,16 @@ checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 ap
   no production editor behavior changed. Concurrent fixture failures are retained
   in local logs and are not installed acceptance.
 - Packaged-runtime CI changes passed independent review plus actionlint/JS/bash
-  syntax and whitespace checks. Actual Windows extraction, tagged MSI and
-  notarized Mac DMG checks still require their final candidate/tagged jobs.
+  syntax and whitespace checks. Final tagged NSIS/MSI and DEB/AppImage extracted
+  runtime checks passed. Mac notarization was accepted and the app stapled, but
+  the original signer predicate used default `codesign -dv` verbosity, which
+  emitted no Authority line and made grep exit 1. Captured stderr and pipeline
+  status `[0,1]` reproduced this validation defect; there was no SIGPIPE.
+  Corrected audit **38077738647** used explicit verbosity and the existing
+  immutable DMG with SHA256 `0f287091cb5e8a6c78e8fdfb4b08e61aa8d4205e5f4284d1e95a8afeefb6a6b7`.
+  Frozen source `5ae7ea0`, digest, strict seal/version/Developer ID, Gatekeeper,
+  stapler and DMG-contained standalone/four-viewer fault-media checks all passed.
+  No asset replacement or tag movement occurred; the original failed job remains.
 - Development `3e353fc` passed push Tests and server CI. Its desktop macOS and
   Linux jobs passed staged runtime/native checks and packaged app/DEB/AppImage
   standalone/media checks. The branch Mac app was ad hoc signed; this is not
@@ -141,7 +152,7 @@ checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 ap
   Failure teardown closes pending launches and sockets, and the existing bounded
   synchronous shutdown fallback remains. Combined 871 unit tests, typecheck,
   desktop lint, production build, browser UI and remote-workspace smokes pass;
-  final Windows CI remains a gate.
+  final Windows development/main/tagged CI subsequently passed.
 - The `3e353fc` pull-request Tests job hit an external Google font fetch failure;
   its merge tree matched the passing push tree. This is retained as CI evidence,
   without changing font behavior or treating the failed check as passed.
@@ -158,8 +169,21 @@ checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 ap
   acceptance for publication on 2026-10-10. Manual feature/platform packages stay
   open. Baseline publication requires final candidate CI and packaged-runtime
   acceptance; it no longer waits for those manual host results.
-  No new release tag, deployment or installed candidate is established by this
-  preparation snapshot. Track signed candidate handoffs separately from ready.
+- Both immutable 1.0.18 tags resolve `5ae7ea0`; server and desktop releases are
+  public. Five updater signatures were verified against the configured key,
+  and the final manifest contains eight valid platform aliases. Homebrew's
+  publication workflow and refreshed local cask match the accepted DMG hash.
+  Production rollback material precedes deployment; authenticated production
+  relay reaches the existing desktop. Mac installation/restored sync and the
+  post-install relay remain pending while its session is locked. RIME-46 stays open.
+- A bounded independent overlay review at `5ae7ea0` found a pending caption can
+  reappear after Clear/retarget frees its slot; TTL then misses that untracked
+  window. Source trace and a deterministic scheduling model establish the race,
+  not installed reproduction. Release notes disclose it. RIME-49 must invalidate
+  pending reveal generations and preserve shared browser-overlay ownership.
+- RIME-49 can proceed independently after baseline distribution verification;
+  it does not depend on RIME-46. Mac qualification/manual provider/platform and
+  RIME-46 installation exit criteria remain pending, never implicitly ready.
 
 ## Keeping the board truthful
 
