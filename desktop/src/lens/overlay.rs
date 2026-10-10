@@ -8,8 +8,8 @@
 //! GPU power on macOS 26.x, so the overlay is never one full-screen sheet.
 //!
 //! Rust owns placement, the page owns rendering. Rust emits `overlay:show`
-//! `{id, kind, text, w, h, origin}` to one slot window, the page renders and
-//! answers `overlay:ready {id}`, and the window is revealed on that
+//! `{id, generation, kind, text, w, h, origin}` to one slot window, the page renders and
+//! answers `overlay:ready {id, generation}`, and the window is revealed on that
 //! acknowledgement or 100 ms later, whichever comes first.
 
 use super::bridge::{Bridge, Kind, Rect};
@@ -304,10 +304,34 @@ impl Overlay {
         json!({ "shown": shown, "interactive": self.interactive() })
     }
 
+    /// Slot mutation, placement, payload and visibility share one main-thread
+    /// order. No slot lock crosses dispatch; Wry executes inline on that thread.
+    fn on_main<T: Send + 'static>(
+        self: &Arc<Self>,
+        operation: impl FnOnce(&Arc<Self>) -> T + Send + 'static,
+    ) -> Result<T, String> {
+        let overlay = self.clone();
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        self.app
+            .run_on_main_thread(move || {
+                let result = operation(&overlay);
+                let _ = send.send(result);
+            })
+            .map_err(|_| "overlay-window-gone")?;
+        receive.recv().map_err(|_| "overlay-window-gone".into())
+    }
+
     /// Places, tells the page what to draw and reveals on the acknowledgement.
     /// Never fails for lack of a slot: the oldest one is evicted and named in
     /// the receipt.
     pub fn show(self: &Arc<Self>, req: ShowReq, place: Place) -> Result<Value, String> {
+        self.on_main(move |overlay| overlay.show_in(req, place))?
+    }
+
+    fn show_in(self: &Arc<Self>, req: ShowReq, place: Place) -> Result<Value, String> {
+        if req.epoch != self.bridge.epoch() {
+            return Err("stale-epoch".into());
+        }
         let (frame, size) = frame_for(&req, place);
         let (index, evicted, generation) = {
             let mut slots = self.slots.lock().unwrap();
@@ -338,6 +362,9 @@ impl Overlay {
             .app
             .get_webview_window(label)
             .ok_or("overlay-window-gone")?;
+        // An already-visible slot must not show the preceding DOM at its new
+        // placement while the current payload is waiting for its acknowledgement.
+        let _ = window.hide();
         let _ = window.set_size(LogicalSize::new(frame[2], frame[3]));
         let _ = window.set_position(LogicalPosition::new(frame[0], frame[1]));
         self.ready.lock().unwrap().retain(|(id, _)| id != &req.id);
@@ -408,7 +435,12 @@ impl Overlay {
     }
 
     /// `None` clears every slot.
-    pub fn clear(&self, id: Option<&str>) {
+    pub fn clear(self: &Arc<Self>, id: Option<&str>) {
+        let id = id.map(str::to_owned);
+        let _ = self.on_main(move |overlay| overlay.clear_in(id.as_deref()));
+    }
+
+    fn clear_in(&self, id: Option<&str>) {
         let mut hidden = Vec::new();
         {
             let mut slots = self.slots.lock().unwrap();
@@ -429,7 +461,11 @@ impl Overlay {
 
     /// A new epoch: everything anchored to the old window described a screen
     /// nobody is looking at. A sticky corner card is the one thing that stays.
-    pub fn retarget(&self) {
+    pub fn retarget(self: &Arc<Self>) {
+        let _ = self.on_main(|overlay| overlay.retarget_in());
+    }
+
+    fn retarget_in(&self) {
         let epoch = self.bridge.epoch();
         let mut hidden = Vec::new();
         {
@@ -449,7 +485,16 @@ impl Overlay {
     /// The target moved or resized. Every anchor is relative to it, so each
     /// live slot is re-placed; nothing is re-rendered, because a window-point
     /// anchor and the slot's own origin move by the same delta.
-    pub fn reposition(&self, place: Place) {
+    pub fn reposition(self: &Arc<Self>, place: Place) {
+        let epoch = self.bridge.epoch();
+        let _ = self.on_main(move |overlay| {
+            if overlay.bridge.epoch() == epoch {
+                overlay.reposition_in(place);
+            }
+        });
+    }
+
+    fn reposition_in(&self, place: Place) {
         let moves: Vec<(&'static str, Rect)> = self
             .slots
             .lock()
@@ -505,7 +550,11 @@ impl Overlay {
     }
 
     /// TTL expiry.
-    pub fn tick(&self) {
+    pub fn tick(self: &Arc<Self>) {
+        let _ = self.on_main(|overlay| overlay.tick_in());
+    }
+
+    fn tick_in(&self) {
         let mut hidden = Vec::new();
         {
             let now = Instant::now();

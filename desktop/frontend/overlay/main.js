@@ -46,7 +46,10 @@ export function render(p) {
 }
 
 if (tauri && own) {
+  let generation = 0;
   void own.listen('overlay:show', (e) => {
+    if (!Number.isSafeInteger(e.payload.generation) || e.payload.generation <= generation) return;
+    generation = e.payload.generation;
     render(e.payload);
     // Ack at once: the DOM is already in place, and a window that is still
     // hidden gets no animation frame, so anything deferred would only run

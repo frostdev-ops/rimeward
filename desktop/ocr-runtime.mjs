@@ -132,6 +132,8 @@ export async function ensureOcr(destination = path.join(here, "runtime/ocr")) {
 				),
 			)[0]
 		: null;
+	if (windows && !installation?.installationPath)
+		throw new Error("An installed Visual Studio toolchain is required for OCR");
 	const compiler = windows
 		? {
 				installation,
@@ -152,12 +154,26 @@ export async function ensureOcr(destination = path.join(here, "runtime/ocr")) {
 				),
 			}
 		: output("c++", ["--version"]);
+	const generator = windows
+		? JSON.parse(output("cmake", ["-E", "capabilities"])).generators.find(
+				({ name }) =>
+					name.startsWith(
+						`Visual Studio ${Number.parseInt(installation.installationVersion, 10)} `,
+					),
+			)?.name
+		: "Unix Makefiles";
+	if (!generator)
+		throw new Error(
+			"CMake has no generator for the installed Visual Studio version",
+		);
 	const toolchain = {
 		cmake: output("cmake", ["--version"]),
 		compiler,
 		sdk: process.env.WindowsSDKVersion ?? null,
-		generator: windows ? "Visual Studio 17 2022" : "Unix Makefiles",
+		generator,
+		instance: installation?.installationPath ?? null,
 	};
+	console.log(`Portable OCR toolchain: ${JSON.stringify(toolchain)}`);
 	const cacheRoot = path.resolve(
 		process.env.RIMEWARD_OCR_CACHE ||
 			path.join(os.homedir(), ".cache/rimeward-ocr"),
@@ -192,6 +208,8 @@ export async function ensureOcr(destination = path.join(here, "runtime/ocr")) {
 		fs.rmSync(prefix, { recursive: true, force: true });
 		fs.rmSync(path.join(cache, "build"), { recursive: true, force: true });
 		const common = [
+			"-G",
+			toolchain.generator,
 			"-DCMAKE_BUILD_TYPE=Release",
 			`-DCMAKE_INSTALL_PREFIX=${prefix}`,
 			`-DCMAKE_PREFIX_PATH=${prefix}`,
@@ -200,8 +218,7 @@ export async function ensureOcr(destination = path.join(here, "runtime/ocr")) {
 			"-DBUILD_SHARED_LIBS=OFF",
 			...(windows
 				? [
-						"-G",
-						"Visual Studio 17 2022",
+						`-DCMAKE_GENERATOR_INSTANCE=${toolchain.instance}`,
 						"-A",
 						process.arch === "arm64" ? "ARM64" : "x64",
 						"-DCMAKE_POLICY_DEFAULT_CMP0091=NEW",
@@ -252,7 +269,9 @@ export async function ensureOcr(destination = path.join(here, "runtime/ocr")) {
 				"-DSW_BUILD=OFF",
 				"-DBUILD_TRAINING_TOOLS=OFF",
 				"-DBUILD_TESTS=OFF",
-				"-DDISABLED_LEGACY_ENGINE=ON",
+				// 5.5.2 removes absolute legacy paths from a relative source list;
+				// compile its supported default, while every invocation stays --oem 1.
+				"-DDISABLED_LEGACY_ENGINE=OFF",
 				"-DGRAPHICS_DISABLED=ON",
 				"-DDISABLE_TIFF=ON",
 				"-DDISABLE_ARCHIVE=ON",

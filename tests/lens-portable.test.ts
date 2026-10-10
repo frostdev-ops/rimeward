@@ -78,7 +78,9 @@ test("unmeasured visual scores disable watches and every live suppression while 
 	try {
 		core.consumer("reader");
 		await core.ready();
-		const modes = await core.watch("reader", { add: [{ visual: true, triage: false }] });
+		const modes = await core.watch("reader", {
+			add: [{ visual: true, triage: false }],
+		});
 		assert.match(JSON.stringify(modes), /unavailable/);
 		const wire = feed as Feed | null;
 		assert.ok(wire);
@@ -171,9 +173,105 @@ test("real native transport reserves bounded Stop admission and sends cancellati
 	);
 	assert.equal(stopped.writes.length, 0);
 	const controlsOnly = transport();
-	const stops = Array.from({ length: 4 }, () => controlsOnly.request("lens-stop"));
+	const stops = Array.from({ length: 4 }, () =>
+		controlsOnly.request("lens-stop"),
+	);
 	await assert.rejects(controlsOnly.request("lens-stop"), /busy/);
 	for (let id = 1; id <= 4; id++)
 		controlsOnly.lines.emit("line", JSON.stringify({ id, value: true }));
 	await Promise.all(stops);
+});
+
+test("actual native overlay listener never renders or acknowledges an older slot generation", () => {
+	let listener:
+		| ((event: { payload: Record<string, unknown> }) => void)
+		| undefined;
+	let rendered: Record<string, unknown> | undefined;
+	const acknowledgements: Record<string, unknown>[] = [];
+	const source = fs.readFileSync(
+		new URL("../desktop/frontend/overlay/main.js", import.meta.url),
+		"utf8",
+	);
+	vm.runInNewContext(source.slice(source.indexOf("if (tauri && own)")), {
+		tauri: {
+			event: {
+				emit: (_name: string, payload: Record<string, unknown>) =>
+					acknowledgements.push(payload),
+			},
+		},
+		own: {
+			listen: (name: string, handler: typeof listener) => {
+				if (name === "overlay:show") listener = handler;
+			},
+		},
+		render: (payload: Record<string, unknown>) => {
+			rendered = payload;
+		},
+		document: { body: { classList: { toggle() {} } } },
+	});
+	assert.ok(listener);
+	listener({
+		payload: { id: "caption", generation: 2, text: "new", origin: [200, 200] },
+	});
+	listener({
+		payload: { id: "caption", generation: 1, text: "old", origin: [100, 100] },
+	});
+	listener({ payload: { id: "reused", generation: 2, text: "duplicate" } });
+	listener({ payload: { id: "reused", text: "unversioned" } });
+	assert.equal(rendered?.text, "new");
+	assert.deepEqual(rendered?.origin, [200, 200]);
+	assert.equal(acknowledgements.length, 1);
+	assert.equal(acknowledgements[0]?.generation, 2);
+	listener({ payload: { id: "reused", generation: 3, text: "new id" } });
+	assert.equal(rendered?.text, "new id");
+	assert.equal(acknowledgements.length, 2);
+});
+
+test("actual OCR recipe matches the installed Visual Studio major to available CMake generators", () => {
+	const source = fs.readFileSync(
+		new URL("../desktop/ocr-runtime.mjs", import.meta.url),
+		"utf8",
+	);
+	const start = source.indexOf("const installation = windows"),
+		end = source.indexOf("const cacheRoot");
+	assert.ok(start >= 0 && end > start);
+	const evaluate = (version: string, generators: string[]) =>
+		vm.runInNewContext(`${source.slice(start, end)}; toolchain`, {
+			windows: true,
+			path: { join: (...parts: string[]) => parts.join("/") },
+			process: { env: { "ProgramFiles(x86)": "C:/Program Files (x86)" } },
+			fs: {
+				readFileSync: () => "14.50\n",
+				readdirSync: () => ["10.0.26100.0"],
+			},
+			console: { log() {} },
+			output: (_file: string, args: string[]) =>
+				args.includes("-format")
+					? JSON.stringify([
+							{
+								installationPath: "C:/VisualStudio",
+								installationVersion: version,
+							},
+						])
+					: args.includes("capabilities")
+						? JSON.stringify({
+								generators: generators.map((name) => ({ name })),
+							})
+						: "cmake version 4.4.3",
+		});
+	const current = evaluate("18.10.12217.157", [
+		"Visual Studio 17 2022",
+		"Visual Studio 18 2026",
+	]);
+	assert.equal(current.generator, "Visual Studio 18 2026");
+	assert.equal(current.instance, "C:/VisualStudio");
+	assert.equal(
+		evaluate("17.14.0", ["Visual Studio 17 2022", "Visual Studio 18 2026"])
+			.generator,
+		"Visual Studio 17 2022",
+	);
+	assert.throws(
+		() => evaluate("18.10.12217.157", ["Visual Studio 17 2022"]),
+		/no generator/,
+	);
 });

@@ -202,8 +202,36 @@ replace feature-specific live acceptance or installed-app checks. Published
   The fixture now observes close with the same two-second deadline; both status
   and actual close remain required. Reset regression and all **872** unit tests,
   typecheck and desktop lint pass in an isolated index-equivalent snapshot.
-  This is a test-fixture correction; no product cause was evidenced. Final
-  Windows CI on the corrected candidate remains required; original red is retained.
+  This is a test-fixture correction; no product cause was evidenced. Both Windows
+  Tests workflows pass on `a034503` (push 38080809643, PR 38080812129), including
+  the corrected fixture. Candidate desktop/package checks remain separate;
+  original red is retained.
+- Independent review of the shared `a034503` phase found one additional overlay
+  ordering defect: concurrent shows could emit an older payload/placement after
+  the current reservation. An assertion executing the actual frontend listener
+  reproduced it. The correction serializes slot mutation, placement, payload
+  and visibility on the main thread and rejects stale frontend generations;
+  installed reproduction remains pending. The corrected commit needs its own
+  independent review.
+  Corrected working-tree checks pass: **877** unit tests, **149** native tests
+  with eleven ignored, typecheck/build/lint, fmt/Clippy, workflow YAML/actionlint
+  with the existing `xcode-27` runner-label allowance, and PowerShell AST syntax.
+  Clean committed `a034503` prebuild, staged standalone and desktop checks pass;
+  affected checks must be repeated on the corrected candidate.
+- Shared candidate Linux desktop run **38080809608** failed naturally while
+  compiling pinned Tesseract 5.5.2 (`cmake --build` exit 2, prebuild exit 1).
+  Its disabled-legacy source exclusions use absolute paths against a relative
+  source list, leaving `docqual.cpp` to compile with removed declarations.
+  The build recipe uses the supported default legacy compilation; all OCR
+  invocations retain fixed `--oem 1` and the same pinned English fast data.
+  Compiler/loader/PNG/TSV and extracted-package checks remain unproved until
+  corrected CI passes. Branch Windows validation now requires both NSIS and MSI.
+- The same shared desktop run failed independently on Windows before OCR
+  compilation: zlib configuration exited 1 because hardcoded Visual Studio
+  17 2022 had no installed instance. The recipe's `vswhere` toolchain discovery
+  must also drive its CMake generator/instance selection. No Windows OCR,
+  staged-runtime or installer checks ran in that failed job. This is a separate
+  build failure from Linux's disabled-legacy source-list mismatch.
 
 ## Keeping the board truthful
 
