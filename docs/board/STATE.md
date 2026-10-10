@@ -666,6 +666,10 @@ below is separately verified. Human feature/platform acceptance remains open.
   capabilities. Independent review identifies the native Windows GNU resource
   filename difference; the corrected MSVC-only guard preserves existing GNU
   behavior rather than imposing an invalid filename there.
+  Independent immutable review of the corrected `ca79fb5` passes with no remaining
+  findings. Local **895** Node tests, typecheck and desktop lint pass; focused
+  source checks cover MSVC output/missing-resource refusal, GNU/Linux skipping
+  and the unchanged Mac Swift rpath.
   A real Cargo fixture proves the generic argument reaches library unit tests;
   a native LLVM COFF probe deduplicates the repeated resource path. Actual MSVC
   linking, the fourteen native fixtures, runtime and installer checks remain
