@@ -25,7 +25,7 @@ const { title, description, path = '/' } = Astro.props;
     <a class="skip-link" href="#main">Skip to content</a>
     <header class="marketing-nav">
       <a href="/" aria-label="Frostdev home">
-        <img src="/projects/frostdev.webp" width="1280" height="269" alt="Frostdev" />
+        <img src="/projects/frostdev-icon-crystal.webp" width="192" height="192" alt="Frostdev" />
       </a>
       <nav aria-label="Main navigation">
         <a href="https://github.com/frostdev-ops">GitHub</a>
@@ -55,7 +55,7 @@ const { title, description, path = '/' } = Astro.props;
     font-size: 0.8rem;
     color: #b3c8dc;
   }
-  .marketing-nav img { width: 8rem; height: auto; }
+  .marketing-nav img { width: 3rem; height: 3rem; object-fit: contain; }
   nav { display: flex; gap: 1.75rem; }
   a { transition: color 0.2s; }
   a:hover { color: #9be7ff; }
