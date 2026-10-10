@@ -493,6 +493,25 @@ below is separately verified. Human feature/platform acceptance remains open.
   in-flight readers set native `active`; the zero-reader transition cancels,
   closes and drains the provider. No duplicate native demand API was introduced.
 
+- Wayland implementation is frozen as a separate ScreenCast-only provider and
+  exclusive capture-only media-helper mode. A private session/connection/FD and
+  stream serial bind one child; parent headers and post-transfer verification
+  reject stale owners, replay, source loss, changed geometry and oversized pixels.
+  Portal/session closure and cancellation revoke before cleanup; pending or failed
+  cleanup remains retained and blocks replacement/Stop acknowledgement. Application
+  identity is explicitly unknown, geometry frame-local, AX and overlays unavailable.
+  The existing live-reader demand contract supplies active admission and zero-reader
+  Stop. Five actual helper tests and seven provider tests await real Linux CI;
+  eleven exact-source extracted host regressions pass with disclosed fixtures.
+  **883** Node tests, typecheck, desktop lint, formatting and strict GNU metadata
+  checks pass. Full GNU helper checking stops before product source because this
+  Mac lacks `x86_64-linux-gnu-gcc`; lean real-GStreamer API metadata is compiled,
+  without native linking/execution. Provider SHA-256 is
+  `0081b29ac38e337079c1c5ff9a1f2051b96b831fe08bbe5048fb310a06db4811`;
+  helper is `b972f6b99f4a98bb56c89fff95d9d02df0be260833ebb4b9a7fa03dcba2d3dd0`.
+  Shared product attachment, independent immutable review, actual Linux CI and
+  GNOME/KDE installed acceptance remain pending; no readiness is claimed.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`

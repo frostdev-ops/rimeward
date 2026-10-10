@@ -430,6 +430,318 @@ fn snapshot(value: &Value) -> Result<Value, String> {
     let _ = pipeline.set_state(gst::State::Null);
     result
 }
+/// Lens is an exclusive capture-only process mode. It never constructs Capture,
+/// Viewer, audio, WebRTC or the remote-control output queue.
+#[cfg(target_os = "linux")]
+fn lens_pipewire() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{Arc, Mutex};
+    let fd = std::env::var("RIMEWARD_LENS_PIPEWIRE_FD")?.parse::<i32>()?;
+    if fd != 3 {
+        return Err("Private Lens descriptor required".into());
+    }
+    let mut stdin = std::io::BufReader::new(std::io::stdin());
+    let bind = lens_command(&mut stdin)?;
+    let owner = bind["owner"]
+        .as_u64()
+        .filter(|v| *v != 0)
+        .ok_or("Invalid Lens owner")?;
+    if bind["command"] != "bind" {
+        return Err("Invalid Lens bind".into());
+    }
+    let source = lens_pipewire_source(&bind, fd)?;
+    let pipeline = gst::parse::launch(&format!("{source} ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! videoconvert ! video/x-raw,format=BGRA ! appsink name=lens sync=false max-buffers=1 drop=true"))?.downcast::<gst::Pipeline>().map_err(|_| "Invalid Lens pipeline")?;
+    let sink = pipeline
+        .by_name("lens")
+        .ok_or("Missing Lens sink")?
+        .downcast::<gst_app::AppSink>()
+        .map_err(|_| "Invalid Lens sink")?;
+    let bus_failed = lens_bus_failed(&pipeline)?;
+    #[derive(Default)]
+    struct Latest {
+        seq: u64,
+        size: Option<[u32; 2]>,
+        pixels: Option<Arc<[u8]>>,
+        at: Option<Instant>,
+        failed: bool,
+    }
+    let latest = Arc::new(Mutex::new(Latest::default()));
+    let captured = latest.clone();
+    sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let mut latest = captured.lock().map_err(|_| gst::FlowError::Error)?;
+                if latest.failed {
+                    return Err(gst::FlowError::Error);
+                }
+                if latest
+                    .at
+                    .is_some_and(|at| at.elapsed() < Duration::from_millis(100))
+                {
+                    return Ok(gst::FlowSuccess::Ok);
+                }
+                let packed = lens_pack_sample(&sample);
+                let Some(seq) = latest.seq.checked_add(1) else {
+                    latest.failed = true;
+                    return Err(gst::FlowError::Error);
+                };
+                match packed {
+                    Ok((size, pixels)) if latest.size.is_none_or(|old| old == size) => {
+                        latest.size = Some(size);
+                        latest.pixels = Some(pixels.into());
+                        latest.seq = seq;
+                        latest.at = Some(Instant::now());
+                        Ok(gst::FlowSuccess::Ok)
+                    }
+                    _ => {
+                        latest.failed = true;
+                        latest.pixels = None;
+                        Err(gst::FlowError::Error)
+                    }
+                }
+            })
+            .build(),
+    );
+    let (commands, input) = mpsc::sync_channel(4);
+    std::thread::spawn(move || loop {
+        let value = lens_command(&mut stdin);
+        let done = value.is_err();
+        if commands.try_send(value).is_err() || done {
+            break;
+        }
+    });
+    let result = (|| {
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|_| "Lens source unavailable")?;
+        let mut output = std::io::stdout().lock();
+        let mut request = 0;
+        loop {
+            let value = match input.recv_timeout(Duration::from_millis(50)) {
+                Ok(Ok(value)) => value,
+                Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            };
+            if value["owner"].as_u64() != Some(owner) {
+                return Err("Invalid Lens owner");
+            }
+            if value["command"] == "stop" {
+                break;
+            }
+            let next = value["request"]
+                .as_u64()
+                .filter(|id| *id > request)
+                .ok_or("Invalid Lens request")?;
+            if value["command"] != "frame" && value["command"] != "verify" {
+                return Err("Invalid Lens request");
+            }
+            request = next;
+            let after = value["after"].as_u64().ok_or("Invalid Lens sequence")?;
+            let (failed, seq, size, pixels) = {
+                let latest = latest.lock().map_err(|_| "Lens source unavailable")?;
+                (
+                    latest.failed,
+                    latest.seq,
+                    latest.size,
+                    latest.pixels.clone(),
+                )
+            };
+            if value["command"] == "verify" {
+                if after == 0 || after > seq {
+                    return Err("Invalid Lens sequence");
+                }
+                let failed = failed || bus_failed.load(std::sync::atomic::Ordering::Acquire);
+                output
+                    .write_all(&lens_header(
+                        if failed { 2 } else { 0 },
+                        owner,
+                        request,
+                        after,
+                        [0, 0],
+                    ))
+                    .and_then(|()| output.flush())
+                    .map_err(|_| "Lens output closed")?;
+                continue;
+            }
+            let status = if failed || bus_failed.load(std::sync::atomic::Ordering::Acquire) {
+                2
+            } else if seq > after && pixels.is_some() {
+                1
+            } else {
+                0
+            };
+            let size = if status == 1 {
+                size.ok_or("Invalid Lens frame")?
+            } else {
+                [0, 0]
+            };
+            let header = lens_header(status, owner, request, seq, size);
+            // A single bounded latest frame, with raw binary pixels over this
+            // private pipe. No base64, observed text, native IDs or public handle.
+            output
+                .write_all(&header)
+                .map_err(|_| "Lens output closed")?;
+            if status == 1 {
+                output
+                    .write_all(pixels.as_ref().ok_or("Invalid Lens frame")?)
+                    .map_err(|_| "Lens output closed")?;
+            }
+            output.flush().map_err(|_| "Lens output closed")?;
+        }
+        Ok(())
+    })();
+    let stopped = pipeline
+        .set_state(gst::State::Null)
+        .map_err(|_| "Lens shutdown failed");
+    result?;
+    stopped?;
+    Ok(())
+}
+#[cfg(target_os = "linux")]
+fn lens_bus_failed(
+    pipeline: &gst::Pipeline,
+) -> Result<std::sync::Arc<std::sync::atomic::AtomicBool>, String> {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let failed = Arc::new(AtomicBool::new(false));
+    let observed = failed.clone();
+    pipeline
+        .bus()
+        .ok_or("Missing Lens bus")?
+        .set_sync_handler(move |_, message| {
+            if matches!(
+                message.view(),
+                gst::MessageView::Error(_) | gst::MessageView::Eos(_)
+            ) {
+                observed.store(true, Ordering::Release);
+            }
+            // This private mode never consumes diagnostics or builds an unbounded
+            // native bus queue. An error/EOS permanently refuses further frames.
+            gst::BusSyncReply::Drop
+        });
+    Ok(failed)
+}
+#[cfg(target_os = "linux")]
+fn lens_command(reader: &mut impl BufRead) -> Result<Value, String> {
+    let mut bytes = Vec::new();
+    let n = reader
+        .take(4097)
+        .read_until(b'\n', &mut bytes)
+        .map_err(|_| "Lens input closed")?;
+    if n == 0 || n > 4096 || bytes.last() != Some(&b'\n') {
+        return Err("Invalid Lens command".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "Invalid Lens command".into())
+}
+#[cfg(target_os = "linux")]
+fn lens_pipewire_source(bind: &Value, fd: i32) -> Result<String, String> {
+    let node = bind["node"]
+        .as_u64()
+        .filter(|v| *v > 0 && *v <= u64::from(u32::MAX))
+        .ok_or("Invalid Lens stream")?;
+    let target = if bind["serial"].is_null() {
+        format!("path={node}")
+    } else {
+        let serial = bind["serial"]
+            .as_u64()
+            .filter(|v| *v > 0)
+            .ok_or("Invalid Lens serial")?;
+        format!("target-object={serial}")
+    };
+    // Pinned PipeWire 1.4.9 uses PW_STREAM_FLAG_DONT_RECONNECT. A source loss
+    // fails this process instead of following a reused numeric node ID.
+    Ok(format!("pipewiresrc fd={fd} {target} do-timestamp=true"))
+}
+#[cfg(target_os = "linux")]
+fn lens_header(status: u8, owner: u64, request: u64, seq: u64, size: [u32; 2]) -> [u8; 40] {
+    let mut header = [0; 40];
+    header[..4].copy_from_slice(b"RLN1");
+    header[4] = status;
+    header[8..16].copy_from_slice(&owner.to_be_bytes());
+    header[16..24].copy_from_slice(&request.to_be_bytes());
+    header[24..32].copy_from_slice(&seq.to_be_bytes());
+    header[32..36].copy_from_slice(&size[0].to_be_bytes());
+    header[36..40].copy_from_slice(&size[1].to_be_bytes());
+    header
+}
+#[cfg(target_os = "linux")]
+fn lens_pack_sample(sample: &gst::Sample) -> Result<([u32; 2], Vec<u8>), String> {
+    use gst_video::prelude::*;
+    let caps = sample.caps().ok_or("Missing Lens caps")?;
+    let info = gst_video::VideoInfo::from_caps(caps).map_err(|_| "Invalid Lens caps")?;
+    if info.format() != gst_video::VideoFormat::Bgra || info.n_planes() != 1 {
+        return Err("Invalid Lens format".into());
+    }
+    let buffer = sample.buffer_owned().ok_or("Missing Lens buffer")?;
+    if buffer.size() > 32 * 1024 * 1024 {
+        return Err("Oversized Lens buffer".into());
+    }
+    let (offset, stride) = if let Some(meta) = buffer.meta::<gst_video::VideoMeta>() {
+        if meta.format() != gst_video::VideoFormat::Bgra
+            || meta.n_planes() != 1
+            || [meta.width(), meta.height()] != [info.width(), info.height()]
+        {
+            return Err("Invalid Lens meta".into());
+        }
+        (meta.offset()[0], meta.stride()[0])
+    } else {
+        (info.offset()[0], info.stride()[0])
+    };
+    let stride = usize::try_from(stride).map_err(|_| "Invalid Lens stride")?;
+    // VideoFrame::plane_data exposes stride*height bytes, including final-row
+    // padding. Prove that entire mapped plane exists before requesting a slice.
+    if info.width() == 0
+        || info.height() == 0
+        || info.width() > 8192
+        || info.height() > 8192
+        || stride < info.width() as usize * 4
+        || stride
+            .checked_mul(info.height() as usize)
+            .and_then(|length| offset.checked_add(length))
+            .is_none_or(|end| end > buffer.size())
+    {
+        return Err("Invalid Lens size/stride".into());
+    }
+    let frame = gst_video::VideoFrame::from_buffer_readable(buffer, &info)
+        .map_err(|_| "Invalid Lens buffer")?;
+    let size = [frame.width(), frame.height()];
+    if size != [info.width(), info.height()] || frame.n_planes() != 1 {
+        return Err("Invalid Lens geometry".into());
+    }
+    let stride = usize::try_from(frame.plane_stride()[0]).map_err(|_| "Invalid Lens stride")?;
+    let pixels = lens_pack_rows(
+        size,
+        stride,
+        frame.plane_data(0).map_err(|_| "Invalid Lens plane")?,
+    )?;
+    Ok((size, pixels))
+}
+#[cfg(target_os = "linux")]
+fn lens_pack_rows(size: [u32; 2], stride: usize, bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let [w, h] = size.map(|v| v as usize);
+    let row = w.checked_mul(4).ok_or("Invalid Lens size")?;
+    let length = row.checked_mul(h).ok_or("Invalid Lens size")?;
+    if w == 0
+        || h == 0
+        || w > 8192
+        || h > 8192
+        || length > 32 * 1024 * 1024
+        || stride < row
+        || stride
+            .checked_mul(h - 1)
+            .and_then(|v| v.checked_add(row))
+            .is_none_or(|end| end > bytes.len())
+    {
+        return Err("Invalid Lens size/stride".into());
+    }
+    let mut packed = Vec::with_capacity(length);
+    for y in 0..h {
+        packed.extend_from_slice(&bytes[y * stride..y * stride + row]);
+    }
+    Ok(packed)
+}
 #[cfg(target_os = "linux")]
 fn linux_audio() -> Result<gst::Element, String> {
     let monitor = gst::DeviceMonitor::new();
@@ -494,6 +806,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("GST_PLUGIN_PATH", "");
     std::env::set_var("GST_PLUGIN_SYSTEM_PATH", &plugins);
     gst::init()?;
+    #[cfg(target_os = "linux")]
+    if std::env::args().any(|a| a == "--lens-pipewire") {
+        if gst::version().0 != 1 || gst::version().1 != 28 || gst::version().2 != 6 {
+            return Err("GStreamer 1.28.6 required".into());
+        }
+        if synthetic {
+            return Err("Lens requires its private portal descriptor".into());
+        }
+        return lens_pipewire();
+    }
     gstrsrtp::plugin_register_static()?;
     if gst::version().0 != 1 || gst::version().1 != 28 || gst::version().2 != 6 {
         return Err("GStreamer 1.28.6 required".into());
@@ -742,3 +1064,118 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 use std::str::FromStr;
+
+#[cfg(all(test, target_os = "linux"))]
+mod lens_tests {
+    use super::*;
+    #[test]
+    fn lens_real_bus_end_is_terminal_without_a_message_backlog() {
+        gst::init().unwrap();
+        let pipeline = gst::Pipeline::new();
+        let failed = lens_bus_failed(&pipeline).unwrap();
+        assert!(!failed.load(std::sync::atomic::Ordering::Acquire));
+        let bus = pipeline.bus().unwrap();
+        bus.post(gst::message::Eos::new()).unwrap();
+        assert!(failed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(bus.pop().is_none());
+    }
+    #[test]
+    fn lens_real_video_frame_mapping_preserves_meta_offset_stride_and_pixels() {
+        gst::init().unwrap();
+        let info = gst_video::VideoInfo::builder(gst_video::VideoFormat::Bgra, 1, 2)
+            .build()
+            .unwrap();
+        let caps = info.to_caps().unwrap();
+        let mut buffer = gst::Buffer::from_mut_slice(vec![
+            99, 99, 99, 99, 1, 2, 3, 4, 99, 99, 99, 99, 5, 6, 7, 8, 99, 99, 99, 99,
+        ]);
+        gst_video::VideoMeta::add_full(
+            buffer.make_mut(),
+            gst_video::VideoFrameFlags::empty(),
+            gst_video::VideoFormat::Bgra,
+            1,
+            2,
+            &[4],
+            &[8],
+        )
+        .unwrap();
+        let sample = gst::Sample::builder().caps(&caps).buffer(&buffer).build();
+        assert_eq!(
+            lens_pack_sample(&sample),
+            Ok(([1, 2], vec![1, 2, 3, 4, 5, 6, 7, 8]))
+        );
+        let mut truncated = gst::Buffer::from_mut_slice(vec![0; 16]);
+        gst_video::VideoMeta::add_full(
+            truncated.make_mut(),
+            gst_video::VideoFrameFlags::empty(),
+            gst_video::VideoFormat::Bgra,
+            1,
+            2,
+            &[4],
+            &[8],
+        )
+        .unwrap();
+        let sample = gst::Sample::builder()
+            .caps(&caps)
+            .buffer(&truncated)
+            .build();
+        assert_eq!(
+            lens_pack_sample(&sample),
+            Err("Invalid Lens size/stride".into())
+        );
+        let wrong = gst_video::VideoInfo::builder(gst_video::VideoFormat::Rgb, 1, 2)
+            .build()
+            .unwrap()
+            .to_caps()
+            .unwrap();
+        let sample = gst::Sample::builder().caps(&wrong).buffer(&buffer).build();
+        assert!(lens_pack_sample(&sample).is_err());
+    }
+    #[test]
+    fn lens_rows_keep_target_pixels_and_drop_padding() {
+        assert_eq!(
+            lens_pack_rows([1, 2], 8, &[1, 2, 3, 4, 99, 99, 99, 99, 5, 6, 7, 8]),
+            Ok(vec![1, 2, 3, 4, 5, 6, 7, 8])
+        );
+        assert!(lens_pack_rows([1, 2], 8, &[0; 11]).is_err());
+        assert!(lens_pack_rows([2, 1], 4, &[0; 8]).is_err());
+        assert!(lens_pack_rows([0, 1], 4, &[]).is_err());
+        assert!(lens_pack_rows([8192, 8192], 32768, &[]).is_err());
+        assert!(lens_pack_rows([1, 2], usize::MAX, &[0; 8]).is_err());
+    }
+    #[test]
+    fn lens_commands_and_private_target_are_bounded() {
+        assert_eq!(
+            lens_pipewire_source(&json!({"node":7,"serial":123}), 3),
+            Ok("pipewiresrc fd=3 target-object=123 do-timestamp=true".into())
+        );
+        assert_eq!(
+            lens_pipewire_source(&json!({"node":7,"serial":null}), 3),
+            Ok("pipewiresrc fd=3 path=7 do-timestamp=true".into())
+        );
+        for value in [
+            json!({"node":0}),
+            json!({"node":u64::MAX}),
+            json!({"node":7,"serial":0}),
+            json!({"node":7,"serial":"123 ! audiotestsrc"}),
+        ] {
+            assert!(lens_pipewire_source(&value, 3).is_err());
+        }
+        let mut reader = std::io::Cursor::new(b"{\"command\":\"frame\"}\n".as_slice());
+        assert_eq!(lens_command(&mut reader).unwrap()["command"], "frame");
+        let mut oversized = std::io::Cursor::new(vec![b' '; 4097]);
+        assert!(lens_command(&mut oversized).is_err());
+        let mut incomplete = std::io::Cursor::new(b"{}".as_slice());
+        assert!(lens_command(&mut incomplete).is_err());
+    }
+    #[test]
+    fn lens_header_has_exact_private_owner_and_frame_geometry() {
+        let header = lens_header(1, 4, 9, 12, [2, 3]);
+        assert_eq!(&header[..8], &[b'R', b'L', b'N', b'1', 1, 0, 0, 0]);
+        assert_eq!(u64::from_be_bytes(header[8..16].try_into().unwrap()), 4);
+        assert_eq!(u64::from_be_bytes(header[16..24].try_into().unwrap()), 9);
+        assert_eq!(u64::from_be_bytes(header[24..32].try_into().unwrap()), 12);
+        assert_eq!(u32::from_be_bytes(header[32..36].try_into().unwrap()), 2);
+        assert_eq!(u32::from_be_bytes(header[36..40].try_into().unwrap()), 3);
+    }
+}
