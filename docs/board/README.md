@@ -103,7 +103,7 @@ repository fallback packaging remains available.
 
 | ID | Title | OS | Depends on | Status | Branch | Evidence | Acceptance / next step |
 |---|---|---|---|---|---|---|---|
-| RIME-48 | Qualify current Mac background-control build | macOS | RIME-47 | Planned | dev/1.0.18 | [Qualification boundary](DELIVERY.md) | Signed temporary exact-build artifact and parent/worker/guardian safety matrix; extend production allowlist only after passing evidence. |
+| RIME-48 | Qualify current Mac background-control build | macOS | RIME-47 | Planned | dev/1.0.19 | [Qualification boundary](DELIVERY.md) | Signed temporary exact-build artifact and parent/worker/guardian safety matrix; extend the next unpublished candidate's allowlist only after passing evidence. Published tags remain immutable. |
 | RIME-49 | Implement shared portable Lens and OCR | Windows, Linux | RIME-47, RIME-24 | In progress | dev/1.0.19 | [Portable contracts](DELIVERY.md), [phase evidence](STATE.md) | Shared lifecycle/OCR/cancellation/calibration and pinned packaging implemented; local checks pass. Independent commit review and Windows/Linux packaged OCR CI remain required before ready. Concrete capture awaits RIME-50–52. |
 | RIME-50 | Implement Windows native Lens | Windows | RIME-49 | Planned | dev/1.0.19 | [WGC/UIA contract](DELIVERY.md) | Exact HWND/process-lifetime capture, bounded UIA, capture-time DPI, refusal/lifecycle and native overlays with focused tests. |
 | RIME-51 | Implement Linux X11 native Lens | Linux | RIME-49 | Planned | dev/1.0.19 | [X11/AT-SPI contract](DELIVERY.md) | Proven window identity, capture/AT-SPI/OCR, lifecycle and native overlays with focused tests. |

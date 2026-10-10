@@ -54,7 +54,9 @@ human results block their gates while independent preparation continues.
    text, concurrent foreground input, web-text refusal, Stop with held input,
    worker/parent failure, lock, revocation, Spaces and external dialogs. Verify
    balanced releases, no replay, independent Stop and local-only Resume. Only
-   passing evidence permits the identical exact-build addition on dev/1.0.18.
+   passing evidence permits the identical exact-build addition on the next
+   unpublished release candidate. The 1.0.18 tags are already immutable;
+   qualification remains pending on dev/1.0.19 while this Mac is locked.
    Failure discards the qualification change and preserves production refusal.
 4. RIME-46 stages signed committed candidates from clean detached /tmp checkouts
    before acceptance starts. Its candidate-ready handoff is distinct from ready;

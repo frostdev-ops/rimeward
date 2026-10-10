@@ -145,8 +145,9 @@ Preserve the profile, avoid remote pairing and use disposable native documents.
 
 All rows must pass on the signed normal host. Failure discards the qualification
 change and preserves production refusal. Only complete passing evidence permits
-the identical exact-build addition on `dev/1.0.18`; revalidate the resulting signed
-installed candidate for RIME-23. Do not broaden to an OS-version family.
+the identical exact-build addition on the next unpublished release candidate,
+currently `dev/1.0.19`; revalidate the resulting signed installed candidate for
+RIME-23. Published 1.0.18 tags remain immutable. Do not broaden to an OS-version family.
 
 ## RIME-33 installed Remote Desktop
 
