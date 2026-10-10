@@ -16,14 +16,15 @@ human-run provider acceptance.
 | Tagged desktop checks | Windows NSIS/MSI and Linux DEB/AppImage passed. Original Mac signer predicate failed; corrected audit passed on the unchanged DMG and frozen source | [Original tagged run](https://github.com/frostdev-ops/rimeward/actions/runs/38074080663), [corrected immutable-DMG audit](https://github.com/frostdev-ops/rimeward/actions/runs/38077738647) |
 | Published server | **1.0.18**, exact `5ae7ea0` | [Server release](https://github.com/frostdev-ops/rimeward/releases/tag/v1.0.18), [tag workflow](https://github.com/frostdev-ops/rimeward/actions/runs/38074080686) |
 | Published desktop | **1.0.18**, twelve unchanged platform/updater assets; published 2026-10-10T18:58:23Z | [Desktop release](https://github.com/frostdev-ops/rimeward/releases/tag/desktop-v1.0.18) |
-| Installed Mac app | **1.0.17**, strict signature/team valid; authenticated native runtime healthy with nine pages/fifty wards. Mac locked, installation pending | Existing-profile read and updater offer **1.0.17 → 1.0.18**; no unsolicited model calls |
+| Installed Mac app | **1.0.18**, strict Developer ID/team, notarized Gatekeeper and stapler valid; restored native runtime/dashboard healthy | Quiesced profile backup, nine identical pages/all fifty ward IDs, visible connected dashboard, authenticated production relay and updater current **1.0.18**; no unsolicited model calls |
 | Homebrew cask | **1.0.18**, public and refreshed local URL/hash match accepted DMG | [Publication run](https://github.com/frostdev-ops/rimeward/actions/runs/38077925212) |
-| Production | **1.0.18**, `5ae7ea0`; PM2/Node 26.10.0/SQLite, origin/public HTTP and authenticated build stamp passed | Supported online DB plus application/config rollback backup before clean deployment; authenticated production-to-installed-1.0.17 relay passed |
+| Production | **1.0.18**, `5ae7ea0`; PM2/Node 26.10.0/SQLite, origin/public HTTP and authenticated build stamp passed | Supported online DB plus application/config rollback backup before clean deployment; authenticated production-to-installed-1.0.18 relay passed |
 | AUR package | Publication and installation acceptance explicitly retired; fallback retained | User decision **Skip AUR**, RIME-43 |
 
 Passing build workflows establish the recorded revision's CI result. They do not
 replace feature-specific live acceptance or installed-app checks. Published
-1.0.18 is not evidence of an installed 1.0.18 app or live provider acceptance.
+1.0.18 alone is not installed-app or live provider evidence; the Mac installation
+below is separately verified. Human feature/platform acceptance remains open.
 
 ## Branch and worktree disposition
 
@@ -411,6 +412,30 @@ replace feature-specific live acceptance or installed-app checks. Published
   isolated Xvfb, OCR and extracted-package checks on this candidate remain
   required; neither compiled platform fixtures nor generated media establish
   installed, provider, physical latency or soak acceptance.
+
+- RIME-46 final installation, **2026-10-10T21:44Z**, uses the unchanged published
+  arm64 DMG, SHA-256
+  `0f287091cb5e8a6c78e8fdfb4b08e61aa8d4205e5f4284d1e95a8afeefb6a6b7`,
+  on M5 Pro/macOS 27.0.1 build `26A434`. Fresh authenticated checks find no active
+  local Rime/voice/native/PTY or Remote Desktop sessions. The release guide's
+  graceful AppleScript Quit succeeds and owned processes/listener stop. The
+  final quiesced backup has **2037** cloned files, three nonempty SQLite snapshots
+  with integrity checks, and five external project roots excluded. Initial
+  incomplete attempts are marked and are not accepted backups: the stopped
+  knowledge WAL database needed SQLite sidecar creation; the successful backup
+  uses the supported backup API on an existing read/write connection and closes
+  it explicitly, without changing application data or journal configuration.
+  The old 1.0.17 app is preserved in a unique Trash entry and its Launch Services
+  entry unregistered. The installed app passes strict deep seal/version/team;
+  source DMG Gatekeeper/stapler pass. Authenticated native runtime returns nine
+  identical pages/all fifty prior ward IDs; all three live database integrity
+  checks, project identities/roots and conversation ownership match the backup.
+  CUA now shows the restored dashboard, history/browser tabs and connected-server
+  sync. The authenticated `frostdev.io`-to-installed-desktop relay passes, and the
+  updater reports current/latest 1.0.18 with no update available. No model/provider
+  call, credential reset or TCC change was made. RIME-46's release/install gates
+  pass under the agreed CI/CD publication adjustment; human feature/platform
+  checks and current-Mac background qualification remain separate open packages.
 
 ## Keeping the board truthful
 

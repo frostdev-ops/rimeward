@@ -56,7 +56,8 @@ human results block their gates while independent preparation continues.
    balanced releases, no replay, independent Stop and local-only Resume. Only
    passing evidence permits the identical exact-build addition on the next
    unpublished release candidate. The 1.0.18 tags are already immutable;
-   qualification remains pending on dev/1.0.19 while this Mac is locked.
+   qualification remains pending on dev/1.0.19. The Mac app is now reachable
+   through CUA after its verified 1.0.18 installation; this is not qualification.
    Failure discards the qualification change and preserves production refusal.
 4. RIME-46 stages signed committed candidates from clean detached /tmp checkouts
    before acceptance starts. Its candidate-ready handoff is distinct from ready;
@@ -80,9 +81,10 @@ human results block their gates while independent preparation continues.
 
 ## Portable native Lens: 1.0.19
 
-Use dev/1.0.19 after baseline distribution verification. With 1.0.18 published,
-independent implementation can proceed while the locked Mac installation gate
-remains pending; RIME-46 stays open until its full exit criteria pass.
+Use dev/1.0.19 after baseline distribution verification. Baseline 1.0.18 is now
+published and installed on this Mac with preserved profile, visible dashboard,
+sync and authenticated relay evidence; RIME-46's release gates pass. Manual
+feature/platform acceptance and exact-build Mac qualification remain open.
 RIME-49 lands first, then Windows and Linux
 owners work concurrently. Linux completes X11 before Wayland integration. One
 integration owner controls shared native runtime/contracts/Cargo/prebuild edits.

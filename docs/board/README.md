@@ -11,7 +11,7 @@ use macOS, Windows, or Linux. Hooks are disabled.
 
 Snapshot: **2026-10-10**, local and GitHub `main` **5ae7ea0**, deployed website and
 published server/desktop/Homebrew **1.0.18**. Active `dev/1.0.19` source is **1.0.19**;
-installed Mac remains **1.0.17** while its locked session prevents installation.
+installed Mac is now **1.0.18** with preserved profile and verified sync/relay.
 See [state and evidence](STATE.md) for the live CI, release and branch checks.
 
 **Merged** means implementation in main; live acceptance is a separate package.
@@ -139,7 +139,7 @@ delivered milestones and do not identify active work.
 |---|---|---|---|---|---|---|---|
 | RIME-42 | Finish Arch fallback installation documentation | Linux | RIME-41 | Done | dev/1.0.18 | [Reviewed source change 73d3e70](https://github.com/frostdev-ops/rimeward/commit/73d3e70); public wiki 87051d1 | Integrated two-file fallback changes; published current Desktop Setup source without changing other wiki pages. |
 | RIME-43 | Retire AUR publication from release scope | Linux | RIME-41, RIME-42 | Done | dev/1.0.18 | User decision 2026-10-10: Skip AUR; journal ready as retirement | Publication/install acceptance retired, not shipped or passed. Automatic release hook disabled; manual publisher and repository fallback packaging retained. |
-| RIME-46 | Complete 1.0.18 release and desktop distribution | Shared | RIME-27, RIME-35, RIME-42, RIME-44, RIME-47 | In progress | dev/1.0.18 | [Merged PR #16](https://github.com/frostdev-ops/rimeward/pull/16), [CI and delivery](STATE.md) | Server/desktop/production and verified updater/cask delivered at 5ae7ea0. Final ready still requires profile-preserving Mac installation, restored dashboard/sync and post-install authenticated relay; Mac session locked. Manual feature/platform acceptance remains separate. |
+| RIME-46 | Complete 1.0.18 release and desktop distribution | Shared | RIME-27, RIME-35, RIME-42, RIME-44, RIME-47 | Done | dev/1.0.18 | [Merged PR #16](https://github.com/frostdev-ops/rimeward/pull/16), [CI and delivery](STATE.md); journal ready 2026-10-10 | Server/desktop/production, updater/cask and profile-preserving Mac installation verified at 5ae7ea0. Restored dashboard is visible, connected sync and authenticated production relay pass. Manual feature/platform acceptance remains separate. |
 | RIME-54 | Publish and verify 1.0.19 native Lens release | Shared | RIME-26, RIME-46, RIME-53 | Planned | dev/1.0.19 | [Second release](DELIVERY.md) | Publication may advance on CI/CD and packaged-runtime evidence; final ready also requires manual installed acceptance, updater/Homebrew and affected acceptance on the promoted revision. AUR is retired. |
 
 ## Board setup
