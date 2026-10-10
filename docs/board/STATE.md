@@ -294,6 +294,39 @@ replace feature-specific live acceptance or installed-app checks. Published
   provenance. Isolated checks exercise this exact assertion block; actual OCR
   and extracted-package execution remain pending on the next candidate.
 
+- Shared `802355a` passes independent immutable review (**877** unit/**153**
+  native passes, eleven ignored) and clean committed local prebuild, staged
+  desktop/standalone and nested Developer ID signing. Its local app-only build
+  passes version 1.0.19, strict deep Developer ID verification and contained
+  standalone/generated four-viewer fault-media checks. Local updater archive
+  generation was disabled for this app proof; distributed configuration is
+  unchanged. No notarization, installation or physical acceptance is claimed.
+- Desktop run **38084491542** fails Linux before Lens/OCR/native validation at
+  Astro `CannotFetchFontFile`: binary Google font fetch failed, build child exit
+  1/signal null. The network subtype is unreported. Push/PR Tests and server
+  pass; the other desktop jobs continue naturally. This is separate from all
+  recorded native/OCR failures. The minimal shared build fix retries only
+  HTTPS Google-font GET failures and restores the native fetch after builds.
+  An actual full Astro reproduction of the exact URL fails after one attempt
+  without the fix and succeeds after two with it; all **112** emitted font names
+  and SHA-256 hashes are identical. Warm build makes no requests; exhaustion
+  still fails after three and restores fetch. **883** unit tests, typecheck,
+  desktop lint and focused provider/theme/lifecycle checks pass locally.
+  Real corrected desktop CI remains pending.
+- RIME-50/51 exclusive platform modules may proceed against the landed,
+  independently reviewed shared contract while its package gates remain open.
+  Integration, promotion and `ready` still require actual checks. One coordinator
+  and three implementation agents own Windows, Linux and shared integration;
+  the coordinator monitors CI. Ordinary servers never gain native execution.
+- RIME-50 has a concrete geometry contract gate: the selected WGC frame API
+  exposes rendered content dimensions and compositor time, but no historical
+  HWND bounds/DPI. Out-of-context window events are asynchronous; callback-time
+  queries alone do not prove capture-time geometry. The adapter currently
+  refuses capture/AX/overlays. A user decision on frame-local pixel geometry
+  versus the original strict DPI contract is pending; no requirement is silently
+  relaxed. X11 AT-SPI association also remains unproved and AX stays unavailable
+  until an exact association is established.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`

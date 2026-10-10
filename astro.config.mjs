@@ -2,6 +2,7 @@
 import { defineConfig, fontProviders } from 'astro/config';
 import node from '@astrojs/node';
 import tailwindcss from '@tailwindcss/vite';
+import { fontFetchRetry } from './ops/font-fetch.mjs';
 
 // The font catalogue lives in ONE place — src/lib/theme.ts — and this derives
 // the build's download list from it, so `var(--font-<id>)` always resolves for
@@ -85,7 +86,7 @@ export default defineConfig({
   // one domain.
   security: { checkOrigin: false },
   vite: {
-    plugins: [/** @type {any} */ (tailwindcss())],
+    plugins: [fontFetchRetry(), /** @type {any} */ (tailwindcss())],
     // better-sqlite3 is a native module — never bundle it.
     ssr: { external: ['better-sqlite3'] },
     build: {
