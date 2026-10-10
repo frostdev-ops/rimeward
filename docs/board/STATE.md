@@ -184,6 +184,14 @@ replace feature-specific live acceptance or installed-app checks. Published
 - RIME-49 can proceed independently after baseline distribution verification;
   it does not depend on RIME-46. Mac qualification/manual provider/platform and
   RIME-46 installation exit criteria remain pending, never implicitly ready.
+- Follow-up workflow-only `f723d30` Windows CI failed one CONNECT fixture with
+  `ECONNRESET`; all six Chromium lifecycle checks passed. A controlled real socket
+  reset reproduced `events.once('close')` rejecting before the actual close.
+  The fixture now observes close with the same two-second deadline; both status
+  and actual close remain required. Reset regression and all **872** unit tests,
+  typecheck and desktop lint pass in an isolated index-equivalent snapshot.
+  This is a test-fixture correction; no product cause was evidenced. Final
+  Windows CI on the corrected candidate remains required; original red is retained.
 
 ## Keeping the board truthful
 
