@@ -475,6 +475,24 @@ below is separately verified. Human feature/platform acceptance remains open.
   installer work continues naturally. These checks precede native attachment;
   they do not execute the new X11 provider fixture or Windows native regressions.
 
+- Follow-up shared correction makes computed portable outer overlay bounds integral
+  native pixels while preserving caption content/anchor coordinates. The actual
+  X11 geometry validator now runs before pool reservation; typed invalid-input
+  refusal preserves existing captions, while genuine native proof failure still
+  revokes. Interaction-off and local Escape use the owned teardown gate even
+  after source/capability loss, propagate partial native failures and permit retry.
+  Three focused production-type regressions pass; **162** Mac native tests pass
+  with eleven existing hardware cases ignored. Formatting, strict Mac Clippy and
+  actual Windows/Linux source metadata checks pass with disclosed GUI/session
+  shims. Portable SHA-256 is
+  `42e5cce558bc9282841fdf2918ecf41304bf06c28a01b5aebbf76407f679ed38`;
+  overlay is `b18ecedf323e20b56ef6781374eebe86c3895ea33c8ee9371e20e46f97ac77b1`.
+  The native X11 validator body is unchanged; only sibling visibility changes.
+  Immutable independent review and real candidate/platform/package CI remain
+  gates. Tracing the existing Node demand path confirms only subscriptions and
+  in-flight readers set native `active`; the zero-reader transition cancels,
+  closes and drains the provider. No duplicate native demand API was introduced.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`

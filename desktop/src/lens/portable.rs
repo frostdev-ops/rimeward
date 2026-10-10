@@ -880,8 +880,11 @@ impl Lens {
             "overlay-show" => self.overlay_show(value, cancellation).await,
             #[cfg(not(target_os = "macos"))]
             "overlay-interactive" => {
+                if value["on"] != true {
+                    return self.disable_interaction().await;
+                }
                 let source = self.overlay_source(self.bridge.epoch(), cancellation)?;
-                self.interactive(source, value["on"] == true).await
+                self.interactive(source, true).await
             }
             _ => Err("unavailable".into()),
         }
@@ -931,7 +934,7 @@ impl Lens {
         let overlay = self.overlay().ok_or("unavailable")?;
         source
             .interactive(move || {
-                overlay.set_interactive(on);
+                overlay.set_interactive(on)?;
                 Ok(Value::Bool(true))
             })
             .await
@@ -940,6 +943,13 @@ impl Lens {
     /// different source after waiting behind Stop or source replacement.
     #[cfg(not(target_os = "macos"))]
     pub(super) fn queue_interactive(self: &Arc<Self>, on: bool) {
+        if !on {
+            let lens = self.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = lens.disable_interaction().await;
+            });
+            return;
+        }
         let Ok(source) = self.overlay_source(self.bridge.epoch(), request::Cancellation::new())
         else {
             return;
@@ -948,6 +958,29 @@ impl Lens {
         tauri::async_runtime::spawn(async move {
             let _ = lens.interactive(source, on).await;
         });
+    }
+    #[cfg(not(target_os = "macos"))]
+    async fn disable_interaction(self: &Arc<Self>) -> Result<Value, String> {
+        let overlay = self.overlay().ok_or("unavailable")?;
+        self.interaction_off(move || {
+            overlay.set_interactive(false)?;
+            Ok(Value::Bool(true))
+        })
+        .await
+    }
+    /// Turning off the pool's owned interaction needs no live capture grant.
+    /// It still serializes with enable and teardown, including dropped waiters.
+    async fn interaction_off<T: Send + 'static>(
+        self: &Arc<Self>,
+        mutation: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let lifecycle = self.lifecycle.clone().lock_owned().await;
+        tokio::task::spawn_blocking(move || {
+            let _lifecycle = lifecycle;
+            mutation()
+        })
+        .await
+        .map_err(|_| "overlay-window-gone".to_owned())?
     }
     #[cfg(not(target_os = "macos"))]
     async fn overlay_show(
@@ -971,6 +1004,7 @@ impl Lens {
             window: source.lease.geometry.window,
             display: source.lease.display_bounds,
         };
+        overlay::native_frame(&req, place).map_err(overlay::Failure::reason)?;
         #[cfg(target_os = "linux")]
         let source = {
             let backend = self.backend.get().ok_or("unavailable")?.clone();
@@ -1081,21 +1115,33 @@ impl OverlaySource {
         &self,
         window: &tauri::WebviewWindow,
         rect: Rect,
-    ) -> Result<linux_overlay::Placement, String> {
-        self.lens.backend.get().ok_or("unavailable")?.overlay.place(
-            window,
-            rect,
-            self.native.as_ref().ok_or("unavailable")?,
-        )
+    ) -> Result<linux_overlay::Placement, overlay::Failure> {
+        overlay::validate_native_frame(rect)?;
+        self.lens
+            .backend
+            .get()
+            .ok_or_else(|| overlay::Failure::Native("unavailable".into()))?
+            .overlay
+            .place(window, rect, self.native.as_ref().ok_or("unavailable")?)
+            .map_err(overlay::Failure::Native)
     }
     #[cfg(target_os = "windows")]
-    fn place(&self, window: &tauri::WebviewWindow, rect: Rect) -> Result<Rect, String> {
+    fn place(&self, window: &tauri::WebviewWindow, rect: Rect) -> Result<Rect, overlay::Failure> {
+        overlay::validate_native_frame(rect)?;
         // shortcut: no native overlay grant without capture-time geometry proof.
-        window.hide().map_err(|_| "overlay-window-gone")?;
+        window
+            .hide()
+            .map_err(|_| overlay::Failure::Native("overlay-window-gone".into()))?;
         windows::place_overlay(
-            ::windows::Win32::Foundation::HWND(window.hwnd().map_err(|_| "overlay-window-gone")?.0),
+            ::windows::Win32::Foundation::HWND(
+                window
+                    .hwnd()
+                    .map_err(|_| overlay::Failure::Native("overlay-window-gone".into()))?
+                    .0,
+            ),
             rect,
-        )?;
+        )
+        .map_err(overlay::Failure::Native)?;
         Ok(rect)
     }
     #[cfg(target_os = "linux")]
@@ -1424,6 +1470,106 @@ mod tests {
             vec!["ov-0"]
         );
         assert!(!slots[0].can_reveal("caption-b", 2, std::time::Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn measured_caption_uses_integral_outer_pixels_and_bad_input_preserves_existing_slots() {
+        let (lens, source) = overlay_fixture().await;
+        let req = overlay::ShowReq::parse(&json!({
+            "id":"hello", "kind":"caption", "text":"hello",
+            "anchor":{"corner":"tl"}, "epoch":source.lease.epoch
+        }))
+        .unwrap();
+        let frame = overlay::native_frame(
+            &req,
+            overlay::Place {
+                window: source.lease.geometry.window,
+                display: source.lease.display_bounds,
+            },
+        )
+        .unwrap();
+        assert_eq!(frame, [21.0, 21.0, 49.0, 34.0]);
+        #[cfg(target_os = "linux")]
+        assert_eq!(linux_overlay::physical(frame).unwrap(), [21, 21, 49, 34]);
+        let slot = overlay::Slot::live_for_test("prior", 1, source.lease.generation);
+        let refused =
+            source.publish(|| overlay::validate_native_frame([4_000_000_000.0, 0.0, 49.0, 34.0]));
+        assert_eq!(refused, Err(overlay::Failure::Refused("bad-rect".into())));
+        assert!(!source.failed(&refused));
+        #[cfg(target_os = "linux")]
+        {
+            // The existing native X11 boundary, before any slot/native mutation.
+            let refused =
+                source.publish(|| overlay::validate_native_frame([32768.0, 0.0, 49.0, 34.0]));
+            assert_eq!(refused, Err(overlay::Failure::Refused("bad-rect".into())));
+            assert!(!source.failed(&refused));
+        }
+        assert_eq!(lens.status()["capabilities"]["overlay"], true);
+        assert!(slot.can_reveal("prior", 1, std::time::Instant::now()));
+        let failed: Result<(), _> = source.publish(|| {
+            Err(overlay::Failure::Native(
+                "overlay-position-exclusion-unproved".into(),
+            ))
+        });
+        assert!(source.failed(&failed));
+        assert_eq!(lens.status()["capabilities"]["overlay"], false);
+    }
+
+    #[tokio::test]
+    async fn interaction_off_survives_native_revocation_source_close_and_consent_withdrawal() {
+        for loss in ["native-proof", "source-closed", "withdrawn"] {
+            let (lens, source) = overlay_fixture().await;
+            let effects = Arc::new(Mutex::new((false, false)));
+            let effect = effects.clone();
+            source
+                .clone()
+                .interactive(move || {
+                    *effect.lock().unwrap() = (true, true);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            match loss {
+                "native-proof" => {
+                    let failed: Result<(), _> = source
+                        .publish(|| Err(overlay::Failure::Native("overlay-exclusion".into())));
+                    assert!(source.failed(&failed));
+                }
+                "source-closed" => {
+                    lens.invalidate_source(source.lease.generation, loss)
+                        .unwrap();
+                }
+                _ => {
+                    lens.dispatch(
+                        "lens-start",
+                        &json!({"consented":false}),
+                        None,
+                        request::Cancellation::new(),
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
+            assert!(lens
+                .overlay_source(lens.bridge.epoch(), request::Cancellation::new())
+                .is_err());
+            // A failed native off is returned and can be retried without a grant.
+            assert_eq!(
+                lens.interaction_off(|| Err::<(), _>("overlay-interactive".into()))
+                    .await,
+                Err("overlay-interactive".into())
+            );
+            assert_eq!(*effects.lock().unwrap(), (true, true));
+            let effect = effects.clone();
+            lens.interaction_off(move || {
+                *effect.lock().unwrap() = (false, false);
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert_eq!(*effects.lock().unwrap(), (false, false), "{loss}");
+            assert_eq!(lens.status()["capabilities"]["overlay"], false);
+        }
     }
 
     #[tokio::test]

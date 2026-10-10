@@ -85,6 +85,10 @@ impl From<&str> for Failure {
 type ShowResult<T> = Result<T, String>;
 #[cfg(not(target_os = "macos"))]
 type ShowResult<T> = Result<T, Failure>;
+#[cfg(target_os = "macos")]
+type InteractiveResult = ();
+#[cfg(not(target_os = "macos"))]
+type InteractiveResult = Result<(), String>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -473,7 +477,10 @@ impl Overlay {
         if req.epoch != self.bridge.epoch() {
             return Err("stale-epoch".into());
         }
+        #[cfg(target_os = "macos")]
         let (frame, _size) = frame_for(&req, place);
+        #[cfg(not(target_os = "macos"))]
+        let frame = native_frame(&req, place)?;
         let (index, evicted, generation) = {
             let mut slots = self.slots.lock().unwrap();
             let index = pick(&slots, &req.id);
@@ -533,7 +540,7 @@ impl Overlay {
                 self.slots.lock().unwrap()[index].invalidate();
                 let _ = super::hide_overlay(&self.app, &window);
                 self.announce();
-                return Err(Failure::Native(reason));
+                return Err(reason);
             }
         };
         self.ready.lock().unwrap().retain(|(id, _)| id != &req.id);
@@ -646,11 +653,15 @@ impl Overlay {
     pub fn clear_checked(self: &Arc<Self>, id: Option<&str>) -> Result<(), String> {
         let id = id.map(str::to_owned);
         let all = id.is_none();
-        let result = self.on_main(move |overlay| overlay.clear_in(id.as_deref()))?;
-        if all {
-            self.set_interactive(false);
-        }
-        result
+        let hidden = self
+            .on_main(move |overlay| overlay.clear_in(id.as_deref()))
+            .and_then(|result| result);
+        let disabled = if all {
+            self.set_interactive(false)
+        } else {
+            Ok(())
+        };
+        hidden.and(disabled)
     }
 
     /// Native source recovery only retires its own slots. A delayed close must
@@ -755,7 +766,7 @@ impl Overlay {
     /// Cursor events on for every slot, plus the page's own 1 px border, plus
     /// Esc as the way back. Never called on the main thread: `unregister`
     /// blocks on it.
-    pub fn set_interactive(&self, on: bool) {
+    pub fn set_interactive(&self, on: bool) -> InteractiveResult {
         #[cfg(target_os = "linux")]
         if on
             && !self
@@ -763,22 +774,32 @@ impl Overlay {
                 .try_state::<Arc<Lens>>()
                 .is_some_and(|lens| lens.overlay_available())
         {
-            return;
+            return Err("unavailable".into());
         }
         if self.interactive.swap(on, Ordering::AcqRel) == on {
+            #[cfg(target_os = "macos")]
             return;
+            #[cfg(not(target_os = "macos"))]
+            return Ok(());
         }
+        #[cfg(not(target_os = "macos"))]
+        let mut failed = false;
         for label in LABELS {
             if let Some(window) = self.app.get_webview_window(label) {
+                #[cfg(target_os = "macos")]
                 let _ = window.set_ignore_cursor_events(!on);
+                #[cfg(not(target_os = "macos"))]
+                if window.set_ignore_cursor_events(!on).is_err() {
+                    failed = true;
+                }
                 let _ = window.emit_to(label, "overlay:interactive", json!({ "on": on }));
             }
         }
         use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
         let shortcut = self.app.global_shortcut();
-        if on {
+        let binding = if on {
             let app = self.app.clone();
-            let _ = shortcut.on_shortcut(ESCAPE, move |_, _, event| {
+            shortcut.on_shortcut(ESCAPE, move |_, _, event| {
                 if event.state() != ShortcutState::Pressed {
                     return;
                 }
@@ -795,9 +816,20 @@ impl Overlay {
                 if let Some(lens) = app.try_state::<Arc<Lens>>() {
                     lens.queue_interactive(false);
                 }
-            });
+            })
         } else {
-            let _ = shortcut.unregister(ESCAPE);
+            shortcut.unregister(ESCAPE)
+        };
+        #[cfg(target_os = "macos")]
+        let _ = binding;
+        #[cfg(not(target_os = "macos"))]
+        {
+            if failed || binding.is_err() {
+                // Retain ownership so Escape/Stop can retry a partial disable.
+                self.interactive.store(true, Ordering::Release);
+                return Err("overlay-interactive".into());
+            }
+            Ok(())
         }
     }
 
@@ -906,6 +938,37 @@ fn frame_for(req: &ShowReq, place: Place) -> (Rect, (f64, f64)) {
     };
     let size = (size.0.max(MIN_W), size.1.max(MIN_H));
     (placed(req.kind, &req.anchor, size, place), size)
+}
+
+/// Only the native outer window is rounded. Caption/anchor content coordinates
+/// remain as requested; payload origin and size describe this actual placement.
+#[cfg(any(test, not(target_os = "macos")))]
+pub(super) fn native_frame(req: &ShowReq, place: Place) -> Result<Rect, Failure> {
+    let frame = frame_for(req, place).0;
+    let x = frame[0].floor();
+    let y = frame[1].floor();
+    let frame = [
+        x,
+        y,
+        (frame[0] + frame[2]).ceil() - x,
+        (frame[1] + frame[3]).ceil() - y,
+    ];
+    validate_native_frame(frame)?;
+    Ok(frame)
+}
+
+#[cfg(any(test, not(target_os = "macos")))]
+pub(super) fn validate_native_frame(frame: Rect) -> Result<(), Failure> {
+    if frame.iter().any(|v| {
+        !v.is_finite() || v.fract() != 0.0 || *v < f64::from(i32::MIN) || *v > f64::from(i32::MAX)
+    }) || frame[2] <= 0.0
+        || frame[3] <= 0.0
+    {
+        return Err("bad-rect".into());
+    }
+    #[cfg(target_os = "linux")]
+    super::linux_overlay::physical(frame).map_err(Failure::Refused)?;
+    Ok(())
 }
 
 fn placed(kind: OverlayKind, anchor: &Anchor, size: (f64, f64), place: Place) -> Rect {
@@ -1180,6 +1243,32 @@ mod tests {
         assert_eq!(width, CAPTION_MAX_W);
         assert!(height > 18.0, "a 400 character line is more than one row");
         assert!(measure("hi").0 < CAPTION_MAX_W);
+    }
+
+    #[test]
+    fn portable_outer_rounding_preserves_content_and_reports_actual_bounds() {
+        let req = request("caption", json!({"corner":"tr"}));
+        assert_eq!(frame_for(&req, place()).0, [835.5, 216.0, 48.5, 34.0]);
+        assert_eq!(
+            native_frame(&req, place()).unwrap(),
+            [835.0, 216.0, 49.0, 34.0]
+        );
+        assert_eq!(req.text, "hello");
+        let req = request(
+            "caption",
+            json!({"rect":[10.25,20.75,300.5,40.5],"ref":"f-3-9"}),
+        );
+        assert_eq!(
+            native_frame(&req, place()).unwrap(),
+            [110.0, 220.0, 301.0, 42.0]
+        );
+        assert_eq!(
+            req.anchor,
+            Anchor::Rect {
+                rect: [10.25, 20.75, 300.5, 40.5],
+                frame_ref: "f-3-9".into()
+            }
+        );
     }
 
     #[test]

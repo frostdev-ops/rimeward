@@ -392,7 +392,7 @@ fn native_id(window: &WebviewWindow) -> Result<u32, String> {
 fn excludes(target: u32, overlay: u32, root: u32, parent: u32) -> bool {
     target != overlay && target != root && overlay != 0 && parent == root
 }
-fn physical(rect: Rect) -> Result<[i32; 4], String> {
+pub(super) fn physical(rect: Rect) -> Result<[i32; 4], String> {
     if rect.iter().any(|v| !v.is_finite() || v.fract() != 0.0)
         || rect[0] < f64::from(i16::MIN)
         || rect[0] > f64::from(i16::MAX)
