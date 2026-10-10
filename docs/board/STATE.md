@@ -346,6 +346,21 @@ replace feature-specific live acceptance or installed-app checks. Published
   commit review and actual Windows integration/runtime/package checks remain
   required. The capture-time geometry refusal remains in force; this phase
   neither enables nor accepts Windows Lens.
+- RIME-51's prepared X11 phase uses only the compositor's redirected client
+  pixmap, fresh surface naming, XRes/local PID and retained process-lifetime
+  proof, bounded cancellable local connections and pre-grant pixel validation.
+  Server lifetime witnesses reject stale/recycled XIDs for capture and overlay
+  placement. Native overlays refuse unproved sibling exclusion or GTK scaling;
+  accessibility stays unavailable until exact AT-SPI association is established.
+  Pending worker joins survive timed-out or cancelled waits; worker/task panic
+  blocks successful Stop and replacement capture. Two exact retirement helper
+  tests pass in a disclosed Mac extraction; actual shared/native Linux metadata
+  and strict all-target Clippy pass with Tauri/session shims. Linux native and
+  isolated Xvfb execution remain pending on CI. The phase's owned source hashes
+  are `cc9855ed13e9299391a11c0353aa439656205889e19fdfca98ed5ad980dc160d`
+  (capture) and `929cfaee4835c08d39c77b8ff43fb450b8c2de091fe37982f5567d09f126f591`
+  (overlay); independent immutable review and shared attachment remain required.
+  No installed or full RIME-51 acceptance is claimed.
 
 ## Keeping the board truthful
 
