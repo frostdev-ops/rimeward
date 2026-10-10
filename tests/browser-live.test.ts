@@ -283,7 +283,8 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     await sleep(100);
     for (let i = 0; i < 21; i++) g.send(Array(200).fill({ t: 'wheel', x: 1, y: 1, dx: 0, dy: 1 }));
     assert.equal(await g.closed, 1008);
-    await sleep(1600);
+    // The previous owner's release must finish before the next fixture clears its log.
+    await s.humanWorker;
     await slow(0);
     const h = client('bw', sid);
     await h.next(m => m.type === 'view');
@@ -348,7 +349,16 @@ test('the ward WebSocket: the stream\'s signaling rides each viewer\'s own socke
     const ice = await a.next(m => m.type === 'rtc' && 'ice' in m, 20000);
     assert.deepEqual(ice.ice, []);
     assert.match(String(ice.conn), /^[0-9a-f]{32}$/);
-    const offer = await a.next(m => m.type === 'rtc' && 'sdp' in m, 15000);
+    let offer: Msg;
+    try { offer = await a.next(m => m.type === 'rtc' && 'sdp' in m, 15000); }
+    catch (error) {
+      t.diagnostic(JSON.stringify({ rtc: a.msgs.filter(m => m.type === 'rtc'),
+        capture: await s.stream?.page.evaluate(`({ ready: document.readyState, self: me?.id,
+          active: lastActivated?.tabId, captured: current?.tabId, peers: [...peers.keys()],
+          tracks: current?.stream.getTracks().map(t => ({ kind: t.kind, ready: t.readyState })) })`).catch(() => null),
+      }));
+      throw error;
+    }
     assert.equal(offer.conn, ice.conn);
     assert.match(String(offer.sdp), /a=fingerprint:sha-256 /);
     assert.ok(String(offer.sdp).includes('m=video ') && String(offer.sdp).includes('m=audio '), 'video and audio offered');

@@ -185,6 +185,10 @@ test('backup then restore round-trips the db and the data dirs', () => {
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /^restored: backgrounds\/$/m);
   assert.equal(fs.readFileSync(path.join(DATA_B, 'backgrounds', 'a.webp'), 'utf8'), 'not really webp');
-  assert.match(run(['users', 'list'], DATA_B).out, /^2 guest@test.io admin/m);
-  assert.equal(run(['settings', 'get', 'site_name'], DATA_B).out, 'Rimeward\n');
+  const restoredUsers = run(['users', 'list'], DATA_B);
+  assert.equal(restoredUsers.code, 0, restoredUsers.err);
+  assert.match(restoredUsers.out, /^2 guest@test.io admin/m);
+  const restoredSetting = run(['settings', 'get', 'site_name'], DATA_B);
+  assert.equal(restoredSetting.code, 0, restoredSetting.err);
+  assert.equal(restoredSetting.out, 'Rimeward\n');
 });
