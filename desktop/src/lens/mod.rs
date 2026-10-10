@@ -216,6 +216,8 @@ pub struct Lens {
     /// Each stream owns one generation; replacement and Pause/Stop invalidate
     /// it under the target lock before any queued callback can publish.
     capture_generation: AtomicU64,
+    /// A bounded Resume discovery may retry; a later Pause or Stop cancels it.
+    resume_requested: AtomicBool,
     signals: Mutex<Option<Signals>>,
     /// `<data>/runtime-diagnostics.jsonl`, the file the app already keeps for
     /// its own start-up trouble. The lens writes its stream events there —
@@ -341,6 +343,7 @@ impl Lens {
             overlay: Mutex::new(None),
             capture: Mutex::new(None),
             capture_generation: AtomicU64::new(0),
+            resume_requested: AtomicBool::new(false),
             signals: Mutex::new(None),
             diagnostics: None,
             retry: AtomicU32::new(0),
@@ -376,7 +379,7 @@ impl Lens {
     /// as consent stands and nothing else has claimed the lens since (a reader
     /// leaving marks it `idle`, the user `not-consented` or `paused`; those
     /// are not retried, the next `lens-start` is theirs).
-    pub fn stream_lost(self: &Arc<Self>, detail: &str, generation: Option<(u64, &Target)>) {
+    pub fn stream_lost(self: &Arc<Self>, detail: &str, generation: Option<(u64, Option<&Target>)>) {
         // One loss can be reported more than once — two delegate callbacks for
         // one stop, or a `start` that fails while the backoff is already
         // sleeping. A restart is already on its way, so it gets no second line
@@ -416,7 +419,10 @@ impl Lens {
     }
 
     fn set_state(&self, run: Run, reason: Option<&str>) {
-        let (screen, ax) = crate::permissions::preflight();
+        self.set_state_with(run, reason, crate::permissions::preflight());
+    }
+
+    fn set_state_with(&self, run: Run, reason: Option<&str>, (screen, ax): (bool, bool)) {
         let state = {
             let mut state = self.state.lock().unwrap();
             state.run = run;
@@ -491,17 +497,20 @@ impl Lens {
     fn stop_in(
         &self,
         reason: Option<&str>,
-        generation: Option<(u64, &Target)>,
+        generation: Option<(u64, Option<&Target>)>,
         lost: bool,
     ) -> Option<bool> {
+        let grants = crate::permissions::preflight();
         let (capture, pending) = {
             let mut capture = self.capture.lock().unwrap();
             let mut target = self.target.write().unwrap();
             if generation.is_some_and(|(generation, source)| {
                 generation != self.capture_generation.load(Ordering::Acquire)
-                    || !target
-                        .as_ref()
-                        .is_some_and(|current| capture::same_source(current, source))
+                    || match (target.as_ref(), source) {
+                        (Some(current), Some(source)) => !capture::same_source(current, source),
+                        (None, None) => false,
+                        _ => true,
+                    }
             }) {
                 return None;
             }
@@ -510,10 +519,11 @@ impl Lens {
                 return Some(true);
             }
             self.capture_generation.fetch_add(1, Ordering::AcqRel);
+            self.resume_requested.store(false, Ordering::Release);
             self.ring.clear();
             *target = None;
             *self.known.write().unwrap() = Known::default();
-            self.set_state(Run::Stopped, reason);
+            self.set_state_with(Run::Stopped, reason, grants);
             (capture.take(), pending)
         };
         if let Some(capture) = capture {
@@ -528,11 +538,13 @@ impl Lens {
     /// A resumed stream gets a fresh generation: samples queued before Pause
     /// must never be relabelled as newly captured content.
     pub fn pause(&self) {
+        let grants = crate::permissions::preflight();
         let capture = {
             let mut capture = self.capture.lock().unwrap();
             let _target = self.target.write().unwrap();
             self.capture_generation.fetch_add(1, Ordering::AcqRel);
-            self.set_state(Run::Paused, None);
+            self.resume_requested.store(false, Ordering::Release);
+            self.set_state_with(Run::Paused, None, grants);
             capture.take()
         };
         if let Some(capture) = capture {
@@ -541,10 +553,89 @@ impl Lens {
     }
 
     pub fn resume(self: &Arc<Self>) {
-        self.set_state(Run::Running, None);
-        let target = self.target.read().unwrap().clone();
-        if let Some(target) = target {
-            let _ = self.build_capture(&target, None);
+        let signals = self.signals.lock().unwrap().clone();
+        self.resume_with(
+            || signals.as_ref()?.refresh(Run::Paused),
+            |target| self.build_capture(target, None),
+        );
+    }
+
+    fn resume_with(
+        self: &Arc<Self>,
+        mut discover: impl FnMut() -> Option<Target>,
+        build: impl FnOnce(&Target) -> Result<bool, String>,
+    ) {
+        {
+            let _target = self.target.write().unwrap();
+            if self.state.lock().unwrap().run != Run::Paused {
+                return;
+            }
+            self.resume_requested.store(true, Ordering::Release);
+        }
+        // Discovery stays paused: no callback may rebuild the retained source
+        // while the OS reads resolve the current foreground window.
+        for _ in 0..2 {
+            if !self.resume_requested.load(Ordering::Acquire) {
+                return;
+            }
+            if let Some(target) = discover() {
+                self.refresh_capture_with(|| Some(target), build);
+                return;
+            }
+        }
+        let missed = {
+            let target = self.target.read().unwrap();
+            if !self.resume_requested.load(Ordering::Acquire)
+                || self.state.lock().unwrap().run != Run::Paused
+            {
+                return;
+            }
+            (
+                self.capture_generation.load(Ordering::Acquire),
+                target.clone(),
+            )
+        };
+        if missed.1.is_some() || self.consented.load(Ordering::Acquire) {
+            // Existing recovery clears the stale source and reports the gap;
+            // its restart resolves the frontmost window without needing AX.
+            self.stream_lost(
+                "Resume could not resolve the foreground window",
+                Some((missed.0, missed.1.as_ref())),
+            );
+        } else {
+            // An empty, unstarted lens has no retained source to mislabel.
+            let grants = crate::permissions::preflight();
+            let target = self.target.read().unwrap();
+            if target.is_none()
+                && self.resume_requested.swap(false, Ordering::AcqRel)
+                && self.state.lock().unwrap().run == Run::Paused
+            {
+                self.set_state_with(Run::Running, None, grants);
+            }
+        }
+    }
+
+    fn refresh_capture_with(
+        self: &Arc<Self>,
+        discover: impl FnOnce() -> Option<Target>,
+        build: impl FnOnce(&Target) -> Result<bool, String>,
+    ) {
+        let Some(target) = discover() else {
+            return;
+        };
+        {
+            let current = self.target.read().unwrap();
+            if self.state.lock().unwrap().run != Run::Running
+                || !current
+                    .as_ref()
+                    .is_some_and(|current| capture::same_source(current, &target))
+            {
+                return;
+            }
+        }
+        let missing = self.capture.lock().unwrap().is_none();
+        if missing {
+            let _ = build(&target);
         }
     }
 
@@ -578,7 +669,7 @@ impl Lens {
                 if failed == expected || failed == expected + 1 {
                     self.stream_lost(
                         &format!("{error} on {}", describe_target(target)),
-                        Some((failed, target)),
+                        Some((failed, Some(target))),
                     );
                 }
                 return Err("stream".into());
@@ -608,24 +699,33 @@ impl Lens {
     pub fn retarget(
         self: &Arc<Self>,
         target: Target,
-        expected: Option<(u64, u64, &AtomicBool, &AtomicI32)>,
+        expected: Option<(u64, u64, &AtomicBool, &AtomicI32, Run)>,
     ) -> bool {
+        let grants = expected
+            .filter(|(_, _, _, _, run)| *run == Run::Paused)
+            .map(|_| crate::permissions::preflight());
         {
             // Held across the bump and the announcements, so a snapshot taken
             // meanwhile sees either the old epoch whole or the new one whole.
             let mut current = self.target.write().unwrap();
-            if expected.is_some_and(|(epoch, generation, stopped, _)| {
+            if expected.is_some_and(|(epoch, generation, stopped, _, run)| {
                 stopped.load(Ordering::Acquire)
                     || self.bridge.epoch() != epoch
                     || self.capture_generation.load(Ordering::Acquire) != generation
-                    || self.state.lock().unwrap().run != Run::Running
+                    || self.state.lock().unwrap().run != run
+                    || (run == Run::Paused && !self.resume_requested.load(Ordering::Acquire))
             }) {
                 return false;
             }
             // Refusal must leave the frontmost poll able to retry. Publish
             // the observer PID only inside this accepted target transition.
-            if let Some((_, _, _, pid)) = expected {
+            if let Some((_, _, _, pid, run)) = expected {
                 pid.store(target.pid, Ordering::Release);
+                if run == Run::Paused {
+                    self.capture_generation.fetch_add(1, Ordering::AcqRel);
+                    self.resume_requested.store(false, Ordering::Release);
+                    self.set_state_with(Run::Running, None, grants.unwrap());
+                }
             }
             // Two activations can describe one switch — the NSWorkspace
             // notification and the frontmost poll in signals.rs — and each

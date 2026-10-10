@@ -738,7 +738,7 @@ fn recover(shared: &Arc<Shared>, reason: Option<String>) {
             shared.lens.diag("lens-stream-stopped", "permission");
             shared.lens.stop_in(
                 Some("permission"),
-                Some((shared.generation, &shared.target)),
+                Some((shared.generation, Some(&shared.target))),
                 false,
             );
             return;
@@ -753,7 +753,7 @@ fn recover(shared: &Arc<Shared>, reason: Option<String>) {
             shared.lens.diag("lens-stream-stopped", "user-stopped");
             shared.lens.stop_in(
                 Some("user-stopped"),
-                Some((shared.generation, &shared.target)),
+                Some((shared.generation, Some(&shared.target))),
                 false,
             );
             return;
@@ -765,7 +765,7 @@ fn recover(shared: &Arc<Shared>, reason: Option<String>) {
             // Not on the spot, then: `stream_lost` comes back on a backoff.
             shared.lens.stream_lost(
                 &format!("{reason} (not rebuilt on the spot)"),
-                Some((shared.generation, &shared.target)),
+                Some((shared.generation, Some(&shared.target))),
             );
             return;
         }
@@ -783,7 +783,7 @@ fn recover(shared: &Arc<Shared>, reason: Option<String>) {
             Ok(false) => (),
             Err(error) => shared.lens.stream_lost(
                 error.as_deref().unwrap_or("no target to rebuild on"),
-                Some((shared.generation, &shared.target)),
+                Some((shared.generation, Some(&shared.target))),
             ),
         }
     });

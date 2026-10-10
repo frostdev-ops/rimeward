@@ -833,37 +833,93 @@ impl Shared {
     /// any other application's — a `ward-*` popout is what a person points the
     /// lens at as readily as a browser — and [`pick_window`] is what keeps the
     /// overlay pool out of them: a slot is never on layer 0.
-    fn activate(&self, pid: i32) {
-        self.activate_with(pid, || self.build_target(pid, None));
+    fn activate(&self, pid: i32) -> Option<Target> {
+        self.activate_with(pid, || self.build_target(pid, None))
     }
 
-    fn activate_with(&self, pid: i32, build_target: impl FnOnce() -> Option<Target>) {
+    fn activate_with(
+        &self,
+        pid: i32,
+        build_target: impl FnOnce() -> Option<Target>,
+    ) -> Option<Target> {
+        self.activate_in(pid, build_target, super::Run::Running)
+    }
+
+    fn activate_in(
+        &self,
+        pid: i32,
+        build_target: impl FnOnce() -> Option<Target>,
+        run: super::Run,
+    ) -> Option<Target> {
         if self.stop.load(Ordering::Acquire) || pid <= 0 {
-            return;
+            return None;
         }
-        let (epoch, generation) = {
-            let _target = self.lens.target.read().unwrap();
+        let (current, epoch, generation) = {
+            let current = self.lens.target.read().unwrap();
             (
+                current.clone(),
                 self.lens.bridge.epoch(),
                 self.lens.capture_generation.load(Ordering::Acquire),
             )
         };
-        let Some(target) = build_target() else {
-            return;
-        };
+        let target = build_target()?;
+        let switching = needs_retarget(current.as_ref(), &target);
         if self.lens.retarget(
-            target,
-            Some((epoch, generation, &self.stop, &self.want_pid)),
+            target.clone(),
+            Some((epoch, generation, &self.stop, &self.want_pid, run)),
         ) {
-            self.mark_change();
+            if let Some(current) = current.filter(|_| !switching) {
+                if current.title != target.title || current.bounds != target.bounds {
+                    let moved = current.bounds != target.bounds;
+                    let read = Read {
+                        target: current,
+                        epoch,
+                        // Resume acceptance invalidates the paused generation.
+                        generation: generation + u64::from(run == super::Run::Paused),
+                    };
+                    let target = self.window(&read, target.title, target.bounds)?;
+                    if moved {
+                        self.lens.reframe(&target);
+                    }
+                    self.mark_change();
+                    return Some(target);
+                }
+            }
+            if switching || run == super::Run::Paused {
+                self.mark_change();
+            }
+            Some(target)
+        } else {
+            None
         }
+    }
+
+    fn refresh(&self, run: super::Run) -> Option<Target> {
+        self.refresh_with(run, frontmost_pid, |pid| self.build_target(pid, None))
+    }
+
+    fn refresh_with(
+        &self,
+        run: super::Run,
+        frontmost: impl FnOnce() -> Option<i32>,
+        build_target: impl FnOnce(i32) -> Option<Target>,
+    ) -> Option<Target> {
+        let pid = frontmost()?;
+        self.activate_in(pid, || build_target(pid), run)
+    }
+
+    fn refresh_capture(&self) {
+        self.lens.refresh_capture_with(
+            || self.refresh(super::Run::Running),
+            |target| self.lens.build_capture(target, None),
+        );
     }
 }
 
 /// The activation observer and the AX thread.
+#[derive(Clone)]
 pub struct Signals {
-    stop: Arc<AtomicBool>,
-    lens: Arc<Lens>,
+    shared: Arc<Shared>,
 }
 
 // Observer tokens stay on the main thread, where they are installed and removed.
@@ -877,7 +933,8 @@ thread_local! {
 impl Signals {
     /// Installs the NSWorkspace observer, points the lens at whatever is
     /// frontmost, and — with the Accessibility grant — starts the `lens-ax`
-    /// thread. Without the grant it starts a 2 s poll that waits for it.
+    /// thread. Without the grant a 2 s poll still follows the foreground
+    /// window and waits for the grant.
     ///
     /// The observer must be registered on the main thread, and NSWorkspace
     /// posts there, so the block runs there too. Rather than take an
@@ -900,41 +957,47 @@ impl Signals {
 
         // A test process has no main run loop, so the hop above may not have
         // landed. Resolving the frontmost application here needs neither.
-        if let Some(pid) = frontmost_pid() {
-            shared.activate(pid);
-        }
+        shared.refresh_capture();
 
+        let waiting = shared.clone();
         if unsafe { AXIsProcessTrusted() } {
-            start_ax_thread(shared);
+            start_ax_thread(waiting);
         } else {
             // OCR-only until the grant appears; `ax: false` is already in the
             // Status the lens emitted on start.
             std::thread::Builder::new()
                 .name("lens-ax-wait".into())
                 .spawn(move || {
-                    while !shared.stop.load(Ordering::Acquire) {
+                    while !waiting.stop.load(Ordering::Acquire) {
                         std::thread::sleep(TRUST_POLL);
-                        if shared.stop.load(Ordering::Acquire) {
+                        if waiting.stop.load(Ordering::Acquire) {
                             return;
                         }
+                        // OCR-only still follows app/window changes and retries
+                        // a discovery superseded by a stream generation.
+                        waiting.refresh_capture();
                         if unsafe { AXIsProcessTrusted() } {
-                            shared.lens.status_changed();
-                            start_ax_thread(shared);
+                            waiting.lens.status_changed();
+                            start_ax_thread(waiting);
                             return;
                         }
                     }
                 })
                 .map_err(|error| error.to_string())?;
         }
-        Ok(Signals { stop, lens })
+        Ok(Signals { shared })
+    }
+
+    pub(super) fn refresh(&self, run: super::Run) -> Option<Target> {
+        self.shared.refresh(run)
     }
 
     pub fn stop(&self) {
         {
-            let _target = self.lens.target.write().unwrap();
-            self.stop.store(true, Ordering::Release);
+            let _target = self.shared.lens.target.write().unwrap();
+            self.shared.stop.store(true, Ordering::Release);
         }
-        let id = Arc::as_ptr(&self.stop) as usize;
+        let id = Arc::as_ptr(&self.shared.stop) as usize;
         on_main(move || {
             ACTIVATION_OBSERVERS.with(|observers| {
                 if let Some(observer) = observers.borrow_mut().remove(&id) {
@@ -986,7 +1049,7 @@ fn install_observer(shared: Arc<Shared>) {
             .and_then(|app| app.downcast::<NSRunningApplication>().ok())
             .map(|app| app.processIdentifier());
         if let Some(pid) = pid {
-            observed.activate(pid);
+            let _ = observed.activate(pid);
         }
     });
     let observer = unsafe {
@@ -1005,7 +1068,7 @@ fn install_observer(shared: Arc<Shared>) {
             .insert(Arc::as_ptr(&shared.stop) as usize, observer);
     });
     if let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() {
-        shared.activate(app.processIdentifier());
+        let _ = shared.activate(app.processIdentifier());
     }
 }
 
@@ -1094,7 +1157,7 @@ impl Ax {
         // Retarget checks duplicates under the target lock to keep one epoch.
         if let Some(pid) = frontmost_pid() {
             if pid != self.shared.want_pid.load(Ordering::Acquire) {
-                self.shared.activate(pid);
+                let _ = self.shared.activate(pid);
             }
         }
         let want = self.shared.want_pid.load(Ordering::Acquire);
@@ -1209,6 +1272,7 @@ impl Ax {
                         read.generation,
                         &self.shared.stop,
                         &self.shared.want_pid,
+                        super::Run::Running,
                     )),
                 )
             {
@@ -1413,6 +1477,269 @@ unsafe extern "C" fn ax_notify(
 mod tests {
     use super::*;
 
+    fn paused_ocr_only_lens() -> (Arc<Shared>, Target) {
+        let (writer, _reader) = tokio::sync::mpsc::unbounded_channel();
+        let lens = Lens::new(super::super::Config::default(), writer);
+        let target = target_from(
+            &app(),
+            9,
+            "First".into(),
+            [0.0, 0.0, 200.0, 100.0],
+            None,
+            &screens(),
+        );
+        lens.set_state(super::super::Run::Running, None);
+        *lens.target.write().unwrap() = Some(target.clone());
+        let shared = Arc::new(Shared {
+            lens: lens.clone(),
+            stop: Arc::new(AtomicBool::new(false)),
+            want_pid: AtomicI32::new(target.pid),
+            screens: RwLock::new(screens()),
+            changed_at: Mutex::new(Instant::now()),
+        });
+        // No AX worker exists: only activation and lifecycle discovery run.
+        lens.pause();
+        assert!(lens.capture.lock().unwrap().is_none());
+        (shared, target)
+    }
+
+    #[test]
+    fn ocr_only_resume_discovers_app_and_same_pid_window_before_capture() {
+        for change in ["app", "window", "geometry"] {
+            let (shared, first) = paused_ocr_only_lens();
+            let next = Target {
+                pid: first.pid + i32::from(change == "app"),
+                window_id: first.window_id + u32::from(change != "geometry"),
+                bounds: if change == "geometry" {
+                    [50.0, 50.0, 100.0, 50.0]
+                } else {
+                    first.bounds
+                },
+                ..first.clone()
+            };
+            let paused = shared.lens.snapshot();
+            assert!(shared
+                .activate_with(next.pid, || Some(next.clone()))
+                .is_none());
+            assert_eq!(shared.lens.snapshot(), paused);
+            let mut captures = Vec::new();
+            shared.lens.resume_with(
+                || {
+                    shared.refresh_with(
+                        super::super::Run::Paused,
+                        || Some(next.pid),
+                        |_| Some(next.clone()),
+                    )
+                },
+                |target| {
+                    captures.push(target.clone());
+                    Ok(true)
+                },
+            );
+            assert_eq!(
+                captures,
+                vec![next.clone()],
+                "Resume must discover before capture"
+            );
+            assert_eq!(*shared.lens.target.read().unwrap(), Some(next));
+            assert_eq!(
+                shared.lens.bridge.epoch(),
+                if change == "geometry" { 1 } else { 2 }
+            );
+        }
+    }
+
+    #[test]
+    fn ocr_only_resume_never_captures_a_retained_target_after_stale_discovery() {
+        let (shared, first) = paused_ocr_only_lens();
+        let next = Target {
+            pid: first.pid + 1,
+            window_id: first.window_id + 1,
+            ..first.clone()
+        };
+        let mut discoveries = 0;
+        let mut captures = Vec::new();
+        shared.lens.resume_with(
+            || {
+                discoveries += 1;
+                shared.refresh_with(
+                    super::super::Run::Paused,
+                    || Some(next.pid),
+                    |_| {
+                        if discoveries == 1 {
+                            shared.lens.reframe(&first);
+                        }
+                        Some(next.clone())
+                    },
+                )
+            },
+            |target| {
+                captures.push(target.clone());
+                Ok(true)
+            },
+        );
+        assert_eq!(
+            discoveries, 2,
+            "Resume retries a superseded discovery without AX"
+        );
+        assert_eq!(
+            captures,
+            vec![next.clone()],
+            "only the retry's foreground source captures"
+        );
+        assert_eq!(shared.want_pid.load(Ordering::Acquire), next.pid);
+    }
+
+    #[test]
+    fn unresolved_ocr_only_resume_reports_loss_and_retries_without_ax() {
+        for miss in ["missing", "stale"] {
+            let (shared, first) = paused_ocr_only_lens();
+            let next = Target {
+                window_id: first.window_id + 1,
+                ..first.clone()
+            };
+            shared.lens.known.write().unwrap().ocr =
+                vec![line([1.0, 1.0, 20.0, 10.0], "retained A")];
+            shared.lens.ring.push(super::super::ring::Frame {
+                frame_ref: "retained-A".into(),
+                epoch: 1,
+                seq: 1,
+                at: super::super::bridge::now_ms(),
+                w: 1,
+                h: 1,
+                geometry: super::super::bridge::FrameGeometry {
+                    window: first.bounds,
+                    scale: 1.0,
+                    content_rect: [0.0, 0.0, 1.0, 1.0],
+                    content_scale: 1.0,
+                    captured: [0.0, 0.0, 200.0, 100.0],
+                },
+                jpeg: Arc::from([]),
+                pixels: None,
+            });
+            let historical = shared.lens.ring.get("retained-A").unwrap();
+            let mut captures = Vec::new();
+            shared.lens.resume_with(
+                || {
+                    shared.refresh_with(
+                        super::super::Run::Paused,
+                        || Some(next.pid),
+                        |_| {
+                            assert_eq!(
+                                shared.lens.state.lock().unwrap().run,
+                                super::super::Run::Paused
+                            );
+                            assert!(shared.lens.capture.lock().unwrap().is_none());
+                            if miss == "stale" {
+                                shared.lens.reframe(&first);
+                                Some(next.clone())
+                            } else {
+                                None
+                            }
+                        },
+                    )
+                },
+                |target| {
+                    captures.push(target.clone());
+                    Ok(true)
+                },
+            );
+            assert!(captures.is_empty(), "{miss}: no retained-target capture");
+            let status = shared.lens.status();
+            let snapshot = shared.lens.snapshot();
+            assert_eq!(status["state"], "stopped");
+            assert_eq!(status["reason"], "stream");
+            assert!(status["target"].is_null());
+            assert_eq!(status["ring"]["n"], 0);
+            assert!(snapshot["app"].is_null());
+            assert!(
+                snapshot["latest"].is_null(),
+                "old A cannot satisfy current-frame readiness"
+            );
+            assert_eq!(snapshot["ocr"], serde_json::json!([]));
+            assert_eq!(snapshot["live"], false);
+            assert_eq!(
+                shared
+                    .lens
+                    .frame(&serde_json::json!({ "ref": "retained-A" }))
+                    .unwrap_err(),
+                "frame-evicted"
+            );
+            assert_eq!(
+                historical.geometry.window, first.bounds,
+                "held historical frames stay immutable"
+            );
+            assert!(shared.lens.retry_pending.load(Ordering::Acquire));
+
+            // The stream-loss restart enters Running before Signals starts.
+            // Its discovery and the denied-AX trust poll share this caller.
+            shared.lens.set_state(super::super::Run::Running, None);
+            shared.lens.refresh_capture_with(
+                || {
+                    shared.refresh_with(
+                        super::super::Run::Running,
+                        || Some(next.pid),
+                        |_| Some(next.clone()),
+                    )
+                },
+                |target| {
+                    captures.push(target.clone());
+                    Ok(true)
+                },
+            );
+            assert_eq!(captures, vec![next.clone()]);
+            assert_eq!(shared.lens.status()["target"]["windowId"], next.window_id);
+            assert!(
+                shared.lens.snapshot()["latest"].is_null(),
+                "retry still waits for fresh pixels"
+            );
+        }
+    }
+
+    #[test]
+    fn pause_and_stop_win_over_ocr_only_resume_discovery() {
+        for action in ["pause", "stop"] {
+            let (shared, first) = paused_ocr_only_lens();
+            let next = Target {
+                window_id: first.window_id + 1,
+                ..first.clone()
+            };
+            let mut captures = Vec::new();
+            shared.lens.resume_with(
+                || {
+                    shared.refresh_with(
+                        super::super::Run::Paused,
+                        || Some(next.pid),
+                        |_| {
+                            if action == "pause" {
+                                shared.lens.pause();
+                            } else {
+                                shared.lens.stop(Some("idle"));
+                            }
+                            Some(next.clone())
+                        },
+                    )
+                },
+                |target| {
+                    captures.push(target.clone());
+                    Ok(true)
+                },
+            );
+            assert!(captures.is_empty(), "{action}");
+            assert_eq!(
+                shared.lens.status()["state"],
+                if action == "pause" {
+                    "paused"
+                } else {
+                    "stopped"
+                }
+            );
+            assert!(!shared.lens.resume_requested.load(Ordering::Acquire));
+            assert!(!shared.lens.retry_pending.load(Ordering::Acquire));
+            assert!(shared.lens.capture.lock().unwrap().is_none());
+        }
+    }
+
     #[test]
     fn a_paused_app_switch_is_retried_after_resume() {
         let (writer, _reader) = tokio::sync::mpsc::unbounded_channel();
@@ -1441,18 +1768,17 @@ mod tests {
         };
         lens.pause();
         let paused = lens.snapshot();
-        shared.activate_with(next.pid, || Some(next.clone()));
+        let _ = shared.activate_with(next.pid, || Some(next.clone()));
         assert_eq!(lens.snapshot(), paused, "Pause refuses the app switch");
-        lens.resume();
         assert_eq!(
             shared.want_pid.load(Ordering::Acquire),
             first.pid,
             "AX must stay attached to the accepted app until a retry"
         );
-        // The next AX tick retries a frontmost PID that differs from want_pid.
-        if next.pid != shared.want_pid.load(Ordering::Acquire) {
-            shared.activate_with(next.pid, || Some(next.clone()));
-        }
+        lens.resume_with(
+            || shared.activate_in(next.pid, || Some(next.clone()), super::super::Run::Paused),
+            |_| Ok(false),
+        );
         assert_eq!(*lens.target.read().unwrap(), Some(next.clone()));
         assert_eq!(shared.want_pid.load(Ordering::Acquire), next.pid);
         assert!(shared.pin(next.pid).is_some(), "AX follows the new target");
@@ -1485,7 +1811,7 @@ mod tests {
             changed_at: Mutex::new(Instant::now()),
         };
         let epoch = lens.bridge.epoch();
-        shared.activate_with(next.pid, || {
+        let _ = shared.activate_with(next.pid, || {
             assert!(
                 lens.target.try_write().is_ok(),
                 "OS discovery holds no target lock"
@@ -1505,7 +1831,7 @@ mod tests {
             "a rejected generation must not consume the frontmost PID"
         );
         if next.pid != shared.want_pid.load(Ordering::Acquire) {
-            shared.activate_with(next.pid, || Some(next.clone()));
+            let _ = shared.activate_with(next.pid, || Some(next.clone()));
         }
         assert_eq!(*lens.target.read().unwrap(), Some(next.clone()));
         assert_eq!(shared.want_pid.load(Ordering::Acquire), next.pid);
@@ -1514,7 +1840,7 @@ mod tests {
         // A new observer can accept an already-known target without a switch.
         shared.want_pid.store(0, Ordering::Release);
         let next_pid = next.pid;
-        shared.activate_with(next.pid, || Some(next));
+        let _ = shared.activate_with(next.pid, || Some(next));
         assert_eq!(shared.want_pid.load(Ordering::Acquire), next_pid);
         assert_eq!(
             lens.bridge.epoch(),
@@ -1583,13 +1909,13 @@ mod tests {
                 &screens(),
             );
             *lens.target.write().unwrap() = Some(target.clone());
-            let shared = Shared {
+            let shared = Arc::new(Shared {
                 lens: lens.clone(),
                 stop: Arc::new(AtomicBool::new(false)),
                 want_pid: AtomicI32::new(target.pid),
                 screens: RwLock::new(screens()),
                 changed_at: Mutex::new(Instant::now()),
-            };
+            });
             let read = shared.pin(target.pid).unwrap();
             let lines = vec![line([1.0, 1.0, 20.0, 10.0], "late AX")];
             match action {
@@ -1606,8 +1932,7 @@ mod tests {
                 "replacement" => lens.reframe(&target),
                 "observer stop" => {
                     Signals {
-                        stop: shared.stop.clone(),
-                        lens: lens.clone(),
+                        shared: shared.clone(),
                     }
                     .stop();
                 }
@@ -1650,7 +1975,13 @@ mod tests {
                     window_id: target.window_id + 1,
                     ..target
                 },
-                Some((read.epoch, read.generation, &shared.stop, &shared.want_pid)),
+                Some((
+                    read.epoch,
+                    read.generation,
+                    &shared.stop,
+                    &shared.want_pid,
+                    super::super::Run::Running
+                )),
             ));
             assert_eq!(shared.want_pid.load(Ordering::Acquire), read.target.pid);
             assert_eq!(
