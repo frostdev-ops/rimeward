@@ -650,8 +650,8 @@ fn window_records() -> Vec<WindowRecord> {
 struct Shared {
     lens: Arc<Lens>,
     stop: Arc<AtomicBool>,
-    /// The pid the AX thread should be observing. 0 until the first
-    /// activation.
+    /// The accepted target's pid, which the AX thread should be observing.
+    /// 0 until the first accepted activation.
     want_pid: AtomicI32,
     /// Refreshed on the main thread, read from the AX thread.
     screens: RwLock<Vec<Screen>>,
@@ -834,11 +834,13 @@ impl Shared {
     /// lens at as readily as a browser — and [`pick_window`] is what keeps the
     /// overlay pool out of them: a slot is never on layer 0.
     fn activate(&self, pid: i32) {
+        self.activate_with(pid, || self.build_target(pid, None));
+    }
+
+    fn activate_with(&self, pid: i32, build_target: impl FnOnce() -> Option<Target>) {
         if self.stop.load(Ordering::Acquire) || pid <= 0 {
             return;
         }
-        self.want_pid.store(pid, Ordering::Release);
-        self.mark_change();
         let (epoch, generation) = {
             let _target = self.lens.target.read().unwrap();
             (
@@ -846,13 +848,14 @@ impl Shared {
                 self.lens.capture_generation.load(Ordering::Acquire),
             )
         };
-        let Some(target) = self.build_target(pid, None) else {
+        let Some(target) = build_target() else {
             return;
         };
-        let current = self.lens.target.read().unwrap().clone();
-        if needs_retarget(current.as_ref(), &target) {
-            self.lens
-                .retarget(target, Some((epoch, generation, &self.stop)));
+        if self.lens.retarget(
+            target,
+            Some((epoch, generation, &self.stop, &self.want_pid)),
+        ) {
+            self.mark_change();
         }
     }
 }
@@ -1086,8 +1089,9 @@ impl Ax {
         // session of app switches inside one epoch, which is what the field
         // report showed. Re-reading the frontmost application here is one
         // cached AppKit read per poll and is what makes `want_pid`
-        // self-healing. `activate` stores it before it does anything else, so
-        // the notification and this poll cannot both retarget the same switch.
+        // self-healing. Only an accepted target advances `want_pid`, so a
+        // switch refused during Pause or a stream replacement is retried.
+        // Retarget checks duplicates under the target lock to keep one epoch.
         if let Some(pid) = frontmost_pid() {
             if pid != self.shared.want_pid.load(Ordering::Acquire) {
                 self.shared.activate(pid);
@@ -1197,11 +1201,17 @@ impl Ax {
             let Some(target) = self.shared.build_target(self.pid, Some(&window)) else {
                 return;
             };
-            if needs_retarget(Some(&read.target), &target) {
-                self.lens().retarget(
+            if needs_retarget(Some(&read.target), &target)
+                && self.lens().retarget(
                     target,
-                    Some((read.epoch, read.generation, &self.shared.stop)),
-                );
+                    Some((
+                        read.epoch,
+                        read.generation,
+                        &self.shared.stop,
+                        &self.shared.want_pid,
+                    )),
+                )
+            {
                 self.shared.mark_change();
                 self.text_due = true;
             }
@@ -1404,6 +1414,116 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_paused_app_switch_is_retried_after_resume() {
+        let (writer, _reader) = tokio::sync::mpsc::unbounded_channel();
+        let lens = Lens::new(super::super::Config::default(), writer);
+        let first = target_from(
+            &app(),
+            9,
+            "First".into(),
+            [0.0, 0.0, 200.0, 100.0],
+            None,
+            &screens(),
+        );
+        let next = Target {
+            pid: first.pid + 1,
+            window_id: first.window_id + 1,
+            ..first.clone()
+        };
+        lens.set_state(super::super::Run::Running, None);
+        *lens.target.write().unwrap() = Some(first.clone());
+        let shared = Shared {
+            lens: lens.clone(),
+            stop: Arc::new(AtomicBool::new(false)),
+            want_pid: AtomicI32::new(first.pid),
+            screens: RwLock::new(screens()),
+            changed_at: Mutex::new(Instant::now()),
+        };
+        lens.pause();
+        let paused = lens.snapshot();
+        shared.activate_with(next.pid, || Some(next.clone()));
+        assert_eq!(lens.snapshot(), paused, "Pause refuses the app switch");
+        lens.resume();
+        assert_eq!(
+            shared.want_pid.load(Ordering::Acquire),
+            first.pid,
+            "AX must stay attached to the accepted app until a retry"
+        );
+        // The next AX tick retries a frontmost PID that differs from want_pid.
+        if next.pid != shared.want_pid.load(Ordering::Acquire) {
+            shared.activate_with(next.pid, || Some(next.clone()));
+        }
+        assert_eq!(*lens.target.read().unwrap(), Some(next.clone()));
+        assert_eq!(shared.want_pid.load(Ordering::Acquire), next.pid);
+        assert!(shared.pin(next.pid).is_some(), "AX follows the new target");
+    }
+
+    #[test]
+    fn an_activation_superseded_during_target_discovery_is_retried() {
+        let (writer, _reader) = tokio::sync::mpsc::unbounded_channel();
+        let lens = Lens::new(super::super::Config::default(), writer);
+        let first = target_from(
+            &app(),
+            9,
+            "First".into(),
+            [0.0, 0.0, 200.0, 100.0],
+            None,
+            &screens(),
+        );
+        let next = Target {
+            pid: first.pid + 1,
+            window_id: first.window_id + 1,
+            ..first.clone()
+        };
+        lens.set_state(super::super::Run::Running, None);
+        *lens.target.write().unwrap() = Some(first.clone());
+        let shared = Shared {
+            lens: lens.clone(),
+            stop: Arc::new(AtomicBool::new(false)),
+            want_pid: AtomicI32::new(first.pid),
+            screens: RwLock::new(screens()),
+            changed_at: Mutex::new(Instant::now()),
+        };
+        let epoch = lens.bridge.epoch();
+        shared.activate_with(next.pid, || {
+            assert!(
+                lens.target.try_write().is_ok(),
+                "OS discovery holds no target lock"
+            );
+            lens.reframe(&first);
+            Some(next.clone())
+        });
+        assert_eq!(*lens.target.read().unwrap(), Some(first.clone()));
+        assert_eq!(
+            lens.bridge.epoch(),
+            epoch,
+            "stale discovery emits no switch"
+        );
+        assert_eq!(
+            shared.want_pid.load(Ordering::Acquire),
+            first.pid,
+            "a rejected generation must not consume the frontmost PID"
+        );
+        if next.pid != shared.want_pid.load(Ordering::Acquire) {
+            shared.activate_with(next.pid, || Some(next.clone()));
+        }
+        assert_eq!(*lens.target.read().unwrap(), Some(next.clone()));
+        assert_eq!(shared.want_pid.load(Ordering::Acquire), next.pid);
+        assert_eq!(lens.bridge.epoch(), epoch + 1);
+        assert!(shared.pin(next.pid).is_some());
+        // A new observer can accept an already-known target without a switch.
+        shared.want_pid.store(0, Ordering::Release);
+        let next_pid = next.pid;
+        shared.activate_with(next.pid, || Some(next));
+        assert_eq!(shared.want_pid.load(Ordering::Acquire), next_pid);
+        assert_eq!(
+            lens.bridge.epoch(),
+            epoch + 1,
+            "duplicate activation is one switch"
+        );
+    }
+
+    #[test]
     fn an_ax_walk_that_outlives_its_target_cannot_repopulate_known() {
         let (writer, _reader) = tokio::sync::mpsc::unbounded_channel();
         let lens = Lens::new(super::super::Config::default(), writer);
@@ -1525,13 +1645,14 @@ mod tests {
                     .is_none(),
                 "{action}"
             );
-            lens.retarget(
+            assert!(!lens.retarget(
                 Target {
                     window_id: target.window_id + 1,
                     ..target
                 },
-                Some((read.epoch, read.generation, &shared.stop)),
-            );
+                Some((read.epoch, read.generation, &shared.stop, &shared.want_pid)),
+            ));
+            assert_eq!(shared.want_pid.load(Ordering::Acquire), read.target.pid);
             assert_eq!(
                 lens.snapshot(),
                 before,

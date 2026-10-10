@@ -22,7 +22,7 @@ use ring::Ring;
 use serde_json::{json, Value};
 use signals::Signals;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::mpsc;
 
@@ -603,20 +603,29 @@ impl Lens {
     /// App switch, or a window switch inside the same app. Everything the old
     /// epoch produced is void: the frames describe a window that is no longer
     /// in front, and the text describes content nobody is looking at. A target
-    /// that is not a different thing to look at is not a switch, and answers
-    /// nothing.
-    pub fn retarget(self: &Arc<Self>, target: Target, expected: Option<(u64, u64, &AtomicBool)>) {
+    /// that is not a different thing to look at is not a switch. Returns
+    /// whether the target was accepted, including a duplicate activation.
+    pub fn retarget(
+        self: &Arc<Self>,
+        target: Target,
+        expected: Option<(u64, u64, &AtomicBool, &AtomicI32)>,
+    ) -> bool {
         {
             // Held across the bump and the announcements, so a snapshot taken
             // meanwhile sees either the old epoch whole or the new one whole.
             let mut current = self.target.write().unwrap();
-            if expected.is_some_and(|(epoch, generation, stopped)| {
+            if expected.is_some_and(|(epoch, generation, stopped, _)| {
                 stopped.load(Ordering::Acquire)
                     || self.bridge.epoch() != epoch
                     || self.capture_generation.load(Ordering::Acquire) != generation
                     || self.state.lock().unwrap().run != Run::Running
             }) {
-                return;
+                return false;
+            }
+            // Refusal must leave the frontmost poll able to retry. Publish
+            // the observer PID only inside this accepted target transition.
+            if let Some((_, _, _, pid)) = expected {
+                pid.store(target.pid, Ordering::Release);
             }
             // Two activations can describe one switch — the NSWorkspace
             // notification and the frontmost poll in signals.rs — and each
@@ -624,7 +633,7 @@ impl Lens {
             // what keeps one switch to one epoch: a second epoch would clear
             // the ring and the known text for nothing.
             if !signals::needs_retarget(current.as_ref(), &target) {
-                return;
+                return true;
             }
             self.capture_generation.fetch_add(1, Ordering::AcqRel);
             self.bridge.bump_epoch();
@@ -650,12 +659,13 @@ impl Lens {
             overlay.retarget();
         }
         if self.state.lock().unwrap().run != Run::Running {
-            return;
+            return true;
         }
         let started = std::time::Instant::now();
         let _ = self.build_capture(&target, None);
         self.counters
             .record_retarget(started.elapsed().as_millis() as u32);
+        true
     }
 
     /// The target moved or resized, same window: the stream follows it and the
