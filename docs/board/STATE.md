@@ -312,7 +312,14 @@ replace feature-specific live acceptance or installed-app checks. Published
   and SHA-256 hashes are identical. Warm build makes no requests; exhaustion
   still fails after three and restores fetch. **883** unit tests, typecheck,
   desktop lint and focused provider/theme/lifecycle checks pass locally.
-  Real corrected desktop CI remains pending.
+  The fix is committed as `32f3d16`. Its clean committed prebuild, staged
+  standalone and all six built UI smoke scripts pass, including the remote
+  workspace check; no external provider calls or golden updates were made.
+  Real corrected desktop CI remains pending. The original `802355a` macOS job
+  **114308029494** succeeds with **153** native passes/eleven ignored, **877**
+  unit passes/no skips, staged and app-contained standalone and generated
+  four-viewer fault-media checks. Windows installer completion remains pending;
+  the original Linux prebuild failure is retained.
 - RIME-50/51 exclusive platform modules may proceed against the landed,
   independently reviewed shared contract while its package gates remain open.
   Integration, promotion and `ready` still require actual checks. One coordinator
@@ -326,6 +333,19 @@ replace feature-specific live acceptance or installed-app checks. Published
   versus the original strict DPI contract is pending; no requirement is silently
   relaxed. X11 AT-SPI association also remains unproved and AX stays unavailable
   until an exact association is established.
+- The RIME-50 native preparation phase contains exact HWND/process-lifetime
+  checks, bounded UIA, source callback ordinals, native exclusion/placement and
+  verified cleanup paths. Its immutable source hash is
+  `b96c3af6a3c9f4615f19c82c7a2d36024dfbf8b56155c230e2278248f73bc342`.
+  Partial WGC initialization now owns its cleanup guard before registering
+  callbacks; all cleanup stages are attempted and failed cleanup/panic blocks
+  replacement and successful Stop acknowledgement. Thread DPI restores on
+  unwind. Combined actual shared/native Windows metadata and strict all-target
+  Clippy pass with disclosed Tauri/session shims; full product formatting passes.
+  Eleven native tests are present but have not executed on Windows. Independent
+  commit review and actual Windows integration/runtime/package checks remain
+  required. The capture-time geometry refusal remains in force; this phase
+  neither enables nor accepts Windows Lens.
 
 ## Keeping the board truthful
 
