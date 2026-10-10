@@ -19,7 +19,7 @@ import { screenOffline } from './types.ts';
 import type { Line, MetaField, Rect } from './types.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { nativeDesktop } from '../dev/remote.ts';
-import { screenDemand } from './runtime.ts';
+import { screenDemand, screenStartup } from './runtime.ts';
 import { visualCalibration } from './gate.ts';
 
 /** How long a captured frame stays addressable by `ref` (BlackIce scene.ts). */
@@ -38,6 +38,8 @@ type Desktop = (op: string, value?: unknown, deadlineMs?: number, signal?: Abort
 export interface ScreenDeps {
   desktop: Desktop;
   demand?(active: boolean): Promise<void>;
+  /** A runtime refresh can replace startup without changing reader demand. */
+  startup?(): { signal: AbortSignal; ready: Promise<unknown> } | undefined;
   /** Install a handler for the pushed signals; the return detaches it. */
   attach(fn: (signal: Record<string, unknown>) => void): () => void;
   now?: () => number;
@@ -408,8 +410,10 @@ export function screenSource(deps: ScreenDeps): Source {
 
   const snapshot = async (signal = demandControl.signal): Promise<SourceSnapshot | null> => {
     const connected = connection;
-    const reply = await desk(deps.desktop, 'lens-snapshot', {}, SNAPSHOT_DEADLINE_MS, signal);
-    if (signal.aborted || signal !== demandControl.signal || connected !== connection) return null;
+    const startup = deps.startup?.();
+    const nativeSignal = startup ? AbortSignal.any([signal, startup.signal]) : signal;
+    const reply = await desk(deps.desktop, 'lens-snapshot', {}, SNAPSHOT_DEADLINE_MS, nativeSignal);
+    if (nativeSignal.aborted || signal !== demandControl.signal || connected !== connection || startup?.signal !== deps.startup?.()?.signal) return null;
     if ('error' in reply || !reply.value || typeof reply.value !== 'object') return null;
     const snap = reply.value as Record<string, unknown>;
     metadata(snap);
@@ -467,6 +471,7 @@ export function screenSource(deps: ScreenDeps): Source {
    *  is already running starts from what it already shows. */
   const resync = async (signal = demandControl.signal): Promise<void> => {
     const connected = connection;
+    const startup = deps.startup?.();
     const snap = await snapshot(signal);
     // The epoch as it stands NOW, not as it stood before the call: a live `app`
     // or `window` signal may have opened a newer one while the reply was in
@@ -474,7 +479,7 @@ export function screenSource(deps: ScreenDeps): Source {
     // lines, the live rectangles and the frame the next version is pinned to —
     // belongs to the epoch this reply describes, so none of it is applied
     // unless that is still the epoch.
-    if (signal.aborted || signal !== demandControl.signal || connected !== connection || !feed || !snap || snap.epoch === 0 || snap.epoch !== epoch) return;
+    if (signal.aborted || signal !== demandControl.signal || connected !== connection || startup?.signal !== deps.startup?.()?.signal || !feed || !snap || snap.epoch === 0 || snap.epoch !== epoch) return;
     feed.epoch(snap.epoch, snap.seq);
     feed.replace(snap.lines, snap.seq);
     feed.live(snap.live ?? []);
@@ -493,8 +498,10 @@ export function screenSource(deps: ScreenDeps): Source {
    *  retry; only an answer that says the lens is down takes the feed offline. */
   const check = async (signal = demandControl.signal): Promise<boolean> => {
     const connected = connection;
-    const reply = await desk(deps.desktop, 'lens-status', {}, SNAPSHOT_DEADLINE_MS, signal);
-    if (signal.aborted || signal !== demandControl.signal || connected !== connection) return false;
+    const startup = deps.startup?.();
+    const nativeSignal = startup ? AbortSignal.any([signal, startup.signal]) : signal;
+    const reply = await desk(deps.desktop, 'lens-status', {}, SNAPSHOT_DEADLINE_MS, nativeSignal);
+    if (nativeSignal.aborted || signal !== demandControl.signal || connected !== connection || startup?.signal !== deps.startup?.()?.signal) return false;
     if (reply.value && typeof reply.value === 'object') metadata(reply.value as Record<string, unknown>);
     const native = 'error' in reply ? null : nativeState(reply.value);
     if (native && native.offline !== null) {
@@ -505,6 +512,31 @@ export function screenSource(deps: ScreenDeps): Source {
     // comes back live here, whether or not this source ever saw the stop.
     if (native) feed?.online();
     return true;
+  };
+
+  const untilCancelled = async (pending: Promise<unknown>, signal: AbortSignal): Promise<void> => {
+    if (signal.aborted) return;
+    let cancel!: () => void;
+    const cancelled = new Promise<void>(resolve => { cancel = resolve; });
+    signal.addEventListener('abort', cancel, { once: true });
+    try { await Promise.race([pending, cancelled]); }
+    finally { signal.removeEventListener('abort', cancel); }
+  };
+
+  const recover = async (signal = demandControl.signal, frame?: Promise<void>): Promise<void> => {
+    const connected = connection;
+    while (!signal.aborted && signal === demandControl.signal && connected === connection) {
+      const startup = deps.startup?.();
+      const nativeSignal = startup ? AbortSignal.any([signal, startup.signal]) : signal;
+      if (startup) await untilCancelled(startup.ready, nativeSignal);
+      if (nativeSignal.aborted) continue;
+      if (await check(signal)) {
+        if (frame) await untilCancelled(frame, nativeSignal);
+        if (nativeSignal.aborted) continue;
+        if (feed) await resync(signal);
+      }
+      if (startup?.signal === deps.startup?.()?.signal) return;
+    }
   };
 
   return {
@@ -525,11 +557,8 @@ export function screenSource(deps: ScreenDeps): Source {
       try {
         await deps.demand!(true);
         control.signal.throwIfAborted();
-        if (await check(control.signal)) {
-          await frame;
-          control.signal.throwIfAborted();
-          if (feed) await resync(control.signal);
-        }
+        await recover(control.signal, frame);
+        control.signal.throwIfAborted();
       } finally {
         clearTimeout(timer);
         control.signal.removeEventListener('abort', finish);
@@ -549,7 +578,7 @@ export function screenSource(deps: ScreenDeps): Source {
       // nothing has written to, which reads exactly like a live, empty screen.
       // Its snapshot is the repaint a newly started reader needs too.
       const signal = demandControl.signal;
-      if (await check(signal)) await resync(signal);
+      await recover(signal);
       return () => {
         if (connected !== connection) return;
         connection += 1;
@@ -731,5 +760,5 @@ export async function describe(
 // lens tools say "open this in the desktop app" rather than answer from a core
 // that can never read anything.
 if (isDesktop()) {
-  SOURCES.screen = (): Source => screenSource({ desktop: native, attach: subscribeSignals, demand: screenDemand });
+  SOURCES.screen = (): Source => screenSource({ desktop: native, attach: subscribeSignals, demand: screenDemand, startup: screenStartup });
 }

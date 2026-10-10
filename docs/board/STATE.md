@@ -591,9 +591,15 @@ below is separately verified. Human feature/platform acceptance remains open.
   runtime startup is replaced without replacing the pending Core/source demand,
   so an old startup cancellation can mark a successful current source offline.
   The implementation owner also reproduces the analogous downstream status-read
-  race. A focused current-start ownership correction and actual Core/screen/runtime
-  regressions are in progress. Builds remain held until the corrected immutable
-  review; fresh final-candidate CI remains required.
+  race. The focused correction follows the current startup Promise and binds
+  status/snapshot/reconnect recovery to its native signal, preserving separate
+  source-demand and Core ownership. Two new actual Core/screen/runtime regressions
+  cover ignored aborts, pending readiness, held status/snapshot replies, current
+  text/epoch/frame/capabilities and balanced release. **895** Node tests and **48**
+  focused tests pass, with typecheck, desktop lint and whitespace checks green.
+  Builds remain held until the corrected immutable review; fresh final-candidate
+  CI remains required. The separate X11 correction passes immutable medium review;
+  actual Xvfb execution still must establish its CI disposition.
 
 ## Keeping the board truthful
 

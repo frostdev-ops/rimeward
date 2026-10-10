@@ -74,15 +74,28 @@ export function setLensPaused(user: number, paused: boolean): void {
 let attached = false;
 let readers = 0;
 let captureControl: AbortController | undefined;
+let syncing: Promise<string | null> = Promise.resolve(null);
+
+/** The current native start, for screen recovery that outlives a refresh. */
+export function screenStartup(): { signal: AbortSignal; ready: Promise<string | null> } | undefined {
+  return captureControl ? { signal: captureControl.signal, ready: syncing } : undefined;
+}
 
 /** Only live subscriptions and in-flight readers count; saved consumers do not. */
 export async function screenDemand(active: boolean): Promise<void> {
   readers += active ? 1 : -1;
-  const pending = startLens();
-  const control = captureControl;
-  await pending;
-  // The source must not begin status/frame recovery for an obsolete start.
-  control?.signal.throwIfAborted();
+  startLens();
+  // Consent/status/pause refreshes replace native startup without replacing
+  // this reader. Follow the current start; source/Core still own off/on refusal.
+  for (;;) {
+    const control = captureControl!;
+    let superseded!: () => void;
+    const changed = new Promise<void>(resolve => { superseded = resolve; });
+    control.signal.addEventListener('abort', superseded, { once: true });
+    try { await Promise.race([syncing, changed]); }
+    finally { control.signal.removeEventListener('abort', superseded); }
+    if (control === captureControl) return;
+  }
 }
 
 /** Installs the signal channel and stored consent. Capture stays stopped until
@@ -142,7 +155,8 @@ export function startLens(): Promise<string | null> {
   captureControl?.abort();
   const control = new AbortController();
   captureControl = control;
-  return syncCapture(control.signal);
+  syncing = syncCapture(control.signal);
+  return syncing;
 }
 
 /** What the last `lens-start` said about demand: the app writes one
