@@ -33,14 +33,23 @@ on:
         type: choice
         default: all
         options: [all, macos-latest, ubuntu-24.04, windows-latest]
+      audit_release_tag:
+        description: Audit an existing immutable desktop release instead of building
+        type: string
+        default: ''
+      audit_dmg_sha256:
+        description: Expected SHA256 of that release's macOS DMG
+        type: string
+        default: ''
 
 # A newer run of the same ref supersedes the one in flight.
 concurrency:
-  group: desktop-${{ github.ref }}
+  group: desktop-${{ github.ref }}-${{ (inputs.audit_release_tag || inputs.audit_dmg_sha256) && format('audit-{0}', inputs.audit_release_tag) || 'build' }}
   cancel-in-progress: true
 
 jobs:
   build:
+    if: ${{ !inputs.audit_release_tag && !inputs.audit_dmg_sha256 }}
     strategy:
       fail-fast: false
       matrix:
@@ -270,7 +279,7 @@ jobs:
           version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
           test "$version" = "$(node -p "require('./desktop/tauri.conf.json').version")"
           if [[ "$RELEASE_BUILD" == true ]]; then
-            codesign -dv "$app" 2>&1 | grep -q '^Authority=Developer ID Application:'
+            codesign -dv --verbose=2 "$app" 2>&1 | grep '^Authority=Developer ID Application:'
             spctl --assess --type execute --verbose=2 "$app"
           fi
           packaged_runtime="$app/Contents/Resources/runtime"
@@ -351,3 +360,74 @@ jobs:
               node tests/remote-media-smoke.mjs
             rm -rf "$package_dir"
           done
+
+  audit-release:
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.audit_release_tag || inputs.audit_dmg_sha256) }}
+    runs-on: xcode-27
+    timeout-minutes: 30
+    permissions:
+      # GitHub exposes draft releases only to tokens with push access.
+      contents: write
+    env:
+      AUDIT_RELEASE_TAG: ${{ inputs.audit_release_tag }}
+      AUDIT_DMG_SHA256: ${{ inputs.audit_dmg_sha256 }}
+    steps:
+      - name: Validate audit inputs
+        shell: bash
+        run: |
+          [[ "$AUDIT_RELEASE_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'Invalid desktop release tag' >&2; exit 1; }
+          [[ "$AUDIT_DMG_SHA256" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Expected a 64-digit DMG SHA256' >&2; exit 1; }
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.AUDIT_RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.22.0
+          cache: npm
+
+      - name: Verify immutable tag and promotion to main
+        shell: bash
+        run: |
+          revision=$(git rev-parse HEAD)
+          test "$revision" = "$(git rev-parse "refs/tags/$AUDIT_RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor "$revision" origin/main
+          tag=$(node -p "'desktop-v' + require('./desktop/tauri.conf.json').version")
+          test "$AUDIT_RELEASE_TAG" = "$tag"
+          printf 'Auditing %s at %s\n' "$AUDIT_RELEASE_TAG" "$revision"
+
+      - run: npm ci
+
+      - name: Validate immutable DMG runtime and signature
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          package_dir=$(mktemp -d)
+          mounted=false
+          trap 'if $mounted; then hdiutil detach "$package_dir/mount"; fi; rm -rf "$package_dir"' EXIT
+          version=$(node -p "require('./desktop/tauri.conf.json').version")
+          asset="Rimeward_${version}_aarch64.dmg"
+          gh release download "$AUDIT_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir "$package_dir"
+          dmg="$package_dir/$asset"
+          printf '%s  %s\n' "$AUDIT_DMG_SHA256" "$dmg" | shasum -a 256 --check
+          printf 'Verified DMG SHA256: %s\n' "$AUDIT_DMG_SHA256"
+          hdiutil verify "$dmg"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$package_dir/mount"
+          mounted=true
+          app="$package_dir/mount/Rimeward.app"
+          codesign --verify --deep --strict "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$version"
+          codesign -dv --verbose=2 "$app" 2>&1 | grep '^Authority=Developer ID Application:'
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          packaged_runtime="$app/Contents/Resources/runtime"
+          node tests/standalone-smoke.mjs "$packaged_runtime" "$app/Contents/MacOS/rimeward-node"
+          RIMEWARD_MEDIA_SDK="$packaged_runtime/media" \
+            RIMEWARD_MEDIA_HELPER="$packaged_runtime/media/rimeward-media" \
+            PLAYWRIGHT_BROWSERS_PATH="$packaged_runtime/browsers" \
+            RIMEWARD_MEDIA_VIEWERS=4 RIMEWARD_MEDIA_FAULTS=1 \
+            node tests/remote-media-smoke.mjs
