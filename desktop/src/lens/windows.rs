@@ -527,9 +527,9 @@ unsafe extern "system" fn native_event(
 fn hooks() -> Result<Hooks, String> {
     let mut hooks = Hooks(vec![]);
     for event in [
+        EVENT_OBJECT_DESTROY,
         EVENT_SYSTEM_FOREGROUND,
         EVENT_SYSTEM_MINIMIZESTART,
-        EVENT_OBJECT_DESTROY,
         EVENT_OBJECT_LOCATIONCHANGE,
     ] {
         let hook = unsafe {
@@ -551,6 +551,36 @@ fn hooks() -> Result<Hooks, String> {
     }
     Ok(hooks)
 }
+fn drain_events(hwnd: HWND, identity: u32) -> Result<bool, String> {
+    let mut message = MSG::default();
+    let mut frame = false;
+    while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+        match message.message {
+            CLOSED if message.wParam.0 == identity as usize => {
+                return Err("window-destroyed".into())
+            }
+            EVENT => {
+                let event = message.lParam.0 as u32;
+                if (event == EVENT_SYSTEM_FOREGROUND && message.wParam.0 != hwnd.0 as usize)
+                    || message.wParam.0 == hwnd.0 as usize
+                {
+                    return Err(if event == EVENT_OBJECT_DESTROY {
+                        "window-destroyed"
+                    } else {
+                        "geometry-changed"
+                    }
+                    .into());
+                }
+            }
+            FRAME if message.wParam.0 == identity as usize => frame = true,
+            _ => unsafe {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            },
+        }
+    }
+    Ok(frame)
+}
 struct Capture {
     pool: Direct3D11CaptureFramePool,
     session: Option<GraphicsCaptureSession>,
@@ -562,6 +592,8 @@ struct Capture {
     callbacks: Arc<AtomicBool>,
     closed: Arc<AtomicBool>,
 }
+#[cfg(test)]
+type InitFault<'a> = &'a mut dyn FnMut(&Capture, u8) -> windows::core::Result<()>;
 impl Drop for Capture {
     fn drop(&mut self) {
         // Also close on a panic: late callbacks must never address a reused
@@ -572,6 +604,22 @@ impl Drop for Capture {
 }
 impl Capture {
     fn new(hwnd: HWND, size: [u32; 2], thread: u32, identity: u32) -> Result<Self, String> {
+        #[cfg(not(test))]
+        {
+            Self::new_inner(hwnd, size, thread, identity)
+        }
+        #[cfg(test)]
+        {
+            Self::new_inner(hwnd, size, thread, identity, None)
+        }
+    }
+    fn new_inner(
+        hwnd: HWND,
+        size: [u32; 2],
+        thread: u32,
+        identity: u32,
+        #[cfg(test)] mut fault: Option<InitFault<'_>>,
+    ) -> Result<Self, String> {
         let result = (|| -> windows::core::Result<Self> {
             unsafe {
                 if !GraphicsCaptureSession::IsSupported()? {
@@ -642,6 +690,10 @@ impl Capture {
                         Ok(())
                     },
                 ))?);
+                #[cfg(test)]
+                if let Some(fault) = fault.as_mut() {
+                    fault(&capture, 1)?;
+                }
                 let active = capture.callbacks.clone();
                 let destroyed = capture.closed.clone();
                 capture.closed_event =
@@ -657,8 +709,20 @@ impl Capture {
                         }
                         Ok(())
                     }))?);
+                #[cfg(test)]
+                if let Some(fault) = fault.as_mut() {
+                    fault(&capture, 2)?;
+                }
                 capture.session = Some(capture.pool.CreateCaptureSession(&capture.item)?);
+                #[cfg(test)]
+                if let Some(fault) = fault.as_mut() {
+                    fault(&capture, 3)?;
+                }
                 capture.session.as_ref().unwrap().StartCapture()?;
+                #[cfg(test)]
+                if let Some(fault) = fault.as_mut() {
+                    fault(&capture, 4)?;
+                }
                 Ok(())
             }
         })();
@@ -953,6 +1017,33 @@ fn run_capture(
     runtime: &tokio::runtime::Handle,
     ready: &mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), String> {
+    // Create/pump the native queue and install destruction observation before
+    // selecting or pinning a HWND. PID/process creation alone cannot distinguish
+    // same-process HWND recycling. Out-of-context events are still asynchronous;
+    // observing none never upgrades the strict capture-time proof gate.
+    let mut message = MSG::default();
+    unsafe {
+        let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
+    }
+    let mut hooks = hooks()?;
+    let result = run_observed_capture(lens, stop, owner, ordinal, cancellation, runtime, ready);
+    match hooks.close() {
+        Ok(()) => result,
+        Err(cleanup) => Err(match result {
+            Ok(()) => cleanup,
+            Err(original) => format!("{cleanup};{original}"),
+        }),
+    }
+}
+fn run_observed_capture(
+    lens: &Arc<Lens>,
+    stop: &AtomicBool,
+    owner: &AtomicU64,
+    ordinal: &AtomicU32,
+    cancellation: &Cancellation,
+    runtime: &tokio::runtime::Handle,
+    ready: &mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+) -> Result<(), String> {
     let hwnd = unsafe { GetForegroundWindow() };
     let pin = Pin::new(hwnd)?;
     let placement = pin.check()?;
@@ -965,23 +1056,17 @@ fn run_capture(
         .map_err(|_| "source-limit")?;
     let (target, display_bounds) = pin.target(placement, identity)?;
     let thread = unsafe { GetCurrentThreadId() };
-    let mut message = MSG::default();
-    unsafe {
-        let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
-    }
+    let _ = drain_events(hwnd, identity)?;
     let token = GeometryToken {
         placement,
         size,
         since: qpc_time()?,
     };
-    let mut hooks = hooks()?;
-    let capture = match Capture::new(hwnd, size, thread, identity) {
-        Ok(capture) => capture,
-        Err(reason) => {
-            hooks.close()?;
-            return Err(reason);
-        }
-    };
+    // This preparation has no approved temporal geometry association. Refuse
+    // before starting native recording, including an unobservable HWND reuse.
+    // Owned-window tests exercise WGC resources independently of that admission.
+    let _ = token.geometry()?;
+    let capture = Capture::new(hwnd, size, thread, identity)?;
     let mut lease: Option<CaptureLease> = None;
     let mut last_ax = Instant::now() - Duration::from_secs(1);
     let mut ax_available = false;
@@ -996,33 +1081,7 @@ fn run_capture(
             if capture.closed.load(Ordering::Acquire) {
                 return Err("window-destroyed".into());
             }
-            let mut frame = false;
-            while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
-                match message.message {
-                    CLOSED if message.wParam.0 == identity as usize => {
-                        return Err("window-destroyed".into())
-                    }
-                    EVENT => {
-                        let event_hwnd = message.wParam.0;
-                        let event = message.lParam.0 as u32;
-                        if (event == EVENT_SYSTEM_FOREGROUND && event_hwnd != hwnd.0 as usize)
-                            || event_hwnd == hwnd.0 as usize
-                        {
-                            return Err(if event == EVENT_OBJECT_DESTROY {
-                                "window-destroyed"
-                            } else {
-                                "geometry-changed"
-                            }
-                            .into());
-                        }
-                    }
-                    FRAME if message.wParam.0 == identity as usize => frame = true,
-                    _ => unsafe {
-                        let _ = TranslateMessage(&message);
-                        DispatchMessageW(&message);
-                    },
-                }
-            }
+            let frame = drain_events(hwnd, identity)?;
             let before = pin.check()?;
             if before != placement {
                 return Err("geometry-changed".into());
@@ -1042,6 +1101,7 @@ fn run_capture(
                         if !token.accepts(timestamp, sample_size, before, pin.check()?) {
                             return Err("geometry-changed".into());
                         }
+                        let _ = drain_events(hwnd, identity)?;
                         let geometry = token.geometry()?;
                         let surface = sample.Surface().map_err(|_| "capture-buffer")?;
                         let pixels = capture.pixels(&surface, sample_size)?;
@@ -1102,6 +1162,7 @@ fn run_capture(
                     if pin.check()? != placement || capture.closed.load(Ordering::Acquire) {
                         return Err("geometry-changed".into());
                     }
+                    let _ = drain_events(hwnd, identity)?;
                     // Never leave a prior tree behind after association fails.
                     let accepted = if ax_available != lines.is_ok() {
                         let geometry = token.geometry()?;
@@ -1143,9 +1204,7 @@ fn run_capture(
             owner.store(next, Ordering::Release);
         }
     }
-    let closed = capture.close();
-    let unhooked = hooks.close();
-    closed.and(unhooked)?;
+    capture.close()?;
     result
 }
 
@@ -1345,6 +1404,193 @@ mod tests {
         unsafe { DestroyWindow(window.0) }.unwrap();
         window.0 = HWND::default();
         assert_eq!(pin.identity(), Err("window-destroyed".into()));
+    }
+    #[test]
+    fn initialization_destruction_observation_precedes_pid_creation_admission() {
+        let mut message = MSG::default();
+        unsafe {
+            let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
+        }
+        let mut observer = hooks().unwrap();
+        let window = NativeWindow::new();
+        // A delayed destroy notification for a recycled handle must refuse even
+        // when the current handle, PID and process creation all match a live HWND.
+        unsafe {
+            NotifyWinEvent(EVENT_OBJECT_DESTROY, window.0, 0, 0);
+        }
+        let pin = Pin::open(window.0).unwrap();
+        pin.identity().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let rejected = loop {
+            if let Err(reason) = drain_events(window.0, u32::MAX) {
+                break reason;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "native destruction observer did not deliver"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(rejected, "window-destroyed");
+        pin.identity().unwrap();
+        observer.close().unwrap();
+    }
+    struct WgcWitness {
+        pool: Direct3D11CaptureFramePool,
+        item: GraphicsCaptureItem,
+        session: Option<GraphicsCaptureSession>,
+        callbacks: Arc<AtomicBool>,
+        closed: Arc<AtomicBool>,
+        device: IDirect3DDevice,
+    }
+    impl WgcWitness {
+        fn acquired(capture: &Capture) -> Self {
+            let dxgi: IDXGIDevice = capture.device.cast().unwrap();
+            let device: IDirect3DDevice = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi) }
+                .unwrap()
+                .cast()
+                .unwrap();
+            Self {
+                pool: capture.pool.clone(),
+                item: capture.item.clone(),
+                session: capture.session.clone(),
+                callbacks: capture.callbacks.clone(),
+                closed: capture.closed.clone(),
+                device,
+            }
+        }
+        fn assert_native_cleanup(&self, window: &mut NativeWindow) {
+            assert!(
+                !self.callbacks.load(Ordering::Acquire),
+                "callback publication remained enabled"
+            );
+            // Retain the actual COM resources so dropping Capture cannot conceal
+            // an omitted native Close. A still-open pool can recreate, and a
+            // still-open session can start on this still-live owned window.
+            let recreated = self.pool.Recreate(
+                &self.device,
+                DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                2,
+                windows::Graphics::SizeInt32 {
+                    Width: 80,
+                    Height: 60,
+                },
+            );
+            assert_eq!(
+                recreated.unwrap_err().code(),
+                windows::Win32::Foundation::RO_E_CLOSED,
+                "native frame pool did not prove closed"
+            );
+            if let Some(session) = &self.session {
+                assert!(
+                    session.StartCapture().unwrap_err().code()
+                        == windows::Win32::Foundation::RO_E_CLOSED,
+                    "native capture session did not prove closed"
+                );
+            }
+            let delivered = Arc::new(AtomicBool::new(false));
+            let observed = delivered.clone();
+            let token = self
+                .item
+                .Closed(&TypedEventHandler::new(move |_, _| {
+                    observed.store(true, Ordering::Release);
+                    Ok(())
+                }))
+                .unwrap();
+            unsafe { DestroyWindow(window.0) }.unwrap();
+            window.0 = HWND::default();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !delivered.load(Ordering::Acquire) && Instant::now() < deadline {
+                let mut message = MSG::default();
+                while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+                    unsafe {
+                        let _ = TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(
+                delivered.load(Ordering::Acquire),
+                "WGC owned-window Closed control event was not delivered"
+            );
+            assert!(
+                !self.closed.load(Ordering::Acquire),
+                "removed native Closed delegate was still subscribed"
+            );
+            self.item.RemoveClosed(token).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Arc::strong_count(&self.callbacks) > 1 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(
+                Arc::strong_count(&self.callbacks),
+                1,
+                "native event delegates retained callback state after cleanup"
+            );
+        }
+    }
+    #[test]
+    fn real_wgc_partial_initialization_closes_native_resources_and_removes_events() {
+        let _apartment = Apartment::new().unwrap();
+        let _dpi = DpiContext::physical().unwrap();
+        let mut message = MSG::default();
+        unsafe {
+            let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
+        }
+        let thread = unsafe { GetCurrentThreadId() };
+        for stage in 1u8..=4 {
+            let mut window = NativeWindow::new();
+            unsafe {
+                let _ = ShowWindow(window.0, SW_SHOWNOACTIVATE);
+            }
+            let mut witness = None;
+            let mut injected = |capture: &Capture, acquired| {
+                if acquired == stage {
+                    witness = Some(WgcWitness::acquired(capture));
+                    return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                        0x80004004u32 as i32,
+                    )));
+                }
+                Ok(())
+            };
+            let result = Capture::new_inner(
+                window.0,
+                [80, 60],
+                thread,
+                u32::from(stage),
+                Some(&mut injected),
+            );
+            let failure = match result {
+                Err(reason) => reason,
+                Ok(_) => panic!("native initialization fault was not exercised"),
+            };
+            let witness = witness.unwrap_or_else(|| {
+                panic!(
+                    "WGC fixture unavailable before stage {stage} on this Windows host: {failure}"
+                )
+            });
+            assert!(
+                failure.contains("capture-unavailable:0x80004004"),
+                "original native initialization failure was lost: {failure}"
+            );
+            assert!(
+                !native_cleanup_failed(&failure),
+                "native cleanup could not be verified: {failure}"
+            );
+            witness.assert_native_cleanup(&mut window);
+        }
+        let mut window = NativeWindow::new();
+        unsafe {
+            let _ = ShowWindow(window.0, SW_SHOWNOACTIVATE);
+        }
+        let capture = Capture::new(window.0, [80, 60], thread, 5).unwrap_or_else(|reason| {
+            panic!("WGC fixture unavailable on this Windows host: {reason}")
+        });
+        let witness = WgcWitness::acquired(&capture);
+        capture.close().unwrap();
+        drop(capture);
+        witness.assert_native_cleanup(&mut window);
     }
     #[test]
     fn actual_overlay_exclusion_and_position_must_both_prove_or_refuse() {

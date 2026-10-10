@@ -362,6 +362,19 @@ replace feature-specific live acceptance or installed-app checks. Published
   (overlay); independent immutable review and shared attachment remain required.
   No installed or full RIME-51 acceptance is claimed.
 
+- Independent review of Windows preparation `e3f88c3` identified a lifetime
+  observation ordering gap and a cleanup regression that did not exercise real
+  WGC resources. The correction installs observation before target selection and
+  refuses the strict geometry contract before native recording. Its owned-window
+  regression enters the real constructor after each acquired resource, retains
+  COM witnesses and checks native closure, callback removal and delegate release.
+  Thirteen Windows tests compile; actual Windows execution remains pending.
+  Corrected source SHA-256 is
+  `8a6f1f4d9805723830007efdd1dde73ad6f88dbb173f43210c840ac84010657d`.
+  Combined actual shared/native metadata and strict all-target Clippy pass with
+  disclosed Tauri/session shims. Independent correction review is still required;
+  capture, AX and overlays remain refused pending the coordinate decision.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`
