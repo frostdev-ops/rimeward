@@ -1,7 +1,8 @@
 import { config } from '../app-config.ts';
 import { terminalEnv } from '../dev/environment.ts';
 import { isDesktop } from '../dev/runtime.ts';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -173,7 +174,7 @@ export function open(userId: number, ward: string, cfg: BrowserConfig, opts: { d
 
 async function launch(userId: number, ward: string, key: string, cfg: BrowserConfig, dsf: number): Promise<Session> {
   if(isDesktop())cfg={...cfg,backend:cfg.backend==='app'?'local':cfg.backend,route:undefined};
-  ensureBrowser();
+  await ensureBrowser();
   await makeRoom();
   // Only a launch takes options; a browser connected over CDP keeps its own scale.
   if (cfg.backend !== 'local') dsf = 1;
@@ -909,20 +910,25 @@ export async function rekeySession(userId: number, before: string, after: string
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+const PROFILE_QUERY: [string, string[]] = process.platform === 'win32'
+  ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand',
+      Buffer.from('$ProgressPreference = "SilentlyContinue"; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process -Property ProcessId,CommandLine -Filter "CommandLine LIKE \'%--user-data-dir=%\'" | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }', 'utf16le').toString('base64'),
+    ]]
+  : ['ps', ['-eo', 'pid=,args=']];
+const PROFILE_QUERY_OPTIONS = { encoding: 'utf8' as const, timeout: 10_000, windowsHide: true };
+
 /** SIGKILL every chromium whose profile sits under `prefix`. At boot that is
  *  everything a SIGKILLed predecessor (pm2 max_memory_restart) left behind. */
 export function killByProfile(prefix: string): number {
-  let out = '';
   try {
-    out = process.platform === 'win32'
-      ? execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand',
-          Buffer.from('$ProgressPreference = "SilentlyContinue"; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process -Property ProcessId,CommandLine -Filter "CommandLine LIKE \'%--user-data-dir=%\'" | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }', 'utf16le').toString('base64'),
-        ], { encoding: 'utf8', timeout: 10_000, windowsHide: true })
-      : execFileSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8', timeout: 10_000 });
+    return killScannedProfiles(prefix, execFileSync(...PROFILE_QUERY, PROFILE_QUERY_OPTIONS));
   } catch (error) {
     console.warn('[browser] Profile cleanup failed:', (error as NodeJS.ErrnoException).code ?? 'process query failed');
     return 0;
   }
+}
+
+function killScannedProfiles(prefix: string, out: string): number {
   let killed = 0;
   for (const line of out.split(/\r?\n/)) {
     const m = /^\s*(\d+)\s+(.*)$/.exec(line);
@@ -933,6 +939,15 @@ export function killByProfile(prefix: string): number {
     } catch {}
   }
   return killed;
+}
+
+function sweepOrphans(): Promise<void> {
+  const query = promisify(execFile)(...PROFILE_QUERY, PROFILE_QUERY_OPTIONS);
+  const stop = () => { query.child.kill(); };
+  process.once('exit', stop);
+  return query.then(({ stdout }) => { killScannedProfiles(PROFILES + path.sep, stdout); }, error => {
+    console.warn('[browser] Profile cleanup failed:', (error as NodeJS.ErrnoException).code ?? 'process query failed');
+  }).finally(() => process.off('exit', stop));
 }
 
 function reap(): void {
@@ -946,11 +961,11 @@ async function shutdown(): Promise<void> {
 
 /** Boot once per process: sweep orphans, reap idle sessions, close cleanly on
  *  the signals pm2 sends (kill_timeout in ecosystem.config.cjs leaves room). */
-export function ensureBrowser(): void {
-  const g = globalThis as { __fdBrowser?: true };
-  if (g.__fdBrowser) return;
-  g.__fdBrowser = true;
-  killByProfile(PROFILES + path.sep);
+export function ensureBrowser(): Promise<void> {
+  const g = globalThis as { __fdBrowser?: Promise<void> };
+  if (g.__fdBrowser) return g.__fdBrowser;
+  // The orphan scan must finish before launch without delaying a viewer's hello.
+  g.__fdBrowser = sweepOrphans();
   setInterval(reap, 60_000).unref();
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.once(sig, () => {
@@ -962,4 +977,5 @@ export function ensureBrowser(): void {
       void Promise.race([Promise.all([shutdown(), terminals, voice, embeddings, knowledge, monitors]), sleep(CLOSE_MS + 1_000)]).finally(() => process.exit(0));
     });
   }
+  return g.__fdBrowser;
 }

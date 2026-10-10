@@ -6,6 +6,9 @@ import type { AddressInfo } from 'node:net';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
 import WebSocket from 'ws';
 import { getDb } from '../src/lib/db.ts';
@@ -44,23 +47,40 @@ let base = '';
 function client(ward: string, session: string, dsf?: number): Client {
   const ws = new WebSocket(`ws://${base}/api/browser/ws/${ward}${dsf === undefined ? '' : `?dsf=${dsf}`}`, { origin: `http://${base}`, headers: { cookie: `${SESSION_COOKIE}=${session}` } });
   const msgs: Msg[] = [], frames: Buffer[] = [];
-  const waiters: (() => void)[] = [];
-  const wake = () => { for (const w of waiters.splice(0)) w(); };
+  const waiters = new Set<() => void>();
+  let error: string | undefined, close: { code: number; reason: string } | undefined;
+  const wake = () => { for (const w of [...waiters]) w(); };
   ws.on('message', (raw, isBinary) => {
     if (isBinary) frames.push(raw as Buffer); else msgs.push(JSON.parse(raw.toString()));
     wake();
   });
-  const closed = new Promise<number>(resolve => { ws.on('close', code => { resolve(code); wake(); }); ws.on('error', () => {}); });
+  const closed = new Promise<number>(resolve => {
+    ws.on('close', (code, reason) => { close = { code, reason: reason.toString() }; resolve(code); wake(); });
+    ws.on('error', err => { error = err.message; wake(); });
+  });
   const c: Client = {
     ws, msgs, frames, closed,
     next: (pred, ms = 5000) => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`no message within ${ms}ms; got ${JSON.stringify(msgs.map(m => m.type))}`)), ms);
-      const check = () => { const m = msgs.find(pred); if (m) { clearTimeout(timer); resolve(m); return; } waiters.push(check); };
+      const timer = setTimeout(() => {
+        waiters.delete(check);
+        reject(new Error(`no message within ${ms}ms for ${pred.toString()}; got ${JSON.stringify(msgs.map(m => m.type))}; socket ${JSON.stringify({ state: ws.readyState, close, error })}`));
+      }, ms);
+      const check = () => { const m = msgs.find(pred); if (m) { clearTimeout(timer); waiters.delete(check); resolve(m); return; } waiters.add(check); };
       check();
     }),
     send: cmds => ws.send(JSON.stringify({ cmds })),
   };
   return c;
+}
+
+async function cleanup(server: http.Server, clients: Client[], uid: number, s?: Session): Promise<void> {
+  for (const c of clients) c.ws.terminate();
+  await Promise.all(clients.map(c => c.closed));
+  // A failed hello/view assertion can leave Chromium launching before `s` is assigned.
+  const pending = (globalThis as { __fdBrowserOpening?: Map<string, Promise<Session>> }).__fdBrowserOpening?.get(`${uid}:bw`);
+  const live = s ?? peek(uid, 'bw') ?? await pending?.catch(() => undefined);
+  if (live) await closeSession(live);
+  await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
 }
 
 /** Width × height from a JPEG's SOF marker. */
@@ -139,6 +159,20 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
   await once(server, 'listening');
   base = `127.0.0.1:${(server.address() as AddressInfo).port}`;
   let s: Session | undefined;
+  const clients: Client[] = [];
+  const connect = (ward: string, session: string, dsf?: number) => { const c = client(ward, session, dsf); clients.push(c); return c; };
+  let releaseSweep: () => void = () => {};
+  const sweep = new Promise<void>(resolve => { releaseSweep = resolve; });
+  const execFile = childProcess.execFile;
+  const query = promisify(execFile);
+  let queried = false;
+  childProcess.execFile = ((...args: Parameters<typeof execFile>) => Reflect.apply(execFile, childProcess, args)) as typeof execFile;
+  Object.defineProperty(childProcess.execFile, promisify.custom, { value: (...args: Parameters<typeof query>) => {
+    queried = true;
+    const pending = query(...args);
+    return Object.assign(pending.then(async result => { await sweep; return result; }), { child: pending.child });
+  } });
+  syncBuiltinESMExports();
   try {
     // Refusals happen BEFORE the upgrade: a status line, never a `hello`.
     for (const [ward, cookie, status] of [['note', sid, 400], ['bw', 'nope', 401], ['far', sid, 409]] as const) {
@@ -149,12 +183,16 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     // The first viewer launches the browser: `hello` arrives at once, then
     // input before `view` is a protocol error, and that close DURING the
     // launch leaves no subscription or owner behind.
-    const early = client('bw', sid, 2);
+    const early = connect('bw', sid, 2);
     await early.next(m => m.type === 'hello');
+    assert.equal(queried, true, 'the orphan query is pending while hello arrives');
+    assert.equal(peek(uid, 'bw'), undefined, 'launch waits for the orphan sweep');
     assert.equal(early.msgs.length, 1, 'hello is the first message');
     early.send([{ t: 'reload' }]);
     assert.equal(await early.closed, 1008);
     assert.equal(early.msgs.some(m => m.type === 'view'), false);
+    releaseSweep();
+    childProcess.execFile = execFile; syncBuiltinESMExports();
     try { s = await open(uid, 'bw', { backend: 'local' }); }
     catch (err) {
       if (existsSync(process.env.BROWSER_EXECUTABLE ?? chromium.executablePath())) throw err;
@@ -165,7 +203,7 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     assert.equal(s.subs.size, 0); assert.equal(s.owners.size, 0);
 
     // Handshake and a binary frame at device pixels.
-    const a = client('bw', sid, 1.5);
+    const a = connect('bw', sid, 1.5);
     await a.next(m => m.type === 'hello');
     const view = await a.next(m => m.type === 'view');
     assert.equal(view.dsf, 2, 'the session\'s scale, fixed at launch, not this viewer\'s');
@@ -236,7 +274,7 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
 
     // Same-batch cancellation: only the executing command survives a disconnect.
     await s.page.evaluate(() => { (window as unknown as { log: string[] }).log = []; });
-    const b = client('bw', sid);
+    const b = connect('bw', sid);
     await b.next(m => m.type === 'view');
     b.send([{ t: 'down', x: 10, y: 10, button: 0 }, { t: 'text', text: 'x' }, { t: 'key', type: 'down', key: 'a' }]);
     await sleep(200);
@@ -250,12 +288,12 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
 
     // Cleanup precedes a reconnected viewer's first command.
     await s.page.evaluate(() => { (window as unknown as { log: string[] }).log = []; });
-    const c = client('bw', sid);
+    const c = connect('bw', sid);
     await c.next(m => m.type === 'view');
     c.send([{ t: 'key', type: 'down', key: 'Shift' }]);
     await until(async () => (await log()).includes('keydown:Shift'), 5000, 'Shift down');
     c.ws.close();
-    const d = client('bw', sid);
+    const d = connect('bw', sid);
     await d.next(m => m.type === 'view');
     d.send([{ t: 'key', type: 'down', key: 'a' }, { t: 'key', type: 'up', key: 'a' }]);
     await until(async () => (await log()).includes('keyup:a'), 5000, 'a typed');
@@ -264,7 +302,7 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
 
     // Ownership: a press another live viewer also holds is not ours to release.
     await s.page.evaluate(() => { (window as unknown as { log: string[] }).log = []; });
-    const e = client('bw', sid);
+    const e = connect('bw', sid);
     await e.next(m => m.type === 'view');
     d.send([{ t: 'key', type: 'down', key: 'Alt' }]);
     e.send([{ t: 'key', type: 'down', key: 'Alt' }]);
@@ -277,7 +315,7 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
 
     // Bounds: more than 4000 queued commands behind a slow one, or one message over 256 KB.
     await slow(1500);
-    const g = client('bw', sid);
+    const g = connect('bw', sid);
     await g.next(m => m.type === 'view');
     g.send([{ t: 'down', x: 10, y: 10, button: 0 }]);
     await sleep(100);
@@ -286,7 +324,7 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     // The previous owner's release must finish before the next fixture clears its log.
     await s.humanWorker;
     await slow(0);
-    const h = client('bw', sid);
+    const h = connect('bw', sid);
     await h.next(m => m.type === 'view');
     h.send([{ t: 'text', text: 'y'.repeat(300 * 1024) }]);
     assert.equal(await h.closed, 1009);
@@ -295,7 +333,7 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     await s.page.evaluate(() => { (window as unknown as { log: string[] }).log = []; });
     const other = createSession(uid).id;
     await slow(1500);
-    const k = client('bw', other);
+    const k = connect('bw', other);
     await k.next(m => m.type === 'view');
     k.send([{ t: 'down', x: 10, y: 10, button: 0 }, { t: 'key', type: 'down', key: 'z' }, { t: 'key', type: 'up', key: 'z' }]);
     await sleep(200);
@@ -309,15 +347,16 @@ test('the ward WebSocket: handshake, HiDPI frames, and the one-worker input queu
     assert.equal(await refused('bw', other, `http://${base}`), 401);
 
     // The browser closing ends every socket normally; the client reconnects on its own.
-    const z = client('bw', sid);
+    const z = connect('bw', sid);
     await z.next(m => m.type === 'view');
     await closeSession(s);
     assert.equal(await z.closed, 1000);
     assert.equal(peek(uid, 'bw'), undefined);
     s = undefined;
   } finally {
-    if (s) await closeSession(s);
-    server.close();
+    releaseSweep();
+    childProcess.execFile = execFile; syncBuiltinESMExports();
+    await cleanup(server, clients, uid, s);
   }
 });
 
@@ -422,9 +461,7 @@ test('the ward WebSocket: the stream\'s signaling rides each viewer\'s own socke
     await until(() => pagePeers().then(n => n === 0), 5000, 'peers removed');
     assert.equal(s.rtc.size, 0);
   } finally {
-    for (const c of clients) c.ws.close();
-    if (s) await closeSession(s);
-    server.close();
+    await cleanup(server, clients, uid, s);
     if (direct === undefined) delete process.env.RIMEWARD_RTC_DIRECT; else process.env.RIMEWARD_RTC_DIRECT = direct;
   }
 });

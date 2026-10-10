@@ -13,7 +13,7 @@ human-run provider acceptance.
 | Main Tests workflow | Passed on `82abf2c` | [Tests run](https://github.com/frostdev-ops/rimeward/actions/runs/38056828919) |
 | Main server workflow | Passed on `82abf2c` | [Server run](https://github.com/frostdev-ops/rimeward/actions/runs/38056828905) |
 | Main desktop workflow | Linux and Windows passed; macOS Runtime validation failed browser-live input-release/signaling checks | [Main desktop run](https://github.com/frostdev-ops/rimeward/actions/runs/38056828904); macOS job 114226923170 |
-| Development desktop workflow | macOS/Linux passed; Windows still running at inspection | [Development run](https://github.com/frostdev-ops/rimeward/actions/runs/38056448593) |
+| Development desktop workflow | `3e353fc`: macOS/Linux passed; Windows browser hello timed out and the test process remained open; cancelled after capturing the failure | [Development run](https://github.com/frostdev-ops/rimeward/actions/runs/38063079715); Windows job 114245199841; final corrected candidate pending |
 | Published server | **1.0.17** | [Server release](https://github.com/frostdev-ops/rimeward/releases/tag/v1.0.17) |
 | Published desktop | **1.0.17**, updater and platform installers present | [Desktop release](https://github.com/frostdev-ops/rimeward/releases/tag/desktop-v1.0.17) |
 | Installed Mac app | **1.0.17**; deep strict signature passes, team `22AAZFMTV8`; live health unproved | Local `/Applications/Rimeward.app/Contents/Info.plist` and read-only codesign checks |
@@ -34,9 +34,9 @@ checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 ap
   [73d3e70](https://github.com/frostdev-ops/rimeward/commit/73d3e70), for Arch fallback
   README/wiki-source guidance. Its reviewed two-file change is integrated on
   `dev/1.0.18` for RIME-42; the stale branch is not merged wholesale.
-- No open GitHub PR was found at initial refresh. `dev/1.0.18` exists at the
-  published website revision and is reused for baseline execution. `dev/1.0.19`
-  remains the planned portable release after baseline closure.
+- No open GitHub PR was found at initial refresh. Draft [PR #16](https://github.com/frostdev-ops/rimeward/pull/16)
+  now tracks `dev/1.0.18` baseline preparation and reproduced native/browser fixes.
+  `dev/1.0.19` remains the planned portable release after baseline publication.
 - Desktop 1.0.16 remains a historical draft superseded by published 1.0.17.
   It is not recorded as a current release blocker.
 
@@ -129,6 +129,31 @@ checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 ap
 - Packaged-runtime CI changes passed independent review plus actionlint/JS/bash
   syntax and whitespace checks. Actual Windows extraction, tagged MSI and
   notarized Mac DMG checks still require their final candidate/tagged jobs.
+- Development `3e353fc` passed push Tests and server CI. Its desktop macOS and
+  Linux jobs passed staged runtime/native checks and packaged app/DEB/AppImage
+  standalone/media checks. The branch Mac app was ad hoc signed; this is not
+  tagged Developer ID/notarized DMG evidence. Windows timed out waiting for
+  browser hello and remained open after the failed fixture; cancellation does
+  not provide a natural process exit code or establish installer startup failure.
+- A controlled 5,500 ms synchronous process scan reproduced that browser hello
+  failure. The boot-only orphan sweep is now asynchronous and awaited before
+  launch; its asynchronous equivalent passes with the original hello deadline.
+  Failure teardown closes pending launches and sockets, and the existing bounded
+  synchronous shutdown fallback remains. Combined 871 unit tests, typecheck,
+  desktop lint, production build, browser UI and remote-workspace smokes pass;
+  final Windows CI remains a gate.
+- The `3e353fc` pull-request Tests job hit an external Google font fetch failure;
+  its merge tree matched the passing push tree. This is retained as CI evidence,
+  without changing font behavior or treating the failed check as passed.
+- Native Lens callback and AX-walk publication races were reproduced and fixed
+  in `bb0cc22`; `8248f1c` repairs desired-PID advancement after refused activation.
+  Review exposed the OCR-only Pause/switch/Resume path; `7a5e985` now discovers
+  the foreground target before resuming capture, retries stale discovery once,
+  and clears retained current state on failure. Pause/Stop cancel that request;
+  denied-AX polling refreshes foreground identity independently. Independent
+  exact-commit review found no remaining actionable findings. Formatting, Clippy
+  and 138 native tests pass, with ten hardware-only checks ignored. These source
+  regressions do not close signed installed Lens acceptance.
 - The user will run installed Windows/Linux/Arch checks manually and chose CI/CD
   acceptance for publication on 2026-10-10. Manual feature/platform packages stay
   open. Baseline publication requires final candidate CI and packaged-runtime

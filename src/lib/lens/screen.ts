@@ -436,8 +436,7 @@ export function screenSource(deps: ScreenDeps): Source {
       // The boundary: every signal at or below it is already in this reply.
       seq: num(snap.seq),
       meta,
-      // The app prunes its own copy after it reconfigures the stream, so a
-      // snapshot taken in that gap carries the new size over the old lines.
+      // The app prunes before replacing the stream; also bound OCR to the current window.
       lines: [...wireDrafts(snap.axText, 'ax'), ...within(wireDrafts(snap.ocr, 'ocr'), (snap.window as { bounds?: unknown } | null)?.bounds)],
       live: Array.isArray(snap.live) ? (snap.live as Rect[]) : [],
       ref: frame && str(frame.ref) ? str(frame.ref) : null,
