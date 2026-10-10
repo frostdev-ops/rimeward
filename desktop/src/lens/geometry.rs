@@ -3,6 +3,13 @@ use super::bridge::Rect;
 
 /// The most merged dirty rectangles a frame reports. Past this, unioning the
 /// cheapest pairs costs less than a FeaturePrint per rectangle.
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(
+        dead_code,
+        reason = "RIME-49 provider dirty bounds; remove when RIME-50/51 attach"
+    )
+)]
 pub const MAX_DIRTY: usize = 8;
 
 /// Window points ↔ captured pixels for one frame, through that frame's own
@@ -40,6 +47,7 @@ impl Transform {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub fn scale(&self) -> f64 {
         self.scale
     }
@@ -71,6 +79,7 @@ impl Transform {
 
     /// Vision's normalized bottom-left rect over `roi` (captured pixels) →
     /// window points.
+    #[cfg(target_os = "macos")]
     pub fn vision_to_window(&self, norm: Rect, roi: [u32; 4]) -> Rect {
         let (rx, ry) = (f64::from(roi[0]), f64::from(roi[1]));
         let (rw, rh) = (f64::from(roi[2]), f64::from(roi[3]));
@@ -99,6 +108,7 @@ fn area(r: Rect) -> f64 {
     (r[2].max(0.0)) * (r[3].max(0.0))
 }
 
+#[cfg(target_os = "macos")]
 fn touches(a: Rect, b: Rect) -> bool {
     // Adjacent counts: two rects sharing an edge are one region to a reader.
     const SLACK: f64 = 1.0;
@@ -120,6 +130,7 @@ pub(super) fn intersect(a: Rect, b: Rect) -> Option<Rect> {
 /// the pair whose union wastes the least area is merged until the count fits.
 // ponytail: O(n²) per merge pass. ScreenCaptureKit hands us single-digit dirty
 // rect counts; sort by area first if a driver ever reports hundreds.
+#[cfg(target_os = "macos")]
 pub fn merge_dirty(rects: &[Rect]) -> Vec<Rect> {
     let mut out: Vec<Rect> = rects.iter().copied().filter(|r| area(*r) > 0.0).collect();
     let mut merged = true;
@@ -144,6 +155,13 @@ pub fn merge_dirty(rects: &[Rect]) -> Vec<Rect> {
     out
 }
 
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(
+        dead_code,
+        reason = "RIME-49 provider dirty merging; remove when RIME-50/51 attach"
+    )
+)]
 pub(super) fn cheapest_pair(rects: &[Rect]) -> (usize, usize) {
     let mut best = (0usize, 1usize, f64::MAX);
     for i in 0..rects.len() {

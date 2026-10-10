@@ -5,13 +5,40 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { deflateSync } from "node:zlib";
-import { validate } from "../desktop/ocr-runtime.mjs";
+import { pins, validate } from "../desktop/ocr-runtime.mjs";
 
 const directory = path.resolve(process.argv[2] || "desktop/runtime/ocr");
 assert.ok(
 	validate(directory),
 	"Pinned OCR runtime manifest and every shipped hash",
 );
+const manifest = JSON.parse(
+	fs.readFileSync(path.join(directory, "manifest.json"), "utf8"),
+);
+const notices = [
+	"SOURCES.md",
+	"licenses/tesseract-LICENSE",
+	"licenses/tesseract-AUTHORS",
+	"licenses/leptonica-leptonica-license.txt",
+	"licenses/zlib-LICENSE",
+	"licenses/png-LICENSE",
+	"licenses/png-AUTHORS",
+	"licenses/tessdata_fast-LICENSE",
+];
+if (process.platform === "linux")
+	notices.push("licenses/GCC-runtime-copyright", "licenses/GCC-runtime-GPL-3");
+for (const name of notices) {
+	assert.match(manifest.hashes[name] || "", /^[a-f0-9]{64}$/, `${name} hashed`);
+	assert.ok(
+		fs.readFileSync(path.join(directory, name), "utf8").trim().length > 0,
+		`${name} nonempty`,
+	);
+}
+const sources = fs.readFileSync(path.join(directory, "SOURCES.md"), "utf8");
+for (const pin of Object.values(pins))
+	for (const value of [pin.version, pin.url, `SHA-256 ${pin.sha256}`])
+		assert.ok(sources.includes(value), `Missing OCR source provenance: ${value}`);
+assert.match(sources, /Build toolchain and exact flags:/);
 const executable = path.join(
 	directory,
 	process.platform === "win32" ? "tesseract.exe" : "tesseract",
@@ -197,9 +224,6 @@ if (process.platform === "linux") {
 		);
 	console.log(imports);
 }
-assert.ok(
-	fs.existsSync(path.join(directory, "licenses/tessdata_fast-LICENSE")),
-);
 console.log(
-	"Portable OCR: pinned versions, hashes, memory PNG/TSV extraction and native loader closure passed.",
+	"Portable OCR: pinned versions, hashes, notices/provenance, memory PNG/TSV extraction and native loader closure passed.",
 );

@@ -49,6 +49,13 @@ pub struct Target {
 /// A backend obtains this only after validating its native source's lifetime,
 /// exact window scope and capture geometry. Never serialize native handles.
 #[derive(Clone)]
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(
+        dead_code,
+        reason = "RIME-49 provider lease; remove when RIME-50/51 attach"
+    )
+)]
 pub struct CaptureLease {
     pub epoch: u64,
     pub generation: u64,
@@ -184,13 +191,23 @@ impl Lens {
     }
     /// Backend grants are actual provider answers. RIME-49 leaves capture/AX
     /// false; installing OCR alone cannot grant capture or native overlays.
+    /// Compare under the lifecycle lock and return this mutation's generation;
+    /// a superseded drain cannot announce grants into a replacement session.
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(
+            dead_code,
+            reason = "RIME-49 provider grants; remove when RIME-50/51 attach"
+        )
+    )]
     pub async fn backend_status(
         &self,
+        expected_generation: u64,
         capture: bool,
         ax: bool,
         score_id: &str,
         reason: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         let accepted = if cfg!(windows) {
             score_id == "windows:wgc:rgb16-tile32-v1"
         } else {
@@ -202,17 +219,25 @@ impl Lens {
         if !accepted || (ax && score_id.contains(":pipewire:")) {
             return Err("unavailable".into());
         }
-        {
+        let generation = {
             let mut state = self.state.lock().unwrap();
+            if state.generation != expected_generation {
+                return Err("cancelled".into());
+            }
             self.invalidate(&mut state);
             state.capture = capture;
             state.ax = ax;
             state.score_id = score_id.into();
             state.reason = reason.map(str::to_owned);
-            self.announce(&state);
-        }
+            state.generation
+        };
         self.ocr.drained().await;
-        Ok(())
+        let state = self.state.lock().unwrap();
+        if state.generation != generation {
+            return Err("cancelled".into());
+        }
+        self.announce(&state);
+        Ok(generation)
     }
     pub async fn stop(&self, reason: Option<&str>) {
         {
@@ -227,16 +252,36 @@ impl Lens {
     /// A provider must invalidate its accepted generation on native destroy,
     /// unmap, resize, monitor/session change or permission withdrawal, even if
     /// an old capture surface remains readable. Old callbacks cannot publish.
-    pub fn invalidate_source(&self, reason: &str) {
+    /// A delayed callback cannot invalidate a newer provider's generation.
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(
+            dead_code,
+            reason = "RIME-49 provider invalidation; remove when RIME-50/51 attach"
+        )
+    )]
+    pub fn invalidate_source(&self, expected_generation: u64, reason: &str) -> Option<u64> {
         let mut state = self.state.lock().unwrap();
+        if state.generation != expected_generation {
+            return None;
+        }
         self.invalidate(&mut state);
         state.capture = false;
         state.ax = false;
         state.reason = Some(reason.into());
         self.announce(&state);
+        Some(state.generation)
     }
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(
+            dead_code,
+            reason = "RIME-49 provider acceptance; remove when RIME-50/51 attach"
+        )
+    )]
     pub fn accept_target(
         &self,
+        expected_generation: u64,
         target: Target,
         geometry: FrameGeometry,
         size: [u32; 2],
@@ -250,7 +295,7 @@ impl Lens {
             return None;
         }
         let mut state = self.state.lock().unwrap();
-        if Self::run(&state) != "running" {
+        if state.generation != expected_generation || Self::run(&state) != "running" {
             return None;
         }
         self.invalidate(&mut state);
@@ -275,12 +320,26 @@ impl Lens {
             size,
         })
     }
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(
+            dead_code,
+            reason = "RIME-49 publication guard; remove when RIME-50/51 attach"
+        )
+    )]
     fn current(&self, state: &State, lease: &CaptureLease) -> bool {
         Self::run(state) == "running"
             && self.bridge.epoch() == lease.epoch
             && state.generation == lease.generation
             && state.target.as_ref() == Some(&lease.target)
     }
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(
+            dead_code,
+            reason = "RIME-49 provider AX; remove when RIME-50/51 attach"
+        )
+    )]
     pub fn publish_ax(&self, lease: &CaptureLease, lines: Vec<Line>) -> bool {
         let mut state = self.state.lock().unwrap();
         if !state.ax
@@ -301,6 +360,13 @@ impl Lens {
     /// Immutable packed BGRA, after the provider proves identity AND geometry
     /// again for this sample. The frame's transform is never reconstructed from
     /// a later window position. The single pending recognition is latest wins.
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(
+            dead_code,
+            reason = "RIME-49 provider frames; remove when RIME-50/51 attach"
+        )
+    )]
     pub fn publish_frame(
         &self,
         lease: &CaptureLease,
@@ -602,6 +668,13 @@ fn rect(value: &Value) -> Option<Rect> {
 fn valid_rect(r: Rect) -> bool {
     r.iter().all(|n| n.is_finite()) && r[2] > 0.0 && r[3] > 0.0
 }
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(
+        dead_code,
+        reason = "RIME-49 provider geometry; remove when RIME-50/51 attach"
+    )
+)]
 fn geometry_valid(g: FrameGeometry, [w, h]: [u32; 2]) -> bool {
     valid_rect(g.window)
         && valid_rect(g.captured)
@@ -621,6 +694,13 @@ fn geometry_valid(g: FrameGeometry, [w, h]: [u32; 2]) -> bool {
 /// RGB max-channel delta >= 16/255, in 32x32 tiles. Scores are changed-pixel
 /// fractions. Merge adjacent tiles into connected regions, then use bounded
 /// minimum-waste unions; every merged score keeps its maximum constituent.
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(
+        dead_code,
+        reason = "RIME-49 provider scoring; remove when RIME-50/51 attach"
+    )
+)]
 fn score(
     previous: Option<&([u32; 2], Arc<[u8]>)>,
     bgra: &[u8],
@@ -718,6 +798,13 @@ fn score(
         })
         .collect()
 }
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(
+        dead_code,
+        reason = "RIME-49 provider scoring; remove when RIME-50/51 attach"
+    )
+)]
 fn merge_scores(regions: &mut Vec<bridge::Dirty>) {
     let rects: Vec<Rect> = regions.iter().map(|region| region.bbox).collect();
     let (i, j) = geometry::cheapest_pair(&rects);
@@ -766,7 +853,14 @@ mod tests {
         assert_eq!(result["capabilities"]["ocr"], false);
         assert_eq!(result["state"], "stopped");
         assert_eq!(result["reason"], "unsupported");
-        lens.backend_status(true, true, Lens::score_id(), None)
+        let generation = lens
+            .backend_status(
+                lens.request_generation(),
+                true,
+                true,
+                Lens::score_id(),
+                None,
+            )
             .await
             .unwrap();
         let geometry = FrameGeometry {
@@ -791,7 +885,9 @@ mod tests {
                 scale: 1.0,
             },
         };
-        let lease = lens.accept_target(target, geometry, [32, 32]).unwrap();
+        let lease = lens
+            .accept_target(generation, target, geometry, [32, 32])
+            .unwrap();
         let pixels: Arc<[u8]> = vec![0; 32 * 32 * 4].into();
         assert!(lens
             .publish_frame(&lease, pixels.clone(), [32, 32], geometry)
@@ -811,5 +907,93 @@ mod tests {
             .publish_frame(&lease, pixels, [32, 32], geometry)
             .is_none());
         assert!(!lens.publish_ax(&lease, vec![]));
+    }
+
+    #[tokio::test]
+    async fn delayed_backend_mutations_cannot_adopt_or_invalidate_a_restarted_source() {
+        let (tx, _) = mpsc::unbounded_channel();
+        let lens = Lens::init(tx, Path::new("/missing-rimeward-ocr"));
+        let start = json!({"consented":true});
+        lens.dispatch("lens-start", &start, None, request::Cancellation::new())
+            .await
+            .unwrap();
+        let delayed = lens.request_generation();
+        lens.stop(Some("idle")).await;
+        lens.dispatch("lens-start", &start, None, request::Cancellation::new())
+            .await
+            .unwrap();
+        let granted = lens
+            .backend_status(
+                lens.request_generation(),
+                true,
+                true,
+                Lens::score_id(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(granted, lens.request_generation());
+        let geometry = FrameGeometry {
+            window: [0.0, 0.0, 1.0, 1.0],
+            scale: 1.0,
+            content_rect: [0.0, 0.0, 1.0, 1.0],
+            content_scale: 1.0,
+            captured: [0.0, 0.0, 1.0, 1.0],
+        };
+        let target = Target {
+            pid: 42,
+            bundle: "disposable.test".into(),
+            name: "Disposable".into(),
+            window_id: 1,
+            title: "Current".into(),
+            bounds: geometry.window,
+            url: None,
+            display: DisplayInfo {
+                id: 1,
+                w: 100.0,
+                h: 100.0,
+                scale: 1.0,
+            },
+        };
+        let lease = lens
+            .accept_target(granted, target.clone(), geometry, [1, 1])
+            .unwrap();
+        assert_eq!(lease.generation, lens.request_generation());
+        let current = lens.status();
+        let session = lens.request_session().unwrap();
+
+        // A provider checked this generation before Stop and completed later.
+        assert_eq!(
+            lens.backend_status(
+                delayed,
+                false,
+                false,
+                Lens::score_id(),
+                Some("old-provider")
+            )
+            .await,
+            Err("cancelled".into())
+        );
+        assert!(lens
+            .accept_target(delayed, target, geometry, [1, 1])
+            .is_none());
+        assert!(lens.invalidate_source(delayed, "old-close").is_none());
+        // Target acceptance also superseded the earlier grant's callback owner.
+        assert!(lens.invalidate_source(granted, "old-geometry").is_none());
+        assert_eq!(lens.status(), current, "no stale state, epoch or signals");
+        assert!(!session.is_cancelled());
+        assert!(lens.publish_ax(&lease, vec![]));
+
+        let invalidated = lens
+            .invalidate_source(lease.generation, "current-close")
+            .unwrap();
+        assert_eq!(invalidated, lens.request_generation());
+        assert!(session.is_cancelled());
+        assert_eq!(lens.status()["capabilities"]["capture"], false);
+        let current = lens.status();
+        assert!(lens
+            .invalidate_source(lease.generation, "duplicate-close")
+            .is_none());
+        assert_eq!(lens.status(), current);
     }
 }

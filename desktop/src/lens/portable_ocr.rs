@@ -441,6 +441,71 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_secs(60));
     }
     #[tokio::test]
+    async fn superseded_backend_grant_does_not_announce_after_ocr_drain() {
+        use super::super::Lens;
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let lens = Lens::init(tx, Path::new("/missing-rimeward-ocr"));
+        let start = serde_json::json!({"consented":true});
+        lens.dispatch("lens-start", &start, None, Cancellation::new())
+            .await
+            .unwrap();
+        // The exact drain barrier used by a running OCR owner; no child is
+        // needed to hold it while provider/control futures mutate the state.
+        let running = lens.ocr.running.lock().await;
+        let grant = lens.backend_status(
+            lens.request_generation(),
+            true,
+            true,
+            Lens::score_id(),
+            Some("old-provider"),
+        );
+        tokio::pin!(grant);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(5), &mut grant)
+                .await
+                .is_err()
+        );
+        let stop = lens.stop(Some("idle"));
+        tokio::pin!(stop);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(5), &mut stop)
+                .await
+                .is_err()
+        );
+        let restart = lens.dispatch("lens-start", &start, None, Cancellation::new());
+        tokio::pin!(restart);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(5), &mut restart)
+                .await
+                .is_err()
+        );
+        let current = lens.status();
+        drop(running);
+        assert_eq!(grant.await, Err("cancelled".into()));
+        stop.await;
+        assert_eq!(restart.await.unwrap(), current);
+        assert_eq!(
+            lens.status(),
+            current,
+            "old grant emitted no later metadata"
+        );
+        assert_ne!(current["reason"], "old-provider");
+        let generation = lens
+            .backend_status(
+                lens.request_generation(),
+                false,
+                false,
+                Lens::score_id(),
+                Some("current-provider"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(generation, lens.request_generation());
+        assert_eq!(lens.status()["reason"], "current-provider");
+        assert_eq!(lens.status()["capabilities"]["capture"], false);
+    }
+
+    #[tokio::test]
     async fn lens_stop_acknowledgement_reaps_its_background_child() {
         use super::super::{
             bridge::{DisplayInfo, FrameGeometry},
@@ -469,7 +534,14 @@ mod tests {
         )
         .await
         .unwrap();
-        lens.backend_status(true, false, Lens::score_id(), None)
+        let generation = lens
+            .backend_status(
+                lens.request_generation(),
+                true,
+                false,
+                Lens::score_id(),
+                None,
+            )
             .await
             .unwrap();
         let geometry = FrameGeometry {
@@ -494,7 +566,9 @@ mod tests {
                 scale: 1.0,
             },
         };
-        let lease = lens.accept_target(target, geometry, [1, 1]).unwrap();
+        let lease = lens
+            .accept_target(generation, target, geometry, [1, 1])
+            .unwrap();
         assert!(lens
             .publish_frame(&lease, Arc::from([255u8; 4]), [1, 1], geometry)
             .is_some());

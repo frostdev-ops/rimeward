@@ -252,6 +252,48 @@ replace feature-specific live acceptance or installed-app checks. Published
   prebuild steps, so no downstream OCR/native/package checks ran there. No
   cancellation, rerun or installed/notarized acceptance is implied.
 
+- Corrected shared candidate `8e99186` passes push/PR Tests and server CI: each
+  Tests platform totals **877** with no failures (Ubuntu 871 passed/six skipped;
+  Windows 868 passed/nine skipped). Windows and Linux now build the pinned OCR
+  runtime and pass actual version/hash, memory-PNG/TSV and loader checks during
+  prebuild. Linux's loader closure contains libc/libm/ld; Windows uses the
+  discovered VS 18 instance/static CRT and imports only KERNEL32.dll.
+  Desktop run **38082587085** then fails naturally at Clippy's unused staged
+  provider APIs/geometry helpers (`-D warnings`), Linux Cargo exit 101; Windows
+  workflow exits 1. Their native tests, standalone/media and extracted installers
+  did not run. The exact logs and both previous build failures are retained.
+  This is partial compiler/OCR evidence, not package or installed acceptance.
+  The same run's Mac job passed **151** native tests with eleven ignored,
+  **877** unit tests without skips, staged and ad hoc app-contained standalone/
+  generated four-viewer fault-media checks, strict seal/version and native build.
+  All jobs finished naturally; no reruns or cancellations. Full notices were
+  copied and hashed by the completed OCR build path, but extracted-package notice
+  proof and independent content assertions remain absent.
+- A focused shared-provider correction compares expected generations atomically
+  for capability grants, target acceptance and native invalidation. Returned
+  generations/leases belong to that mutation; superseded grants recheck after
+  OCR drain before metadata. Two actual state/drain regressions pass alongside
+  **877** unit tests and **153** native tests with eleven ignored, typecheck,
+  lint/fmt/Clippy on this Mac. Concrete provider attachment and cross-platform
+  package gates remain pending; root commit and independent immutable review
+  are required for this correction.
+- The reviewed `8e99186` overlay source/cancellation fix has no actionable
+  independent findings. Its clean committed prebuild, staged desktop checks
+  (**151** native passes/eleven ignored), staged standalone and nested Developer
+  ID signing pass locally; this is neither installed nor notarized acceptance.
+- The staged-provider compile correction keeps strict warnings and limits
+  temporary `expect(dead_code)` attributes to the unused provider publication
+  closure. Mac-only Vision/cover helpers are conditionally compiled. Actual
+  shared source via a disclosed local Tauri startup/state-lookup shim passes
+  Linux/Windows library and test metadata checks; a deliberate backend call
+  fails an unfulfilled expectation, requiring removal when providers attach.
+  A full local Windows cross-build first stopped at missing MinGW GCC; that log
+  is retained. Real desktop/package CI remains required.
+  The OCR smoke now requires every common/Linux notice to be nonempty and
+  manifest-hashed, plus all pinned source URLs/versions/hashes and toolchain
+  provenance. Isolated checks exercise this exact assertion block; actual OCR
+  and extracted-package execution remain pending on the next candidate.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`
