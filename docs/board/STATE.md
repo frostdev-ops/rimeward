@@ -16,7 +16,8 @@ human-run provider acceptance.
 | Tagged desktop checks | Windows NSIS/MSI and Linux DEB/AppImage passed. Original Mac signer predicate failed; corrected audit passed on the unchanged DMG and frozen source | [Original tagged run](https://github.com/frostdev-ops/rimeward/actions/runs/38074080663), [corrected immutable-DMG audit](https://github.com/frostdev-ops/rimeward/actions/runs/38077738647) |
 | Published server | **1.0.18**, exact `5ae7ea0` | [Server release](https://github.com/frostdev-ops/rimeward/releases/tag/v1.0.18), [tag workflow](https://github.com/frostdev-ops/rimeward/actions/runs/38074080686) |
 | Published desktop | **1.0.18**, twelve unchanged platform/updater assets; published 2026-10-10T18:58:23Z | [Desktop release](https://github.com/frostdev-ops/rimeward/releases/tag/desktop-v1.0.18) |
-| Installed Mac app | **1.0.18**, strict Developer ID/team, notarized Gatekeeper and stapler valid; restored native runtime/dashboard healthy | Quiesced profile backup, nine identical pages/all fifty ward IDs, visible connected dashboard, authenticated production relay and updater current **1.0.18**; no unsolicited model calls |
+| Accepted public Mac installation | **1.0.18**, strict Developer ID/team, notarized Gatekeeper and stapler valid; restored native runtime/dashboard healthy | Quiesced profile backup, nine identical pages/all fifty ward IDs, visible connected dashboard, authenticated production relay and updater current **1.0.18**; no unsolicited model calls |
+| Current private Mac qualifier | Signed private **1.0.19** at `a4de1899`, parent `632eaf4`; control remains stopped/suspended and qualification is pending | Fresh quiesced backup, all 144 native hashes match the verified artifact, preserved original pages/wards and normal sync; separate disposable projectless operator added through normal APIs. No production allowlist change or published 1.0.19 |
 | Homebrew cask | **1.0.18**, public and refreshed local URL/hash match accepted DMG | [Publication run](https://github.com/frostdev-ops/rimeward/actions/runs/38077925212) |
 | Production | **1.0.18**, `5ae7ea0`; PM2/Node 26.10.0/SQLite, origin/public HTTP and authenticated build stamp passed | Supported online DB plus application/config rollback backup before clean deployment; authenticated production-to-installed-1.0.18 relay passed |
 | AUR package | Publication and installation acceptance explicitly retired; fallback retained | User decision **Skip AUR**, RIME-43 |
@@ -660,8 +661,11 @@ below is separately verified. Human feature/platform acceptance remains open.
   resource section. These facts support a missing test activation manifest;
   pinned Tauri resource generation emits a bins-only linker argument, so the
   library unit executable receives no manifest. The correction reuses Tauri's
-  compiled `resource.lib` through a generic Windows linker argument and asserts
-  that it exists, preserving the application manifest and native capabilities.
+  compiled `resource.lib` through a generic Windows MSVC linker argument and
+  asserts that it exists, preserving the application manifest and native
+  capabilities. Independent review identifies the native Windows GNU resource
+  filename difference; the corrected MSVC-only guard preserves existing GNU
+  behavior rather than imposing an invalid filename there.
   A real Cargo fixture proves the generic argument reaches library unit tests;
   a native LLVM COFF probe deduplicates the repeated resource path. Actual MSVC
   linking, the fourteen native fixtures, runtime and installer checks remain
