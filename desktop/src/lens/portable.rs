@@ -9,6 +9,8 @@ pub mod geometry;
 #[cfg(target_os = "linux")]
 pub mod linux_overlay;
 #[cfg(target_os = "linux")]
+pub mod linux_wayland;
+#[cfg(target_os = "linux")]
 pub mod linux_x11;
 #[path = "portable_ocr.rs"]
 pub mod ocr;
@@ -41,6 +43,80 @@ use tokio::sync::{mpsc, Notify};
 
 pub const FRAME_CAP: usize = 2 * 1024 * 1024;
 pub const DEFAULT_MAX_PX: u32 = 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureBackend {
+    Windows,
+    X11,
+    Wayland,
+}
+impl CaptureBackend {
+    fn selected() -> Self {
+        #[cfg(target_os = "linux")]
+        let wayland = crate::remote_wayland::is_wayland();
+        #[cfg(not(target_os = "linux"))]
+        let wayland = false;
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::linux(wayland)
+        }
+    }
+    fn linux(wayland: bool) -> Self {
+        if wayland {
+            Self::Wayland
+        } else {
+            Self::X11
+        }
+    }
+    fn score_id(self) -> &'static str {
+        match self {
+            Self::Windows => "windows:wgc:rgb16-tile32-v1",
+            Self::X11 => "linux:x11:rgb16-tile32-v1",
+            Self::Wayland => "linux:pipewire:rgb16-tile32-v1",
+        }
+    }
+    fn native_overlays(self) -> bool {
+        self != Self::Wayland
+    }
+}
+
+#[cfg(target_os = "linux")]
+enum LinuxBackend {
+    X11(Arc<linux_x11::Backend>),
+    Wayland(Arc<linux_wayland::Backend>),
+}
+#[cfg(target_os = "linux")]
+impl LinuxBackend {
+    fn cancel(&self) {
+        match self {
+            Self::X11(backend) => backend.cancel(),
+            Self::Wayland(backend) => backend.cancel(),
+        }
+    }
+    async fn stop(&self) -> Result<(), String> {
+        match self {
+            Self::X11(backend) => backend.stop().await,
+            Self::Wayland(backend) => backend.stop().await,
+        }
+    }
+    async fn start(
+        &self,
+        generation: u64,
+        cancellation: Arc<request::Cancellation>,
+    ) -> Result<(), String> {
+        match self {
+            Self::X11(backend) => backend.start(generation, cancellation).await,
+            Self::Wayland(backend) => backend.start(generation, cancellation).await,
+        }
+    }
+    fn overlay(&self) -> Option<Arc<linux_overlay::Overlay>> {
+        match self {
+            Self::X11(backend) => Some(backend.overlay.clone()),
+            Self::Wayland(_) => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,10 +172,11 @@ pub struct Lens {
     pending: Mutex<Option<(String, Rect)>>,
     wake: Notify,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
+    capture_backend: CaptureBackend,
     #[cfg(target_os = "windows")]
     backend: std::sync::OnceLock<Arc<windows::Backend>>,
     #[cfg(target_os = "linux")]
-    backend: std::sync::OnceLock<Arc<linux_x11::Backend>>,
+    backend: std::sync::OnceLock<LinuxBackend>,
     #[cfg(not(target_os = "macos"))]
     overlay: std::sync::OnceLock<Arc<overlay::Overlay>>,
 }
@@ -108,6 +185,13 @@ impl Lens {
         Self::new(writer, ocr::Ocr::new(directory))
     }
     fn new(writer: mpsc::UnboundedSender<String>, ocr: ocr::Ocr) -> Arc<Self> {
+        Self::new_for_backend(writer, ocr, CaptureBackend::selected())
+    }
+    fn new_for_backend(
+        writer: mpsc::UnboundedSender<String>,
+        ocr: ocr::Ocr,
+        capture_backend: CaptureBackend,
+    ) -> Arc<Self> {
         let lens = Arc::new(Self {
             bridge: Bridge::new(writer),
             ring: ring::Ring::new(),
@@ -115,6 +199,7 @@ impl Lens {
             pending: Mutex::new(None),
             wake: Notify::new(),
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
+            capture_backend,
             #[cfg(not(target_os = "macos"))]
             backend: std::sync::OnceLock::new(),
             #[cfg(not(target_os = "macos"))]
@@ -132,7 +217,7 @@ impl Lens {
                 known_ax: vec![],
                 known_ocr: vec![],
                 previous: None,
-                score_id: Self::score_id().into(),
+                score_id: capture_backend.score_id().into(),
                 control_generation: 1,
                 control: request::Cancellation::new(),
                 placement: None,
@@ -161,12 +246,24 @@ impl Lens {
     }
     /// Setup is dormant. Only a consented, active control starts a provider.
     #[cfg(not(target_os = "macos"))]
-    pub fn attach(self: &Arc<Self>, app: &tauri::AppHandle) {
+    pub fn attach(self: &Arc<Self>, app: &tauri::AppHandle, media_directory: &Path) {
         #[cfg(target_os = "windows")]
-        let backend = windows::Backend::attach(app, Arc::downgrade(self));
+        let backend = {
+            let _ = media_directory;
+            windows::Backend::attach(app, Arc::downgrade(self))
+        };
         #[cfg(target_os = "linux")]
-        let backend = linux_x11::Backend::attach(app, self);
+        let backend = match self.capture_backend {
+            CaptureBackend::Wayland => {
+                LinuxBackend::Wayland(linux_wayland::Backend::attach(app, self, media_directory))
+            }
+            CaptureBackend::X11 => LinuxBackend::X11(linux_x11::Backend::attach(app, self)),
+            CaptureBackend::Windows => unreachable!("Windows backend on Linux"),
+        };
         let _ = self.backend.set(backend);
+        if !self.capture_backend.native_overlays() {
+            return;
+        }
         if let Err(error) = app.plugin(tauri_plugin_global_shortcut::Builder::new().build()) {
             eprintln!("overlay: shortcut service unavailable: {error}");
             return;
@@ -182,9 +279,13 @@ impl Lens {
     }
     #[cfg(target_os = "linux")]
     pub(super) fn register_overlay_windows(&self, windows: Vec<tauri::WebviewWindow>) {
-        if let Some(backend) = self.backend.get() {
-            let _ = backend.overlay.register_windows(windows);
+        if let Some(overlay) = self.native_overlay() {
+            let _ = overlay.register_windows(windows);
         }
+    }
+    #[cfg(target_os = "linux")]
+    fn native_overlay(&self) -> Option<Arc<linux_overlay::Overlay>> {
+        self.backend.get().and_then(LinuxBackend::overlay)
     }
     #[cfg(not(target_os = "macos"))]
     fn overlay(&self) -> Option<Arc<overlay::Overlay>> {
@@ -200,15 +301,12 @@ impl Lens {
             "linux"
         }
     }
+    #[cfg(test)]
     fn score_id() -> &'static str {
-        if cfg!(windows) {
-            "windows:wgc:rgb16-tile32-v1"
-        } else {
-            "linux:x11:rgb16-tile32-v1"
-        }
+        CaptureBackend::selected().score_id()
     }
     fn capabilities(&self, state: &State) -> Value {
-        json!({"capture":state.capture,"ax":state.ax,"ocr":self.ocr.available(),"embed":false,"triage":false,"describe":false,"translate":false,"overlay":state.overlay})
+        json!({"capture":state.capture,"ax":state.ax,"ocr":self.ocr.available(),"embed":false,"triage":false,"describe":false,"translate":false,"overlay":state.overlay && self.capture_backend.native_overlays()})
     }
     fn run(state: &State) -> &'static str {
         if state.paused {
@@ -373,6 +471,9 @@ impl Lens {
     /// Old bootstrap completions cannot grant overlays into a new source.
     #[cfg(target_os = "linux")]
     pub fn set_overlay_available(&self, expected_generation: u64, available: bool) -> bool {
+        if available && !self.capture_backend.native_overlays() {
+            return false;
+        }
         if !available {
             return self.revoke_overlay(expected_generation, None);
         }
@@ -413,15 +514,9 @@ impl Lens {
         score_id: &str,
         reason: Option<&str>,
     ) -> Result<u64, String> {
-        let accepted = if cfg!(windows) {
-            score_id == "windows:wgc:rgb16-tile32-v1"
-        } else {
-            matches!(
-                score_id,
-                "linux:x11:rgb16-tile32-v1" | "linux:pipewire:rgb16-tile32-v1"
-            )
-        };
-        if !accepted || (ax && score_id.contains(":pipewire:")) {
+        if score_id != self.capture_backend.score_id()
+            || (ax && self.capture_backend == CaptureBackend::Wayland)
+        {
             return Err("unavailable".into());
         }
         let generation = {
@@ -1007,13 +1102,13 @@ impl Lens {
         overlay::native_frame(&req, place).map_err(overlay::Failure::reason)?;
         #[cfg(target_os = "linux")]
         let source = {
-            let backend = self.backend.get().ok_or("unavailable")?.clone();
+            let overlay = self.native_overlay().ok_or("unavailable")?;
             let mut source = source;
             let generation = source.lease.generation;
             let epoch = source.lease.epoch;
             let cancellation = source.cancellation.clone();
             let prepared = tokio::task::spawn_blocking(move || {
-                backend.overlay.prepare(generation, epoch, cancellation)
+                overlay.prepare(generation, epoch, cancellation)
             })
             .await
             .unwrap_or_else(|_| Err("unavailable".into()));
@@ -1118,10 +1213,8 @@ impl OverlaySource {
     ) -> Result<linux_overlay::Placement, overlay::Failure> {
         overlay::validate_native_frame(rect)?;
         self.lens
-            .backend
-            .get()
+            .native_overlay()
             .ok_or_else(|| overlay::Failure::Native("unavailable".into()))?
-            .overlay
             .place(window, rect, self.native.as_ref().ok_or("unavailable")?)
             .map_err(overlay::Failure::Native)
     }
@@ -1151,10 +1244,8 @@ impl OverlaySource {
         proof: &linux_overlay::Placement,
     ) -> Result<(), String> {
         self.lens
-            .backend
-            .get()
+            .native_overlay()
             .ok_or("unavailable")?
-            .overlay
             .reveal(window, proof)
     }
     #[cfg(target_os = "windows")]
@@ -1191,12 +1282,7 @@ pub(super) fn hide_overlay(
     use tauri::Manager;
     let lens = app.try_state::<Arc<Lens>>().ok_or("unavailable")?;
     #[cfg(target_os = "linux")]
-    return lens
-        .backend
-        .get()
-        .ok_or("unavailable")?
-        .overlay
-        .hide(window);
+    return lens.native_overlay().ok_or("unavailable")?.hide(window);
     #[cfg(target_os = "windows")]
     {
         let _ = lens;
@@ -1349,6 +1435,172 @@ fn merge_scores(regions: &mut Vec<bridge::Dirty>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn selected_backend_freezes_scoring_and_wayland_never_grants_ax_or_native_overlays() {
+        assert_eq!(CaptureBackend::linux(false), CaptureBackend::X11);
+        assert_eq!(CaptureBackend::linux(true), CaptureBackend::Wayland);
+        assert!(CaptureBackend::X11.native_overlays());
+        assert!(CaptureBackend::Windows.native_overlays());
+        assert!(!CaptureBackend::Wayland.native_overlays());
+        let (tx, _) = mpsc::unbounded_channel();
+        let lens = Lens::new_for_backend(
+            tx,
+            ocr::Ocr::new(Path::new("/missing-rimeward-ocr")),
+            CaptureBackend::Wayland,
+        );
+        let pipe = CaptureBackend::Wayland.score_id();
+        assert_eq!(lens.status()["visual"]["scoreId"], pipe);
+        assert_eq!(lens.status()["capabilities"]["capture"], false);
+        assert_eq!(lens.status()["capabilities"]["ax"], false);
+        assert_eq!(lens.status()["capabilities"]["overlay"], false);
+        lens.dispatch(
+            "lens-start",
+            &json!({"consented":true,"active":true}),
+            None,
+            request::Cancellation::new(),
+        )
+        .await
+        .unwrap();
+        let generation = lens.request_generation();
+        assert_eq!(
+            lens.backend_status(
+                generation,
+                true,
+                false,
+                CaptureBackend::X11.score_id(),
+                None
+            )
+            .await,
+            Err("unavailable".into())
+        );
+        assert_eq!(
+            lens.backend_status(generation, true, true, pipe, None)
+                .await,
+            Err("unavailable".into())
+        );
+        assert_eq!(lens.request_generation(), generation);
+        let grant = lens
+            .backend_status(
+                generation,
+                true,
+                false,
+                pipe,
+                Some("wayland-selected-window-frame-local-application-unknown-ocr-only"),
+            )
+            .await
+            .unwrap();
+        #[cfg(target_os = "linux")]
+        assert!(!lens.set_overlay_available(grant, true));
+        #[cfg(not(target_os = "linux"))]
+        let _ = grant;
+        assert_eq!(lens.status()["visual"]["scoreId"], pipe);
+        assert_eq!(lens.status()["capabilities"]["ax"], false);
+        assert_eq!(lens.status()["capabilities"]["overlay"], false);
+        lens.stop(Some("idle")).await.unwrap();
+        assert_eq!(lens.status()["visual"]["scoreId"], pipe);
+        assert_eq!(
+            lens.capture_backend,
+            CaptureBackend::Wayland,
+            "refusal/Stop cannot select X11"
+        );
+    }
+
+    #[tokio::test]
+    async fn wayland_zero_reader_control_invalidates_before_cleanup_and_rejects_old_frames() {
+        let (tx, _) = mpsc::unbounded_channel();
+        let lens = Lens::new_for_backend(
+            tx,
+            ocr::Ocr::new(Path::new("/missing-rimeward-ocr")),
+            CaptureBackend::Wayland,
+        );
+        let control = request::Cancellation::new();
+        lens.dispatch(
+            "lens-start",
+            &json!({"consented":true,"active":true}),
+            None,
+            control.clone(),
+        )
+        .await
+        .unwrap();
+        let grant = lens
+            .backend_status(
+                lens.request_generation(),
+                true,
+                false,
+                CaptureBackend::Wayland.score_id(),
+                None,
+            )
+            .await
+            .unwrap();
+        let geometry = FrameGeometry {
+            window: [0.0, 0.0, 2.0, 2.0],
+            scale: 1.0,
+            content_rect: [0.0, 0.0, 2.0, 2.0],
+            content_scale: 1.0,
+            captured: [0.0, 0.0, 2.0, 2.0],
+        };
+        let lease = lens
+            .accept_target(
+                grant,
+                Target {
+                    pid: 0,
+                    bundle: String::new(),
+                    name: "Unknown application".into(),
+                    window_id: 1,
+                    title: "Selected Wayland window (frame-local pixels)".into(),
+                    bounds: geometry.window,
+                    url: None,
+                    display: DisplayInfo {
+                        id: 1,
+                        w: 2.0,
+                        h: 2.0,
+                        scale: 1.0,
+                    },
+                },
+                geometry,
+                [2, 2],
+                geometry.window,
+            )
+            .unwrap();
+        let pixels: Arc<[u8]> = vec![0; 16].into();
+        assert!(lens
+            .publish_frame(&lease, pixels.clone(), [2, 2], geometry)
+            .is_some());
+        let session = lens.request_session().unwrap();
+        let gate = lens.lifecycle.lock().await;
+        // The real Node syncCapture zero-reader value, while cleanup is queued.
+        let no_readers = json!({"consented":true,"active":false});
+        let idle = lens.dispatch(
+            "lens-start",
+            &no_readers,
+            None,
+            request::Cancellation::new(),
+        );
+        tokio::pin!(idle);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut idle)
+                .await
+                .is_err()
+        );
+        assert!(control.is_cancelled() && session.is_cancelled());
+        assert!(lens.ring.latest().is_none());
+        assert!(lens.pending.lock().unwrap().is_none());
+        assert!(!lens.state.lock().unwrap().active);
+        assert!(lens
+            .publish_frame(&lease, pixels, [2, 2], geometry)
+            .is_none());
+        assert!(!lens.publish_ax(&lease, vec![]));
+        drop(gate);
+        let stopped = idle.await.unwrap();
+        assert_eq!(stopped["state"], "stopped");
+        assert_eq!(
+            stopped["visual"]["scoreId"],
+            CaptureBackend::Wayland.score_id()
+        );
+        assert_eq!(stopped["capabilities"]["overlay"], false);
+    }
+
     async fn overlay_fixture() -> (Arc<Lens>, OverlaySource) {
         let (tx, _) = mpsc::unbounded_channel();
         let lens = Lens::init(tx, Path::new("/missing-rimeward-ocr"));

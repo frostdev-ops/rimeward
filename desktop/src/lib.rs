@@ -169,13 +169,11 @@ pub fn run() {
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let lens = lens::Lens::init(
-                    lines.clone(),
-                    &runtime::resources(app.handle())?.join("ocr"),
-                );
+                let resources = runtime::resources(app.handle())?;
+                let lens = lens::Lens::init(lines.clone(), &resources.join("ocr"));
                 app.manage(lens.clone());
                 tauri::async_runtime::spawn(lens.bridge.clone().run_writer());
-                lens.attach(app.handle());
+                lens.attach(app.handle(), &resources.join("media"));
             }
             app.manage(runtime::Stdin::new(lines, reader));
             let handle = app.handle().clone();

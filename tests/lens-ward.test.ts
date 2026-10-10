@@ -56,6 +56,97 @@ test('pause is a settings row, not layout config', () => {
   assert.equal(lensPaused(7), false);
 });
 
+test('actual runtime sends off/on before a chooser settles and ignores superseded native results and abort failures', async (t) => {
+  const { screenDemand, SCREEN_SOURCE } = await import('../src/lib/lens/runtime.ts');
+  const { SOURCES, lens, releaseLens } = await import('../src/lib/lens/core.ts');
+  const { localOwner } = await import('../src/lib/dev/native.ts');
+  const { setLensSettings } = await import('../src/lib/lens/settings.ts');
+  const native = globalThis as typeof globalThis & { __nativeDesktop?: (op: string, value?: unknown, deadline?: number, signal?: AbortSignal) => Promise<unknown> };
+  const original = native.__nativeDesktop;
+  const source = SOURCES.screen;
+  const desktop = process.env.RIMEWARD_DESKTOP;
+  const token = process.env.RIMEWARD_NATIVE_TOKEN;
+  process.env.RIMEWARD_DESKTOP = '1';
+  process.env.RIMEWARD_NATIVE_TOKEN = 'test-only';
+  SOURCES.screen = () => ({ async connect() { return () => {}; } });
+  setLensSettings({ consented: true });
+  const owner = localOwner();
+  const core = lens(owner, SCREEN_SOURCE)!;
+  t.after(() => {
+    releaseLens(owner, SCREEN_SOURCE);
+    if (source) SOURCES.screen = source; else delete SOURCES.screen;
+    if (original) native.__nativeDesktop = original; else Reflect.deleteProperty(native, '__nativeDesktop');
+    if (desktop === undefined) delete process.env.RIMEWARD_DESKTOP; else process.env.RIMEWARD_DESKTOP = desktop;
+    if (token === undefined) delete process.env.RIMEWARD_NATIVE_TOKEN; else process.env.RIMEWARD_NATIVE_TOKEN = token;
+  });
+  const status = { state: 'running', permissions: { screen: true, ax: false }, capabilities: { embed: false } };
+  for (const failure of [false, true]) {
+    const calls: { active: boolean; signal: AbortSignal; resolve(value: unknown): void; reject(error: Error): void }[] = [];
+    native.__nativeDesktop = (op, value, _deadline, signal) => {
+      assert.equal(op, 'lens-start');
+      assert.ok(signal);
+      return new Promise((resolve, reject) => calls.push({ active: (value as { active: boolean }).active, signal, resolve, reject }));
+    };
+    const old = screenDemand(true).then(() => null, error => error);
+    const off = screenDemand(false).catch(() => {});
+    const replacement = screenDemand(true);
+    assert.deepEqual(calls.map(c => c.active), [true, false, true], 'all controls reach the native transport while old start is unresolved');
+    assert.equal(calls[0]!.signal.aborted, true);
+    assert.equal(calls[1]!.signal.aborted, true);
+    calls[2]!.resolve(status);
+    await replacement;
+    assert.equal(core.status().state, 'live');
+    const embedder = core.embedderId;
+    calls[1]!.resolve({ ...status, state: 'stopped', reason: 'old-off' });
+    await off;
+    if (failure) calls[0]!.reject(new Error('late native abort failure'));
+    else calls[0]!.resolve({ ...status, state: 'stopped', reason: 'permission', capabilities: { embed: true } });
+    assert.equal((await old)?.name, 'AbortError');
+    assert.equal(core.status().state, 'live', 'obsolete errors/status cannot stop replacement');
+    assert.equal(core.embedderId, embedder, 'obsolete helper grant cannot replace the current decider');
+    const stopped = screenDemand(false);
+    if (failure) calls[3]!.reject(new Error('native-cleanup-refused'));
+    else calls[3]!.resolve({ ...status, state: 'stopped', reason: 'idle' });
+    await stopped;
+    if (failure) {
+      assert.equal(core.status().state, 'offline', 'current native failure is still reported');
+      assert.match(core.status().error ?? '', /native-cleanup-refused/);
+    }
+  }
+});
+
+test('runtime status started before a replacement cannot publish into the new core', async (t) => {
+  const { startLens, lensNativeStatus, SCREEN_SOURCE } = await import('../src/lib/lens/runtime.ts');
+  const { SOURCES, lens, releaseLens } = await import('../src/lib/lens/core.ts');
+  const { localOwner } = await import('../src/lib/dev/native.ts');
+  const native = globalThis as typeof globalThis & { __nativeDesktop?: (op: string) => Promise<unknown> };
+  const original = native.__nativeDesktop;
+  const source = SOURCES.screen;
+  const desktop = process.env.RIMEWARD_DESKTOP;
+  const token = process.env.RIMEWARD_NATIVE_TOKEN;
+  process.env.RIMEWARD_DESKTOP = '1'; process.env.RIMEWARD_NATIVE_TOKEN = 'test-only';
+  SOURCES.screen = () => ({ async connect() { return () => {}; } });
+  const owner = localOwner();
+  const oldCore = lens(owner, SCREEN_SOURCE)!;
+  let finish!: (value: unknown) => void;
+  native.__nativeDesktop = op => op === 'lens-status' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ state: 'running', capabilities: { embed: false } });
+  t.after(() => {
+    releaseLens(owner, SCREEN_SOURCE);
+    if (source) SOURCES.screen = source; else delete SOURCES.screen;
+    if (original) native.__nativeDesktop = original; else Reflect.deleteProperty(native, '__nativeDesktop');
+    if (desktop === undefined) delete process.env.RIMEWARD_DESKTOP; else process.env.RIMEWARD_DESKTOP = desktop;
+    if (token === undefined) delete process.env.RIMEWARD_NATIVE_TOKEN; else process.env.RIMEWARD_NATIVE_TOKEN = token;
+  });
+  const pending = lensNativeStatus();
+  releaseLens(owner, SCREEN_SOURCE);
+  const replacement = lens(owner, SCREEN_SOURCE)!;
+  await startLens();
+  finish({ state: 'stopped', reason: 'permission' });
+  assert.equal(await pending, null);
+  assert.equal(replacement.status().state, 'live');
+  assert.equal(oldCore.status().state, 'live');
+});
+
 test("the card's captions switch honours the ward's overlay knob like the tool does", async () => {
   const { OVERLAY_OFF } = await import('../src/lib/lens/tools.ts');
   const src = await import('node:fs').then((fs) => fs.readFileSync(new URL('../src/pages/api/lens/[ward].ts', import.meta.url), 'utf8'));

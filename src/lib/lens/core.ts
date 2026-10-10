@@ -294,6 +294,7 @@ export class LensCore {
     const reembed = next !== undefined && this.#embedderId !== undefined && next !== this.#embedderId;
     if (next !== undefined) this.#embedderId = next;
     for (const consumer of [...this.#consumers.values()]) {
+      if (this.#deps.decider !== decider) return;
       if (consumer.watches.length === 0) continue;
       if (reembed) for (const watch of consumer.watches) delete watch.vector;
       await this.watch(consumer.id);
@@ -437,8 +438,9 @@ export class LensCore {
     const demand = this.#deps.source.demand;
     if (!demand) return { ready: Promise.resolve(), release: () => {} };
     const reader = {};
-    if (this.#readers.size === 0) this.#setDemand(true);
+    const start = this.#readers.size === 0;
     this.#readers.add(reader);
+    if (start) this.#setDemand(true);
     return {
       ready: this.#demand,
       release: () => {
@@ -448,9 +450,14 @@ export class LensCore {
   }
 
   #setDemand(active: boolean): void {
-    this.#demand = this.#demand.then(() => this.#deps.source.demand?.(active)).catch((err: unknown) => {
-      this.feed.offline(err instanceof Error ? err.message : String(err));
+    // A release must reach the source even while its chooser/start is pending.
+    let pending: Promise<void>;
+    try { pending = this.#deps.source.demand?.(active) ?? Promise.resolve(); }
+    catch (err) { pending = Promise.reject(err); }
+    const current = pending.catch((err: unknown) => {
+      if (this.#demand === current) this.feed.offline(err instanceof Error ? err.message : String(err));
     });
+    this.#demand = current;
   }
 
   doc(): Doc {
@@ -862,13 +869,16 @@ export class LensCore {
    *  indistinguishable from a live, empty one. */
   async ready(ms = CONNECT_SETTLE_MS): Promise<boolean> {
     const token = this.#connectToken;
-    const connecting = this.#demand.then(() => {
+    const demand = this.#demand;
+    const connecting = demand.then(() => {
+      if (demand !== this.#demand) return false;
       if (token === this.#connectToken) this.#connect();
-      return this.#connecting;
+      const connected = this.#connectToken;
+      return Promise.resolve(this.#connecting).then(() => demand === this.#demand && connected === this.#connectToken);
     });
     let timer: unknown = null;
     const settled = await Promise.race([
-      connecting.then(() => true),
+      connecting,
       new Promise<boolean>((resolve) => {
         timer = this.#hold(this.#clock.setTimeout(() => resolve(false), ms));
       }),
@@ -1023,28 +1033,32 @@ export class LensCore {
 
     // `Watch.vector` is not persisted (it belongs to whichever model produced
     // it), so every call re-embeds whatever is missing one, in one batch.
-    const embed = this.#deps.decider?.embed;
-    const cal = calibration(this.#deps.decider?.embedderId);
+    const decider = this.#deps.decider;
+    const embed = decider?.embed;
+    const embeddingCal = calibration(decider?.embedderId);
     const pending = consumer.watches.filter((w) => w.spec.for && w.vector === undefined).slice(0, 32);
     if (pending.length > 0 && embed) {
       try {
-        const vectors = await embed(pending.map((w) => watchText(w.spec.for ?? '', cal.score)));
-        this.#embedding = vectors !== null;
-        // Whose space the stored vectors are in, for the next decider swap.
-        if (vectors) this.#embedderId = this.#deps.decider?.embedderId ?? this.#embedderId;
-        if (vectors) {
-          for (const [index, watch] of pending.entries()) {
-            const vector = vectors[index];
-            if (Array.isArray(vector) && vector.length > 0) watch.vector = vector;
+        const vectors = await embed(pending.map((w) => watchText(w.spec.for ?? '', embeddingCal.score)));
+        if (this.#deps.decider === decider) {
+          this.#embedding = vectors !== null;
+          // Whose space the stored vectors are in, for the next decider swap.
+          if (vectors) this.#embedderId = decider?.embedderId ?? this.#embedderId;
+          if (vectors) {
+            for (const [index, watch] of pending.entries()) {
+              const vector = vectors[index];
+              if (Array.isArray(vector) && vector.length > 0) watch.vector = vector;
+            }
           }
         }
       } catch {
-        this.#embedding = false;
+        if (this.#deps.decider === decider) this.#embedding = false;
       }
     } else if (pending.length > 0) {
       this.#embedding = false;
     }
 
+    const cal = calibration(this.#deps.decider?.embedderId);
     const caps = {
       triage: this.#deps.decider?.triage !== undefined,
       describe: this.#deps.decider?.describe !== undefined,

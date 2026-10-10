@@ -3,8 +3,8 @@
 // `SOURCES.screen` is never registered, which is what makes the ward and the
 // tools say so (plan D7: consent and pause are runtime state, never layout).
 
-import { LENS_SETTINGS, lens } from './core.ts';
-import type { Decider, LensSettings } from './core.ts';
+import { LENS_SETTINGS, lens, peekLens } from './core.ts';
+import type { Decider, LensCore, LensSettings } from './core.ts';
 import { deciderFor, helperDecider } from './decider.ts';
 // Importing the module is what registers `SOURCES.screen` on a desktop.
 import { applyNativeState, nativeState, onHelperSignal, pushSignal } from './screen.ts';
@@ -73,12 +73,16 @@ export function setLensPaused(user: number, paused: boolean): void {
 
 let attached = false;
 let readers = 0;
-let syncing: Promise<string | null> = Promise.resolve(null);
+let captureControl: AbortController | undefined;
 
 /** Only live subscriptions and in-flight readers count; saved consumers do not. */
 export async function screenDemand(active: boolean): Promise<void> {
   readers += active ? 1 : -1;
-  await startLens();
+  const pending = startLens();
+  const control = captureControl;
+  await pending;
+  // The source must not begin status/frame recovery for an obsolete start.
+  control?.signal.throwIfAborted();
 }
 
 /** Installs the signal channel and stored consent. Capture stays stopped until
@@ -104,13 +108,14 @@ export function ensureLens(): void {
  *  a consent toggle is, and a rebuild would drop every cursor — so the stored
  *  watches are re-embedded and re-scored in place.
  *  (Track D adds the local and cloud deciders through the same call.) */
-async function syncDecider(status?: unknown): Promise<void> {
-  const reply = status ?? (await nativeDesktop('lens-status').catch(() => null));
+async function syncDecider(status?: unknown, signal = captureControl?.signal,
+  core: LensCore | null = lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()))): Promise<void> {
+  const reply = status ?? (await nativeDesktop('lens-status', undefined, undefined, signal).catch(() => null));
+  if (signal?.aborted || signal !== captureControl?.signal || core !== peekLens(localOwner(), SCREEN_SOURCE)) return;
   const capabilities = helperCapabilities(reply);
   // A read that failed says nothing about the helper. Only an explicit answer
   // takes it away: a dropped tunnel would otherwise disarm every `for` watch.
   if (!capabilities) return;
-  const core = lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()));
   // One instance, so a helper state change that says nothing new (a recovery,
   // a rate-limit window) is identity-equal and re-embeds nothing.
   if (capabilities.embed) helper ??= helperDecider(nativeDesktop);
@@ -134,8 +139,10 @@ let helper: Decider | undefined;
 /** Tells Rust what the user answered. Returns the refusal, if any: `permission`
  *  is Screen Recording, which the setup page points at. */
 export function startLens(): Promise<string | null> {
-  syncing = syncing.then(syncCapture, syncCapture);
-  return syncing;
+  captureControl?.abort();
+  const control = new AbortController();
+  captureControl = control;
+  return syncCapture(control.signal);
 }
 
 /** What the last `lens-start` said about demand: the app writes one
@@ -144,7 +151,7 @@ export function startLens(): Promise<string | null> {
  *  the line can never disagree with the op it rode on. */
 let lastDemand: boolean | null = null;
 
-async function syncCapture(): Promise<string | null> {
+async function syncCapture(signal: AbortSignal): Promise<string | null> {
   if (!isDesktop()) return null;
   const consented = lensSetting('consented');
   const core = lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()));
@@ -157,8 +164,10 @@ async function syncCapture(): Promise<string | null> {
   try {
     // `lens-start` answers with the whole status, so the decider is synced from
     // that reply rather than a second round trip.
-    const status = await nativeDesktop('lens-start', { consented, active, paused: lensPaused(localOwner()), ...(why ? { why } : {}) });
-    await syncDecider(status);
+    const status = await nativeDesktop('lens-start', { consented, active, paused: lensPaused(localOwner()), ...(why ? { why } : {}) }, undefined, signal);
+    if (signal.aborted || core !== peekLens(localOwner(), SCREEN_SOURCE)) return null;
+    await syncDecider(status, signal, core);
+    if (signal.aborted || core !== peekLens(localOwner(), SCREEN_SOURCE)) return null;
     // The same reply says whether anything is capturing at all. The source only
     // ever learns it went down from a `status stopped` TRANSITION, and there is
     // none when nothing was ever running: without this an unconsented lens
@@ -166,6 +175,7 @@ async function syncCapture(): Promise<string | null> {
     applyNativeState(core, status);
     return null;
   } catch (err) {
+    if (signal.aborted || core !== peekLens(localOwner(), SCREEN_SOURCE)) return null;
     const reason = err instanceof Error ? err.message : String(err);
     // The refusal IS the reason: `lens-start` answers `not-consented` or
     // `permission` by throwing, and nothing is capturing after it.
@@ -201,8 +211,11 @@ export interface LensConsentStatus {
  *  screen source's own connect shares). */
 export async function lensNativeStatus(): Promise<ReturnType<typeof nativeState>> {
   if (!isDesktop()) return null;
-  const reply = await nativeDesktop('lens-status').catch(() => null);
-  applyNativeState(lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner())), reply);
+  const control = captureControl;
+  const core = lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner()));
+  const reply = await nativeDesktop('lens-status', undefined, undefined, control?.signal).catch(() => null);
+  if (control !== captureControl || core !== peekLens(localOwner(), SCREEN_SOURCE)) return null;
+  applyNativeState(core, reply);
   return nativeState(reply);
 }
 

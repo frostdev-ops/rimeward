@@ -254,6 +254,8 @@ export function screenSource(deps: ScreenDeps): Source {
   let capabilities: ReturnType<NonNullable<Source['capabilities']>>;
   let scoreId: string | undefined;
   let platform: string | undefined;
+  let demandControl = new AbortController();
+  let connection = 0;
   const metadata = (body: Record<string, unknown>): void => {
     if (typeof body.platform === 'string') platform = body.platform;
     if (body.capabilities && typeof body.capabilities === 'object') capabilities = body.capabilities as NonNullable<typeof capabilities>;
@@ -404,8 +406,10 @@ export function screenSource(deps: ScreenDeps): Source {
     }
   };
 
-  const snapshot = async (): Promise<SourceSnapshot | null> => {
-    const reply = await desk(deps.desktop, 'lens-snapshot', {}, SNAPSHOT_DEADLINE_MS);
+  const snapshot = async (signal = demandControl.signal): Promise<SourceSnapshot | null> => {
+    const connected = connection;
+    const reply = await desk(deps.desktop, 'lens-snapshot', {}, SNAPSHOT_DEADLINE_MS, signal);
+    if (signal.aborted || signal !== demandControl.signal || connected !== connection) return null;
     if ('error' in reply || !reply.value || typeof reply.value !== 'object') return null;
     const snap = reply.value as Record<string, unknown>;
     metadata(snap);
@@ -461,15 +465,16 @@ export function screenSource(deps: ScreenDeps): Source {
 
   /** The stream carries changes only, so a reader that attaches to a lens which
    *  is already running starts from what it already shows. */
-  const resync = async (): Promise<void> => {
-    const snap = await snapshot();
+  const resync = async (signal = demandControl.signal): Promise<void> => {
+    const connected = connection;
+    const snap = await snapshot(signal);
     // The epoch as it stands NOW, not as it stood before the call: a live `app`
     // or `window` signal may have opened a newer one while the reply was in
     // flight, and that window is the one on screen. Everything below — the
     // lines, the live rectangles and the frame the next version is pinned to —
     // belongs to the epoch this reply describes, so none of it is applied
     // unless that is still the epoch.
-    if (!feed || !snap || snap.epoch === 0 || snap.epoch !== epoch) return;
+    if (signal.aborted || signal !== demandControl.signal || connected !== connection || !feed || !snap || snap.epoch === 0 || snap.epoch !== epoch) return;
     feed.epoch(snap.epoch, snap.seq);
     feed.replace(snap.lines, snap.seq);
     feed.live(snap.live ?? []);
@@ -486,8 +491,10 @@ export function screenSource(deps: ScreenDeps): Source {
   /** What the lens is doing right now, asked for rather than waited for. A read
    *  that failed says nothing about the lens, so the snapshot below is its own
    *  retry; only an answer that says the lens is down takes the feed offline. */
-  const check = async (): Promise<boolean> => {
-    const reply = await desk(deps.desktop, 'lens-status', {}, SNAPSHOT_DEADLINE_MS);
+  const check = async (signal = demandControl.signal): Promise<boolean> => {
+    const connected = connection;
+    const reply = await desk(deps.desktop, 'lens-status', {}, SNAPSHOT_DEADLINE_MS, signal);
+    if (signal.aborted || signal !== demandControl.signal || connected !== connection) return false;
     if (reply.value && typeof reply.value === 'object') metadata(reply.value as Record<string, unknown>);
     const native = 'error' in reply ? null : nativeState(reply.value);
     if (native && native.offline !== null) {
@@ -504,6 +511,9 @@ export function screenSource(deps: ScreenDeps): Source {
     capabilities: () => capabilities,
     visualCalibration: () => scoreId === undefined ? undefined : visualCalibration(scoreId),
     ...(deps.demand ? { demand: async (active: boolean): Promise<void> => {
+      demandControl.abort();
+      const control = new AbortController();
+      demandControl = control;
       if (!active) return deps.demand!(false);
       // Starting ScreenCaptureKit precedes its first frame. Subscribe before
       // starting so a quick reader cannot mistake yesterday's text for now.
@@ -511,14 +521,18 @@ export function screenSource(deps: ScreenDeps): Source {
       const frame = new Promise<void>((resolve) => { finish = resolve; });
       const off = deps.attach((signal) => { if (signal.kind === 'frame') finish(); });
       const timer = setTimeout(finish, SNAPSHOT_DEADLINE_MS);
+      control.signal.addEventListener('abort', finish, { once: true });
       try {
         await deps.demand!(true);
-        if (await check()) {
+        control.signal.throwIfAborted();
+        if (await check(control.signal)) {
           await frame;
-          if (feed) await resync();
+          control.signal.throwIfAborted();
+          if (feed) await resync(control.signal);
         }
       } finally {
         clearTimeout(timer);
+        control.signal.removeEventListener('abort', finish);
         off();
       }
     } } : {}),
@@ -526,16 +540,19 @@ export function screenSource(deps: ScreenDeps): Source {
     ruleKeys: ['focus'],
 
     async connect(_user, _target, f): Promise<() => void> {
+      const connected = ++connection;
       feed = f;
       // One screen per process: a second connect only re-points the feed.
-      if (detach) return () => {};
-      detach = deps.attach(apply);
+      detach ??= deps.attach(apply);
       // The status read is what says the lens is not reading, so `ready()` has
       // to wait for it: a look that answered first would describe a document
       // nothing has written to, which reads exactly like a live, empty screen.
       // Its snapshot is the repaint a newly started reader needs too.
-      if (await check()) await resync();
+      const signal = demandControl.signal;
+      if (await check(signal)) await resync(signal);
       return () => {
+        if (connected !== connection) return;
+        connection += 1;
         detach?.();
         detach = null;
         feed = null;

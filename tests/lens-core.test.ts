@@ -51,6 +51,78 @@ function bare(email: string, decider?: Parameters<LensCore['setDecider']>[0]) {
   });
 }
 
+test('last reader release reaches a deferred start and replacement readiness owns only current demand', async () => {
+  const user = createUser('lens-demand-replacement@example.com', 'pw-demand-123456');
+  const clock = new FakeClock(1000);
+  const requests: { active: boolean; resolve(): void; reject(error: Error): void }[] = [];
+  let connects = 0;
+  const source: Source = {
+    demand(active) {
+      return new Promise<void>((resolve, reject) => requests.push({ active, resolve, reject }));
+    },
+    async connect() { connects += 1; return () => {}; },
+  };
+  const core = new LensCore({ user, target: 'local', source, clock,
+    store: sqliteStore(user, 'screen:local', () => clock.now()), settings: () => ({ settleMs: 750, minLines: 1 }) });
+  const first = core.acquire();
+  const shared = core.acquire();
+  const oldReady = core.ready();
+  first.release();
+  assert.deepEqual(requests.map(r => r.active), [true], 'another live reader retains demand');
+  shared.release();
+  shared.release();
+  assert.deepEqual(requests.map(r => r.active), [true, false], 'off is sent before startup resolves, exactly once');
+  const replacement = core.acquire();
+  const replacementReady = core.ready();
+  assert.deepEqual(requests.map(r => r.active), [true, false, true], 'replacement does not wait for old startup or teardown');
+  requests[2]!.resolve();
+  assert.equal(await replacementReady, true);
+  assert.equal(connects, 1);
+  requests[0]!.reject(new Error('obsolete native abort failure'));
+  assert.equal(await oldReady, false, 'obsolete readiness cannot connect');
+  assert.equal(core.status().state, 'live', 'old failure cannot take the replacement offline');
+  requests[1]!.resolve();
+  replacement.release();
+  requests[3]!.resolve();
+  core.close();
+  assert.deepEqual(requests.map(r => r.active), [true, false, true, false]);
+});
+
+test('close sends off during deferred startup and prevents its late connect', async () => {
+  const user = createUser('lens-demand-close-source@example.com', 'pw-demand-123456');
+  const clock = new FakeClock(1000);
+  let finish!: () => void;
+  const calls: boolean[] = [];
+  let connects = 0;
+  const source: Source = {
+    demand(active) { calls.push(active); return active ? new Promise<void>(resolve => { finish = resolve; }) : Promise.resolve(); },
+    async connect() { connects += 1; return () => {}; },
+  };
+  const held = new LensCore({ user, target: 'local', source, clock,
+    store: sqliteStore(user, 'screen:local', () => clock.now()), settings: () => ({ settleMs: 750, minLines: 1 }) });
+  const reader = held.acquire();
+  const ready = held.ready();
+  held.close();
+  reader.release();
+  assert.deepEqual(calls, [true, false]);
+  finish();
+  assert.equal(await ready, false);
+  assert.equal(connects, 0);
+});
+
+test('a deferred old decider cannot overwrite replacement watch vectors', async () => {
+  const core = bare('lens-decider-superseded@example.com');
+  await core.watch('c', { add: [{ for: 'a failing build', visual: false, triage: false }] });
+  let finish!: (vectors: number[][]) => void;
+  const old = core.setDecider({ embedderId: 'old', embed: () => new Promise(resolve => { finish = resolve; }) });
+  await core.setDecider({ embedderId: 'replacement', embed: async () => [[2, 0]] });
+  finish([[1, 0]]);
+  await old;
+  assert.equal(core.embedderId, 'replacement');
+  assert.deepEqual(core.consumer('c').watches[0]!.vector, [2, 0]);
+  core.close();
+});
+
 test('a change of embedder re-embeds every stored watch; the same one never does', async () => {
   const counted = (embedderId: string, dims: number) => {
     const calls: string[][] = [];

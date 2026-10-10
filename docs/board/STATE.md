@@ -538,6 +538,30 @@ below is separately verified. Human feature/platform acceptance remains open.
   Independent immutable correction review, native GUI and final product/package
   CI remain gates; no package is marked ready from these checks.
 
+- Follow-up Wayland attachment passes **165** Mac native tests with eleven
+  existing hardware cases ignored, strict Mac Clippy and actual shared
+  Windows/Linux metadata checks. It freezes the existing Linux session selector,
+  passes bundled media resources to ScreenCast and skips Wayland native overlay
+  and shortcut setup. Refusal never falls back to X11; score identity, unknown
+  application and unavailable AX/overlay capabilities remain truthful.
+  The native zero-reader invalidation was already synchronous, but tracing the
+  actual Node callers then found demand and startup queues delaying delivery of
+  that control behind an unresolved chooser. Core, runtime and screen now send
+  release immediately, cancel superseded native requests, and guard asynchronous
+  readiness/status/snapshot/decider-vector publication against replacement.
+  Ten focused regressions exercise those actual callers; **893** Node tests,
+  typecheck and desktop lint pass. Independent immutable review and fresh actual
+  product/platform/package CI remain pending; no readiness is claimed.
+
+- The user manually unlocks the Mac after the native UI tool's locked-session
+  refusal. The signed disposable AppKit fixture launches without arguments;
+  each window's button changes its own fixture text, with the other unchanged.
+  Normal window closes stop both fixture runs. These checks verify fixture UI
+  callbacks only: they record no injected key/mouse events and establish no
+  Rimeward background-input qualification. The signed current product qualifier,
+  normal parent/worker/guardian/local Stop path and physical safety matrix remain
+  required. Production input remains disabled/suspended and its allowlist unchanged.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`
