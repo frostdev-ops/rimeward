@@ -562,6 +562,39 @@ below is separately verified. Human feature/platform acceptance remains open.
   normal parent/worker/guardian/local Stop path and physical safety matrix remain
   required. Production input remains disabled/suspended and its allowlist unchanged.
 
+- Fresh candidate `38f0830` passes server and push Tests CI. Its ordinary Linux
+  native suite passes **78** tests with two ignored, including all seven Wayland
+  provider cases. The media helper passes all five tests against the real pinned
+  GStreamer SDK, including native VideoFrame offset/stride and bus-end behavior.
+  The explicit isolated Xvfb regression then fails with Cargo exit **101** at
+  `Native::connect`, returning `x11-unavailable`; remaining Linux runtime/package
+  checks are skipped. Source tracing identifies strict propagation of a missing
+  Xauthority file as a causal candidate: the fixture's ordinary x11rb connections
+  tolerate that missing lookup, while native Lens refuses it. A focused absent-file
+  correction preserves server handshake authorization and all other lookup errors;
+  actual Linux revalidation is required before assigning the final disposition.
+  One separate Windows PR Tests attempt fails a fixture Git status child with
+  exit **1** and empty stderr while the matching push job passes. Its captured
+  failure is retained. Targeted rerun attempt two passes **884 of 893** tests
+  with nine platform skips, including Git pagination and CLI backup/restore;
+  no cause is inferred from that unreproduced first-attempt failure.
+
+- The X11 missing-authority correction is frozen with SHA-256
+  `9d290db6b11dc6c1aac599ffb4a308b1915ef9703682e8d1df31e2fe917c563b`.
+  Its exact-source regression fails under the prior strict mapping and passes
+  under the corrected mapping, preserving credentials and PermissionDenied,
+  InvalidData, UnexpectedEof and other refusals. Formatting, whitespace and strict
+  actual-source GNU metadata Clippy pass. The original Xvfb fixture is unchanged;
+  independent immutable review and fresh actual Linux execution remain gates.
+
+- Independent immutable review of `38f0830` finds a same-reader refresh race:
+  runtime startup is replaced without replacing the pending Core/source demand,
+  so an old startup cancellation can mark a successful current source offline.
+  The implementation owner also reproduces the analogous downstream status-read
+  race. A focused current-start ownership correction and actual Core/screen/runtime
+  regressions are in progress. Builds remain held until the corrected immutable
+  review; fresh final-candidate CI remains required.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`

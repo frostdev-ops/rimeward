@@ -444,6 +444,7 @@ impl Native {
                 let (stream, (family, peer)) =
                     DefaultStream::from_unix_stream(stream).map_err(native_error)?;
                 let (name, data) = get_auth(family, &peer, display.display)
+                    .or_else(missing_authority)
                     .map_err(|_| "x11-unavailable")?
                     .unwrap_or_default();
                 let stream = BoundedStream {
@@ -1176,6 +1177,14 @@ fn proc_started(stat: &str) -> Result<u64, String> {
 fn native_error<T: std::fmt::Display>(_: T) -> String {
     "x11-unavailable".into()
 }
+fn missing_authority(error: io::Error) -> io::Result<Option<(Vec<u8>, Vec<u8>)>> {
+    // Missing files still leave authorization to the X server handshake.
+    if error.kind() == io::ErrorKind::NotFound {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
 fn local_socket(path: &str, control: &Control) -> io::Result<UnixStream> {
     let bytes = path.as_bytes();
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
@@ -1341,6 +1350,26 @@ fn pack(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authority_only_tolerates_missing_file_and_preserves_credentials() {
+        assert!(missing_authority(io::ErrorKind::NotFound.into())
+            .unwrap()
+            .is_none());
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::InvalidData,
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::Other,
+        ] {
+            assert_eq!(missing_authority(kind.into()).unwrap_err().kind(), kind);
+        }
+        let cookie = (b"MIT-MAGIC-COOKIE-1".to_vec(), vec![1, 2, 3, 4]);
+        assert_eq!(
+            Ok(Some(cookie.clone())).or_else(missing_authority).unwrap(),
+            Some(cookie)
+        );
+        assert!(Ok(None).or_else(missing_authority).unwrap().is_none());
+    }
     #[tokio::test]
     async fn pending_retirement_survives_timeout_and_cancelled_wait_until_proved_exit() {
         let (send, receive) = std::sync::mpsc::channel::<()>();
