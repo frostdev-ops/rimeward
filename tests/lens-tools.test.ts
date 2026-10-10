@@ -46,6 +46,7 @@ test('every lens tool is a local dev tool and a device tool, at its own kind', (
   assert.deepEqual(LENS_TOOL_NAMES.filter(n => LENS_TOOLS[n].kind === 'write'), ['lens_captions', 'overlay_show', 'overlay_clear']);
   // A wait parks for minutes: the turn must be able to take it back.
   assert.equal(LOCAL_DEV_TOOLS.lens_wait.cancellable, true);
+  assert.equal(LOCAL_DEV_TOOLS.lens_text.cancellable, true);
 });
 
 test('a consumer is the conversation, or the relayed caller when there is none', () => {

@@ -9,9 +9,14 @@
 pub mod bridge;
 pub mod capture;
 pub mod embed;
+pub mod geometry;
 pub mod helper;
 pub mod ocr;
 pub mod overlay;
+#[cfg(test)]
+#[allow(dead_code)]
+pub mod portable;
+pub mod request;
 pub mod ring;
 pub mod signals;
 
@@ -243,6 +248,12 @@ pub fn retry_delay(attempt: u32) -> std::time::Duration {
 }
 
 impl Lens {
+    pub fn request_generation(&self) -> u64 {
+        self.capture_generation.load(Ordering::Acquire)
+    }
+    pub fn request_session(&self) -> Option<Arc<request::Cancellation>> {
+        None
+    }
     /// Reads `<data>/lens.json`, warms Vision and starts the helper when its
     /// binary is where `layout` says and this Mac is new enough to run it.
     /// Starts no capture: that waits for consent, which arrives as
@@ -531,6 +542,9 @@ impl Lens {
         }
         if let Some(signals) = self.signals.lock().unwrap().take() {
             signals.stop();
+        }
+        if let Some(overlay) = self.overlay() {
+            overlay.clear(None);
         }
         Some(pending)
     }
@@ -1219,6 +1233,24 @@ pub async fn desktop_request(
             .map_err(|_| "cancelled".to_owned())?
         }
         _ => lens.desktop_request(op, value, deadline).await,
+    }
+}
+
+pub async fn desktop_request_cancel(
+    app: &tauri::AppHandle,
+    op: &str,
+    value: &Value,
+    deadline: Option<i64>,
+    cancellation: Arc<request::Cancellation>,
+) -> Result<Value, String> {
+    if cancellation.is_cancelled() {
+        return Err("cancelled".into());
+    }
+    let result = desktop_request(app, op, value, deadline).await;
+    if cancellation.is_cancelled() {
+        Err("cancelled".into())
+    } else {
+        result
     }
 }
 

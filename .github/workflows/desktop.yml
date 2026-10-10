@@ -75,6 +75,7 @@ jobs:
       # The lens helper's MobileCLIP-S0 text tower (desktop/models.mjs): 85 MB
       # fetched once and restored from the cache below.
       RIMEWARD_MODELS_CACHE: ${{ github.workspace }}/.cache/lens-models
+      RIMEWARD_OCR_CACHE: ${{ github.workspace }}/.cache/portable-ocr
     permissions:
       contents: write
     steps:
@@ -134,6 +135,13 @@ jobs:
           path: ${{ env.RIMEWARD_MODELS_CACHE }}
           key: lens-models-${{ hashFiles('desktop/models.mjs') }}
 
+      - name: Cache pinned portable OCR builds
+        if: matrix.platform != 'macos-latest'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.RIMEWARD_OCR_CACHE }}
+          key: portable-ocr-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/ocr-runtime.mjs') }}
+
       - name: Linux build deps
         if: matrix.platform == 'ubuntu-24.04'
         run: |
@@ -191,6 +199,10 @@ jobs:
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/desktop/runtime/browsers
         run: npm run typecheck && npm test && node tests/standalone-smoke.mjs
+
+      - name: Validate bundled portable OCR
+        if: matrix.platform != 'macos-latest'
+        run: node tests/portable-ocr-smoke.mjs desktop/runtime/ocr
 
       - name: Bundled remote media validation
         shell: bash
@@ -322,6 +334,8 @@ jobs:
               if (-not (Test-Path $node)) { throw 'Packaged Node must be beside the application runtime directory' }
               & node tests/standalone-smoke.mjs $runtime $node
               if ($LASTEXITCODE -ne 0) { throw 'Packaged standalone smoke failed' }
+              & node tests/portable-ocr-smoke.mjs (Join-Path $runtime 'ocr')
+              if ($LASTEXITCODE -ne 0) { throw 'Packaged portable OCR smoke failed' }
               $env:RIMEWARD_MEDIA_SDK = Join-Path $runtime 'media'
               $env:RIMEWARD_MEDIA_HELPER = Join-Path $env:RIMEWARD_MEDIA_SDK 'rimeward-media.exe'
               $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $runtime 'browsers'
@@ -353,6 +367,7 @@ jobs:
             # Check the shipped bytes: packagers must not rewrite private libraries.
             diff -qr desktop/runtime "$packaged_runtime"
             node tests/standalone-smoke.mjs "$packaged_runtime" "$package_root/usr/bin/rimeward-node"
+            node tests/portable-ocr-smoke.mjs "$packaged_runtime/ocr"
             RIMEWARD_MEDIA_SDK="$packaged_runtime/media" \
               RIMEWARD_MEDIA_HELPER="$packaged_runtime/media/rimeward-media" \
               PLAYWRIGHT_BROWSERS_PATH="$packaged_runtime/browsers" \

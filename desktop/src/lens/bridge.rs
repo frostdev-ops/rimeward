@@ -107,6 +107,11 @@ impl Cover {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Kind {
+    Capabilities {
+        platform: String,
+        capabilities: serde_json::Value,
+        visual: serde_json::Value,
+    },
     Frame {
         #[serde(rename = "ref")]
         frame_ref: String,

@@ -51,6 +51,8 @@ export interface GateDeps {
   liveThreshold: number;
   liveFrames: number;
   liveWindowMs: number;
+  /** A portable pixel score has no visual authority until it has been measured. */
+  visualCalibrated?: boolean;
   /** The meta keys a change to which is a delivery on its own. The others
    *  (`app`, `window`) still force a keyframe — that is `nextKind`'s job — but
    *  they are not, by themselves, something a consumer asked to hear about. */
@@ -142,6 +144,42 @@ export interface Calibration {
 /** One row per embedder, written by `ops/lens-calibrate.ts`. */
 export const calibrationKey = (embedderId: string): string => `lens_calibration:${embedderId}`;
 
+export const VISUAL_SCORE_IDS = [
+  'windows:wgc:rgb16-tile32-v1',
+  'linux:x11:rgb16-tile32-v1',
+  'linux:pipewire:rgb16-tile32-v1',
+] as const;
+
+export interface VisualCalibration {
+  scoreId: string;
+  visualThreshold: number;
+  liveThreshold: number;
+  calibrated: boolean;
+}
+
+export const visualCalibrationKey = (scoreId: string): string => `lens_visual_calibration:${scoreId}`;
+
+function measuredVisual(scoreId: string, raw: unknown): raw is { visualThreshold: number; liveThreshold: number } {
+  if (!(VISUAL_SCORE_IDS as readonly string[]).includes(scoreId) || !raw || typeof raw !== 'object') return false;
+  const row = raw as Record<string, unknown>;
+  return ['visualThreshold', 'liveThreshold'].every((key) =>
+    typeof row[key] === 'number' && Number.isFinite(row[key]) && row[key] >= 0 && row[key] <= 1);
+}
+
+/** Pixel measurements never borrow an embedder's thresholds or seed an unmeasured backend. */
+export function visualCalibration(scoreId: string): VisualCalibration {
+  let raw: unknown = null;
+  try { raw = JSON.parse(getSetting(visualCalibrationKey(scoreId)) ?? 'null'); } catch {}
+  return measuredVisual(scoreId, raw)
+    ? { scoreId, visualThreshold: raw.visualThreshold, liveThreshold: raw.liveThreshold, calibrated: true }
+    : { scoreId, visualThreshold: 1, liveThreshold: 1, calibrated: false };
+}
+
+export function saveVisualCalibration(scoreId: string, payload: Record<string, unknown>): void {
+  if (!measuredVisual(scoreId, payload)) throw new Error('Invalid portable visual calibration');
+  setSetting(visualCalibrationKey(scoreId), JSON.stringify(payload));
+}
+
 /** What to tell whoever asked for a `for` watch this machine cannot judge. */
 export const calibrateCommand = (user: number): string => `node ops/lens-calibrate.ts --user ${user}`;
 
@@ -231,9 +269,10 @@ export interface Candidates {
  *  live once the frames stop. */
 export function liveRegions(
   history: { at: number; dirty: Dirty[] }[],
-  deps: Pick<GateDeps, 'liveThreshold' | 'liveFrames' | 'liveWindowMs'>,
+  deps: Pick<GateDeps, 'liveThreshold' | 'liveFrames' | 'liveWindowMs' | 'visualCalibrated'>,
   now: number
 ): Rect[] {
+  if (deps.visualCalibrated === false) return [];
   let chains: { rect: Rect; n: number }[] = [];
   for (const frame of history) {
     if (now - frame.at > deps.liveWindowMs) continue;
@@ -252,13 +291,13 @@ export function liveRegions(
 export function candidates(
   diff: Diff,
   live: Rect[],
-  deps: Pick<GateDeps, 'minLines' | 'visualThreshold' | 'ruleKeys' | 'removals'>
+  deps: Pick<GateDeps, 'minLines' | 'visualThreshold' | 'ruleKeys' | 'removals' | 'visualCalibrated'>
 ): Candidates {
-  const outside = (bbox: Rect | undefined): boolean => outsideLive(live, bbox);
+  const outside = (bbox: Rect | undefined): boolean => outsideLive(deps.visualCalibrated === false ? [] : live, bbox);
   const added = diff.added.filter((l) => outside(l.bbox));
   const removed = diff.removed.filter((l) => outside(l.bbox));
   // `diff.visual` already excludes dirty rectangles that a text change explains.
-  const visual = diff.visual.filter((d) => d.d >= deps.visualThreshold && outside(d.bbox));
+  const visual = deps.visualCalibrated === false ? [] : diff.visual.filter((d) => d.d >= deps.visualThreshold && outside(d.bbox));
   const text = deps.removals === false ? added : [...added, ...removed];
   return {
     added,
@@ -323,7 +362,7 @@ export function parseWatchSpec(raw: unknown, defaults: { triage: boolean } = { t
  *  embedder exists", because a `for` without a vector has to go to triage. */
 export function watchMode(
   spec: WatchSpec,
-  caps: { embed: boolean; triage: boolean; describe: boolean; cloud: boolean }
+  caps: { embed: boolean; triage: boolean; describe: boolean; cloud: boolean; visual?: boolean }
 ): WatchMode {
   const canTriage = caps.triage || caps.cloud;
   if (spec.for !== undefined && spec.for !== '') {
@@ -332,7 +371,7 @@ export function watchMode(
   }
   if (spec.regex !== undefined && spec.regex !== '') return 'regex';
   if (spec.filter && Object.keys(spec.filter).length > 0) return 'filter';
-  if (spec.visual) return 'visual';
+  if (spec.visual) return caps.visual === false ? 'unavailable' : 'visual';
   if (spec.rect) return 'rect';
   return spec.triage && canTriage ? 'triage-only' : 'unavailable';
 }
@@ -425,6 +464,7 @@ async function one(
   // uncalibrated embedder reads exactly like no embedder at all.
   const mode = watchMode(spec, {
     ...caps,
+    visual: deps.visualCalibrated !== false,
     embed: vector !== undefined && vector.length > 0 && deps.calibrated !== false,
   });
   if (mode === 'unavailable') return { id, hit: false, mode, evaluation: 'unavailable' };

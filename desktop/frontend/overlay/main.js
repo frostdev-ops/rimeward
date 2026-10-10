@@ -51,7 +51,7 @@ if (tauri && own) {
     // Ack at once: the DOM is already in place, and a window that is still
     // hidden gets no animation frame, so anything deferred would only run
     // after Rust gave up waiting and showed it anyway.
-    void tauri.event.emit('overlay:ready', { id: e.payload.id });
+    void tauri.event.emit('overlay:ready', { id: e.payload.id, generation: e.payload.generation });
   });
   void own.listen('overlay:interactive', (e) => {
     document.body.classList.toggle('interactive', e.payload.on === true);

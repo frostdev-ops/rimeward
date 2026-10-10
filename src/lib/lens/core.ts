@@ -27,7 +27,7 @@ import {
   watchMode,
   watchText,
 } from './gate.ts';
-import type { DescribeQuery, GateDeps, TriageQuery, WatchReport } from './gate.ts';
+import type { DescribeQuery, GateDeps, TriageQuery, VisualCalibration, WatchReport } from './gate.ts';
 import { sqliteStore } from './store.ts';
 import type { Store } from './store.ts';
 import type {
@@ -139,6 +139,9 @@ export interface SourceSnapshot {
 }
 
 export interface Source {
+  /** Separate from text embedding calibration; absent preserves existing sources. */
+  visualCalibration?(): VisualCalibration | undefined;
+  capabilities?(): Partial<Record<'capture' | 'ax' | 'ocr' | 'embed' | 'triage' | 'describe' | 'translate' | 'overlay', boolean>> | undefined;
   /** Live readers, separate from saved cursors. Optional for sources that do
    *  not own a native capture session. */
   demand?(active: boolean): Promise<void>;
@@ -352,7 +355,7 @@ export class LensCore {
       const gate = this.#gate();
       // A purely visual change on an otherwise idle source opens the settle
       // window like a text change does.
-      if (d.d >= gate.visualThreshold && outsideLive(this.#liveNow(gate), d.bbox)) this.#bump();
+      if (gate.visualCalibrated !== false && d.d >= gate.visualThreshold && outsideLive(this.#liveNow(gate), d.bbox)) this.#bump();
     },
 
     live: (rects) => {
@@ -517,7 +520,7 @@ export class LensCore {
   #gate(): GateDeps {
     const settings = this.#deps.settings();
     const decider = this.#deps.decider;
-    return gateDefaults({
+    const gate = gateDefaults({
       settleMs: this.#settleMs(),
       minLines: settings.minLines,
       seq: this.#doc.lastSeq(),
@@ -531,6 +534,9 @@ export class LensCore {
       ...(decider?.describe ? { describe: decider.describe } : {}),
       ...(decider?.cloudTriage ? { cloudTriage: decider.cloudTriage } : {}),
     });
+    const visual = this.#deps.source.visualCalibration?.();
+    return visual ? { ...gate, visualThreshold: visual.visualThreshold, liveThreshold: visual.liveThreshold,
+      visualCalibrated: visual.calibrated } : gate;
   }
 
   /** The end of an epoch's opening turn: whatever the source wrote after the
@@ -635,6 +641,7 @@ export class LensCore {
   /** Live regions as of now, trimming the frame history on the way so a region
    *  stops being live once its frames stop arriving. */
   #liveNow(gate: GateDeps): Rect[] {
+    if (gate.visualCalibrated === false) return [];
     const cutoff = this.#clock.now() - FRAME_HISTORY_MS;
     while (this.#frames.length > 0 && (this.#frames[0] as { at: number }).at < cutoff) this.#frames.shift();
     // A region of the window, never the window (LIVE_WHOLE). A source with no
@@ -990,6 +997,8 @@ export class LensCore {
     return this.#deps.decider?.embedderId;
   }
 
+  capabilities() { return this.#deps.source.capabilities?.(); }
+
   async watch(
     id: string,
     o: { add?: WatchSpec[]; remove?: string[]; minIntervalS?: number } = {}
@@ -1040,6 +1049,7 @@ export class LensCore {
       triage: this.#deps.decider?.triage !== undefined,
       describe: this.#deps.decider?.describe !== undefined,
       cloud: this.#deps.decider?.cloudTriage !== undefined,
+      visual: this.#gate().visualCalibrated !== false,
     };
     for (const watch of consumer.watches) {
       // A vector scored against another model's threshold is a guess: an

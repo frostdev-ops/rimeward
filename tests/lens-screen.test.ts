@@ -365,6 +365,11 @@ test('text reads the document by source and rect, and the accurate path re-runs 
     value: { ref: 'f-1-10', rect: [0, 0, 656, 422], accurate: true },
     deadlineMs: 30_000,
   });
+  const abort = new AbortController();
+  await text(h.core, { accurate: true, signal: abort.signal }, async (op, value, deadline, signal) => {
+    assert.equal(op, 'lens-ocr'); assert.equal(deadline, 30_000); assert.equal(signal, abort.signal);
+    return h.desktop(op, value, deadline);
+  });
 });
 
 test('describe frames the question as an observation and reports a stale epoch', async () => {

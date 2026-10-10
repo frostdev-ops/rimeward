@@ -190,6 +190,8 @@ try {
     fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
   }
   run(process.execPath, [path.join(here, 'cua-runtime.mjs')]);
+  const portableOcr = platform !== 'darwin';
+  if (portableOcr) run(process.execPath, [path.join(here, 'ocr-runtime.mjs')]);
   // The screen lens's Swift helper and the MobileCLIP-S0 text tower it embeds
   // with: macOS only (the helper needs the macOS 27 SDK), and RIMEWARD_SKIP_LENS=1
   // leaves both out, which is what a build on an older Xcode image does.
@@ -222,6 +224,7 @@ try {
       protocol: 1,
       helper: lens ? "helper/blackice-helper" : null,
       models: lens ? [LENS_MODEL] : [],
+      ocr: portableOcr ? { path: 'ocr', tesseract: '5.5.2', leptonica: '1.87.0' } : null,
     }),
   );
   console.log(

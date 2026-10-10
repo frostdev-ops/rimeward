@@ -20,6 +20,7 @@ import type { Line, MetaField, Rect } from './types.ts';
 import { isDesktop } from '../dev/runtime.ts';
 import { nativeDesktop } from '../dev/remote.ts';
 import { screenDemand } from './runtime.ts';
+import { visualCalibration } from './gate.ts';
 
 /** How long a captured frame stays addressable by `ref` (BlackIce scene.ts). */
 export const FRAME_TTL_MS = 60_000;
@@ -32,7 +33,7 @@ const DESCRIBE_DEADLINE_MS = 8_000;
 /** `lens_look {frame: true}` returns the window, not a crop of it. */
 const LOOK_MAX_PX = 1024;
 
-type Desktop = (op: string, value?: unknown, deadlineMs?: number) => Promise<unknown>;
+type Desktop = (op: string, value?: unknown, deadlineMs?: number, signal?: AbortSignal) => Promise<unknown>;
 
 export interface ScreenDeps {
   desktop: Desktop;
@@ -147,7 +148,7 @@ export function coveredValue(over: unknown): { value: string; bounds?: Rect } | 
  *  same reply — are what name it; the off-macOS stub states its own. */
 export function nativeState(
   reply: unknown
-): { state: string; screen: boolean; ax: boolean; offline: string | null } | null {
+): { state: string; screen: boolean; ax: boolean; offline: string | null; platform?: string } | null {
   if (!reply || typeof reply !== 'object') return null;
   const body = reply as Record<string, unknown>;
   const permissions = (body.permissions ?? {}) as { screen?: unknown; ax?: unknown };
@@ -157,13 +158,16 @@ export function nativeState(
     state !== 'stopped' || body.reason === 'idle'
       ? null
       : str(body.reason) || (body.consented === false ? 'not-consented' : screen ? 'stopped' : 'permission');
-  return { state, screen, ax: permissions.ax === true, offline: reason === null ? null : screenOffline(reason) };
+  const platform = typeof body.platform === 'string' ? body.platform : undefined;
+  return { state, screen, ax: permissions.ax === true, offline: reason === null ? null : screenOffline(reason, platform),
+    ...(platform ? { platform } : {}) };
 }
 
 /** Hand a core what such a reply says without waiting for a signal: the stream
  *  reports a stop as a TRANSITION, and a lens that was never running never
  *  emits one. Without this an unconsented lens reads as a live, empty screen. */
 export function applyNativeState(core: LensCore | null, reply: unknown): void {
+  if (reply && typeof reply === 'object') pushSignal({ ...reply, kind: 'capabilities' });
   const native = nativeState(reply);
   if (!core || !native) return;
   if (native.offline === null) core.feed.online();
@@ -247,6 +251,15 @@ export function screenSource(deps: ScreenDeps): Source {
   let epoch = 0;
   let detach: (() => void) | null = null;
   let stopped = false;
+  let capabilities: ReturnType<NonNullable<Source['capabilities']>>;
+  let scoreId: string | undefined;
+  let platform: string | undefined;
+  const metadata = (body: Record<string, unknown>): void => {
+    if (typeof body.platform === 'string') platform = body.platform;
+    if (body.capabilities && typeof body.capabilities === 'object') capabilities = body.capabilities as NonNullable<typeof capabilities>;
+    const visual = body.visual as { scoreId?: unknown } | undefined;
+    if (typeof visual?.scoreId === 'string') scoreId = visual.scoreId;
+  };
   /** The last `window` signal, so an `ax-window` can restate the header it
    *  belongs to (the id, the url and the display are that signal's). */
   let lastWindow: Record<string, unknown> | null = null;
@@ -255,6 +268,8 @@ export function screenSource(deps: ScreenDeps): Source {
   let covered = false;
 
   const apply = (body: Record<string, unknown>): void => {
+    if (body.kind === 'capabilities' || body.kind === 'status') metadata(body);
+    if (body.kind === 'capabilities') return;
     if (!feed) return;
     const kind = str(body.kind);
     const e = num(body.epoch);
@@ -282,7 +297,7 @@ export function screenSource(deps: ScreenDeps): Source {
       // document, so it is read ahead of the guard below: a lens that stopped
       // (or came back) while its last signal belonged to another window would
       // otherwise be filtered out and the core would report the opposite.
-      setOffline(str(body.state) === 'stopped' && body.reason !== 'idle' ? screenOffline(str(body.reason, 'stopped')) : null);
+      setOffline(str(body.state) === 'stopped' && body.reason !== 'idle' ? screenOffline(str(body.reason, 'stopped'), platform) : null);
       return;
     }
     // Everything else from another epoch describes a window nobody is looking at.
@@ -393,6 +408,7 @@ export function screenSource(deps: ScreenDeps): Source {
     const reply = await desk(deps.desktop, 'lens-snapshot', {}, SNAPSHOT_DEADLINE_MS);
     if ('error' in reply || !reply.value || typeof reply.value !== 'object') return null;
     const snap = reply.value as Record<string, unknown>;
+    metadata(snap);
     if (!Number.isFinite(snap.epoch) || !Number.isFinite(snap.seq)) return null;
     const meta: Record<string, MetaField> = {};
     const app = snap.app as Record<string, unknown> | null;
@@ -472,6 +488,7 @@ export function screenSource(deps: ScreenDeps): Source {
    *  retry; only an answer that says the lens is down takes the feed offline. */
   const check = async (): Promise<boolean> => {
     const reply = await desk(deps.desktop, 'lens-status', {}, SNAPSHOT_DEADLINE_MS);
+    if (reply.value && typeof reply.value === 'object') metadata(reply.value as Record<string, unknown>);
     const native = 'error' in reply ? null : nativeState(reply.value);
     if (native && native.offline !== null) {
       setOffline(native.offline);
@@ -484,6 +501,8 @@ export function screenSource(deps: ScreenDeps): Source {
   };
 
   return {
+    capabilities: () => capabilities,
+    visualCalibration: () => scoreId === undefined ? undefined : visualCalibration(scoreId),
     ...(deps.demand ? { demand: async (active: boolean): Promise<void> => {
       if (!active) return deps.demand!(false);
       // Starting ScreenCaptureKit precedes its first frame. Subscribe before
@@ -537,15 +556,15 @@ interface DeskResult {
 }
 
 /** Every native call goes through here: a rejection becomes `{error}`. */
-async function desk(desktop: Desktop, op: string, value: unknown, deadlineMs: number): Promise<DeskResult> {
+async function desk(desktop: Desktop, op: string, value: unknown, deadlineMs: number, signal?: AbortSignal): Promise<DeskResult> {
   try {
-    return { value: await desktop(op, value, deadlineMs) };
+    return { value: await desktop(op, value, deadlineMs, signal) };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
 
-const native: Desktop = (op, value, deadlineMs) => nativeDesktop(op, value, deadlineMs);
+const native: Desktop = (op, value, deadlineMs, signal) => nativeDesktop(op, value, deadlineMs, signal);
 
 export interface CropResult {
   ref: string;
@@ -632,7 +651,7 @@ export const lookFrame = (
  *  recognition over the newest frame instead. */
 export async function text(
   core: LensCore,
-  o: { rect?: Rect; src?: 'ax' | 'ocr' | 'any'; accurate?: boolean } = {},
+  o: { rect?: Rect; src?: 'ax' | 'ocr' | 'any'; accurate?: boolean; signal?: AbortSignal } = {},
   desktop: Desktop = native
 ): Promise<{ lines: { bbox?: Rect; text: string; src: string; conf?: number }[]; ref: string | null } | { error: string }> {
   const src = o.src ?? 'any';
@@ -640,7 +659,7 @@ export async function text(
     const ref = latest?.ref;
     if (!ref) return { error: 'frame-evicted' };
     const area = o.rect ?? latest?.geometry?.captured ?? ([0, 0, 1 << 20, 1 << 20] as Rect);
-    const reply = await desk(desktop, 'lens-ocr', { ref, rect: area, accurate: true }, OCR_DEADLINE_MS);
+    const reply = await desk(desktop, 'lens-ocr', { ref, rect: area, accurate: true }, OCR_DEADLINE_MS, o.signal);
     if (reply.error !== undefined) return { error: reply.error };
     const value = (reply.value ?? {}) as { lines?: unknown; ref?: unknown };
     return {

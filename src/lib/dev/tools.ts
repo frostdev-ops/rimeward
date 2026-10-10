@@ -449,7 +449,7 @@ export const LOCAL_DEV_TOOLS: Record<string, ToolDef> = {
       schema({ runtime: context.runtime, ...tool.inputSchema.properties }, ['runtime', ...tool.inputSchema.required]),
       (a, c) => lensToolRun(name, a, c)),
       // A wait parks for up to five minutes: the turn must be able to take it back.
-      ...(name === 'lens_wait' ? { cancellable: true } : {}) }];
+      ...(['lens_wait', 'lens_text'].includes(name) ? { cancellable: true } : {}) }];
   })),
 };
 

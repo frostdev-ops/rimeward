@@ -10,9 +10,7 @@ mod chromium;
 mod commands;
 mod computer;
 mod input_guardian;
-// Off macOS the lens is a stub that answers `unavailable`; the capture,
-// accessibility and OCR stages are platform work of their own.
-#[cfg_attr(not(target_os = "macos"), path = "lens/unsupported.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "lens/portable.rs")]
 mod lens;
 #[cfg(target_os = "macos")]
 mod permissions;
@@ -168,6 +166,15 @@ pub fn run() {
                     }
                     Err(error) => eprintln!("overlay: pool unavailable: {error}"),
                 }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let lens = lens::Lens::init(
+                    lines.clone(),
+                    &runtime::resources(app.handle())?.join("ocr"),
+                );
+                app.manage(lens.clone());
+                tauri::async_runtime::spawn(lens.bridge.clone().run_writer());
             }
             app.manage(runtime::Stdin::new(lines, reader));
             let handle = app.handle().clone();

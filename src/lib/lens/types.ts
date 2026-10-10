@@ -167,7 +167,17 @@ export const VERSION_RING = 32;
  *
  *  Nothing ever travels bare: an unmapped reason keeps its own words, but
  *  inside a sentence, because "permission" alone told the user nothing. */
-export function screenOffline(reason: string): string {
+export function screenOffline(reason: string, platform?: string): string {
+  if (platform === 'windows' || platform === 'linux') {
+    switch (reason) {
+      case 'not-consented': return 'the Screen lens is turned off for this computer';
+      case 'paused': return 'the Screen lens is paused on this computer';
+      case 'permission': return 'screen capture permission has not been granted to Rimeward';
+      case 'stream':
+      case 'display-changed': return 'the screen lens lost its capture: start a fresh read to select the source again';
+      case 'user-stopped': return 'the user stopped screen capture: the next read starts it again';
+    }
+  }
   switch (reason) {
     case 'not-consented':
       return 'the Screen lens is turned off for this Mac';

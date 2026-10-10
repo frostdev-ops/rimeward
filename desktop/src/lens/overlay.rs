@@ -176,6 +176,7 @@ pub struct Place {
 struct Slot {
     label: &'static str,
     id: Option<String>,
+    generation: u64,
     kind: OverlayKind,
     anchor: Anchor,
     /// The size the anchor asked for, before the display clamp.
@@ -192,6 +193,7 @@ impl Slot {
         Slot {
             label,
             id: None,
+            generation: 0,
             kind: OverlayKind::Card,
             anchor: Anchor::Corner(Corner::Tr),
             size: (CARD_W, CARD_H),
@@ -201,6 +203,15 @@ impl Slot {
             expires_at: now,
         }
     }
+
+    fn can_reveal(&self, id: &str, generation: u64, now: Instant) -> bool {
+        self.id.as_deref() == Some(id) && self.generation == generation && self.expires_at > now
+    }
+
+    fn invalidate(&mut self) {
+        self.id = None;
+        self.generation = self.generation.wrapping_add(1);
+    }
 }
 
 pub struct Overlay {
@@ -209,7 +220,7 @@ pub struct Overlay {
     slots: Mutex<Vec<Slot>>,
     interactive: AtomicBool,
     /// Ids the page has acknowledged and no reveal has consumed yet.
-    ready: Mutex<HashSet<String>>,
+    ready: Mutex<HashSet<(String, u64)>>,
 }
 
 impl Overlay {
@@ -233,9 +244,14 @@ impl Overlay {
         lens.set_overlay_windows(windows);
         let acked = overlay.clone();
         app.listen("overlay:ready", move |event| {
-            let Some(id) = serde_json::from_str::<Value>(event.payload())
+            let Some((id, generation)) = serde_json::from_str::<Value>(event.payload())
                 .ok()
-                .and_then(|value| value["id"].as_str().map(str::to_owned))
+                .and_then(|value| {
+                    Some((
+                        value["id"].as_str()?.to_owned(),
+                        value["generation"].as_u64()?,
+                    ))
+                })
             else {
                 return;
             };
@@ -243,7 +259,7 @@ impl Overlay {
             // Bounded: a page that acknowledged ids nobody asked for cannot
             // grow this without limit.
             if ready.len() < SLOTS * 4 {
-                ready.insert(id);
+                ready.insert((id, generation));
             }
         });
         let ticking = overlay.clone();
@@ -293,7 +309,7 @@ impl Overlay {
     /// the receipt.
     pub fn show(self: &Arc<Self>, req: ShowReq, place: Place) -> Result<Value, String> {
         let (frame, size) = frame_for(&req, place);
-        let (index, evicted) = {
+        let (index, evicted, generation) = {
             let mut slots = self.slots.lock().unwrap();
             let index = pick(&slots, &req.id);
             let evicted = slots[index]
@@ -302,9 +318,11 @@ impl Overlay {
                 .filter(|id| *id != &req.id)
                 .cloned();
             let now = Instant::now();
+            let generation = slots[index].generation.wrapping_add(1);
             slots[index] = Slot {
                 label: slots[index].label,
                 id: Some(req.id.clone()),
+                generation,
                 kind: req.kind,
                 anchor: req.anchor.clone(),
                 size,
@@ -313,7 +331,7 @@ impl Overlay {
                 shown_at: now,
                 expires_at: now + Duration::from_millis(req.ttl_ms),
             };
-            (index, evicted)
+            (index, evicted, generation)
         };
         let label = LABELS[index];
         let window = self
@@ -322,12 +340,13 @@ impl Overlay {
             .ok_or("overlay-window-gone")?;
         let _ = window.set_size(LogicalSize::new(frame[2], frame[3]));
         let _ = window.set_position(LogicalPosition::new(frame[0], frame[1]));
-        self.ready.lock().unwrap().remove(&req.id);
+        self.ready.lock().unwrap().retain(|(id, _)| id != &req.id);
         let _ = window.emit_to(
             label,
             "overlay:show",
             json!({
                 "id": req.id,
+                "generation": generation,
                 "kind": req.kind,
                 "text": req.text,
                 "w": frame[2],
@@ -342,7 +361,7 @@ impl Overlay {
             "overlay:interactive",
             json!({ "on": self.interactive() }),
         );
-        self.reveal(window, req.id.clone());
+        self.reveal(window, req.id.clone(), index, generation);
         self.announce();
         let mut receipt = json!({ "id": req.id });
         if let Some(evicted) = evicted {
@@ -357,18 +376,34 @@ impl Overlay {
     /// Nothing here touches the capture filter: it excludes the pool's windows
     /// by id (`Lens::set_overlay_windows`, named at build), so every slot is
     /// out of every frame however it is revealed.
-    fn reveal(self: &Arc<Self>, window: WebviewWindow, id: String) {
+    fn reveal(self: &Arc<Self>, window: WebviewWindow, id: String, index: usize, generation: u64) {
         let overlay = self.clone();
         std::thread::spawn(move || {
             let deadline = Instant::now() + ACK_WAIT;
             let mut acked = false;
             while !acked && Instant::now() < deadline {
-                acked = overlay.ready.lock().unwrap().remove(&id);
+                acked = overlay
+                    .ready
+                    .lock()
+                    .unwrap()
+                    .remove(&(id.clone(), generation));
                 if !acked {
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
-            let _ = window.show();
+            // Validate on the same main-thread path that changes visibility; never
+            // keep the slot lock while dispatching a blocking window operation.
+            let app = overlay.app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let current = overlay.slots.lock().unwrap()[index].can_reveal(
+                    &id,
+                    generation,
+                    Instant::now(),
+                );
+                if current {
+                    let _ = window.show();
+                }
+            });
         });
     }
 
@@ -384,7 +419,7 @@ impl Overlay {
                     _ => false,
                 };
                 if matched {
-                    slot.id = None;
+                    slot.invalidate();
                     hidden.push(slot.label);
                 }
             }
@@ -403,7 +438,7 @@ impl Overlay {
                 let corner = matches!(slot.anchor, Anchor::Corner(_));
                 let stale = slot.epoch != epoch;
                 if slot.id.is_some() && stale && !(slot.sticky && corner) {
-                    slot.id = None;
+                    slot.invalidate();
                     hidden.push(slot.label);
                 }
             }
@@ -477,7 +512,7 @@ impl Overlay {
             let mut slots = self.slots.lock().unwrap();
             for slot in slots.iter_mut() {
                 if slot.id.is_some() && slot.expires_at <= now {
-                    slot.id = None;
+                    slot.invalidate();
                     hidden.push(slot.label);
                 }
             }
@@ -681,6 +716,25 @@ fn native(window: &WebviewWindow) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_retarget_and_id_reuse_never_reveal_an_old_show() {
+        let now = Instant::now();
+        let mut slot = Slot::new("ov-0");
+        slot.id = Some("caption".into());
+        slot.generation = 7;
+        slot.expires_at = now + Duration::from_secs(1);
+        assert!(slot.can_reveal("caption", 7, now));
+        slot.invalidate(); // The same invalidation used by Clear, retarget and TTL.
+        assert!(!slot.can_reveal("caption", 7, now));
+        slot.id = Some("caption".into());
+        slot.generation += 1;
+        assert!(!slot.can_reveal("caption", 7, now));
+        assert!(slot.can_reveal("caption", 9, now));
+        assert!(!slot.can_reveal("caption", 9, now + Duration::from_secs(2)));
+        slot.invalidate();
+        assert!(!slot.can_reveal("caption", 9, now));
+    }
 
     const WINDOW: Rect = [100.0, 200.0, 800.0, 600.0];
     const DISPLAY: Rect = [0.0, 0.0, 1512.0, 982.0];

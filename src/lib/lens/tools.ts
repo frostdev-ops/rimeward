@@ -652,7 +652,7 @@ const TOOLS: Record<LensToolName, LensTool> = {
       'Page the observed text of a screen or browser lens by rectangle: this is how you read what a ' +
       'truncated delivery or lens_look omitted. On a screen `src` picks accessibility text, OCR text or ' +
       'either, and `accurate: true` re-runs OCR over the newest frame in accurate mode, which takes up to ' +
-      'half a minute over a whole window on this Mac, so pass a rect to keep it short. A browser ward has ' +
+      'half a minute over a whole window, so pass a rect to keep it short. A browser ward has ' +
       'neither: its text is the page’s own, so `src` and `accurate` do nothing there and the receipt says ' +
       'the text came from the DOM. Bounding boxes are window points on a screen and CSS pixels of the ' +
       'viewport in a browser ward, top-left origin. A `truncated` receipt with `omitted: n` means the last ' +
@@ -672,6 +672,7 @@ const TOOLS: Record<LensToolName, LensTool> = {
               ...(area ? { rect: area } : {}),
               ...(args.src === 'ax' || args.src === 'ocr' ? { src: args.src } : {}),
               ...(args.accurate === true ? { accurate: true } : {}),
+              ...(opts?.signal ? { signal: opts.signal } : {}),
             })
           : browserText(core, { ...(area ? { rect: area } : {}) });
       // An `accurate` read of a lens that is not reading fails `frame-evicted`;
@@ -945,7 +946,16 @@ export const LENS_TOOLS: Record<LensToolName, LensTool> = Object.fromEntries(
           return tool.call(core, consumer, args, opts);
         const { release } = core.acquire();
         try {
-          return await tool.call(core, consumer, args, (await core.ready()) ? opts : { ...opts, connecting: true });
+          const ready = await core.ready();
+          if (browserWard(opts) === null) {
+            const caps = core.capabilities();
+            const capability = name === 'lens_describe' ? 'describe'
+              : name === 'overlay_show' ? 'overlay'
+              : name === 'lens_captions' && args.on === true ? (caps?.overlay === false ? 'overlay' : 'translate')
+              : name === 'lens_text' && args.accurate === true ? 'ocr' : undefined;
+            if (capability && caps?.[capability] === false) return fail(`${name} is unavailable on this computer (${capability})`);
+          }
+          return await tool.call(core, consumer, args, ready ? opts : { ...opts, connecting: true });
         } finally {
           release();
         }

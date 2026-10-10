@@ -184,6 +184,7 @@ export async function setLensConsent(consented: boolean): Promise<string | null>
 }
 
 export interface LensConsentStatus {
+  platform?: string;
   consented: boolean;
   paused: boolean;
   /** `warming | running | idle | paused | stopped`, or `unsupported` off the app. */
@@ -198,9 +199,11 @@ export interface LensConsentStatus {
  *  `state` is `warming | running | idle | paused | stopped`, and `offline` is
  *  why it is not reading (lens/screen.ts `nativeState`, the one decode the
  *  screen source's own connect shares). */
-export async function lensNativeStatus(): Promise<{ state: string; screen: boolean; ax: boolean; offline: string | null } | null> {
+export async function lensNativeStatus(): Promise<ReturnType<typeof nativeState>> {
   if (!isDesktop()) return null;
-  return nativeState(await nativeDesktop('lens-status').catch(() => null));
+  const reply = await nativeDesktop('lens-status').catch(() => null);
+  applyNativeState(lens(localOwner(), SCREEN_SOURCE, screenSettings(localOwner())), reply);
+  return nativeState(reply);
 }
 
 /** What the setup page's Screen lens switch draws. Retrying a grant only
@@ -218,6 +221,7 @@ export async function lensConsentStatus(error: string | null = null): Promise<Le
     state: status?.state ?? 'unsupported',
     screen: status?.screen === true,
     ax: status?.ax === true,
-    error: failed,
+    error: failed ?? (status?.platform && status.platform !== 'macos' ? status.offline : null),
+    ...(status?.platform ? { platform: status.platform } : {}),
   };
 }

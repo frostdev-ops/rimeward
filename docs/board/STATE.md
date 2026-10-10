@@ -184,6 +184,18 @@ replace feature-specific live acceptance or installed-app checks. Published
 - RIME-49 can proceed independently after baseline distribution verification;
   it does not depend on RIME-46. Mac qualification/manual provider/platform and
   RIME-46 installation exit criteria remain pending, never implicitly ready.
+- The first RIME-49 shared phase implements portable routing, immutable capture
+  leases, bounded cancellable OCR, reserved controls, separate visual calibration
+  and pinned source-built OCR packaging. Missing calibration disables visual
+  watches and live-region text suppression. Overlay reveal generations now
+  invalidate delayed Clear/retarget/reused-ID results. Local working-tree checks
+  pass: **875** unit tests, **149** native tests with eleven ignored, typecheck,
+  build, lint, fmt/Clippy, staged standalone, editor and remote-workspace smokes.
+  Ten existing native hardware ignores remain; the additional ignored child
+  helper is explicitly launched by process regressions. This is preparation
+  evidence: independent immutable review and real Windows/Linux OCR compiler,
+  loader, license, PNG/TSV and extracted-installer CI gates remain open. Concrete
+  capture/AX/overlays report unavailable until RIME-50–52 attach their providers.
 - Follow-up workflow-only `f723d30` Windows CI failed one CONNECT fixture with
   `ECONNRESET`; all six Chromium lifecycle checks passed. A controlled real socket
   reset reproduced `events.once('close')` rejecting before the actual close.
