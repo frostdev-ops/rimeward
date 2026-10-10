@@ -73,9 +73,12 @@ below is separately verified. Human feature/platform acceptance remains open.
   narrow Apple Silicon allowlist, TURN provisioning wording against historical
   production TURN evidence, and the local-triage comment against actual composition.
 - RIME-26 is now approved native Windows/Linux Lens delivery through RIME-49–53,
-  with basic observation/tools/watches and capability-gated overlays. Current
-  non-Mac builds still report unavailable. Apple-only describe/translation remains
-  unavailable; existing Remote Desktop capture alone does not implement Lens.
+  with basic observation/tools/watches and capability-gated overlays. Published
+  1.0.18 non-Mac builds report unavailable. The 1.0.19 candidate attaches X11 and
+  capture-only Wayland sources; Windows capture still refuses before recording.
+  Fresh platform CI and installed evidence remain required. Apple-only
+  describe/translation remains unavailable on portable platforms; existing
+  Remote Desktop capture alone does not implement Lens.
 - RIME-27 retires optional local-chat D2: composition comments and assertion
   wording now match configured embeddings/helper triage/opted-in cloud triage.
   Scoped decider tests pass and emitted logic matches the prior revision.

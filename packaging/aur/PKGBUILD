@@ -1,5 +1,5 @@
 # Maintainer: frostdev <admin@frostdev.io>
-# Repackages the release .deb. .github/workflows/aur.yml bumps pkgver/sha256sums here and in .SRCINFO.
+# Repository fallback pins the published .deb below; AUR publication is retired.
 pkgname=rimeward-bin
 pkgver=1.0.17
 pkgrel=1

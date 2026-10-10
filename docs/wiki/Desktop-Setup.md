@@ -8,6 +8,21 @@ finishes, Rimeward stops the native screen-sharing stream. Saved conversations,
 watches and an open lens card do not keep it running. Pausing also stops the
 stream; resuming starts it only if something still needs it.
 
+### Lens in the 1.0.19 candidate
+
+Published 1.0.18 provides Lens on macOS. The 1.0.19 candidate adds Linux support;
+its release and installed acceptance are still pending.
+
+- X11 observes the selected application window and reads its pixels with OCR.
+  Accessibility text remains unavailable until its window association is proved.
+- Wayland observes the source you select in the system sharing dialog. Application
+  identity may be unknown; coordinates belong to the captured image. Accessibility
+  text and native overlays are unavailable.
+- Windows Lens remains unavailable pending capture-geometry qualification.
+
+Portable visual watches remain unavailable until the source is calibrated.
+On-device description and translation are Apple-only.
+
 Use this path to run Rimeward entirely as a desktop application. You do not need a Rimeward account on a server, a domain, Docker, a reverse proxy, or an externally reachable port. The installed app bundles its backend, Node runtime, Chromium, and editor tools, and creates its local owner on first launch.
 
 ## Requirements
@@ -20,7 +35,7 @@ Use this path to run Rimeward entirely as a desktop application. You do not need
 
 Open [Rimeward Releases](https://github.com/frostdev-ops/rimeward/releases), select the newest **Rimeward desktop** release, and check its notes before downloading an installer. You do not need to install Node or Rust to run a published installer. Local development tools for your own projects, Git, and optional CLI agents remain separate installations.
 
-For a downloaded AppImage, make it executable in your file manager or with `chmod +x <downloaded-file>.AppImage`, then launch it. On Debian/Ubuntu, install the downloaded DEB with `sudo apt install ./<downloaded-file>.deb`, substituting the actual filename. On Arch Linux, build and install the `rimeward-bin` package from the repository's [`packaging/aur`](https://github.com/frostdev-ops/rimeward/tree/main/packaging/aur) folder with `makepkg -si`. It repackages the release DEB. Update it with pacman, not the in-app updater.
+For a downloaded AppImage, make it executable in your file manager or with `chmod +x <downloaded-file>.AppImage`, then launch it. On Debian/Ubuntu, install the downloaded DEB with `sudo apt install ./<downloaded-file>.deb`, substituting the actual filename. On Arch Linux, build and install the `rimeward-bin` package from the repository's [`packaging/aur`](https://github.com/frostdev-ops/rimeward/tree/main/packaging/aur) folder with `makepkg -si`. This repository fallback currently pins the published 1.0.17 DEB; no public AUR package is provided. Update it with pacman, not the in-app updater.
 
 ## First launch, without remote access
 
