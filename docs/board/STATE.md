@@ -601,6 +601,36 @@ below is separately verified. Human feature/platform acceptance remains open.
   CI remains required. The separate X11 correction passes immutable medium review;
   actual Xvfb execution still must establish its CI disposition.
 
+- Independent medium review accepts the current-startup correction at `632eaf4`,
+  including the reproduced same-reader refresh and held status/snapshot schedules.
+  A clean committed Mac stage then passes normal prebuild, desktop validation
+  (**165** native tests, eleven existing hardware cases ignored), standalone and
+  all six built UI smokes, including remote workspace and browser persistence.
+  The first prebuild attempt fails with explicit ENOSPC after the coordinator's
+  cache override duplicates the Cua target. Removing only that incomplete owned
+  duplicate and reusing the existing separate caches makes the unchanged candidate
+  pass. No external provider or model calls, goldens, installed qualification or
+  platform acceptance are inferred from these checks.
+  Windows desktop CI at the earlier `38f0830` exits **0xc0000139**
+  (`STATUS_ENTRYPOINT_NOT_FOUND`) before its harness: none of the fourteen provider
+  fixtures run, and runtime/installers are skipped. Source/import auditing proves
+  no culprit; the original run has no uploaded failed executable. Failure-specific
+  loader diagnostics and fresh final-candidate CI remain required.
+  That earlier candidate's Mac CI subsequently completes successfully: **165**
+  native tests pass with eleven ignored and all **893** Node tests pass. Staged
+  and app-packaged standalone, generated screen/audio/fault probes, application
+  build, version and deep strict signature checks pass. Its branch app is ad hoc
+  signed; this does not qualify the current Mac or complete the corrected release.
+
+- The Windows native CI step now retains its original output and exit status.
+  An isolated failure-only diagnostic preserves the exact failed native test PE,
+  imports/dependents, runner identity and system-library export/version/hash data.
+  Its separate System32-restricted loads are explicitly diagnostic-process
+  evidence, not the failed executable's loader trace. The script does not execute
+  the test PE or any imported API. A focused PowerShell self-check runs on Windows
+  before native validation; actual Windows execution remains a fresh-CI gate.
+  No failed job is converted to success or production capability enabled.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`

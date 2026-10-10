@@ -191,9 +191,36 @@ jobs:
           node desktop/sign-runtime.mjs
 
       - name: Desktop lint and native tests
+        if: matrix.platform != 'windows-latest'
         env:
           RUST_BACKTRACE: '1'
         run: npm run desktop:check
+
+      - name: Windows desktop lint and native tests
+        if: matrix.platform == 'windows-latest'
+        id: windows_native
+        shell: pwsh
+        env:
+          RUST_BACKTRACE: '1'
+        run: |
+          ./ops/windows-loader.ps1 -SelfTest
+          npm run desktop:check 2>&1 | Tee-Object -FilePath desktop-native-check.log
+          $nativeExit = $LASTEXITCODE
+          exit $nativeExit
+
+      - name: Diagnose Windows native loader failure
+        if: failure() && steps.windows_native.conclusion == 'failure'
+        shell: pwsh
+        run: ./ops/windows-loader.ps1
+
+      - name: Preserve Windows native failure evidence
+        if: failure() && steps.windows_native.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rimeward-windows-native-failure-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rimeward-windows-loader
+          if-no-files-found: warn
+          retention-days: 14
 
       # The target creates its own disposable Xvfb display and compositor
       # redirect; it never captures or redirects the runner's user desktop.
