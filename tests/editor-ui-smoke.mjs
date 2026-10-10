@@ -128,6 +128,8 @@ try {
   await code.filter({hasText:'A little room'}).waitFor();
   await ward.getByRole('tab',{name:'workspace.ts',exact:true}).click();
   await code.filter({hasText:'function answer'}).waitFor();
+  await ward.locator('.cm-content[contenteditable=true]').waitFor();
+  await code.focus();
   await page.keyboard.press(mod+'+z');
   await code.filter({hasText:'interface Workspace'}).waitFor();
   await page.keyboard.press(mod+'+Shift+z'); await code.filter({hasText:'function answer'}).waitFor();

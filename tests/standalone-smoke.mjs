@@ -1,4 +1,5 @@
-// Run after desktop/prebuild.mjs. Uses disposable data and the bundled Node.
+// Run after prebuild, or pass an extracted runtime directory and Node binary.
+// Uses disposable data and the bundled Node.
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -7,15 +8,19 @@ import readline from "node:readline";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const runtime = path.join(repo, "desktop/runtime");
+const runtime = process.argv[2]
+  ? path.resolve(process.argv[2])
+  : path.join(repo, "desktop/runtime");
 const { target } = JSON.parse(
   fs.readFileSync(path.join(runtime, "runtime.json"), "utf8"),
 );
-const node = path.join(
-  repo,
-  "desktop/binaries",
-  "rimeward-node-" + target + (process.platform === "win32" ? ".exe" : ""),
-);
+const node = process.argv[3]
+  ? path.resolve(process.argv[3])
+  : path.join(
+      repo,
+      "desktop/binaries",
+      "rimeward-node-" + target + (process.platform === "win32" ? ".exe" : ""),
+    );
 const data = fs.mkdtempSync(
   path.join(os.tmpdir(), "rimeward-standalone-test-"),
 );

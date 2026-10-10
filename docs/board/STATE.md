@@ -118,7 +118,14 @@ checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 ap
   app contents and Windows installer extraction; manual GUI startup stays open.
 - Full built UI smoke stopped at editor undo after file switching (line 132);
   the remaining smokes in that chained command did not run. Investigation is
-  tracing the editor's asynchronous load/focus readiness before changing behavior.
+  complete: a delayed view save reproduced cached text appearing while read-only
+  with focus on the tab. The smoke now waits for editable content and focuses it
+  before undo. Complete editor and all five other built UI smokes pass individually;
+  no production editor behavior changed. Concurrent fixture failures are retained
+  in local logs and are not installed acceptance.
+- Packaged-runtime CI changes passed independent review plus actionlint/JS/bash
+  syntax and whitespace checks. Actual Windows extraction, tagged MSI and
+  notarized Mac DMG checks still require their final candidate/tagged jobs.
 - The user will run installed Windows/Linux/Arch checks manually and chose CI/CD
   acceptance for publication on 2026-10-10. Manual feature/platform packages stay
   open. Baseline publication requires final candidate CI and packaged-runtime
