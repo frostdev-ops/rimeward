@@ -452,6 +452,29 @@ below is separately verified. Human feature/platform acceptance remains open.
   cancellation wrongly revoking a newer same-source overlay and interactive
   enable racing successful Stop; its owner is correcting both before publication.
 
+- Shared review corrections distinguish request/source refusal from genuine
+  current native overlay proof failure. Cancellation and obsolete callbacks no
+  longer revoke a newer same-source caption; failure revocation rechecks source
+  and cancellation under State. Interactive commands/hotkey/Escape freeze their
+  source and share the native teardown lifecycle gate. The blocking mutation owns
+  that gate even when its async waiter disappears, so Stop/ClearAll cannot
+  acknowledge before a delayed Escape registration is disabled. Two regressions
+  use actual source guards, slot reveal/retirement and Stop with disclosed native
+  effect spies. **159** Mac native tests pass/eleven hardware cases ignored;
+  formatting, strict Mac Clippy and actual Windows/Linux metadata closures pass.
+  Frozen shared SHA-256 values are
+  `9180cf1a0662aabd95993ef2cfb700dab095c378f9e19b9478f609c36e64db2d`
+  (portable) and `c0b3e51fb7b7c8a8e92663da81924c9f34837cc53e28b35de74935c1ad3fb6c3`
+  (overlay). Immutable correction review and real final-candidate CI remain gates.
+- Corrected font-only `32f3d16` desktop run **38087915547** has successful Mac
+  and Linux jobs. Mac passes **153** native/eleven ignored and **883** unit/no
+  skips, staged and app-contained standalone/generated media and strict branch
+  app seal/version. Linux passes **41** native/one ignored and **883** unit/no
+  skips; staged plus both extracted DEB/AppImage repeat standalone, full pinned
+  OCR/hash/notices/provenance/PNG-TSV/loader and generated-media checks. Windows
+  installer work continues naturally. These checks precede native attachment;
+  they do not execute the new X11 provider fixture or Windows native regressions.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`

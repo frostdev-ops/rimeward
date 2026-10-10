@@ -24,7 +24,7 @@ pub mod ring;
 #[cfg(target_os = "windows")]
 pub mod windows;
 #[cfg(target_os = "macos")]
-pub use super::{bridge, geometry, request, ring};
+pub use super::{bridge, geometry, overlay, request, ring};
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "unsupported.rs"]
@@ -95,7 +95,7 @@ pub struct Lens {
     ocr: ocr::Ocr,
     pending: Mutex<Option<(String, Rect)>>,
     wake: Notify,
-    lifecycle: tokio::sync::Mutex<()>,
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
     #[cfg(target_os = "windows")]
     backend: std::sync::OnceLock<Arc<windows::Backend>>,
     #[cfg(target_os = "linux")]
@@ -114,7 +114,7 @@ impl Lens {
             ocr,
             pending: Mutex::new(None),
             wake: Notify::new(),
-            lifecycle: tokio::sync::Mutex::new(()),
+            lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(not(target_os = "macos"))]
             backend: std::sync::OnceLock::new(),
             #[cfg(not(target_os = "macos"))]
@@ -275,6 +275,26 @@ impl Lens {
         self.announce(&state);
         true
     }
+    fn revoke_overlay(
+        &self,
+        expected_generation: u64,
+        cancellation: Option<&request::Cancellation>,
+    ) -> bool {
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.generation != expected_generation
+                || state.control.is_cancelled()
+                || cancellation.is_some_and(request::Cancellation::is_cancelled)
+                || Self::run(&state) != "running"
+            {
+                return false;
+            }
+            state.overlay = false;
+            self.announce(&state);
+        }
+        self.clear_source_overlays(expected_generation);
+        true
+    }
     /// Controls invalidate synchronously before this gate. A superseded control
     /// must not close a newer worker after waiting for an earlier start/drain.
     async fn finish_control(&self, generation: u64, start: bool) -> Result<(), String> {
@@ -353,6 +373,9 @@ impl Lens {
     /// Old bootstrap completions cannot grant overlays into a new source.
     #[cfg(target_os = "linux")]
     pub fn set_overlay_available(&self, expected_generation: u64, available: bool) -> bool {
+        if !available {
+            return self.revoke_overlay(expected_generation, None);
+        }
         let granted = {
             let mut state = self.state.lock().unwrap();
             if state.generation != expected_generation
@@ -843,9 +866,13 @@ impl Lens {
                 #[cfg(not(target_os = "macos"))]
                 if let Some(overlay) = self.overlay() {
                     let id = value["id"].as_str().map(str::to_owned);
-                    tokio::task::spawn_blocking(move || overlay.clear_checked(id.as_deref()))
-                        .await
-                        .map_err(|_| "overlay-window-gone")??;
+                    let lifecycle = self.lifecycle.clone().lock_owned().await;
+                    tokio::task::spawn_blocking(move || {
+                        let _lifecycle = lifecycle;
+                        overlay.clear_checked(id.as_deref())
+                    })
+                    .await
+                    .map_err(|_| "overlay-window-gone")??;
                 }
                 Ok(Value::Bool(true))
             }
@@ -853,13 +880,8 @@ impl Lens {
             "overlay-show" => self.overlay_show(value, cancellation).await,
             #[cfg(not(target_os = "macos"))]
             "overlay-interactive" => {
-                if !self.state.lock().unwrap().overlay {
-                    return Err("unavailable".into());
-                }
-                self.overlay()
-                    .ok_or("unavailable")?
-                    .set_interactive(value["on"] == true);
-                Ok(Value::Bool(true))
+                let source = self.overlay_source(self.bridge.epoch(), cancellation)?;
+                self.interactive(source, value["on"] == true).await
             }
             _ => Err("unavailable".into()),
         }
@@ -901,6 +923,33 @@ impl Lens {
         })
     }
     #[cfg(not(target_os = "macos"))]
+    async fn interactive(
+        self: &Arc<Self>,
+        source: OverlaySource,
+        on: bool,
+    ) -> Result<Value, String> {
+        let overlay = self.overlay().ok_or("unavailable")?;
+        source
+            .interactive(move || {
+                overlay.set_interactive(on);
+                Ok(Value::Bool(true))
+            })
+            .await
+    }
+    /// Freeze before scheduling a hotkey/escape callback. It cannot act on a
+    /// different source after waiting behind Stop or source replacement.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn queue_interactive(self: &Arc<Self>, on: bool) {
+        let Ok(source) = self.overlay_source(self.bridge.epoch(), request::Cancellation::new())
+        else {
+            return;
+        };
+        let lens = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = lens.interactive(source, on).await;
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
     async fn overlay_show(
         self: &Arc<Self>,
         value: &Value,
@@ -929,26 +978,25 @@ impl Lens {
             let generation = source.lease.generation;
             let epoch = source.lease.epoch;
             let cancellation = source.cancellation.clone();
-            source.native = Some(
-                tokio::task::spawn_blocking(move || {
-                    backend.overlay.prepare(generation, epoch, cancellation)
-                })
-                .await
-                .map_err(|_| "unavailable")??,
-            );
+            let prepared = tokio::task::spawn_blocking(move || {
+                backend.overlay.prepare(generation, epoch, cancellation)
+            })
+            .await
+            .unwrap_or_else(|_| Err("unavailable".into()));
+            source.native = Some(match prepared {
+                Ok(native) => native,
+                Err(reason) => {
+                    let failed: Result<(), overlay::Failure> =
+                        source.publish(|| Err(overlay::Failure::Native(reason)));
+                    source.failed(&failed);
+                    return Err(failed.unwrap_err().reason());
+                }
+            });
             source
         };
-        let generation = source.lease.generation;
-        let result = tokio::task::spawn_blocking(move || overlay.show(req, place, source))
+        tokio::task::spawn_blocking(move || overlay.show(req, place, source))
             .await
-            .map_err(|_| "overlay-window-gone")?;
-        #[cfg(target_os = "linux")]
-        if result.is_err() {
-            self.set_overlay_available(generation, false);
-        }
-        #[cfg(target_os = "windows")]
-        let _ = generation;
-        result
+            .map_err(|_| "overlay-window-gone")?
     }
 }
 
@@ -964,7 +1012,10 @@ struct OverlaySource {
 impl OverlaySource {
     /// Freeze under State, then recheck while doing the actual UI mutation.
     /// No State/native lock crosses main-thread dispatch or an async wait.
-    fn publish<T>(&self, publish: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    fn publish<T>(
+        &self,
+        publish: impl FnOnce() -> Result<T, overlay::Failure>,
+    ) -> Result<T, overlay::Failure> {
         let state = self.lens.state.lock().unwrap();
         if self.cancellation.is_cancelled()
             || self.session.is_cancelled()
@@ -987,13 +1038,43 @@ impl OverlaySource {
         {
             return Err("stale-epoch".into());
         }
-        publish()
+        let result = publish();
+        if self.cancellation.is_cancelled()
+            || self.session.is_cancelled()
+            || state.control.is_cancelled()
+        {
+            return Err("cancelled".into());
+        }
+        result
     }
-    #[cfg(not(target_os = "macos"))]
-    fn failed(&self) {
-        #[cfg(target_os = "linux")]
-        self.lens
-            .set_overlay_available(self.lease.generation, false);
+    fn failed<T>(&self, result: &Result<T, overlay::Failure>) -> bool {
+        matches!(result, Err(overlay::Failure::Native(_)))
+            && !self.cancellation.is_cancelled()
+            && !self.session.is_cancelled()
+            && self
+                .lens
+                .revoke_overlay(self.lease.generation, Some(&self.cancellation))
+    }
+    async fn interactive<T: Send + 'static>(
+        self,
+        mutation: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let lifecycle = tokio::select! { biased;
+            _ = self.cancellation.cancelled() => return Err("cancelled".into()),
+            _ = self.session.cancelled() => return Err("cancelled".into()),
+            lifecycle = self.lens.lifecycle.clone().lock_owned() => lifecycle,
+        };
+        tokio::task::spawn_blocking(move || {
+            // The blocking mutation owns the gate even if its async waiter is
+            // dropped. Stop cannot acknowledge ahead of a late Escape binding.
+            let _lifecycle = lifecycle;
+            self.publish(|| Ok(())).map_err(overlay::Failure::reason)?;
+            let result = mutation();
+            self.publish(|| Ok(())).map_err(overlay::Failure::reason)?;
+            result
+        })
+        .await
+        .map_err(|_| "overlay-window-gone".to_owned())?
     }
     #[cfg(target_os = "linux")]
     fn place(
@@ -1222,6 +1303,171 @@ fn merge_scores(regions: &mut Vec<bridge::Dirty>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn overlay_fixture() -> (Arc<Lens>, OverlaySource) {
+        let (tx, _) = mpsc::unbounded_channel();
+        let lens = Lens::init(tx, Path::new("/missing-rimeward-ocr"));
+        lens.dispatch(
+            "lens-start",
+            &json!({"consented":true}),
+            None,
+            request::Cancellation::new(),
+        )
+        .await
+        .unwrap();
+        let geometry = FrameGeometry {
+            window: [5.0, 5.0, 8.0, 8.0],
+            scale: 1.0,
+            content_rect: [0.0, 0.0, 8.0, 8.0],
+            content_scale: 1.0,
+            captured: [0.0, 0.0, 8.0, 8.0],
+        };
+        let grant = lens
+            .backend_status(
+                lens.request_generation(),
+                true,
+                false,
+                Lens::score_id(),
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = lens
+            .accept_target(
+                grant,
+                Target {
+                    pid: 42,
+                    bundle: "disposable.test".into(),
+                    name: "Disposable".into(),
+                    window_id: 1,
+                    title: "Fixture".into(),
+                    bounds: geometry.window,
+                    url: None,
+                    display: DisplayInfo {
+                        id: 1,
+                        w: 100.0,
+                        h: 100.0,
+                        scale: 1.0,
+                    },
+                },
+                geometry,
+                [8, 8],
+                [0.0, 0.0, 100.0, 100.0],
+            )
+            .unwrap();
+        // Only native hidden-pool proof is stood in; guards and slot state below
+        // are the actual shared production types and transitions, without GUI.
+        lens.state.lock().unwrap().overlay = true;
+        let source = lens
+            .overlay_source(lease.epoch, request::Cancellation::new())
+            .unwrap();
+        (lens, source)
+    }
+
+    #[tokio::test]
+    async fn cancelled_overlay_request_preserves_replacement_slot_and_native_failure_revokes() {
+        let (lens, b) = overlay_fixture().await;
+        let cancel = request::Cancellation::new();
+        let a = lens.overlay_source(b.lease.epoch, cancel.clone()).unwrap();
+        a.publish(|| Ok(())).unwrap(); // A is admitted before queueing, then stalls.
+        cancel.cancel();
+        let mut slots = vec![];
+        b.publish(|| {
+            slots.push(overlay::Slot::live_for_test(
+                "caption-b",
+                2,
+                b.lease.generation,
+            ));
+            Ok(())
+        })
+        .unwrap();
+        let refused = a.publish(|| {
+            slots[0] = overlay::Slot::live_for_test("caption-a", 1, a.lease.generation);
+            Err::<(), _>(overlay::Failure::Native(
+                "native operation must not run".into(),
+            ))
+        });
+        assert_eq!(refused, Err("cancelled".into()));
+        assert!(!a.failed(&refused));
+        assert_eq!(lens.status()["capabilities"]["overlay"], true);
+        assert!(slots[0].can_reveal("caption-b", 2, std::time::Instant::now()));
+
+        // Cancellation during an admitted native call also remains a refusal.
+        let during = lens
+            .overlay_source(b.lease.epoch, request::Cancellation::new())
+            .unwrap();
+        let refused = during.publish(|| {
+            during.cancellation.cancel();
+            Err::<(), _>(overlay::Failure::Native("cancelled".into()))
+        });
+        assert_eq!(refused, Err("cancelled".into()));
+        assert!(!during.failed(&refused));
+        assert_eq!(lens.status()["capabilities"]["overlay"], true);
+        assert!(slots[0].can_reveal("caption-b", 2, std::time::Instant::now()));
+        let obsolete =
+            b.publish(|| Err::<(), _>(overlay::Failure::Refused("obsolete-slot".into())));
+        assert!(!b.failed(&obsolete));
+
+        let native = b.publish(|| {
+            Err::<(), _>(overlay::Failure::Native(
+                "overlay-position-exclusion-unproved".into(),
+            ))
+        });
+        assert!(b.failed(&native));
+        assert_eq!(
+            native.unwrap_err().reason(),
+            "overlay-position-exclusion-unproved"
+        );
+        assert_eq!(lens.status()["capabilities"]["overlay"], false);
+        // The real pool's retirement helper then hides the source's own slots.
+        assert_eq!(
+            overlay::revoke_source_slots(&mut slots, b.lease.generation),
+            vec!["ov-0"]
+        );
+        assert!(!slots[0].can_reveal("caption-b", 2, std::time::Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn interactive_callbacks_recheck_the_frozen_source_after_stop_and_hold_the_teardown_gate()
+    {
+        let (lens, delayed) = overlay_fixture().await;
+        delayed.publish(|| Ok(())).unwrap(); // Previous callback's early check.
+        let effects = Arc::new(Mutex::new((false, false))); // Native cursor/Escape effects.
+        lens.stop(Some("idle")).await.unwrap();
+        let effect = effects.clone();
+        assert_eq!(
+            delayed
+                .interactive(move || {
+                    *effect.lock().unwrap() = (true, true);
+                    Ok(())
+                })
+                .await,
+            Err("cancelled".into())
+        );
+        assert_eq!(*effects.lock().unwrap(), (false, false));
+
+        let (lens, current) = overlay_fixture().await;
+        let (entered, entry) = tokio::sync::oneshot::channel();
+        let (release, waiting) = std::sync::mpsc::sync_channel(1);
+        let mut mutation = tokio::spawn(current.interactive(move || {
+            let _ = entered.send(());
+            waiting.recv().unwrap();
+            Ok(())
+        }));
+        entry.await.unwrap();
+        mutation.abort(); // The async requester disappears during a native call.
+        let stop = lens.stop(Some("idle"));
+        tokio::pin!(stop);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut stop)
+                .await
+                .is_err(),
+            "Stop cannot acknowledge while the blocking mutation owns the gate"
+        );
+        release.send(()).unwrap();
+        stop.await.unwrap();
+        let _ = (&mut mutation).await;
+        assert_eq!(lens.status()["state"], "stopped");
+    }
     #[tokio::test]
     async fn cleanup_failure_revokes_only_the_current_controls_proved_capabilities() {
         let (tx, _) = mpsc::unbounded_channel();

@@ -59,6 +59,33 @@ const MAX_TEXT: usize = 2_000;
 const ACK_WAIT: Duration = Duration::from_millis(100);
 const TICK: Duration = Duration::from_millis(500);
 
+/// A refused request never disproves the current native pool. Only an admitted
+/// native placement/proof failure can revoke that source's overlay capability.
+#[cfg(any(test, not(target_os = "macos")))]
+#[derive(Debug, PartialEq)]
+pub(super) enum Failure {
+    Refused(String),
+    Native(String),
+}
+#[cfg(any(test, not(target_os = "macos")))]
+impl Failure {
+    pub(super) fn reason(self) -> String {
+        match self {
+            Self::Refused(reason) | Self::Native(reason) => reason,
+        }
+    }
+}
+#[cfg(any(test, not(target_os = "macos")))]
+impl From<&str> for Failure {
+    fn from(reason: &str) -> Self {
+        Self::Refused(reason.into())
+    }
+}
+#[cfg(target_os = "macos")]
+type ShowResult<T> = Result<T, String>;
+#[cfg(not(target_os = "macos"))]
+type ShowResult<T> = Result<T, Failure>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OverlayKind {
@@ -175,7 +202,7 @@ pub struct Place {
 }
 
 /// One window in the pool. Free when `id` is `None`.
-struct Slot {
+pub(super) struct Slot {
     label: &'static str,
     id: Option<String>,
     generation: u64,
@@ -197,6 +224,15 @@ struct Slot {
 }
 
 impl Slot {
+    #[cfg(test)]
+    pub(super) fn live_for_test(id: &str, generation: u64, source_generation: u64) -> Self {
+        let mut slot = Self::new("ov-0");
+        slot.id = Some(id.into());
+        slot.generation = generation;
+        slot.source_generation = source_generation;
+        slot.expires_at = Instant::now() + Duration::from_millis(DEFAULT_TTL_MS);
+        slot
+    }
     fn new(label: &'static str) -> Slot {
         let now = Instant::now();
         Slot {
@@ -220,7 +256,7 @@ impl Slot {
         }
     }
 
-    fn can_reveal(&self, id: &str, generation: u64, now: Instant) -> bool {
+    pub(super) fn can_reveal(&self, id: &str, generation: u64, now: Instant) -> bool {
         self.id.as_deref() == Some(id) && self.generation == generation && self.expires_at > now
     }
 
@@ -353,7 +389,9 @@ impl Overlay {
                     return;
                 }
                 let overlay = overlay.clone();
-                std::thread::spawn(move || overlay.set_interactive(!overlay.interactive()));
+                if let Some(lens) = app.try_state::<Arc<Lens>>() {
+                    lens.queue_interactive(!overlay.interactive());
+                }
             })
             .is_err()
         {
@@ -410,8 +448,15 @@ impl Overlay {
     ) -> Result<Value, String> {
         #[cfg(not(target_os = "macos"))]
         let cancellation = source.cancellation.clone();
+        #[cfg(target_os = "macos")]
         let result = self
             .on_main(move |overlay| source.publish(|| overlay.show_in(req, place, source.clone())));
+        #[cfg(not(target_os = "macos"))]
+        let result = self.on_main(move |overlay| {
+            let result = source.publish(|| overlay.show_in(req, place, source.clone()));
+            source.failed(&result);
+            result.map_err(Failure::reason)
+        });
         #[cfg(not(target_os = "macos"))]
         if result.is_err() {
             cancellation.cancel();
@@ -424,7 +469,7 @@ impl Overlay {
         req: ShowReq,
         place: Place,
         source: OverlaySource,
-    ) -> Result<Value, String> {
+    ) -> ShowResult<Value> {
         if req.epoch != self.bridge.epoch() {
             return Err("stale-epoch".into());
         }
@@ -463,10 +508,16 @@ impl Overlay {
             (index, evicted, generation)
         };
         let label = LABELS[index];
-        let window = self
-            .app
-            .get_webview_window(label)
-            .ok_or("overlay-window-gone")?;
+        let window = self.app.get_webview_window(label).ok_or_else(|| {
+            #[cfg(target_os = "macos")]
+            {
+                "overlay-window-gone".to_owned()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Failure::Native("overlay-window-gone".into())
+            }
+        })?;
         // An already-visible slot must not show the preceding DOM at its new
         // placement while the current payload is waiting for its acknowledgement.
         #[cfg(target_os = "macos")]
@@ -482,7 +533,7 @@ impl Overlay {
                 self.slots.lock().unwrap()[index].invalidate();
                 let _ = super::hide_overlay(&self.app, &window);
                 self.announce();
-                return Err(reason);
+                return Err(Failure::Native(reason));
             }
         };
         self.ready.lock().unwrap().retain(|(id, _)| id != &req.id);
@@ -571,15 +622,13 @@ impl Overlay {
                             overlay.slots.lock().unwrap()[index].invalidate();
                             let _ = super::hide_overlay(&overlay.app, &window);
                             overlay.announce();
-                            return Err(reason);
+                            return Err(Failure::Native(reason));
                         }
                     }
                     Ok(())
                 });
                 #[cfg(not(target_os = "macos"))]
-                if result.is_err() {
-                    source.failed();
-                }
+                source.failed(&result);
                 #[cfg(target_os = "macos")]
                 let _ = result;
             });
@@ -733,12 +782,19 @@ impl Overlay {
                 if event.state() != ShortcutState::Pressed {
                     return;
                 }
-                let app = app.clone();
-                std::thread::spawn(move || {
-                    if let Some(overlay) = app.try_state::<Arc<Overlay>>() {
-                        overlay.set_interactive(false);
-                    }
-                });
+                #[cfg(target_os = "macos")]
+                {
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        if let Some(overlay) = app.try_state::<Arc<Overlay>>() {
+                            overlay.set_interactive(false);
+                        }
+                    });
+                }
+                #[cfg(not(target_os = "macos"))]
+                if let Some(lens) = app.try_state::<Arc<Lens>>() {
+                    lens.queue_interactive(false);
+                }
             });
         } else {
             let _ = shortcut.unregister(ESCAPE);
@@ -804,7 +860,7 @@ impl Overlay {
 }
 
 #[cfg(any(test, not(target_os = "macos")))]
-fn revoke_source_slots(slots: &mut [Slot], generation: u64) -> Vec<&'static str> {
+pub(super) fn revoke_source_slots(slots: &mut [Slot], generation: u64) -> Vec<&'static str> {
     slots
         .iter_mut()
         .filter_map(|slot| {
