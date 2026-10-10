@@ -275,6 +275,8 @@ pub struct Overlay {
     bridge: Arc<Bridge>,
     slots: Mutex<Vec<Slot>>,
     interactive: AtomicBool,
+    #[cfg(not(target_os = "macos"))]
+    interactive_incomplete: AtomicBool,
     /// Ids the page has acknowledged and no reveal has consumed yet.
     ready: Mutex<HashSet<(String, u64)>>,
     #[cfg(target_os = "linux")]
@@ -290,6 +292,8 @@ impl Overlay {
             bridge: lens.bridge.clone(),
             slots: Mutex::new(LABELS.iter().map(|label| Slot::new(label)).collect()),
             interactive: AtomicBool::new(false),
+            #[cfg(not(target_os = "macos"))]
+            interactive_incomplete: AtomicBool::new(false),
             ready: Mutex::new(HashSet::new()),
             #[cfg(target_os = "linux")]
             hotkey: AtomicBool::new(false),
@@ -776,61 +780,69 @@ impl Overlay {
         {
             return Err("unavailable".into());
         }
+        #[cfg(target_os = "macos")]
         if self.interactive.swap(on, Ordering::AcqRel) == on {
-            #[cfg(target_os = "macos")]
             return;
+        }
+        let apply = || {
             #[cfg(not(target_os = "macos"))]
-            return Ok(());
-        }
-        #[cfg(not(target_os = "macos"))]
-        let mut failed = false;
-        for label in LABELS {
-            if let Some(window) = self.app.get_webview_window(label) {
-                #[cfg(target_os = "macos")]
-                let _ = window.set_ignore_cursor_events(!on);
-                #[cfg(not(target_os = "macos"))]
-                if window.set_ignore_cursor_events(!on).is_err() {
-                    failed = true;
+            let mut failed = false;
+            for label in LABELS {
+                if let Some(window) = self.app.get_webview_window(label) {
+                    #[cfg(target_os = "macos")]
+                    let _ = window.set_ignore_cursor_events(!on);
+                    #[cfg(not(target_os = "macos"))]
+                    if window.set_ignore_cursor_events(!on).is_err() {
+                        failed = true;
+                    }
+                    let _ = window.emit_to(label, "overlay:interactive", json!({ "on": on }));
                 }
-                let _ = window.emit_to(label, "overlay:interactive", json!({ "on": on }));
             }
-        }
-        use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-        let shortcut = self.app.global_shortcut();
-        let binding = if on {
-            let app = self.app.clone();
-            shortcut.on_shortcut(ESCAPE, move |_, _, event| {
-                if event.state() != ShortcutState::Pressed {
-                    return;
+            use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+            let shortcut = self.app.global_shortcut();
+            #[cfg(target_os = "macos")]
+            let settled = false;
+            #[cfg(not(target_os = "macos"))]
+            let settled = shortcut.is_registered(ESCAPE) == on;
+            let binding = if settled {
+                Ok(())
+            } else if on {
+                let app = self.app.clone();
+                shortcut.on_shortcut(ESCAPE, move |_, _, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            if let Some(overlay) = app.try_state::<Arc<Overlay>>() {
+                                overlay.set_interactive(false);
+                            }
+                        });
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    if let Some(lens) = app.try_state::<Arc<Lens>>() {
+                        lens.queue_interactive(false);
+                    }
+                })
+            } else {
+                shortcut.unregister(ESCAPE)
+            };
+            #[cfg(target_os = "macos")]
+            let _ = binding;
+            #[cfg(not(target_os = "macos"))]
+            {
+                if failed || binding.is_err() {
+                    return Err("overlay-interactive".into());
                 }
-                #[cfg(target_os = "macos")]
-                {
-                    let app = app.clone();
-                    std::thread::spawn(move || {
-                        if let Some(overlay) = app.try_state::<Arc<Overlay>>() {
-                            overlay.set_interactive(false);
-                        }
-                    });
-                }
-                #[cfg(not(target_os = "macos"))]
-                if let Some(lens) = app.try_state::<Arc<Lens>>() {
-                    lens.queue_interactive(false);
-                }
-            })
-        } else {
-            shortcut.unregister(ESCAPE)
+                Ok(())
+            }
         };
         #[cfg(target_os = "macos")]
-        let _ = binding;
+        apply();
         #[cfg(not(target_os = "macos"))]
-        {
-            if failed || binding.is_err() {
-                // Retain ownership so Escape/Stop can retry a partial disable.
-                self.interactive.store(true, Ordering::Release);
-                return Err("overlay-interactive".into());
-            }
-            Ok(())
-        }
+        interaction_transition(&self.interactive, &self.interactive_incomplete, on, apply)
     }
 
     /// TTL expiry.
@@ -889,6 +901,28 @@ impl Overlay {
             .collect();
         self.bridge.emit(Kind::Overlay { ids });
     }
+}
+
+/// Serialized by the portable lifecycle gate. `owned` includes partial native
+/// effects; only a complete transition permits an idempotent acknowledgement.
+#[cfg(any(test, not(target_os = "macos")))]
+fn interaction_transition(
+    owned: &AtomicBool,
+    incomplete: &AtomicBool,
+    on: bool,
+    apply: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if !incomplete.load(Ordering::Acquire) && owned.load(Ordering::Acquire) == on {
+        return Ok(());
+    }
+    incomplete.store(true, Ordering::Release);
+    owned.store(true, Ordering::Release);
+    let result = apply();
+    if result.is_ok() {
+        owned.store(on, Ordering::Release);
+        incomplete.store(false, Ordering::Release);
+    }
+    result
 }
 
 #[cfg(any(test, not(target_os = "macos")))]
@@ -1117,6 +1151,84 @@ fn native(window: &WebviewWindow) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incomplete_native_interaction_retries_effects_before_acknowledging_on_or_off() {
+        let owned = AtomicBool::new(false);
+        let incomplete = AtomicBool::new(false);
+        let mut effects = ([false; SLOTS], false, 0);
+        fn apply(
+            owned: &AtomicBool,
+            incomplete: &AtomicBool,
+            on: bool,
+            effects: &mut ([bool; SLOTS], bool, usize),
+            refuse_cursor: Option<usize>,
+            refuse_binding: bool,
+        ) -> Result<(), String> {
+            // The actual setter's transition helper, with native effect spies.
+            interaction_transition(owned, incomplete, on, || {
+                effects.2 += 1;
+                for (i, interactive) in effects.0.iter_mut().enumerate() {
+                    if Some(i) != refuse_cursor {
+                        *interactive = on;
+                    }
+                }
+                if !refuse_binding {
+                    effects.1 = on;
+                }
+                if refuse_cursor.is_some() || refuse_binding {
+                    Err("overlay-interactive".into())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+        let failed = Err("overlay-interactive".into());
+        assert_eq!(
+            apply(&owned, &incomplete, true, &mut effects, Some(0), false),
+            failed
+        );
+        assert!(!effects.0[0]);
+        assert!(owned.load(Ordering::Acquire) && incomplete.load(Ordering::Acquire));
+        apply(&owned, &incomplete, true, &mut effects, None, false).unwrap();
+        assert_eq!(effects, ([true; SLOTS], true, 2));
+        interaction_transition(&owned, &incomplete, true, || {
+            panic!("completed on is idempotent")
+        })
+        .unwrap();
+
+        // Seven windows disable and Escape unregisters, but one cursor refuses.
+        assert_eq!(
+            apply(&owned, &incomplete, false, &mut effects, Some(0), false),
+            failed
+        );
+        assert!(effects.0[0] && effects.0[1..].iter().all(|on| !on) && !effects.1);
+        apply(&owned, &incomplete, true, &mut effects, None, false).unwrap();
+        assert_eq!(effects, ([true; SLOTS], true, 4));
+        apply(&owned, &incomplete, false, &mut effects, None, false).unwrap();
+        assert_eq!(effects, ([false; SLOTS], false, 5));
+        assert!(!owned.load(Ordering::Acquire) && !incomplete.load(Ordering::Acquire));
+        interaction_transition(&owned, &incomplete, false, || {
+            panic!("completed off is idempotent")
+        })
+        .unwrap();
+
+        // Binding failure also leaves work pending, with either retry direction.
+        assert_eq!(
+            apply(&owned, &incomplete, true, &mut effects, None, true),
+            failed
+        );
+        assert!(!effects.1);
+        apply(&owned, &incomplete, true, &mut effects, None, false).unwrap();
+        assert_eq!(effects, ([true; SLOTS], true, 7));
+        assert_eq!(
+            apply(&owned, &incomplete, false, &mut effects, None, true),
+            failed
+        );
+        assert_eq!(effects, ([false; SLOTS], true, 8));
+        apply(&owned, &incomplete, false, &mut effects, None, false).unwrap();
+        assert_eq!(effects, ([false; SLOTS], false, 9));
+    }
 
     #[test]
     fn delayed_source_clear_never_hides_a_replacement_id_and_retries_failed_hides() {

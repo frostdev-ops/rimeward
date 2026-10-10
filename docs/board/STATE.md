@@ -512,6 +512,32 @@ below is separately verified. Human feature/platform acceptance remains open.
   Shared product attachment, independent immutable review, actual Linux CI and
   GNOME/KDE installed acceptance remain pending; no readiness is claimed.
 
+- Desktop CI **38087915547** subsequently completes successfully on `32f3d16`.
+  Windows passes **41** native tests/one ignored and **880 of 883** Node tests
+  with three platform skips. Staged and both extracted NSIS/MSI repeat standalone,
+  full pinned OCR/hash/notices/provenance/PNG-TSV/loader and generated-media checks.
+  Its actual CLI database/data backup/restore round-trip passes with subprocess
+  status/stderr assertions; the historical assertion has no currently reproduced
+  product cause. Push Tests **38087915533**, PR Tests **38087918592** and server
+  **38087915541** pass too. This earlier candidate predates native attachment and
+  overlay follow-ups, so these results do not close their final-candidate CI gate.
+
+- Independent medium review of Wayland `a857222` passes without surviving
+  actionable findings, including re-execution of all eleven exact-source extracted
+  host regressions. Actual portal/product/SDK execution and shared attachment are
+  still pending. Shared overlay `df18183` review accepts geometry/refusal and safe
+  off, but finds partial native cleanup ownership mistaken for completed enable.
+  The focused correction separates incomplete effects from successful on/off
+  state, reapplies effects on either retry direction and reconciles Escape against
+  the pinned plugin's successful registration map. One regression executes the
+  actual setter transition helper with native effect spies. **163** Mac native
+  tests pass/eleven existing hardware cases ignored; formatting, strict Mac Clippy
+  and final actual Windows/Linux metadata checks pass with disclosed GUI/session
+  shims. Corrected overlay SHA-256 is
+  `b95dd4e9647c276cb05fdfd439f615edcc67a9941c47d7d87156fd6411300c20`.
+  Independent immutable correction review, native GUI and final product/package
+  CI remain gates; no package is marked ready from these checks.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`
