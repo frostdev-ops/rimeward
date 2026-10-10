@@ -46,7 +46,7 @@ ensureAgentMonitors();
 ensureLens(); // the bundled screen lens: the signal channel and the stored consent (desktop only)
 ensureKnowledge();
 
-// Public: the hub and Rimeward marketing page (exact matches), login,
+// Public: the hub and product marketing pages (exact matches), login,
 // the SSO endpoints, the OAuth connect callbacks (public so the provider can
 // land on them; each one re-checks the session itself), and static assets.
 const PUBLIC_PREFIXES = [
@@ -92,7 +92,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
     });
   }
   if (needsSetup() && ['/', '/login'].includes(pathname)) return context.redirect('/setup',303);
-  if (pathname === '/' || pathname === '/rimeward' || pathname === '/rimeward/') return next();
+  if (['/', '/rimeward', '/rimeward/', '/crosspane', '/crosspane/', '/rimewire', '/rimewire/'].includes(pathname)) return next();
   // Only the claim step is public, and only while there is nobody to claim it:
   // every later wizard step is an ADMIN_PREFIXES page with a real session.
   if (pathname === '/setup' && needsSetup()) return next();

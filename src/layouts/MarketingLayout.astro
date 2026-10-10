@@ -5,8 +5,9 @@ interface Props {
   title: string;
   description: string;
   path?: string;
+  image?: string;
 }
-const { title, description, path = '/' } = Astro.props;
+const { title, description, path = '/', image = '/projects/frostdev-wordmark-crystal.webp' } = Astro.props;
 ---
 
 <BaseLayout title={title} description={description} index>
@@ -16,6 +17,8 @@ const { title, description, path = '/' } = Astro.props;
   <meta slot="head" property="og:description" content={description} />
   <meta slot="head" property="og:url" content={`https://frostdev.io${path}`} />
   <meta slot="head" property="og:type" content="website" />
+  <meta slot="head" property="og:image" content={`https://frostdev.io${image}`} />
+  <meta slot="head" name="twitter:card" content="summary_large_image" />
   <meta slot="head" name="google-adsense-account" content="ca-pub-1806642805052030" />
 
   <div class="splash-ground"></div>

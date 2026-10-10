@@ -25,7 +25,7 @@
 
 ## Make room for the way you work
 
-The public [Frostdev hub](https://frostdev.io) links to Rimeward, Frostsim, and Loothing. [Explore Rimeward](https://frostdev.io/rimeward) for a quick introduction and desktop downloads.
+The public [Frostdev hub](https://frostdev.io) links to Rimeward, Frostsim, Loothing, Crosspane, and Rimewire. [Explore Rimeward](https://frostdev.io/rimeward), [Crosspane](https://frostdev.io/crosspane), and [Rimewire](https://frostdev.io/rimewire) on their dedicated product pages.
 
 Rimeward brings an AI agent, a development workspace, and your everyday tools into a place you can shape. Write code beside a live terminal. Keep your notes, calendar, inbox, and browser within reach. Give your agent context from the things you're looking at, then keep working while it handles a task.
 
