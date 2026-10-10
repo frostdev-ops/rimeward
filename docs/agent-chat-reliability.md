@@ -12,7 +12,7 @@ The observed model request waited for 10 minutes 21 seconds before returning. St
 - The Thinking line expands when the provider supplies exposed reasoning or a summary. OpenRouter reasoning and Responses API summaries render as plain text in a keyboard-accessible native disclosure. Expansion survives streaming updates. The live-session display is bounded to 32,000 characters with a truncation notice; it is not a new durable history record. Encrypted reasoning is never displayed, and text is excluded from model-call diagnostics.
 - The last 40 model-call records per account retain metadata in `agent_model_calls:<user>`: model, conversation/cache reference, duration, first thinking/text timing, count provenance, and outcome. No prompts or reasoning text are added to these diagnostics.
 
-## Validation
+## Historical validation at 21a5358
 
 Validation used an isolated copy of HEAD with only this change, excluding concurrent authentication and desktop work.
 
@@ -24,6 +24,23 @@ Validation used an isolated copy of HEAD with only this change, excluding concur
 - The required remote-workspace smoke did not pass: it timed out waiting for the Add Workspace dialog to close. Remote end-to-end validation remains outstanding.
 
 These are source and isolated-build results. The changes have not been deployed or installed into the running desktop. Native execution that does not support cancellation still requires its own completion receipt; releasing a model wait is not evidence that an external operation was rolled back.
+
+## Baseline reconciliation, 2026-10-10
+
+The red fixture/remote-workspace entries above retain their original scope.
+Later source uses `/api/agent-placement` in the conversation smoke (48402c6),
+and the workspace smoke uses the current shared fixture (2a9bea0). The current
+built conversation and remote-workspace smokes passed with synthetic events/model
+responses and no provider calls; this does not establish installed acceptance.
+B11 admission review at af42597 recorded 170 resume, 33 sync, 39 UI and six race
+checks; its full suite still retained a browser-live frame timeout. Those records
+supersede the earlier stopped checkpoint, not installed acceptance.
+
+Current focused results and exact ceilings, B5 no-autostart, Stop, lineage/backend
+refusal, attachment rollback/mixed peers and relay restart/no-replay procedures
+are in [RIME-17 acceptance](validation/rime-browser-acceptance.md). RIME-17 reuses
+RIME-19's real B6 evidence and remains open. Main's two macOS browser-live failures
+on 82abf2c remain an independent CI blocker.
 
 ## Preview
 

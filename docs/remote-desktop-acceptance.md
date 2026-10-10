@@ -5,6 +5,11 @@ Updated 2026-09-08 UTC. This is an implementation/verification record, not a rel
 or installed-platform certification. Fixtures use generated pixels/audio and
 temporary files, with no model calls or personal application input.
 
+The table and release narrative below are historical observations on their named
+revisions. September TURN provisioning/forced allocations and installer jobs do
+not establish current service health or acceptance of 1.0.18. Record fresh results
+with the exact candidate using [native acceptance](validation/native-acceptance.md).
+
 Supported release targets: Apple Silicon macOS, Windows and Linux. Intel Mac
 support was retired at the user's request on 2026-09-08.
 
@@ -111,6 +116,22 @@ is not a substitute for installed capture/resource profiling.
 - Real display/audio capture for 60 minutes with monitor hotplug, lock, sleep and
   permission changes on each reference platform.
 - Three-platform packaging CI, distributed installer jobs and macOS notarization.
+
+For each supported host and desktop-to-desktop/mobile-web path, collect at least
+200 actual input-to-visible samples after warmup in adaptive 1080p with one viewer.
+Require p95 ≤200 ms on LAN and ≤400 ms with 100 ms RTT, 20 ms jitter, 1% loss,
+10 Mbps down and 5 Mbps up. Measure from actual input dispatch to the changed
+target pixels becoming visible in the viewer; network RTT alone is insufficient.
+Keep the sample series, method, warmup and network shaping evidence.
+
+Run a 60-minute real display/audio soak on Apple Silicon macOS, Windows, X11,
+GNOME Wayland and KDE Wayland, including four viewers, hotplug, lock, sleep and
+permission/audio changes. Record component RSS and final steady-state median
+growth against the post-warmup median; growth must stay below max(50 MiB, 10%)
+of that baseline. Retain per-component measurements so one process cannot hide
+another's growth. Watchdog releases and absence of replay are independent safety
+gates, regardless of latency/resource results. Generated media soaks do not close
+these installed gates.
 
 The desktop workflow has a manual `validation_only` mode that builds/checks every
 target without publishing a release. Production TURN setup is in

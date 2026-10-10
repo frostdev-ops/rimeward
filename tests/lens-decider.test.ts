@@ -49,7 +49,7 @@ test('without the helper the local embedder answers, and nothing describes', () 
   const composed = deciderFor(user);
   assert.ok(composed.embedderId?.startsWith('local:'), `local embedder id, got ${composed.embedderId}`);
   assert.ok(composed.embed, 'the local embedder is the embed path');
-  assert.equal(composed.triage, undefined, 'no on-device triage without the helper (D2 adds the local one)');
+  assert.equal(composed.triage, undefined, 'no on-device triage without the helper; optional local-chat D2 is retired');
   assert.equal(composed.describe, undefined, 'describe is the helper alone');
 });
 

@@ -1,0 +1,33 @@
+/* Rimeward frost chrome; layout, focus rings and status markers stay board-owned. */
+.topbar {
+  background: var(--bg);
+  border-bottom-color: color-mix(in srgb, var(--accent) 18%, var(--line));
+}
+
+@supports (backdrop-filter: blur(8px)) {
+  .topbar {
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    backdrop-filter: blur(8px);
+  }
+}
+
+.brand-mark { width: 28px; height: 28px; }
+.brand-word { font-size: 14px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; }
+
+.panel, .lane {
+  border-radius: 12px;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--text) 3%, transparent),
+    0 8px 24px color-mix(in srgb, var(--bg) 45%, transparent);
+}
+
+.hero {
+  background: linear-gradient(135deg, var(--accent-soft), var(--surface) 55%);
+}
+
+.card { border-radius: 8px; }
+.card-title { font-weight: 600; }
+.lane-index { color: var(--accent); background: var(--accent-soft); }
+
+@media (max-width: 600px) {
+  .brand-word { letter-spacing: 0.12em; }
+}

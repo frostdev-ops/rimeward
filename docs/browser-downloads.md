@@ -37,3 +37,8 @@ model calls were made. Browserbase and legacy app CDP downloads were not exercis
 Both server and desktop need the new code, included in web 0.23.7 and desktop
 0.5.7 alongside the remote project and Remote Desktop repairs. The supported
 backup command includes retained browser downloads.
+
+[RIME-31 acceptance](validation/rime-browser-acceptance.md) supplies the human-run
+hosted/legacy click and direct-download, PDF import, ownership and installed
+checkpoint/migration procedures. The validation/version paragraph above is
+historical 0.5.7 evidence; it does not qualify the 1.0.18 installed candidate.

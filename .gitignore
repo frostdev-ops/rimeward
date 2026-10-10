@@ -35,3 +35,4 @@ desktop/binaries/
 
 # Worker bundle is rebuilt from authoritative source on every build.
 workers/knowledge.bundle.mjs
+/.rimewire/journal/

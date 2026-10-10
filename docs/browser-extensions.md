@@ -45,3 +45,8 @@ existing installations are not silently replaced.
 
 Validation uses the existing browser session/UI and desktop checks. No production
 Browserbase session or installed-app migration is implied by those local checks.
+
+[RIME-31 acceptance](validation/rime-browser-acceptance.md) supplies human-run
+Browserbase, legacy CDP and installed migration steps with package/storage/owner
+evidence fields. These paths remain unaccepted until exact-candidate results are
+returned; local Chromium checks do not substitute for them.

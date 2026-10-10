@@ -1,13 +1,41 @@
 # Desktop/server provider ownership and routing plan
 
-Status: implementation in the working tree, **uncommitted and not accepted**. The first handoff was
-rejected by `docs/desktop-server-provider-review.md`; section 12 records the second pass, including
-what that review found and what changed. Sections 1-11 are the design record as approved. The
-acceptance matrix in section 10 is NOT satisfied: most cases are source-verified only. No test code
-was added or changed, and nothing has been signed in, paired, disconnected, committed, deployed or
-installed.
+Status, 2026-10-10: **implementation committed; human acceptance pending**.
+RIME-12 landed in `60c7565`, with routed-provider mock corrections in `46162cf`.
+Current reconciliation inspected `dev/1.0.18` at `82abf2c`; this does not establish
+installed candidate or live provider acceptance. RIME-13 owns the remaining
+two-installation checks. Use the [current R1–R10 reconciliation](desktop-server-provider-review.md#current-source-reconciliation--2026-10-10)
+and [bounded human-run procedures](validation/integration-acceptance.md).
+The matrix in section 10 remains an acceptance requirement, not a pass record.
 
-Source baseline: `0056cda`, inspected 2026-09-15. Unrelated source edits appeared during this review and were left untouched; line references are baseline-sensitive. Re-read changed files before implementation.
+Historical design baseline: `0056cda`, inspected 2026-09-15. Sections 1–11 retain
+the approved design; section 2 describes that original baseline and section 12
+retains rejected/superseded implementation evidence. Their historical paths,
+line numbers, authorizations and test totals do not describe today's release.
+
+## Current enforced contracts and acceptance boundary
+
+- [Provider contract](../src/lib/agent/contract.ts): `providerScope: 2`, `routePin: 2`.
+  Scoped writes require the rendered target binding. Remote model access requires
+  verified serving installation/profile and opaque credential generation; an old
+  peer lacking those guarantees fails closed rather than weakening ownership.
+- [History format](../src/lib/agent/chat-format.ts): `CHAT_FORMAT = 4`.
+  [Remote pins](../src/lib/agent/route.ts) carry
+  `server:<installation>:<profile>:<url>`. Old profile-only pins are unidentified;
+  format <4 peers do not receive protected chat records.
+- [Catalogs](../src/lib/agent/models.ts) and `sharedCatalog` in
+  [sync.ts](../src/lib/agent/sync.ts) use the admitted route, envelope provenance,
+  source verification and generation-separated caches. A labelled Codex fallback
+  list is not a live attestation. Recorded backend constraints still outrank policy.
+- Existing isolated tests provide partial regression evidence. They do not prove
+  real OAuth, paired card ownership, billing identity, catalog freshness, 401 races
+  or voice cleanup. The old 629/632 snapshot is retained as historical evidence;
+  current candidate checks must report their own results.
+
+The [accepted delivery contract](board/DELIVERY.md) authorizes implementation and
+release work separately from this original plan and allows focused regression
+tests. All external account/provider acceptance remains human-run. No source/test
+code or provider/account actions were performed for this documentation update.
 
 ## 1. Objective
 
@@ -24,7 +52,7 @@ This is an ownership/routing repair, not a new login system. Keep existing OAuth
 - Do not introduce automatic multi-server failover, a general account-page rewrite, or clustered token refresh merely to fix this issue.
 - No implementation, test additions, commit, deployment, or installation is authorized by approval of this planning document alone.
 
-## 2. Current behavior and evidence
+## 2. Historical baseline behavior and evidence — 2026-09-15
 
 | Area | Current behavior | Assessment / source |
 | --- | --- | --- |
@@ -298,7 +326,15 @@ Use existing suites and disposable profiles/fixtures. Preserve every existing te
 
 Relevant existing suites: `identity-redesign.test.ts`, `oauth-integration.test.ts`, `oauth-state.test.ts`, `codex-loopback.test.ts`, `agent-providers.test.ts`, `agent-context.test.ts`, `agent-core.test.ts`, `agent-conversations.test.ts`, `agent-sync.test.ts`, `instance.test.ts`, `agent-placement.test.ts`, and `auth-ui-smoke.mjs` plus existing conversation/remote-workspace smokes.
 
-Coverage gap: source search found no direct existing tests referencing sharedModel, sharedVoice, voiceAction, transcriptionRoute/transcribeAudio, or the Codex 401 invalidation helper. The auth UI smoke asserts the Codex section exists; that does not establish paired local/server write correctness. The independent review also found no assertions covering the `/account` versus `/api/account/agent` ownership split. Existing passing suites must not be represented as full regression coverage for this plan. Request explicit permission for focused new test cases at implementation approval, or document the corresponding disposable/manual acceptance evidence and remaining automation gap.
+Coverage gap: existing provider tests exercise dialect/stream mechanics, the
+harness authorization test scopes sync/model access to the authenticated server
+account, and core/placement tests exercise scripted work and run ownership. They
+do not cover the complete paired route/card/catalog/voice matrix, actual provider
+401 races or offline `/account` credential submission. Auth UI smoke renders the
+Codex section without proving real consent or paired writes. See the checkpoint
+table in the current review for the actual test/source map. Focused regressions
+are authorized by the current delivery contract; human-run external acceptance
+still needs its own exact-candidate evidence.
 
 Validation sequence after implementation: focused existing suites; `npm test`, `npm run typecheck`, `npm run lint:desktop`; built auth/UI smoke and relevant `npm run test:ui`; remote-workspace smoke; staged `npm run desktop:check` and `npm run test:standalone`. Do not inspect or generate goldens unless requested. Validate real OAuth handoff and OS-specific loopback behavior separately using explicitly authorized test accounts, not by disconnecting production accounts.
 
@@ -320,12 +356,15 @@ Planning is not implementation completion. Live deployment verification, provide
 
 ## 12. Historical Claude implementation status — superseded
 
-The direct implementation and final validation checkpoint are recorded in
-`docs/desktop-server-provider-review.md`. In particular, current code uses opaque
-credential revisions, serving installation identity, provider contract 2 and chat
-format 4; the older descriptions below are historical, not current guarantees.
-The final direct-implementation suite has 629/632 passing tests with three
-unresolved failures. This work is not fully accepted or release-ready.
+The historical direct implementation and final validation checkpoint are recorded
+in [the review](desktop-server-provider-review.md#historical-final-checkpoint--direct-implementation-not-fully-accepted).
+**Every subsection below is a September snapshot, not a current contract or
+release result.** In particular, masked-key/account-ID generations, profile-only
+remote pins, contract 1, chat format 3, the permissive-old-peer limitation and
+uncommitted/no-test-change statements were superseded. Current enforced values
+and R1–R10 source disposition appear above and in the current review. The final
+629/632 suite was a failure record for that snapshot; it is neither a present
+defect report nor release sign-off.
 
 Second pass, after the parent review in `docs/desktop-server-provider-review.md` rejected the first.
 Source changes are **uncommitted** in the working tree; nothing is committed, built for release,

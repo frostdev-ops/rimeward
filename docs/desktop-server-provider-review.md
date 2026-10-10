@@ -1,8 +1,54 @@
-# Independent implementation review
+# Provider ownership review and acceptance record
 
-Parent review, 2026-09-15. This is an acceptance record, not new authorization.
+This is an evidence record, not new authorization. Current source reconciliation
+is followed by the historical parent review from 2026-09-15.
 
-## Current checkpoint — direct implementation, NOT fully accepted
+## Current source reconciliation — 2026-10-10
+
+RIME-12 implementation was committed as `60c7565` (installation-bound provider
+connections/routes); `46162cf` corrected routed provider mocks and cross-platform
+fixtures. Reconciliation inspected `dev/1.0.18` at `82abf2c`; this is source
+evidence, not installed/provider acceptance. RIME-13 remains open for the
+[human-run two-installation matrix](validation/integration-acceptance.md#rime-13--two-installation-provider-ownership).
+The September 629/632 result below belongs to its named snapshot. It cannot
+establish current failures or current acceptance; validate the actual candidate.
+
+Current enforced values: [provider contract](../src/lib/agent/contract.ts)
+`{ providerScope: 2, routePin: 2 }`,
+[chat format](../src/lib/agent/chat-format.ts) **4**, and
+[compat pin](../src/lib/agent/route.ts) `server:<installation>:<profile>:<url>`.
+An old profile-only pin parses as unidentified. A new desktop refuses remote
+model authority without installation/generation/contract-2 guarantees; it does
+not knowingly accept an old peer ignoring account checks. Protected chat records
+are held back from format <4 peers by both harness and sync paths. These supersede
+the contract-1, chat-format-3 and permissive-old-peer descriptions in section 12
+of the historical plan.
+
+| Checkpoint | Current source disposition | Existing test evidence and remaining human gate |
+| --- | --- | --- |
+| R1 Recorded backend/local compat | `resolveProviderRoute`, `recordedBackendCheck`, `parseRemotePin` in [route.ts](../src/lib/agent/route.ts) and `getProvider.run` in [provider.ts](../src/lib/agent/provider.ts) refuse pin/route conflicts; serving installation and profile qualify remote identity. Unpinned compat history is blocked where previous relay cannot be ruled out. | [conversation tests](../tests/agent-conversations.test.ts) preserve existing history behavior; they do not exercise the live cross-installation pin matrix. P7 checks same alias, machine-local URLs, repoint and legacy history. |
+| R2 Source-bound catalog/context | `modelCatalog` in [models.ts](../src/lib/agent/models.ts) accepts the admitted route; `sharedCatalog` in [sync.ts](../src/lib/agent/sync.ts) verifies contract/runtime/profile/generation and caches by pairing/installation/profile/generation/provider/backend. Local Codex/OpenAI catalog keys in [codex.ts](../src/lib/agent/codex.ts) include credential generation; `getProvider.context` uses the same route. | [context tests](../tests/agent-context.test.ts) cover context arithmetic, not paired provenance. Codex may show a labelled fallback catalog when discovery fails; it is not a live catalog attestation. P1/P4/P8 verify actual source, defaults, freshness and cache segregation. |
+| R3 Credential account pinned | [accounts.ts](../src/lib/agent/accounts.ts) persists opaque UUID generations; refresh preserves its owning revision. Provider dispatch/transport retry re-checks credential, while [harness model dispatch](../src/pages/api/devices/harness/[...action].ts) validates contract/runtime/profile/generation and passes `credential` into the outgoing call. | [provider tests](../tests/agent-providers.test.ts) cover dialect/stream mechanics; [harness authorization test](../tests/agent-sync.test.ts) scopes calls to the authenticated account. Neither proves real 401/reconnect races. P3/P6 require a controlled boundary and provider receipts. |
+| R4 Scoped writes/transport | [provider API](../src/pages/api/account/provider.ts) requires valid target and binding; `runtimeBinding` in [provider-scope.ts](../src/lib/agent/provider-scope.ts) hashes opaque account generations including Browserbase. Remote writes keep the validated `instanceRequestOn` connection and server generation precondition. | [identity tests](../tests/identity-redesign.test.ts) cover session/CSRF and credential protection, not every provider card mutation. P3/P10 check same-mask replacement, stale/missing target/binding and unauthorized requests. |
+| R5 OAuth binding/recovery | [desktop provider cards](../src/scripts/app/desktop-providers.ts) retain render-time binding and dispose OAuth controllers. [account-oauth.ts](../src/scripts/account-oauth.ts) guards async results; [OAuth API](../src/pages/api/account/oauth.ts) uses session-bound attempt enumeration and remote owner receipts; `codexAttempts` in [codex.ts](../src/lib/agent/codex.ts) filters session. | [identity](../tests/identity-redesign.test.ts), [OAuth state](../tests/oauth-state.test.ts), [integration](../tests/oauth-integration.test.ts) and [loopback](../tests/codex-loopback.test.ts) checks are partial mocked/local evidence. P5/I5/I6 require simultaneous scopes, restart/disposal, stale card and actual OS consent/handoff. |
+| R6 Turn/child/UI source | [core.ts](../src/lib/agent/core.ts) carries admitted `ToolCtx.route` into matching child work and model validation; provider receipt is attached to call records; running ward surface reports the in-flight source separately from next-turn policy. Resume/continue validate recorded backend and run owner. | [core](../tests/agent-core.test.ts), [conversation](../tests/agent-conversations.test.ts) and [placement](../tests/agent-placement.test.ts) suites exercise scripted work/history/owner behavior, not a live policy/account switch mid-turn. P4/P6 inspect child/one-shot/compaction/continuation receipts. |
+| R7 Voice owner/control | [voice API](../src/pages/api/agent/[ward]/voice.ts), `sharedVoice` in [sync.ts](../src/lib/agent/sync.ts) and [voice leases](../src/lib/agent/voice.ts) check original pairing/runtime/profile/credential/lease. Uncertain stop retains owner receipt; missing owner cannot guess. [transcribe.ts](../src/lib/agent/transcribe.ts) deliberately requires local clip credentials. | Existing [Live delegation tests](../tests/agent-live.test.ts) cover router/deduplication, not provider lease ownership. P9 and RIME-19 supply one actual owner-switch/cleanup record; remote-only clip availability is inspected without upload. |
+| R8 Health versus authority | [sync.ts](../src/lib/agent/sync.ts) separates online/reachable/authority and transport/authority failure; [route.ts](../src/lib/agent/route.ts) blocks unverified identity/protocol rather than Automatic account hopping. Sync format errors alone do not revoke valid model authority. | [sync tests](../tests/agent-sync.test.ts) cover auth/CAS/local-data boundaries, not the entire authority/outage matrix. P2/P8 verify transport outage, revoked pairing, mismatched identity and old protocol separately. |
+| R9 Compatibility/constraint preservation | Contract 2 and chat format 4 are negotiated; [harness](../src/pages/api/devices/harness/[...action].ts) refuses empty/non-string/>300-character backend constraints instead of dropping them. [sync.ts](../src/lib/agent/sync.ts) pauses protected history to incompatible peers. | Current source supersedes permissive old-peer assertions; no dedicated existing test directly covers all remote format/pin combinations. P7/P8 need actual old/new artifacts and identity-specific history/catalog results. |
+| R10 Offline Account ownership | [instance-routing.ts](../src/lib/dev/instance-routing.ts) redirects joined desktop `/account` to `/desktop/server-unavailable` when it cannot supply the server-owned page; destination-bound provider/OAuth paths stay local. [legacy agent form](../src/pages/api/account/agent.ts) requires bound credential scope and refuses relayed/native local credential writes. | [instance tests](../tests/instance.test.ts) cover routing safeguards but do not establish the formerly unsafe offline credential submission. P2/P3/P10 require outage/recovery, stale form and standalone behavior on installed candidate. |
+
+Focused preparation checks on 2026-10-10, source `82abf2c`: existing Notion,
+Notion-codec, identity-redesign, OAuth-integration, OAuth-state, Codex-loopback,
+setup, agent-providers and agent-sync suites **86/86 pass**, no skips. A separate
+existing agent-core run **36/36 pass**, including both named historical failing
+scenarios (computer observations/pending approval and resumed-confirm
+interjection filing). This resolves their status for this local source check,
+not all installed/live routing acceptance. Tests use
+isolated data and mocked provider transports; no external provider action or
+account mutation was performed. Full candidate validation belongs to the
+coordinator. No source or test code was changed for this reconciliation.
+
+## Historical final checkpoint — direct implementation, NOT fully accepted
 
 The user asked Rime to implement the corrections directly at 22:07Z and to wrap
 up at 22:38Z and 22:42Z. Claude remained idle; its handoff monitor was deleted.
@@ -35,7 +81,7 @@ informational findings); build PASS; `git diff --check` PASS. Existing test suit
    `codex: not connected`.
 3. `tests/browser-live.test.ts:306` — WebSocket frame wait timed out at 8000 ms.
 
-The two core failures are unresolved regressions in the direct implementation's
+At that snapshot, the two core failures were unresolved regressions in the direct implementation's
 provider-wrapper/mock interaction; do not dismiss them as baseline failures.
 The browser frame timeout resembles previously observed flakiness, but this final
 run failed and was not retried to manufacture a green result.

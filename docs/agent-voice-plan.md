@@ -20,6 +20,12 @@ Live remains active across dashboard page hiding and compact/expanded views. A g
 
 **Validation boundary:** the pure digest/router/dedup checks and source checks do not establish provider behavior. The required six existing probe groups (nine synthetic calls), a persistent-session delegation/result check, quiet-context retention, `initial_items` acceptance, and signed-Mac open-speaker echo/interruption checks remain separate gates. No qualifying real-provider or signed-Mac acoustic acceptance result is recorded for this development revision. The earlier manual results below must not be presented as Live-session validation. Record those results against the exact candidate before accepting it as a Live voice release.
 
+The [RIME-19 procedure](validation/rime-browser-acceptance.md) specifies all nine
+probe cases, semantic evidence/cleanup, signed-Mac listening and real clip routes.
+External results are human-run after RIME-13; RIME-17 reuses their B6 evidence.
+On 2026-10-10 safe local `--check` stopped because this database had no ChatGPT
+connection; no provider call was made.
+
 ### Existing manual controls and earlier validation
 
 The shared agent composer has microphone dictation, a per-message **Read aloud** action, **Stop voice**, an independent **Read responses** toggle, and a **Finish & Send** conversation mode. Read responses speaks new complete Rime messages without requesting microphone access. Dictation edits the saved draft and keeps the ordinary Send, steering, context, and approval paths. Stopping voice does not interrupt running agent tools.
@@ -39,6 +45,10 @@ A disposable built-UI check also passed: the Read responses checkbox never reque
 The manual-flow gate is satisfied by the earlier user report. The retired Hands-free mode guessed at turn boundaries from microphone loudness followed by 2.5 seconds of silence and 1.2 seconds of transcript quiet, which was an explicit heuristic and never a provider finalization guarantee. That mode and the RMS-based barge-in sampler are removed. Finish & Send and manual Stop still drain for at least two seconds and 1.2 seconds of transcript quiet, with a six-second ceiling. An unsettled transcript stays editable. Earlier manual transport testing showed that `session.close` is not a transcript flush: closing about 800 ms after speech cut off punctuation.
 
 In manual modes, only input transcript fragments edit the draft; provider delegation text and voice output have no automatic submission path. Newly received `says` and `reply` messages carry stable event identifiers shared by the direct stream and live mirror, preventing duplicate speech across those deliveries; stored history and repeated `done` data do not enqueue speech. Manual speech is sent sequentially in chunks of at most 500 UTF-8 bytes. The Live controller shares this byte-aware splitter and lease helpers, not manual draft handling, playback pumping or call replacement.
+
+The earlier user report qualifies the historical manual candidate only. Current
+signed Live acoustics, app switching and real clip-provider results remain RIME-19
+gates; the old manual-flow wording does not assert 1.0.18 acceptance.
 
 ### Voice implementation review (2026-09-21)
 

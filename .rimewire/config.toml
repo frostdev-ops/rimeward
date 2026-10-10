@@ -1,0 +1,166 @@
+name = "Rimeward"
+tracker = "docs/board/README.md"
+idPattern = "RIME-[0-9]+"
+branchPrefix = "dev"
+branchAliases = []
+journalDir = ".rimewire/journal"
+logo = "assets/rimeward-mark.svg"
+stylesheet = ".rimewire/board.css"
+
+[palette]
+mode = "auto"
+
+[palette.colors]
+[palette.light]
+background = "#f3f7fb"
+surface = "#ffffff"
+surfaceAlt = "#eaf6f9"
+border = "#c3d4e4"
+borderSoft = "#dbe6f0"
+text = "#0c1a2b"
+textSecondary = "#123b66"
+muted = "#5c7189"
+accent = "#0369a1"
+accentSoft = "#e6f7ff"
+focus = "#0284c7"
+highlight = "#e6f7ff"
+done = "#047857"
+active = "#0369a1"
+spec = "#7c3aed"
+planned = "#5c7189"
+blocked = "#dc2626"
+aside = "#6b7280"
+onSolid = "#ffffff"
+
+[palette.dark]
+background = "#060d18"
+surface = "#0d1b2e"
+surfaceAlt = "#06121f"
+border = "#24405f"
+borderSoft = "#16283f"
+text = "#e8f2fa"
+textSecondary = "#c4d4dc"
+muted = "#8fa8c0"
+accent = "#17c8f4"
+accentSoft = "#082f49"
+focus = "#6fdcff"
+highlight = "#082f49"
+done = "#34d399"
+active = "#17c8f4"
+spec = "#c4b5fd"
+planned = "#8fa8c0"
+blocked = "#f87171"
+aside = "#a1a1aa"
+onSolid = "#04121f"
+
+[fonts]
+sans = "ui-sans-serif, system-ui, sans-serif"
+mono = "ui-monospace, \"SF Mono\", Menlo, Consolas, monospace"
+
+[hooks]
+enabled = false
+
+[statuses]
+[roadmap]
+fewRows = 0
+
+[[roadmap.platforms]]
+id = "desktop"
+label = "Desktop"
+tokens = [ "desktop", "macos", "windows", "linux" ]
+
+[[roadmap.platforms]]
+id = "web"
+label = "Server / web"
+tokens = [ "server", "web" ]
+
+[[roadmap.platforms]]
+id = "shared"
+label = "Shared"
+tokens = []
+
+[[roadmap.milestones]]
+id = "workspace"
+kind = "phase"
+title = "Workspace and integrations"
+lane = "^Workspace and integrations$"
+doc = "STATE.md"
+
+[[roadmap.milestones]]
+id = "rime"
+kind = "phase"
+title = "Rime and model access"
+lane = "^Rime and model access$"
+doc = "STATE.md"
+
+[[roadmap.milestones]]
+id = "native"
+kind = "phase"
+title = "Lens and desktop control"
+lane = "^Lens and desktop control$"
+doc = "STATE.md"
+
+[[roadmap.milestones]]
+id = "releases"
+kind = "phase"
+title = "Release history"
+lane = "^Release history$"
+doc = "STATE.md"
+
+[[roadmap.milestones]]
+id = "distribution"
+kind = "phase"
+title = "Distribution and public site"
+lane = "^Distribution and public site$"
+doc = "STATE.md"
+
+[[roadmap.milestones]]
+id = "board-setup"
+kind = "phase"
+title = "Board setup"
+lane = "^Board setup$"
+doc = "STATE.md"
+
+[[roadmap.milestones]]
+id = "release-1-0-14"
+kind = "release"
+title = "1.0.14"
+lane = "^Release history$"
+include = "^RIME-36$"
+
+[[roadmap.milestones]]
+id = "release-1-0-15"
+kind = "release"
+title = "1.0.15"
+lane = "^Release history$"
+include = "^RIME-37$"
+
+[[roadmap.milestones]]
+id = "release-1-0-16"
+kind = "release"
+title = "1.0.16"
+lane = "^Release history$"
+include = "^RIME-38$"
+
+[[roadmap.milestones]]
+id = "release-1-0-17"
+kind = "release"
+title = "1.0.17"
+lane = "^Release history$"
+include = "^RIME-39$"
+
+[[roadmap.milestones]]
+id = "release-1-0-18"
+kind = "release"
+title = "1.0.18"
+lane = "^Distribution and public site$"
+doc = "DELIVERY.md"
+include = "^RIME-46$"
+
+[[roadmap.milestones]]
+id = "release-1-0-19"
+kind = "release"
+title = "1.0.19"
+lane = "^Distribution and public site$"
+doc = "DELIVERY.md"
+include = "^RIME-54$"

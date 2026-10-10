@@ -20,7 +20,7 @@ Use this path to run Rimeward entirely as a desktop application. You do not need
 
 Open [Rimeward Releases](https://github.com/frostdev-ops/rimeward/releases), select the newest **Rimeward desktop** release, and check its notes before downloading an installer. You do not need to install Node or Rust to run a published installer. Local development tools for your own projects, Git, and optional CLI agents remain separate installations.
 
-For a downloaded AppImage, make it executable in your file manager or with `chmod +x <downloaded-file>.AppImage`, then launch it. On Debian/Ubuntu, install the downloaded DEB with `sudo apt install ./<downloaded-file>.deb`, substituting the actual filename.
+For a downloaded AppImage, make it executable in your file manager or with `chmod +x <downloaded-file>.AppImage`, then launch it. On Debian/Ubuntu, install the downloaded DEB with `sudo apt install ./<downloaded-file>.deb`, substituting the actual filename. On Arch Linux, build and install the `rimeward-bin` package from the repository's [`packaging/aur`](https://github.com/frostdev-ops/rimeward/tree/main/packaging/aur) folder with `makepkg -si`. It repackages the release DEB. Update it with pacman, not the in-app updater.
 
 ## First launch, without remote access
 

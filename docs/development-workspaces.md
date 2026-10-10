@@ -215,6 +215,10 @@ Source search uses Git’s tracked and non-ignored untracked files for the selec
 
 ## Background app control
 
-The macOS background app integration is staged behind a disabled capability while
-its pinned worker cancellation behavior and signed-host compatibility are validated.
-See [Background app control](background-app-control.md) for the tool contract and release gate.
+The macOS background app integration is enabled only on Apple Silicon build
+`26A5416b`, as enforced by `desktop/src/background_worker.rs`. Every other build
+refuses it; the current M5 Pro on macOS 27.0.1 build `26A434` still requires signed
+qualification. Historical worker validation does not certify the current installed
+app or broaden this allowlist. See [Background app control](background-app-control.md)
+for the contract and [native acceptance](validation/native-acceptance.md) for
+installed workspace, Lens, background-control and Remote Desktop gates.

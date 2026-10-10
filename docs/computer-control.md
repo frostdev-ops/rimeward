@@ -85,8 +85,12 @@ composed-text capabilities depend on the compositor and are reported independent
 macOS continuous capture uses ScreenCaptureKit; Windows uses D3D11 and WASAPI
 loopback. Linux uses the selected PulseAudio/PipeWire-Pulse output monitor, never
 the default source or microphone. Audio is muted initially and unavailable in Compatibility mode.
-The TURN credential adapter is implemented; DNS/TLS/service provisioning remains
-outstanding. Up to four viewers share one capture per display and capture size (on macOS a
+The TURN adapter and production DNS/TLS/service provisioning were validated in
+September 2026, including forced UDP/TCP/TLS allocations. Those dated results in
+[the acceptance record](remote-desktop-acceptance.md) do not establish current
+service health or an installed candidate's connectivity. Fresh TLS/refusal checks
+and forced allocation/media evidence remain acceptance gates. Up to four viewers
+share one capture per display and capture size (on macOS a
 capture is sized to the viewer's output, so ScreenCaptureKit scales on the GPU and no viewer
 branch downscales a 4K/5K frame in software); independent bounded
 branches preserve their quality and audio choices. Capture of system audio stops
@@ -216,11 +220,14 @@ Existing pairing/project/terminal protocol versions remain unchanged.
 
 Run the existing full suite, TypeScript checks, desktop lint, Rust formatting,
 Clippy/tests, production build, standalone runtime checks and remote-workspace
-smoke. `npm run goldens` also runs the editor, terminal, conversation and generated
-remote-desktop UI smoke checks. Fixtures use generated screen pixels and temporary
+smoke. Run applicable `npm run test:ui` checks against the build; generate or inspect
+`docs/goldens` only when explicitly requested. Fixtures use generated screen pixels and temporary
 files; they do not capture personal applications or make model calls. Installed
 macOS/Windows/X11/Wayland acceptance, media performance, TURN and release signing/
 notarization must be reported separately; passing fixtures does not establish them.
+Use [the native acceptance procedure](validation/native-acceptance.md) and the
+[Remote Desktop measurement gates](remote-desktop-acceptance.md#outstanding-acceptance-and-release-gates)
+for exact installed-candidate evidence.
 
 `tests/remote-media-smoke.mjs` exercises the actual bundled helper and browser with
 generated video/audio, DTLS negotiation and input data-channel delivery. Set

@@ -3,6 +3,11 @@
 Native background control is enabled only on Apple Silicon macOS 27 build
 `26A5416b`, validated on the owner's Mac. Other builds, including macOS 14,
 remain disabled. No environment variable or remote argument can opt a host in.
+The current M5 Pro is arm64 macOS 27.0.1 build `26A434`; it is outside this
+allowlist. RIME-48 requires a separately committed, signed qualification artifact
+before an identical exact-build addition can reach production. The
+[native acceptance procedure](validation/native-acceptance.md#rime-48-background-control-qualification)
+keeps this qualification separate from installed RIME-23 acceptance.
 Text in windows containing web content is refused before dispatch: isolated
 VS Code testing showed that background text could be ignored. Use browser tools
 or an explicit physical-control handoff for those fields. Click/scroll receipts
@@ -159,6 +164,8 @@ separately during installation. No model calls or real documents were used.
 Actual lock/permission-revocation UI, other Spaces, out-of-process dialogs and
 macOS 14 were not exercised. The host fails closed on unavailable target/session
 state; compatibility is intentionally limited to the recorded build and routes.
+This historical scratch-harness evidence does not certify the current installed
+app; the real lock/revocation, Spaces and external-dialog gates remain outstanding.
 Do not expand the OS allowlist without separate signed-host acceptance.
 
 Existing JavaScript tests, typecheck, desktop lint, native checks and packaged
