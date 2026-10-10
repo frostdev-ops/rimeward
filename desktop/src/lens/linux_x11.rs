@@ -88,6 +88,15 @@ pub(super) struct Control {
     lens: Weak<Lens>,
     guarded: bool,
     source_cancel: Option<Arc<Cancellation>>,
+    #[cfg(test)]
+    owned_display: Option<Arc<OwnedDisplay>>,
+}
+/// Only the disposable Xvfb regression constructs this fixture. No production
+/// session or environment override exists, and the fixture dies with its child.
+#[cfg(test)]
+struct OwnedDisplay {
+    name: String,
+    process: Process,
 }
 impl Control {
     fn new(lens: Weak<Lens>, generation: u64) -> Arc<Self> {
@@ -97,6 +106,8 @@ impl Control {
             lens,
             guarded: false,
             source_cancel: None,
+            #[cfg(test)]
+            owned_display: None,
         })
     }
     pub(super) fn check(&self) -> Result<(), String> {
@@ -105,7 +116,15 @@ impl Control {
                 .source_cancel
                 .as_ref()
                 .is_some_and(|cancel| cancel.is_cancelled())
-            || !crate::remote_session::active()
+            || !{
+                let active = crate::remote_session::active();
+                #[cfg(test)]
+                let active = self
+                    .owned_display
+                    .as_ref()
+                    .map_or(active, |display| display.process.alive().unwrap_or(false));
+                active
+            }
             || (!self.guarded
                 && !self.lens.upgrade().is_some_and(|lens| {
                     lens.request_generation() == self.generation.load(Ordering::Acquire)
@@ -122,6 +141,8 @@ impl Control {
             lens: Weak::new(),
             guarded: true,
             source_cancel: Some(source_cancel),
+            #[cfg(test)]
+            owned_display: self.owned_display.clone(),
         })
     }
 }
@@ -404,7 +425,14 @@ impl Drop for Backend {
 impl Native {
     pub(super) fn connect(control: Arc<Control>) -> Result<Self, String> {
         control.check()?;
-        let display = parse_display(None).map_err(|_| "x11-unavailable")?;
+        #[cfg(not(test))]
+        let display_name = None;
+        #[cfg(test)]
+        let display_name = control
+            .owned_display
+            .as_ref()
+            .map(|display| display.name.as_str());
+        let display = parse_display(display_name).map_err(|_| "x11-unavailable")?;
         // /proc PID authority is meaningful only for this local server. TCP and
         // SSH forwarding cannot prove the server's process lifetime locally.
         let mut connected = None;
@@ -1588,9 +1616,12 @@ mod tests {
             }
         }
         let display = format!(":{}", String::from_utf8(display).unwrap());
+        let fixture = Arc::new(OwnedDisplay {
+            name: display.clone(),
+            process: Process::open(server.0.id()).expect("owned Xvfb lifetime"),
+        });
         let (client, screen) = x11rb::connect(Some(&display)).unwrap();
         let (compositor, _) = x11rb::connect(Some(&display)).unwrap();
-        let (observer, _) = x11rb::connect(Some(&display)).unwrap();
         let root = &client.setup().roots[screen];
         let target = client.generate_id().unwrap();
         let create = |color| {
@@ -1618,32 +1649,33 @@ mod tests {
             .unwrap()
             .check()
             .unwrap();
-        observer
-            .change_window_attributes(
-                target,
-                &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
-            )
+        let active = client
+            .intern_atom(false, b"_NET_ACTIVE_WINDOW")
             .unwrap()
-            .check()
-            .unwrap();
-        let ids = res::query_client_ids(
-            &observer,
-            &[res::ClientIdSpec {
-                client: target,
-                mask: res::ClientIdMask::LOCAL_CLIENT_PID,
-            }],
-        )
-        .unwrap()
-        .reply()
-        .unwrap()
-        .ids;
-        assert_eq!(ids[0].value, [std::process::id()]);
-        let _identity = Process::open(ids[0].value[0]).unwrap();
-        let pixmap = observer.generate_id().unwrap();
-        composite::name_window_pixmap(&observer, target, pixmap)
+            .reply()
             .unwrap()
-            .check()
-            .unwrap();
+            .atom;
+        let foreground = |window: u32| {
+            client
+                .change_property(
+                    PropMode::REPLACE,
+                    root.root,
+                    active,
+                    AtomEnum::WINDOW,
+                    32,
+                    1,
+                    &window.to_ne_bytes(),
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            client
+                .set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)
+                .unwrap()
+                .check()
+                .unwrap();
+        };
+        foreground(target);
         let foreign = client.generate_id().unwrap();
         client
             .create_window(
@@ -1663,61 +1695,158 @@ mod tests {
             .check()
             .unwrap();
         client.map_window(foreign).unwrap().check().unwrap();
-        let geometry = Geometry {
-            x: 20,
-            y: 20,
-            w: 32,
-            h: 24,
-            depth: root.root_depth,
-            visual: root.root_visual,
+
+        // Actual shared consent/grant/lease and actual Native connection/proof.
+        // Only login1/display selection is a cfg(test) owned-child fixture.
+        let accept = || {
+            let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+            let lens = Lens::init(tx, std::path::Path::new("/missing-rimeward-ocr"));
+            tauri::async_runtime::block_on(lens.dispatch(
+                "lens-start",
+                &serde_json::json!({"consented":true,"active":true}),
+                None,
+                Cancellation::new(),
+            ))
+            .unwrap();
+            let mut control = Control::new(Arc::downgrade(&lens), lens.request_generation());
+            Arc::get_mut(&mut control).unwrap().owned_display = Some(fixture.clone());
+            let native = Arc::new(Native::connect(control).unwrap());
+            native.budget();
+            native.watch_root().unwrap();
+            let source = Arc::new(native.accept(&lens, 1, None).unwrap());
+            assert_eq!(source.process.pid, std::process::id());
+            assert_eq!(lens.status()["capabilities"]["ax"], false);
+            (lens, native, source)
         };
-        let reply = observer
-            .get_image(ImageFormat::Z_PIXMAP, pixmap, 0, 0, 32, 24, u32::MAX)
-            .unwrap()
-            .reply()
-            .unwrap();
-        let pixels = pack(
-            &observer.setup().pixmap_formats,
-            &observer.setup().roots[screen].allowed_depths,
-            observer.setup().image_byte_order,
-            geometry,
-            &reply.data,
-            &Cancellation::new(),
-        )
-        .unwrap();
-        assert!(
-            pixels
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .all(|pixel| *pixel == [0x33, 0x22, 0x11, 255]),
-            "foreign root sibling never replaces target pixels"
-        );
-        composite::unredirect_window(&compositor, target, composite::Redirect::MANUAL)
-            .unwrap()
-            .check()
-            .unwrap();
-        let probe = observer.generate_id().unwrap();
-        assert!(
-            composite::name_window_pixmap(&observer, target, probe)
+        struct Sampling {
+            control: Arc<Control>,
+            worker: Option<JoinHandle<()>>,
+            result: std::sync::mpsc::Receiver<Result<EventAction, String>>,
+        }
+        impl Sampling {
+            fn start(lens: Arc<Lens>, native: Arc<Native>, source: Arc<Source>) -> Self {
+                let (send, result) = std::sync::mpsc::channel();
+                let control = source.control.clone();
+                let worker = std::thread::spawn(move || {
+                    let _ = send.send(native.samples(&lens, &source));
+                });
+                Self {
+                    control,
+                    worker: Some(worker),
+                    result,
+                }
+            }
+            fn finished(&mut self) -> Result<EventAction, String> {
+                let result = self
+                    .result
+                    .recv_timeout(Duration::from_secs(3))
+                    .expect("bounded real sample loop exit");
+                self.worker.take().unwrap().join().unwrap();
+                result
+            }
+        }
+        impl Drop for Sampling {
+            fn drop(&mut self) {
+                self.control.cancel.cancel();
+                if let Some(worker) = self.worker.take() {
+                    let _ = worker.join();
+                }
+            }
+        }
+        let pixels = |lens: &Lens, color: [u8; 4]| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(frame) = lens.ring.latest() {
+                    if frame.pixels.as_ref().is_some_and(|pixels| {
+                        !pixels.is_empty()
+                            && pixels
+                                .as_chunks::<4>()
+                                .0
+                                .iter()
+                                .all(|pixel| *pixel == color)
+                    }) {
+                        return frame;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "production sample must publish expected current pixels"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+
+        {
+            let (lens, native, source) = accept();
+            native.budget();
+            native.verify(&source).unwrap();
+            let alias = native.current_pixmap(target, source.geometry).unwrap();
+            native.conn.free_pixmap(alias).unwrap().check().unwrap();
+            let mut sampling = Sampling::start(lens.clone(), native.clone(), source.clone());
+            let initial = pixels(&lens, [0x33, 0x22, 0x11, 255]);
+            assert_eq!(initial.geometry, source.lease.geometry);
+
+            // Only this fixture's compositor changes its owned target. A server
+            // grab makes the replacement atomic relative to production reads.
+            compositor.grab_server().unwrap().check().unwrap();
+            composite::unredirect_window(&compositor, target, composite::Redirect::MANUAL)
                 .unwrap()
                 .check()
-                .is_err(),
-            "fresh naming refuses an unredirected target"
-        );
-        assert!(
-            observer.get_geometry(pixmap).unwrap().reply().is_ok(),
-            "retained alias alone cannot prove current compositor capture"
-        );
+                .unwrap();
+            composite::redirect_window(&compositor, target, composite::Redirect::MANUAL)
+                .unwrap()
+                .check()
+                .unwrap();
+            compositor
+                .change_window_attributes(
+                    target,
+                    &ChangeWindowAttributesAux::new().background_pixel(0xabcdef),
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            compositor
+                .clear_area(false, target, 0, 0, 0, 0)
+                .unwrap()
+                .check()
+                .unwrap();
+            compositor.ungrab_server().unwrap().check().unwrap();
+            let replacement = pixels(&lens, [0xef, 0xcd, 0xab, 255]);
+            assert!(
+                replacement.seq > initial.seq,
+                "actual sample path must read the replacement surface, not the retained alias"
+            );
+
+            composite::unredirect_window(&compositor, target, composite::Redirect::MANUAL)
+                .unwrap()
+                .check()
+                .unwrap();
+            client
+                .clear_area(false, target, 0, 0, 0, 0)
+                .unwrap()
+                .check()
+                .unwrap();
+            assert_eq!(
+                sampling.finished(),
+                Err("x11-compositor-pixmap-unavailable".into()),
+                "real sample loop must refuse when fresh naming fails"
+            );
+            native.budget();
+            assert!(native.current_pixmap(target, source.geometry).is_err());
+            native.budget();
+            assert!(native.verify(&source).is_err());
+            assert!(
+                native
+                    .conn
+                    .get_geometry(source.pixmap)
+                    .unwrap()
+                    .reply()
+                    .is_ok(),
+                "retained readability is not current capture proof"
+            );
+        }
+
         composite::redirect_window(&compositor, target, composite::Redirect::MANUAL)
-            .unwrap()
-            .check()
-            .unwrap();
-        client
-            .change_window_attributes(
-                target,
-                &ChangeWindowAttributesAux::new().background_pixel(0xabcdef),
-            )
             .unwrap()
             .check()
             .unwrap();
@@ -1726,109 +1855,81 @@ mod tests {
             .unwrap()
             .check()
             .unwrap();
-        composite::name_window_pixmap(&observer, target, probe)
-            .unwrap()
-            .check()
-            .unwrap();
-        let reply = observer
-            .get_image(ImageFormat::Z_PIXMAP, probe, 0, 0, 32, 24, u32::MAX)
-            .unwrap()
-            .reply()
-            .unwrap();
-        let fresh = pack(
-            &observer.setup().pixmap_formats,
-            &observer.setup().roots[screen].allowed_depths,
-            observer.setup().image_byte_order,
-            geometry,
-            &reply.data,
-            &Cancellation::new(),
-        )
-        .unwrap();
-        assert!(fresh
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .all(|pixel| *pixel == [0xef, 0xcd, 0xab, 255]));
-        assert_ne!(
-            fresh, pixels,
-            "re-redirect requires the current named surface"
-        );
-        observer.free_pixmap(probe).unwrap().check().unwrap();
-        let active = observer
-            .intern_atom(false, b"_NET_ACTIVE_WINDOW")
-            .unwrap()
-            .reply()
-            .unwrap()
-            .atom;
-        observer
-            .change_window_attributes(
-                root.root,
-                &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
-            )
-            .unwrap()
-            .check()
-            .unwrap();
-        observer
-            .change_property(
-                PropMode::REPLACE,
-                root.root,
-                active,
-                AtomEnum::WINDOW,
+        {
+            let (lens, native, source) = accept();
+            let mut sampling = Sampling::start(lens.clone(), native.clone(), source.clone());
+            pixels(&lens, [0xef, 0xcd, 0xab, 255]);
+            // The replacement has the same PID, XID, geometry and focus, and its
+            // old named pixmap remains alive. Actual Source::change must reject.
+            client.grab_server().unwrap().check().unwrap();
+            client.unmap_window(target).unwrap().check().unwrap();
+            client.destroy_window(target).unwrap().check().unwrap();
+            create(0xabcdef);
+            client.map_window(target).unwrap().check().unwrap();
+            composite::redirect_window(&client, target, composite::Redirect::MANUAL)
+                .unwrap()
+                .check()
+                .unwrap();
+            client
+                .set_input_focus(InputFocus::PARENT, target, x11rb::CURRENT_TIME)
+                .unwrap()
+                .check()
+                .unwrap();
+            client.ungrab_server().unwrap().check().unwrap();
+            assert!(
+                source.change().is_err(),
+                "production event witness must reject same-process XID reuse"
+            );
+            assert!(
+                sampling.finished().is_err(),
+                "production sample loop must reject native lifetime events"
+            );
+            native.budget();
+            assert!(
+                native.verify(&source).is_err(),
+                "native overlay proof must use the same lifetime witness"
+            );
+            assert!(native
+                .conn
+                .get_geometry(source.pixmap)
+                .unwrap()
+                .reply()
+                .is_ok());
+        }
+
+        {
+            let (lens, native, source) = accept();
+            foreground(foreign);
+            assert_eq!(source.change().unwrap(), Some(EventAction::Foreground));
+            assert_eq!(
+                native.samples(&lens, &source).unwrap(),
+                EventAction::Foreground
+            );
+        }
+        foreground(target);
+        {
+            let (lens, native, source) = accept();
+            client
+                .configure_window(target, &ConfigureWindowAux::new().width(40))
+                .unwrap()
+                .check()
+                .unwrap();
+            assert_eq!(source.change().unwrap(), Some(EventAction::Geometry));
+            assert_eq!(
+                native.samples(&lens, &source).unwrap(),
+                EventAction::Geometry
+            );
+            assert_eq!(
+                native
+                    .conn
+                    .get_geometry(source.pixmap)
+                    .unwrap()
+                    .reply()
+                    .unwrap()
+                    .width,
                 32,
-                1,
-                &foreign.to_ne_bytes(),
-            )
-            .unwrap()
-            .check()
-            .unwrap();
-        observer.get_input_focus().unwrap().reply().unwrap();
-        let mut retargeted = false;
-        while let Some(event) = observer.poll_for_event().unwrap() {
-            retargeted |=
-                source_event(&event, target, root.root, active) == EventAction::Foreground;
+                "old readable surface cannot preserve the lease after resize"
+            );
         }
-        assert!(
-            retargeted,
-            "foreground change requires a fresh generation and target proof"
-        );
-        client
-            .configure_window(target, &ConfigureWindowAux::new().width(40))
-            .unwrap()
-            .check()
-            .unwrap();
-        assert_eq!(
-            observer
-                .get_geometry(pixmap)
-                .unwrap()
-                .reply()
-                .unwrap()
-                .width,
-            32,
-            "named old surface survives resize"
-        );
-        client.unmap_window(target).unwrap().check().unwrap();
-        client.destroy_window(target).unwrap().check().unwrap();
-        // Recreate exactly that XID in the same still-live process. Native
-        // lifetime events must invalidate even when PID/starttime are identical.
-        create(0xabcdef);
-        client.map_window(target).unwrap().check().unwrap();
-        observer.get_input_focus().unwrap().reply().unwrap();
-        let mut invalidated = false;
-        let mut resized = false;
-        while let Some(event) = observer.poll_for_event().unwrap() {
-            invalidated |= source_event(&event, target, root.root, 0) == EventAction::Invalidate;
-            resized |= source_event(&event, target, root.root, 0) == EventAction::Geometry;
-        }
-        assert!(invalidated && resized);
-        assert_eq!(
-            observer
-                .get_geometry(pixmap)
-                .unwrap()
-                .reply()
-                .unwrap()
-                .width,
-            32,
-            "retained pixmap readability is not lifetime proof"
-        );
     }
 }

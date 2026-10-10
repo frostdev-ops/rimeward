@@ -375,6 +375,20 @@ replace feature-specific live acceptance or installed-app checks. Published
   disclosed Tauri/session shims. Independent correction review is still required;
   capture, AX and overlays remain refused pending the coordinate decision.
 
+- Independent review of X11 preparation `76da409` found a proving gap in its
+  protocol-only Xvfb regression. The corrected fixture uses the real native
+  connect/accept/pixmap/verify/read loop and shared consent, lease and ring. It
+  checks actual replacement pixels, unredirect refusal, same-process XID reuse,
+  foreground and geometry changes. The disposable display and process identity
+  exist only under `cfg(test)`; production session checks are unchanged.
+  Corrected capture SHA-256 is
+  `4920bfc0848336e65410001acbc36f82476a0e491a379afe25b28de2bbbc458c`;
+  overlay remains `929cfaee4835c08d39c77b8ff43fb450b8c2de091fe37982f5567d09f126f591`.
+  Combined actual shared/Linux library and test metadata pass strict Clippy with
+  disclosed shims. Actual isolated Xvfb execution and independent correction
+  review remain pending; exact AT-SPI association and installed acceptance stay
+  open. The two recorded retirement-helper checks remain valid.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`
