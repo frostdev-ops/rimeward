@@ -634,6 +634,44 @@ below is separately verified. Human feature/platform acceptance remains open.
   before native validation; actual Windows execution remains a fresh-CI gate.
   No failed job is converted to success or production capability enabled.
 
+- At `7182a68`, push/PR Tests and server CI pass without retries. Linux passes
+  **79** ordinary native tests with two ignored, seven Wayland provider cases,
+  five real-SDK media-helper cases and prebuild OCR checks. The isolated Xvfb
+  regression gets past the corrected authority lookup, then times out waiting
+  for sampler retirement after compositor unredirect. Xorg's unredirect path
+  does not report a Damage event for the fully obscured idle target. The sampler
+  only proves its surface while dirty, leaving retained status/crops live after
+  surface loss. The correction reuses bounded surface verification at the existing
+  100 ms idle cadence without reading pixels. The fixture now exercises surface
+  loss without a redraw and preserves its three-second retirement bound and
+  retained-alias refusals. Exact-body host schedules fail before and pass after
+  (**2/2**); formatting and strict GNU metadata Clippy pass. Actual Xvfb/platform
+  package execution and independent review remain required.
+
+- The same candidate's Windows diagnostic self-check, failure collection and
+  artifact upload pass. Its original native test executable still exits
+  **0xc0000139**, with none of the fourteen provider fixtures executed. The
+  preserved PE imports `TaskDialogIndirect` from `comctl32.dll`; its diagnostic
+  process resolves Common Controls **5.82**, which does not export that function.
+  All other named imports occur in the corresponding captured export lists.
+  The Microsoft API requires Common Controls v6; the failed test PE has no
+  resource section. These facts support a missing test activation manifest;
+  build-script/resource and fresh Windows verification remain required before
+  final disposition. No function suppression or native capability change is made.
+
+- A private signed qualifier at `a4de1899`, parent `632eaf4`, contains only the
+  two exact `26A434` allowance additions. Normal prebuild, **165** native tests
+  (eleven ignored), standalone and final app-contained checks pass. The app and
+  **144** native binaries pass Developer ID/deep strict signature verification;
+  no updater archive or notarization is claimed. After a fresh quiesced profile
+  backup and graceful Quit, installation preserves the original nine pages and
+  fifty wards, sync and the stopped/suspended control state. A separate disposable
+  fixture page/ward and genuine projectless conversation are added through normal
+  concurrent-save/placement APIs, preserving every original entry. Its full-policy
+  status passes after normal source synchronization; the initial refusal is retained.
+  Input enablement awaits action-time confirmation, and physical parent/worker/
+  guardian/local Stop qualification remains pending. Production allowances are unchanged.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`

@@ -1089,6 +1089,11 @@ impl Native {
                     source.lease.geometry,
                 );
                 next = Instant::now() + Duration::from_millis(100);
+            } else if Instant::now() >= next {
+                // Unredirect can leave an obscured idle window without Damage.
+                // Reprove its surface without taking periodic screenshots.
+                self.verify(source)?;
+                next = Instant::now() + Duration::from_millis(100);
             }
             // Only an event-coalescing/session tick; never periodic screenshots.
             std::thread::sleep(Duration::from_millis(10));
@@ -1850,11 +1855,9 @@ mod tests {
                 .unwrap()
                 .check()
                 .unwrap();
-            client
-                .clear_area(false, target, 0, 0, 0, 0)
-                .unwrap()
-                .check()
-                .unwrap();
+            // No redraw: loss of the fully obscured surface must also retire
+            // an idle sampler, even without a new Damage event.
+            assert_eq!(source.change().unwrap(), None);
             assert_eq!(
                 sampling.finished(),
                 Err("x11-compositor-pixmap-unavailable".into()),
