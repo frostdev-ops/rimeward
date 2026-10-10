@@ -594,6 +594,40 @@ struct Capture {
 }
 #[cfg(test)]
 type InitFault<'a> = &'a mut dyn FnMut(&Capture, u8) -> windows::core::Result<()>;
+#[cfg(test)]
+struct AdmissionProbe {
+    hwnd: HWND,
+    observers: usize,
+    selections: usize,
+    capture_attempts: usize,
+    destroy_at_selection: bool,
+}
+#[cfg(test)]
+impl AdmissionProbe {
+    fn select(&mut self) -> HWND {
+        assert_eq!(
+            self.observers, 4,
+            "target selection preceded native observers"
+        );
+        self.selections += 1;
+        if self.destroy_at_selection {
+            unsafe { NotifyWinEvent(EVENT_OBJECT_DESTROY, self.hwnd, 0, 0) };
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut message = MSG::default();
+            // Pump native delivery without removing the callback's EVENT: the
+            // production admission drain must reject it, not this probe.
+            while !unsafe { PeekMessageW(&mut message, None, EVENT, EVENT, PM_NOREMOVE) }.as_bool()
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "native destruction observer did not deliver"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        self.hwnd
+    }
+}
 impl Drop for Capture {
     fn drop(&mut self) {
         // Also close on a panic: late callbacks must never address a reused
@@ -603,7 +637,20 @@ impl Drop for Capture {
     }
 }
 impl Capture {
-    fn new(hwnd: HWND, size: [u32; 2], thread: u32, identity: u32) -> Result<Self, String> {
+    fn new(
+        hwnd: HWND,
+        size: [u32; 2],
+        thread: u32,
+        identity: u32,
+        #[cfg(test)] admission: Option<&mut AdmissionProbe>,
+    ) -> Result<Self, String> {
+        #[cfg(test)]
+        if let Some(probe) = admission {
+            probe.capture_attempts += 1;
+            // Detect an admission regression before any WGC/D3D allocation,
+            // even on an unsupported host; never record for this order test.
+            return Err("test-wgc-allocation".into());
+        }
         #[cfg(not(test))]
         {
             Self::new_inner(hwnd, size, thread, identity)
@@ -1006,8 +1053,22 @@ fn run(
 ) -> Result<(), String> {
     let _apartment = Apartment::new()?;
     let _dpi = DpiContext::physical()?;
-    run_capture(lens, stop, owner, ordinal, cancellation, runtime, ready)
+    run_capture(
+        lens,
+        stop,
+        owner,
+        ordinal,
+        cancellation,
+        runtime,
+        ready,
+        #[cfg(test)]
+        None,
+    )
 }
+#[cfg_attr(
+    test,
+    expect(clippy::too_many_arguments, reason = "local test-only admission trace")
+)]
 fn run_capture(
     lens: &Arc<Lens>,
     stop: &AtomicBool,
@@ -1016,6 +1077,7 @@ fn run_capture(
     cancellation: &Cancellation,
     runtime: &tokio::runtime::Handle,
     ready: &mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    #[cfg(test)] mut admission: Option<&mut AdmissionProbe>,
 ) -> Result<(), String> {
     // Create/pump the native queue and install destruction observation before
     // selecting or pinning a HWND. PID/process creation alone cannot distinguish
@@ -1026,7 +1088,22 @@ fn run_capture(
         let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
     }
     let mut hooks = hooks()?;
-    let result = run_observed_capture(lens, stop, owner, ordinal, cancellation, runtime, ready);
+    #[cfg(test)]
+    if let Some(probe) = admission.as_deref_mut() {
+        assert!(hooks.0.iter().all(|hook| !hook.0.is_null()));
+        probe.observers = hooks.0.len();
+    }
+    let result = run_observed_capture(
+        lens,
+        stop,
+        owner,
+        ordinal,
+        cancellation,
+        runtime,
+        ready,
+        #[cfg(test)]
+        admission,
+    );
     match hooks.close() {
         Ok(()) => result,
         Err(cleanup) => Err(match result {
@@ -1035,6 +1112,10 @@ fn run_capture(
         }),
     }
 }
+#[cfg_attr(
+    test,
+    expect(clippy::too_many_arguments, reason = "local test-only admission trace")
+)]
 fn run_observed_capture(
     lens: &Arc<Lens>,
     stop: &AtomicBool,
@@ -1043,8 +1124,15 @@ fn run_observed_capture(
     cancellation: &Cancellation,
     runtime: &tokio::runtime::Handle,
     ready: &mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    #[cfg(test)] mut admission: Option<&mut AdmissionProbe>,
 ) -> Result<(), String> {
+    #[cfg(not(test))]
     let hwnd = unsafe { GetForegroundWindow() };
+    #[cfg(test)]
+    let hwnd = match admission.as_deref_mut() {
+        Some(probe) => probe.select(),
+        None => unsafe { GetForegroundWindow() },
+    };
     let pin = Pin::new(hwnd)?;
     let placement = pin.check()?;
     let size = [placement.bounds[2] as u32, placement.bounds[3] as u32];
@@ -1066,7 +1154,14 @@ fn run_observed_capture(
     // before starting native recording, including an unobservable HWND reuse.
     // Owned-window tests exercise WGC resources independently of that admission.
     let _ = token.geometry()?;
-    let capture = Capture::new(hwnd, size, thread, identity)?;
+    let capture = Capture::new(
+        hwnd,
+        size,
+        thread,
+        identity,
+        #[cfg(test)]
+        admission,
+    )?;
     let mut lease: Option<CaptureLease> = None;
     let mut last_ax = Instant::now() - Duration::from_secs(1);
     let mut ax_available = false;
@@ -1435,6 +1530,57 @@ mod tests {
         pin.identity().unwrap();
         observer.close().unwrap();
     }
+    #[tokio::test]
+    async fn production_admission_observes_before_selection_and_refuses_before_wgc() {
+        let _apartment = Apartment::new().unwrap();
+        let _dpi = DpiContext::physical().unwrap();
+        let (writer, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let lens = Lens::init(writer, std::path::Path::new("unused-admission-fixture"));
+        let stop = AtomicBool::new(false);
+        let owner = AtomicU64::new(lens.request_generation());
+        let ordinal = AtomicU32::new(1);
+        let cancellation = Cancellation::new();
+        let runtime = tokio::runtime::Handle::current();
+        for destroy_at_selection in [false, true] {
+            let window = NativeWindow::new();
+            unsafe {
+                let _ = ShowWindow(window.0, SW_SHOWNOACTIVATE);
+            }
+            let mut probe = AdmissionProbe {
+                hwnd: window.0,
+                observers: 0,
+                selections: 0,
+                capture_attempts: 0,
+                destroy_at_selection,
+            };
+            let result = run_capture(
+                &lens,
+                &stop,
+                &owner,
+                &ordinal,
+                &cancellation,
+                &runtime,
+                &mut None,
+                Some(&mut probe),
+            );
+            assert_eq!(
+                result,
+                Err(if destroy_at_selection {
+                    "window-destroyed"
+                } else {
+                    "capture-time-geometry-unavailable"
+                }
+                .into())
+            );
+            assert_eq!(probe.observers, 4);
+            assert_eq!(probe.selections, 1);
+            assert_eq!(
+                probe.capture_attempts, 0,
+                "WGC entered before strict refusal"
+            );
+            Pin::open(window.0).unwrap().identity().unwrap();
+        }
+    }
     struct WgcWitness {
         pool: Direct3D11CaptureFramePool,
         item: GraphicsCaptureItem,
@@ -1584,7 +1730,7 @@ mod tests {
         unsafe {
             let _ = ShowWindow(window.0, SW_SHOWNOACTIVATE);
         }
-        let capture = Capture::new(window.0, [80, 60], thread, 5).unwrap_or_else(|reason| {
+        let capture = Capture::new(window.0, [80, 60], thread, 5, None).unwrap_or_else(|reason| {
             panic!("WGC fixture unavailable on this Windows host: {reason}")
         });
         let witness = WgcWitness::acquired(&capture);

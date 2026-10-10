@@ -437,6 +437,21 @@ below is separately verified. Human feature/platform acceptance remains open.
   pass under the agreed CI/CD publication adjustment; human feature/platform
   checks and current-Mac background qualification remain separate open packages.
 
+- Windows correction `cb0dc6c` independently confirms observer-first production
+  admission and real retained-COM cleanup coverage. Its manual ordering fixture
+  had a further proving gap; the new focused regression invokes actual
+  `run_capture` twice with a local `cfg(test)` owned-window probe. It requires
+  actual hooks before selection, delivered native destruction refusal and zero
+  constructor entries before strict geometry refusal. Fourteen Windows tests
+  compile; combined strict real-API metadata, formatting and whitespace pass.
+  Final Windows SHA-256 is
+  `7381b4fb35775786c6c0360cc71027e7c296cc5f16a1969b3b5af8cc413b7ee8`.
+  Native execution and final independent review remain pending. X11 correction
+  `8a99830` independently passes with no surviving findings; actual Xvfb/product
+  CI and installed acceptance remain pending. Shared `8f3bbdd` review found
+  cancellation wrongly revoking a newer same-source overlay and interactive
+  enable racing successful Stop; its owner is correcting both before publication.
+
 ## Keeping the board truthful
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`
