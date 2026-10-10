@@ -1,4 +1,41 @@
-# Rimeward UI demonstrations
+# Product UI demonstrations
+
+## Crosspane Settings
+
+Captured on 2026-10-10 from Crosspane source `ce3dee9` with its built-in native
+demo/screenshot export: `CROSSPANE_UI_SCREENSHOT=… CROSSPANE_UI_TAB=layout`
+(then `windows`) and `cargo run --locked --release -p crosspane-ui`.
+Screenshot mode uses the app's demo model with no worker, agent socket or DNS.
+No machine was paired, controlled or projected, and no privacy or driver settings
+were changed. The screenshots use Crosspane's own renderer and demo fixtures.
+
+`crosspane-settings.webp` and `crosspane-windows.webp` are unchanged 2200 × 1520
+native pixels from the app's 1100 × 760 window at 2× scale, encoded as WebP.
+The marketing animation adds illustrative pointer and window motion over these
+captures. It does not record or perform a live cross-machine session. Full-size
+captures remain available for inspecting the actual controls.
+
+## Rimewire board
+
+Captured on 2026-10-10 from Rimewire source `93c6f7a`, using its actual board
+server, styles and client renderer with a disposable local demo checkout. The
+tracker contains three sample packages for a website refresh. The real CLI
+posts notes, 70% progress, a blocked download link, unblock and explicit ready
+updates to that checkout's ignored journal. These package IDs and updates were
+never posted to a real project board.
+
+The three `rimewire-board-{plan,progress,ready}.webp` images are 1280 × 720 and
+show the resulting board states in the default browser viewport. Matching
+`-phone` images use the real responsive layout at a 390 × 844 viewport, cropped
+to the work-package area: plan 358 × 430, progress 358 × 546 and ready 358 × 404.
+Roadmap and the duplicate In flight section are collapsed through their normal
+controls; the completed package section is expanded. These crops preserve
+genuine browser pixels and keep the package labels readable at narrow widths.
+No production account, project data, model or external agent call is included.
+The marketing page's replay changes local visual states; it does not write a
+journal or control an agent.
+
+## Rimeward
 
 Captured from the current built Rimeward application in an isolated local desktop
 runtime on 2026-10-09 (America/New_York). The profile, Orbital project, notes, and notebook were created

@@ -1,5 +1,6 @@
 ---
 import MarketingLayout from '../layouts/MarketingLayout.astro';
+import CrosspaneDemo from '../components/marketing/CrosspaneDemo.astro';
 import '../styles/products.css';
 
 const source = 'https://github.com/frostdev-ops/crosspane';
@@ -10,10 +11,10 @@ const guide = `${source}/blob/master/docs/running.md`;
   title="Crosspane — Your computers. One workspace."
   description="One keyboard and mouse across your Mac and Linux desktop. Bring individual application windows along with Crosspane, an open-source project by Frostdev."
   path="/crosspane"
-  image="/projects/crosspane-flow.webp"
+  image="/projects/crosspane-settings.webp"
 >
   <div class="product-page">
-    <section class="product-hero" aria-labelledby="crosspane-title">
+    <section class="product-hero product-hero-demo" aria-labelledby="crosspane-title">
       <div class="product-intro">
         <p class="product-eyebrow">Across the desk</p>
         <img class="product-logo" src="/projects/crosspane.webp" width="900" height="301" alt="Crosspane" />
@@ -25,10 +26,7 @@ const guide = `${source}/blob/master/docs/running.md`;
         </div>
         <p class="product-meta">Early development · macOS + Linux / Hyprland · Open source</p>
       </div>
-      <figure class="product-hero-art">
-        <img src="/projects/crosspane-flow.webp" width="1536" height="1024" alt="Concept illustration of two computers connected by a flowing ribbon of light, with an application window between them." fetchpriority="high" />
-        <figcaption>Two machines. A shared working space. Concept artwork.</figcaption>
-      </figure>
+      <CrosspaneDemo />
     </section>
 
     <section class="product-section" aria-labelledby="desk-title">

@@ -18,9 +18,11 @@
 .product-button.secondary { color: #d5e5f2; border-color: #35506a; background: rgb(12 27 44 / 0.6); }
 .product-button.secondary:hover { border-color: var(--product-accent); background: #112b40; }
 .product-meta { color: #8fa8c0; font-size: 0.75rem; line-height: 1.7; margin-top: 1rem; }
-.product-hero-art { min-width: 0; margin: 0; }
-.product-hero-art img { display: block; width: 100%; height: auto; border-radius: 1.25rem; }
-.product-hero-art figcaption { text-align: center; color: #8fa8c0; font-size: 0.7rem; margin-top: 0.75rem; }
+.product-hero-demo { grid-template-columns: minmax(0, 1fr); gap: 2.5rem; }
+.product-hero-demo .product-intro { width: 100%; max-width: 46rem; margin: auto; text-align: center; }
+.product-hero-demo .product-lead { max-width: 42rem; margin-inline: auto; }
+.product-hero-demo .product-logo { margin-inline: auto; }
+.product-hero-demo .product-actions { justify-content: center; }
 .product-section { padding: 4.5rem 0; border-top: 1px solid rgb(143 168 192 / 0.2); }
 .product-section-heading { max-width: 42rem; margin-bottom: 2.5rem; }
 .product-section-heading h2, .product-cta h2 { color: #e8f2fa; font-size: clamp(1.9rem, 3vw, 2.8rem); letter-spacing: -0.04em; font-weight: 600; line-height: 1.15; text-wrap: balance; margin-bottom: 1rem; }
@@ -50,7 +52,6 @@
   .product-intro { max-width: 34rem; }
   .product-title { font-size: clamp(2.6rem, 9vw, 3.5rem); }
   .product-logo { margin-bottom: 1.5rem; }
-  .product-hero-art { width: 100%; max-width: 35rem; justify-self: center; }
   .product-section { padding: 3rem 0; }
   .product-section-heading { margin-bottom: 1.75rem; }
   .product-grid, .product-split { grid-template-columns: 1fr; }
