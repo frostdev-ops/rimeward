@@ -21,6 +21,8 @@ external account/provider checks remain human-run. On 2026-10-10 the user chose
 CI/CD acceptance for publication and will run installed Windows/Linux/Arch checks
 manually. Missing manual evidence remains open. New focused regression tests are
 authorized for this work.
+AUR publication was explicitly retired at the user's request on the same date;
+repository fallback packaging remains available.
 
 ## Workspace and integrations
 
@@ -135,9 +137,9 @@ delivered milestones and do not identify active work.
 | ID | Title | OS | Depends on | Status | Branch | Evidence | Acceptance / next step |
 |---|---|---|---|---|---|---|---|
 | RIME-42 | Finish Arch fallback installation documentation | Linux | RIME-41 | Done | dev/1.0.18 | [Reviewed source change 73d3e70](https://github.com/frostdev-ops/rimeward/commit/73d3e70); public wiki 87051d1 | Integrated two-file fallback changes; published current Desktop Setup source without changing other wiki pages. |
-| RIME-43 | Publish and validate rimeward-bin on AUR | Linux | RIME-41, RIME-42, RIME-46 | Planned | dev/1.0.18 | [AUR lookup](https://aur.archlinux.org/rpc/v5/info/rimeward-bin), .github/workflows/aur.yml | Establish maintainer/effective workflow access; publish after desktop release and record real Arch install/update acceptance. |
+| RIME-43 | Retire AUR publication from release scope | Linux | RIME-41, RIME-42 | Done | dev/1.0.18 | User decision 2026-10-10: Skip AUR; journal ready as retirement | Publication/install acceptance retired, not shipped or passed. Automatic release hook disabled; manual publisher and repository fallback packaging retained. |
 | RIME-46 | Complete 1.0.18 release and desktop distribution | Shared | RIME-27, RIME-35, RIME-42, RIME-44, RIME-47 | In progress | dev/1.0.18 | [CI and delivery](STATE.md), [candidate and publication gates](DELIVERY.md) | Stage signed candidates; final ready requires exact-revision CI/CD checks, artifacts/publication, updater/cask, restored Mac profile and authenticated relay. Manual feature/platform acceptance remains in its own packages. |
-| RIME-54 | Publish and verify 1.0.19 native Lens release | Shared | RIME-26, RIME-43, RIME-46, RIME-53 | Planned | dev/1.0.19 | [Second release](DELIVERY.md) | Publication may advance on CI/CD and packaged-runtime evidence; final ready also requires manual installed acceptance, updater/Homebrew/AUR and affected acceptance on the promoted revision. |
+| RIME-54 | Publish and verify 1.0.19 native Lens release | Shared | RIME-26, RIME-46, RIME-53 | Planned | dev/1.0.19 | [Second release](DELIVERY.md) | Publication may advance on CI/CD and packaged-runtime evidence; final ready also requires manual installed acceptance, updater/Homebrew and affected acceptance on the promoted revision. AUR is retired. |
 
 ## Board setup
 

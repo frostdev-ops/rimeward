@@ -98,6 +98,9 @@ checks. Source version 1.0.18 is not evidence of a published/installed 1.0.18 ap
   private local Lens instructions were refreshed without publication.
 - RIME-42's two-file source fallback is integrated. Public Desktop Setup is
   synchronized at wiki commit `87051d1`; unrelated wiki pages are preserved.
+- RIME-43 publication was explicitly retired by the user on 2026-10-10 (Skip
+  AUR). Its missing-credential audit remains historical evidence. The automatic
+  release trigger is disabled; the manual publisher and fallback package remain.
 - The local M5 Pro is arm64 macOS 27.0.1 build `26A434`, outside the production
   background allowlist `26A5416b`. RIME-48 requires a signed isolated qualification
   artifact and real parent/worker/guardian safety checks before any expansion.

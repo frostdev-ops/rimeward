@@ -1,12 +1,11 @@
-# AUR bump: when a `desktop-vX.Y.Z` release is PUBLISHED, push packaging/aur
+# Manual AUR bump: for a published `desktop-vX.Y.Z` release, push packaging/aur
 # (PKGBUILD + .SRCINFO, version and .deb sha256 filled in) to
 # aur.archlinux.org/rimeward-bin. The first push creates the package.
 # AUR_SSH_PRIVATE_KEY is a key registered on the maintainer's AUR account.
+# Automatic publication was retired from the completion plan on 2026-10-10.
 name: AUR package
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -15,10 +14,10 @@ on:
 
 jobs:
   aur:
-    if: startsWith(github.event.release.tag_name || inputs.tag, 'desktop-v')
+    if: startsWith(inputs.tag, 'desktop-v')
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7

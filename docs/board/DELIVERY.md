@@ -14,6 +14,11 @@ provider results remain open in their acceptance packages; they do not become
 passing evidence. Current-Mac background support still requires RIME-48's signed
 qualification before its exact build can enter the production allowlist.
 
+Scope adjustment, 2026-10-10: the user explicitly said to skip AUR. RIME-43's
+publication and AUR install/update acceptance are retired, not shipped. Keep
+repository Arch fallback packaging/docs and the manual publisher; disable its
+automatic release trigger. Neither release nor final completion requires AUR.
+
 ## Work and evidence ownership
 
 The coordinator owns the tracker, release branches, shared versions/manifests,
@@ -68,8 +73,8 @@ human results block their gates while independent preparation continues.
    packaged-runtime acceptance and all jobs before publishing. Windows/Linux
    installed startup remains pending manual evidence. Verify updater signatures,
    Homebrew, profile-preserving installation, restored sync and authenticated
-   production-to-desktop relay. RIME-43 then publishes/validates public AUR and
-   real Arch install/update. Never move published tags.
+   production-to-desktop relay. RIME-43 records the explicit AUR retirement;
+   no automatic AUR publication is attempted. Never move published tags.
 
 ## Portable native Lens: 1.0.19
 
@@ -82,7 +87,7 @@ Local agent prompts must name this contract and the current package/branch,
 replacing obsolete dev/1.0.15 and missing-plan assumptions.
 
 RIME-53 depends on RIME-49 through RIME-52; RIME-26 depends on those implementation
-packages and RIME-53. RIME-54 depends on RIME-26/43/46/53 for final completion;
+packages and RIME-53. RIME-54 depends on RIME-26/46/53 for final completion;
 publication may use CI/CD acceptance while manual results are pending. RIME-53
 must not depend on RIME-26. Repeat affected baseline checks after shared native
 changes; unaffected evidence remains tied to its original candidate. Shipping
