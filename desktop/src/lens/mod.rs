@@ -238,6 +238,35 @@ pub struct Lens {
     retry_pending: AtomicBool,
 }
 
+/// Native source authority frozen before placement is queued. Neither the wire
+/// nor a slot's render generation can replace this capture lifetime.
+#[derive(Clone)]
+struct OverlaySource {
+    lens: Arc<Lens>,
+    target: Target,
+    epoch: u64,
+    generation: u64,
+    cancellation: Arc<request::Cancellation>,
+}
+
+impl OverlaySource {
+    /// Called only inside the main-thread transaction (including delayed reveal).
+    /// The target guard serializes publication with Pause/Stop, never dispatch.
+    fn publish<T>(&self, publish: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        self.lens
+            .with_target(&self.target, self.epoch, self.generation, || {
+                if self.cancellation.is_cancelled() {
+                    Err("cancelled".into())
+                } else if !self.lens.consented.load(Ordering::Acquire) {
+                    Err("not-consented".into())
+                } else {
+                    publish()
+                }
+            })
+            .ok_or("stale-epoch")?
+    }
+}
+
 /// How long [`Lens::stream_lost`] waits before restart attempt `attempt`
 /// (0-based): 5 s doubling to a minute, then every minute for as long as the
 /// user's consent stands. A display that sleeps, a lock screen, a display
@@ -969,7 +998,7 @@ impl Lens {
             }
             // Without a pool a consumer hears that the capability is missing
             // rather than waiting on a window that will never exist.
-            "overlay-show" => self.overlay_show(value),
+            "overlay-show" => self.overlay_show(value, request::Cancellation::new()),
             "overlay-clear" => {
                 self.need_overlay()?.clear(value["id"].as_str());
                 Ok(Value::Bool(true))
@@ -1009,10 +1038,31 @@ impl Lens {
         })
     }
 
+    fn overlay_source(
+        self: &Arc<Self>,
+        epoch: u64,
+        cancellation: Arc<request::Cancellation>,
+    ) -> Result<OverlaySource, String> {
+        // Pin before cloning: Stop keeps the epoch but ends this capture lifetime.
+        let generation = self.capture_generation.load(Ordering::Acquire);
+        let target = self.target.read().unwrap().clone().ok_or("no-target")?;
+        Ok(OverlaySource {
+            lens: self.clone(),
+            target,
+            epoch,
+            generation,
+            cancellation,
+        })
+    }
+
     /// A host draws on the overlay. The `ref` on a rect anchor is only checked
     /// against the ring: placement uses the *current* target bounds, because
     /// the window may have moved since that frame was captured.
-    fn overlay_show(&self, value: &Value) -> Result<Value, String> {
+    fn overlay_show(
+        self: &Arc<Self>,
+        value: &Value,
+        cancellation: Arc<request::Cancellation>,
+    ) -> Result<Value, String> {
         let overlay = self.need_overlay()?;
         let request = overlay::ShowReq::parse(value)?;
         if request.epoch != self.bridge.epoch() {
@@ -1023,8 +1073,8 @@ impl Lens {
                 return Err("frame-evicted".into());
             }
         }
-        let target = self.target.read().unwrap().clone().ok_or("no-target")?;
-        overlay.show(request, self.place(&target))
+        let source = self.overlay_source(request.epoch, cancellation)?;
+        overlay.show(request, self.place(&source.target), source)
     }
 
     /// The crop path: pixels come from the immutable frame named by `ref` and
@@ -1243,10 +1293,19 @@ pub async fn desktop_request_cancel(
     deadline: Option<i64>,
     cancellation: Arc<request::Cancellation>,
 ) -> Result<Value, String> {
+    use tauri::Manager;
     if cancellation.is_cancelled() {
         return Err("cancelled".into());
     }
-    let result = desktop_request(app, op, value, deadline).await;
+    // Overlay mutation and its later reveal need the real token, not just a
+    // receipt check after the main-thread work has already drawn stale text.
+    let result = if op == "overlay-show" {
+        app.try_state::<Arc<Lens>>()
+            .ok_or("unavailable")?
+            .overlay_show(value, cancellation.clone())
+    } else {
+        desktop_request(app, op, value, deadline).await
+    };
     if cancellation.is_cancelled() {
         Err("cancelled".into())
     } else {
@@ -1318,6 +1377,82 @@ mod tests {
                 scale: 2.0,
             },
         }
+    }
+
+    #[test]
+    fn delayed_overlay_admission_cannot_outlive_stop_at_the_same_epoch() {
+        let (lens, _rx) = lens();
+        lens.consented.store(true, Ordering::Release);
+        *lens.target.write().unwrap() = Some(target());
+        let epoch = lens.bridge.epoch();
+        let delayed = lens
+            .overlay_source(epoch, request::Cancellation::new())
+            .unwrap();
+        let mut mutations = 0;
+        delayed
+            .publish(|| {
+                assert!(
+                    lens.target.try_write().is_err(),
+                    "publication owns the boundary"
+                );
+                mutations += 1;
+                Ok(())
+            })
+            .unwrap();
+
+        // The request cloned its target, then stalled before main-thread admission.
+        lens.stop(None);
+        assert_eq!(lens.bridge.epoch(), epoch);
+        assert_eq!(
+            delayed.publish(|| {
+                mutations += 1;
+                Ok(())
+            }),
+            Err("stale-epoch".into())
+        );
+        assert_eq!(mutations, 1, "Stop cannot be followed by a new stale slot");
+
+        // Reusing the same native source/epoch cannot revive the old request.
+        *lens.target.write().unwrap() = Some(target());
+        let fresh = lens
+            .overlay_source(epoch, request::Cancellation::new())
+            .unwrap();
+        fresh.publish(|| Ok(())).unwrap();
+        assert_eq!(delayed.publish(|| Ok(())), Err("stale-epoch".into()));
+    }
+
+    #[test]
+    fn overlay_reveal_rechecks_pause_consent_and_request_cancellation() {
+        let (lens, _rx) = lens();
+        lens.consented.store(true, Ordering::Release);
+        *lens.target.write().unwrap() = Some(target());
+        let epoch = lens.bridge.epoch();
+        let source = lens
+            .overlay_source(epoch, request::Cancellation::new())
+            .unwrap();
+        source.publish(|| Ok(())).unwrap(); // Placement/payload admitted.
+        lens.pause(); // Before the acknowledgement/fallback can reveal it.
+        assert_eq!(lens.bridge.epoch(), epoch);
+        assert_eq!(source.publish(|| Ok(())), Err("stale-epoch".into()));
+
+        // A new read while paused still uses the retained source as before.
+        let cancellation = request::Cancellation::new();
+        let paused = lens.overlay_source(epoch, cancellation.clone()).unwrap();
+        assert_eq!(lens.state.lock().unwrap().run, Run::Paused);
+        paused.publish(|| Ok(())).unwrap();
+        cancellation.cancel();
+        assert_eq!(paused.publish(|| Ok(())), Err("cancelled".into()));
+
+        let consent = lens
+            .overlay_source(epoch, request::Cancellation::new())
+            .unwrap();
+        consent.publish(|| Ok(())).unwrap();
+        lens.consented.store(false, Ordering::Release);
+        assert_eq!(
+            consent.publish(|| Ok(())),
+            Err("not-consented".into()),
+            "withdrawal refuses reveal even before Stop increments the generation"
+        );
     }
 
     /// The M0 stub's shape, grown to what M1 answers.

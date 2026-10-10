@@ -13,7 +13,7 @@
 //! acknowledgement or 100 ms later, whichever comes first.
 
 use super::bridge::{Bridge, Kind, Rect};
-use super::Lens;
+use super::{Lens, OverlaySource};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -324,11 +324,21 @@ impl Overlay {
     /// Places, tells the page what to draw and reveals on the acknowledgement.
     /// Never fails for lack of a slot: the oldest one is evicted and named in
     /// the receipt.
-    pub fn show(self: &Arc<Self>, req: ShowReq, place: Place) -> Result<Value, String> {
-        self.on_main(move |overlay| overlay.show_in(req, place))?
+    pub(super) fn show(
+        self: &Arc<Self>,
+        req: ShowReq,
+        place: Place,
+        source: OverlaySource,
+    ) -> Result<Value, String> {
+        self.on_main(move |overlay| source.publish(|| overlay.show_in(req, place, source.clone())))?
     }
 
-    fn show_in(self: &Arc<Self>, req: ShowReq, place: Place) -> Result<Value, String> {
+    fn show_in(
+        self: &Arc<Self>,
+        req: ShowReq,
+        place: Place,
+        source: OverlaySource,
+    ) -> Result<Value, String> {
         if req.epoch != self.bridge.epoch() {
             return Err("stale-epoch".into());
         }
@@ -388,7 +398,7 @@ impl Overlay {
             "overlay:interactive",
             json!({ "on": self.interactive() }),
         );
-        self.reveal(window, req.id.clone(), index, generation);
+        self.reveal(window, req.id.clone(), index, generation, source);
         self.announce();
         let mut receipt = json!({ "id": req.id });
         if let Some(evicted) = evicted {
@@ -403,7 +413,14 @@ impl Overlay {
     /// Nothing here touches the capture filter: it excludes the pool's windows
     /// by id (`Lens::set_overlay_windows`, named at build), so every slot is
     /// out of every frame however it is revealed.
-    fn reveal(self: &Arc<Self>, window: WebviewWindow, id: String, index: usize, generation: u64) {
+    fn reveal(
+        self: &Arc<Self>,
+        window: WebviewWindow,
+        id: String,
+        index: usize,
+        generation: u64,
+        source: OverlaySource,
+    ) {
         let overlay = self.clone();
         std::thread::spawn(move || {
             let deadline = Instant::now() + ACK_WAIT;
@@ -422,14 +439,17 @@ impl Overlay {
             // keep the slot lock while dispatching a blocking window operation.
             let app = overlay.app.clone();
             let _ = app.run_on_main_thread(move || {
-                let current = overlay.slots.lock().unwrap()[index].can_reveal(
-                    &id,
-                    generation,
-                    Instant::now(),
-                );
-                if current {
-                    let _ = window.show();
-                }
+                let _ = source.publish(|| {
+                    let current = overlay.slots.lock().unwrap()[index].can_reveal(
+                        &id,
+                        generation,
+                        Instant::now(),
+                    );
+                    if current {
+                        let _ = window.show();
+                    }
+                    Ok(())
+                });
             });
         });
     }

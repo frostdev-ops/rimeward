@@ -218,6 +218,18 @@ replace feature-specific live acceptance or installed-app checks. Published
   with the existing `xcode-27` runner-label allowance, and PowerShell AST syntax.
   Clean committed `a034503` prebuild, staged standalone and desktop checks pass;
   affected checks must be repeated on the corrected candidate.
+- Review of the corrected overlay transaction confirmed payload/placement order
+  but reproduced a distinct delayed-show-after-Stop schedule: an old target
+  clone can pass an unchanged epoch after Stop clears the slots. The focused
+  correction freezes capture generation before cloning the target and carries
+  request cancellation through the existing target-publication boundary inside
+  main-thread placement/payload/reveal. Source-checked and native regressions
+  are required; no live GUI reproduction is claimed.
+  The actual cancellation token and frozen source now guard placement and delayed
+  reveal; fresh paused overlays retain their prior behavior. Focused native
+  regressions pass, as do **877** unit tests and **151** native tests with eleven
+  ignored, typecheck/lint/fmt/Clippy. Independent review and committed validation
+  remain required.
 - Shared candidate Linux desktop run **38080809608** failed naturally while
   compiling pinned Tesseract 5.5.2 (`cmake --build` exit 2, prebuild exit 1).
   Its disabled-legacy source exclusions use absolute paths against a relative
@@ -232,6 +244,13 @@ replace feature-specific live acceptance or installed-app checks. Published
   must also drive its CMake generator/instance selection. No Windows OCR,
   staged-runtime or installer checks ran in that failed job. This is a separate
   build failure from Linux's disabled-legacy source-list mismatch.
+- All first shared-candidate workflows finished naturally. Push/PR Tests and
+  server passed on `a034503`; desktop Mac passed **149** native tests with eleven
+  ignored, **875** unit tests without skips, staged and app-contained standalone
+  plus generated four-viewer fault-media checks, native build and strict seal/
+  version. Its app was ad hoc signed. Windows/Linux failed at their recorded
+  prebuild steps, so no downstream OCR/native/package checks ran there. No
+  cancellation, rerun or installed/notarized acceptance is implied.
 
 ## Keeping the board truthful
 
