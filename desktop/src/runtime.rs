@@ -605,7 +605,9 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
         .try_state::<Arc<crate::lens::Lens>>()
         .map(|lens| Arc::clone(&lens))
     {
-        lens.stop(None).await;
+        if let Err(reason) = lens.stop(None).await {
+            eprintln!("lens: disconnect teardown: {reason}");
+        }
     }
     crate::computer::disconnect();
     if app.state::<Startup>().0.lock().unwrap().stage != "ready" {
@@ -776,7 +778,9 @@ pub async fn shutdown(app: &AppHandle) {
         .try_state::<Arc<crate::lens::Lens>>()
         .map(|lens| Arc::clone(&lens))
     {
-        lens.stop(None).await;
+        if let Err(reason) = lens.stop(None).await {
+            eprintln!("lens: shutdown teardown: {reason}");
+        }
     }
     // Stop capturing before asking the core to wind down: the final `status`
     // signal goes out on the same channel, ahead of the shutdown line, so Node

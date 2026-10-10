@@ -5653,6 +5653,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-vision",
  "platform-macos",
+ "raw-window-handle",
  "reis",
  "reqwest",
  "screencapturekit",
@@ -5674,6 +5675,7 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "url",
  "windows 0.61.3",
+ "x11rb",
  "xcap",
 ]
 

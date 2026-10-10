@@ -318,8 +318,13 @@ replace feature-specific live acceptance or installed-app checks. Published
   Real corrected desktop CI remains pending. The original `802355a` macOS job
   **114308029494** succeeds with **153** native passes/eleven ignored, **877**
   unit passes/no skips, staged and app-contained standalone and generated
-  four-viewer fault-media checks. Windows installer completion remains pending;
-  the original Linux prebuild failure is retained.
+  four-viewer fault-media checks. Windows job **114308029784** also succeeds:
+  **41** native passes/one ignored and **874** unit passes/three skips. Both
+  extracted NSIS and MSI pass contained standalone, pinned OCR versions/hashes,
+  complete notices/provenance, PNG-stdin/TSV-stdout/loader and generated four-viewer
+  fault-media checks. Its retained installer artifact is **1,121,196,547 bytes**.
+  The original Linux prebuild failure is retained. Corrected `32f3d16` push/PR
+  Tests and server workflows pass; desktop run **38087915547** is still running.
 - RIME-50/51 exclusive platform modules may proceed against the landed,
   independently reviewed shared contract while its package gates remain open.
   Integration, promotion and `ready` still require actual checks. One coordinator
@@ -388,6 +393,24 @@ replace feature-specific live acceptance or installed-app checks. Published
   disclosed shims. Actual isolated Xvfb execution and independent correction
   review remain pending; exact AT-SPI association and installed acceptance stay
   open. The two recorded retirement-helper checks remain valid.
+
+- Shared native attachment is now prepared against the corrected Windows/X11
+  modules. Startup remains dormant. Actual control cancellation and a serialized
+  lifecycle gate coordinate native close, all-window hide and OCR kill/reap/drain;
+  every cleanup stage is attempted. Failure revokes capability and reports its
+  original reason only for the still-current control, and prevents replacement
+  or successful acknowledgement. Frozen frame/display geometry and source/slot
+  generations protect placement and delayed cleanup. Linux placement preparation
+  runs off main; native placement never reenters the held Lens state guard.
+  Optional portable shortcut startup cannot prevent app startup on failure.
+  Refreshed checks pass: **883** unit tests/no skips, typecheck, desktop lint,
+  full formatting, strict Mac Clippy and **157** native tests/eleven existing
+  hardware cases ignored. Actual Windows/Linux source closures pass strict
+  library/test metadata checks with disclosed Tauri/session shims. Configured
+  actionlint and whitespace pass. Immutable shared review and real product,
+  isolated Xvfb, OCR and extracted-package checks on this candidate remain
+  required; neither compiled platform fixtures nor generated media establish
+  installed, provider, physical latency or soak acceptance.
 
 ## Keeping the board truthful
 

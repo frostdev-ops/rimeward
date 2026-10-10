@@ -3,13 +3,6 @@ use super::bridge::Rect;
 
 /// The most merged dirty rectangles a frame reports. Past this, unioning the
 /// cheapest pairs costs less than a FeaturePrint per rectangle.
-#[cfg_attr(
-    all(not(target_os = "macos"), not(test)),
-    expect(
-        dead_code,
-        reason = "RIME-49 provider dirty bounds; remove when RIME-50/51 attach"
-    )
-)]
 pub const MAX_DIRTY: usize = 8;
 
 /// Window points ↔ captured pixels for one frame, through that frame's own
@@ -155,13 +148,6 @@ pub fn merge_dirty(rects: &[Rect]) -> Vec<Rect> {
     out
 }
 
-#[cfg_attr(
-    all(not(target_os = "macos"), not(test)),
-    expect(
-        dead_code,
-        reason = "RIME-49 provider dirty merging; remove when RIME-50/51 attach"
-    )
-)]
 pub(super) fn cheapest_pair(rects: &[Rect]) -> (usize, usize) {
     let mut best = (0usize, 1usize, f64::MAX);
     for i in 0..rects.len() {

@@ -67,7 +67,7 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init());
-    // The overlay pool's interactive hotkey. macOS only, because the pool is.
+    // The Mac pool's existing hotkey; portable pool setup is optional.
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
     let app = builder
@@ -175,6 +175,7 @@ pub fn run() {
                 );
                 app.manage(lens.clone());
                 tauri::async_runtime::spawn(lens.bridge.clone().run_writer());
+                lens.attach(app.handle());
             }
             app.manage(runtime::Stdin::new(lines, reader));
             let handle = app.handle().clone();

@@ -6,14 +6,23 @@ pub mod bridge;
 #[cfg(not(target_os = "macos"))]
 #[path = "geometry.rs"]
 pub mod geometry;
+#[cfg(target_os = "linux")]
+pub mod linux_overlay;
+#[cfg(target_os = "linux")]
+pub mod linux_x11;
 #[path = "portable_ocr.rs"]
 pub mod ocr;
+#[cfg(not(target_os = "macos"))]
+#[path = "overlay.rs"]
+pub mod overlay;
 #[cfg(not(target_os = "macos"))]
 #[path = "request.rs"]
 pub mod request;
 #[cfg(not(target_os = "macos"))]
 #[path = "ring.rs"]
 pub mod ring;
+#[cfg(target_os = "windows")]
+pub mod windows;
 #[cfg(target_os = "macos")]
 pub use super::{bridge, geometry, request, ring};
 #[cfg(test)]
@@ -49,19 +58,14 @@ pub struct Target {
 /// A backend obtains this only after validating its native source's lifetime,
 /// exact window scope and capture geometry. Never serialize native handles.
 #[derive(Clone)]
-#[cfg_attr(
-    all(not(target_os = "macos"), not(test)),
-    expect(
-        dead_code,
-        reason = "RIME-49 provider lease; remove when RIME-50/51 attach"
-    )
-)]
 pub struct CaptureLease {
     pub epoch: u64,
     pub generation: u64,
     pub target: Target,
     pub geometry: FrameGeometry,
     pub size: [u32; 2],
+    /// Private capture-time display rectangle in the provider's screen units.
+    pub display_bounds: Rect,
 }
 
 struct State {
@@ -78,6 +82,10 @@ struct State {
     known_ocr: Vec<Line>,
     previous: Option<([u32; 2], Arc<[u8]>)>,
     score_id: String,
+    control_generation: u64,
+    control: Arc<request::Cancellation>,
+    placement: Option<(FrameGeometry, [u32; 2], Rect)>,
+    overlay: bool,
 }
 
 pub struct Lens {
@@ -87,6 +95,13 @@ pub struct Lens {
     ocr: ocr::Ocr,
     pending: Mutex<Option<(String, Rect)>>,
     wake: Notify,
+    lifecycle: tokio::sync::Mutex<()>,
+    #[cfg(target_os = "windows")]
+    backend: std::sync::OnceLock<Arc<windows::Backend>>,
+    #[cfg(target_os = "linux")]
+    backend: std::sync::OnceLock<Arc<linux_x11::Backend>>,
+    #[cfg(not(target_os = "macos"))]
+    overlay: std::sync::OnceLock<Arc<overlay::Overlay>>,
 }
 impl Lens {
     pub fn init(writer: mpsc::UnboundedSender<String>, directory: &Path) -> Arc<Self> {
@@ -99,6 +114,11 @@ impl Lens {
             ocr,
             pending: Mutex::new(None),
             wake: Notify::new(),
+            lifecycle: tokio::sync::Mutex::new(()),
+            #[cfg(not(target_os = "macos"))]
+            backend: std::sync::OnceLock::new(),
+            #[cfg(not(target_os = "macos"))]
+            overlay: std::sync::OnceLock::new(),
             state: Mutex::new(State {
                 generation: 1,
                 consented: false,
@@ -113,6 +133,10 @@ impl Lens {
                 known_ocr: vec![],
                 previous: None,
                 score_id: Self::score_id().into(),
+                control_generation: 1,
+                control: request::Cancellation::new(),
+                placement: None,
+                overlay: false,
             }),
         });
         let worker = lens.clone();
@@ -135,6 +159,37 @@ impl Lens {
     pub fn request_generation(&self) -> u64 {
         self.state.lock().unwrap().generation
     }
+    /// Setup is dormant. Only a consented, active control starts a provider.
+    #[cfg(not(target_os = "macos"))]
+    pub fn attach(self: &Arc<Self>, app: &tauri::AppHandle) {
+        #[cfg(target_os = "windows")]
+        let backend = windows::Backend::attach(app, Arc::downgrade(self));
+        #[cfg(target_os = "linux")]
+        let backend = linux_x11::Backend::attach(app, self);
+        let _ = self.backend.set(backend);
+        if let Err(error) = app.plugin(tauri_plugin_global_shortcut::Builder::new().build()) {
+            eprintln!("overlay: shortcut service unavailable: {error}");
+            return;
+        }
+        match overlay::Overlay::build(app, self) {
+            Ok(overlay) => {
+                let _ = self.overlay.set(overlay.clone());
+                use tauri::Manager;
+                app.manage(overlay);
+            }
+            Err(error) => eprintln!("overlay: pool unavailable: {error}"),
+        }
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) fn register_overlay_windows(&self, windows: Vec<tauri::WebviewWindow>) {
+        if let Some(backend) = self.backend.get() {
+            let _ = backend.overlay.register_windows(windows);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    fn overlay(&self) -> Option<Arc<overlay::Overlay>> {
+        self.overlay.get().cloned()
+    }
     pub fn request_session(&self) -> Option<Arc<request::Cancellation>> {
         Some(self.state.lock().unwrap().session.clone())
     }
@@ -153,7 +208,7 @@ impl Lens {
         }
     }
     fn capabilities(&self, state: &State) -> Value {
-        json!({"capture":state.capture,"ax":state.ax,"ocr":self.ocr.available(),"embed":false,"triage":false,"describe":false,"translate":false,"overlay":false})
+        json!({"capture":state.capture,"ax":state.ax,"ocr":self.ocr.available(),"embed":false,"triage":false,"describe":false,"translate":false,"overlay":state.overlay})
     }
     fn run(state: &State) -> &'static str {
         if state.paused {
@@ -171,6 +226,8 @@ impl Lens {
         self.bridge.bump_epoch();
         self.ring.clear();
         state.target = None;
+        state.placement = None;
+        state.overlay = false;
         state.known_ax.clear();
         state.known_ocr.clear();
         state.previous = None;
@@ -189,17 +246,142 @@ impl Lens {
             ax: state.ax,
         });
     }
+    fn cancel_native(&self) {
+        #[cfg(not(target_os = "macos"))]
+        if let Some(backend) = self.backend.get() {
+            backend.cancel();
+        }
+    }
+    /// Drop State before dispatching. Source-scoped retirement cannot hide a
+    /// replacement that reused the same pool window while this callback waited.
+    fn clear_source_overlays(&self, generation: u64) {
+        #[cfg(not(target_os = "macos"))]
+        if let Some(overlay) = self.overlay() {
+            if let Err(reason) = overlay.clear_source(generation) {
+                eprintln!("overlay: source cleanup failed: {reason}");
+            }
+        }
+        #[cfg(target_os = "macos")]
+        let _ = generation;
+    }
+    fn cleanup_failure(&self, generation: u64, reason: &str) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.control_generation != generation {
+            return false;
+        }
+        state.capture = false;
+        state.ax = false;
+        state.reason = Some(reason.into());
+        self.announce(&state);
+        true
+    }
+    /// Controls invalidate synchronously before this gate. A superseded control
+    /// must not close a newer worker after waiting for an earlier start/drain.
+    async fn finish_control(&self, generation: u64, start: bool) -> Result<(), String> {
+        let _lifecycle = self.lifecycle.lock().await;
+        let expected = {
+            let state = self.state.lock().unwrap();
+            if state.control_generation != generation {
+                return Err("cancelled".into());
+            }
+            (state.generation, state.control.clone())
+        };
+        #[cfg(not(target_os = "macos"))]
+        let stopped = if let Some(backend) = self.backend.get() {
+            backend.stop().await
+        } else {
+            Ok(())
+        };
+        #[cfg(target_os = "macos")]
+        let stopped: Result<(), String> = Ok(());
+        #[cfg(not(target_os = "macos"))]
+        let hidden = if let Some(overlay) = self.overlay() {
+            tokio::task::spawn_blocking(move || overlay.clear_checked(None))
+                .await
+                .unwrap_or_else(|_| Err("overlay-window-gone".to_owned()))
+        } else {
+            Ok(())
+        };
+        #[cfg(target_os = "macos")]
+        let hidden: Result<(), String> = Ok(());
+        self.ocr.drained().await;
+        if let Err(reason) = stopped.and(hidden) {
+            self.cleanup_failure(generation, &reason);
+            return Err(reason);
+        }
+        {
+            let state = self.state.lock().unwrap();
+            if state.control_generation != generation || expected.1.is_cancelled() {
+                return Err("cancelled".into());
+            }
+        }
+        if start {
+            #[cfg(not(target_os = "macos"))]
+            if let Some(backend) = self.backend.get() {
+                let result = backend.start(expected.0, expected.1.clone()).await;
+                let cancelled = {
+                    let state = self.state.lock().unwrap();
+                    state.control_generation != generation || expected.1.is_cancelled()
+                };
+                if cancelled {
+                    backend.cancel();
+                    let stopped = backend.stop().await;
+                    self.ocr.drained().await;
+                    if let Err(reason) = stopped {
+                        self.cleanup_failure(generation, &reason);
+                        return Err(reason);
+                    }
+                    return Err("cancelled".into());
+                }
+                if let Err(reason) = result {
+                    let mut state = self.state.lock().unwrap();
+                    if state.control_generation != generation || expected.1.is_cancelled() {
+                        return Err("cancelled".into());
+                    }
+                    self.invalidate(&mut state);
+                    state.capture = false;
+                    state.ax = false;
+                    state.reason = Some(reason.clone());
+                    self.announce(&state);
+                    return Err(reason);
+                }
+            }
+        }
+        Ok(())
+    }
+    /// A concrete source proves the hidden native pool's exclusion/readback.
+    /// Old bootstrap completions cannot grant overlays into a new source.
+    #[cfg(target_os = "linux")]
+    pub fn set_overlay_available(&self, expected_generation: u64, available: bool) -> bool {
+        let granted = {
+            let mut state = self.state.lock().unwrap();
+            if state.generation != expected_generation
+                || state.control.is_cancelled()
+                || Self::run(&state) != "running"
+            {
+                return false;
+            }
+            state.overlay = available && state.target.is_some() && self.overlay.get().is_some();
+            self.announce(&state);
+            state.overlay
+        };
+        if granted {
+            if let Some(overlay) = self.overlay() {
+                std::thread::spawn(move || overlay.enable_hotkey());
+            }
+        } else {
+            self.clear_source_overlays(expected_generation);
+        }
+        true
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) fn overlay_available(&self) -> bool {
+        self.state.lock().unwrap().overlay
+    }
     /// Backend grants are actual provider answers. RIME-49 leaves capture/AX
     /// false; installing OCR alone cannot grant capture or native overlays.
     /// Compare under the lifecycle lock and return this mutation's generation;
     /// a superseded drain cannot announce grants into a replacement session.
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(
-            dead_code,
-            reason = "RIME-49 provider grants; remove when RIME-50/51 attach"
-        )
-    )]
     pub async fn backend_status(
         &self,
         expected_generation: u64,
@@ -221,7 +403,7 @@ impl Lens {
         }
         let generation = {
             let mut state = self.state.lock().unwrap();
-            if state.generation != expected_generation {
+            if state.generation != expected_generation || state.control.is_cancelled() {
                 return Err("cancelled".into());
             }
             self.invalidate(&mut state);
@@ -231,62 +413,75 @@ impl Lens {
             state.reason = reason.map(str::to_owned);
             state.generation
         };
+        #[cfg(not(target_os = "macos"))]
+        if let Some(overlay) = self.overlay() {
+            match tokio::task::spawn_blocking(move || overlay.clear_source(expected_generation))
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(reason)) => eprintln!("overlay: source cleanup failed: {reason}"),
+                Err(_) => eprintln!("overlay: source cleanup failed: overlay-window-gone"),
+            }
+        }
         self.ocr.drained().await;
         let state = self.state.lock().unwrap();
-        if state.generation != generation {
+        if state.generation != generation || state.control.is_cancelled() {
             return Err("cancelled".into());
         }
         self.announce(&state);
         Ok(generation)
     }
-    pub async fn stop(&self, reason: Option<&str>) {
-        {
+    pub async fn stop(&self, reason: Option<&str>) -> Result<(), String> {
+        self.stop_control(reason, false).await
+    }
+    async fn stop_control(&self, reason: Option<&str>, pause: bool) -> Result<(), String> {
+        let generation = {
             let mut state = self.state.lock().unwrap();
+            state.control.cancel();
             self.invalidate(&mut state);
+            self.cancel_native();
+            state.control_generation = state.generation;
+            state.control = request::Cancellation::new();
+            if pause {
+                state.paused = true;
+            }
             state.active = false;
             state.reason = reason.map(str::to_owned);
             self.announce(&state);
-        }
-        self.ocr.drained().await;
+            state.control_generation
+        };
+        self.finish_control(generation, false).await
     }
     /// A provider must invalidate its accepted generation on native destroy,
     /// unmap, resize, monitor/session change or permission withdrawal, even if
     /// an old capture surface remains readable. Old callbacks cannot publish.
     /// A delayed callback cannot invalidate a newer provider's generation.
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(
-            dead_code,
-            reason = "RIME-49 provider invalidation; remove when RIME-50/51 attach"
-        )
-    )]
     pub fn invalidate_source(&self, expected_generation: u64, reason: &str) -> Option<u64> {
-        let mut state = self.state.lock().unwrap();
-        if state.generation != expected_generation {
-            return None;
-        }
-        self.invalidate(&mut state);
-        state.capture = false;
-        state.ax = false;
-        state.reason = Some(reason.into());
-        self.announce(&state);
-        Some(state.generation)
+        let generation = {
+            let mut state = self.state.lock().unwrap();
+            if state.generation != expected_generation {
+                return None;
+            }
+            self.invalidate(&mut state);
+            state.capture = false;
+            state.ax = false;
+            state.reason = Some(reason.into());
+            self.announce(&state);
+            state.generation
+        };
+        self.clear_source_overlays(expected_generation);
+        Some(generation)
     }
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(
-            dead_code,
-            reason = "RIME-49 provider acceptance; remove when RIME-50/51 attach"
-        )
-    )]
     pub fn accept_target(
         &self,
         expected_generation: u64,
         target: Target,
         geometry: FrameGeometry,
         size: [u32; 2],
+        display_bounds: Rect,
     ) -> Option<CaptureLease> {
         if !valid_rect(target.bounds)
+            || !valid_rect(display_bounds)
             || target.window_id == 0
             || target.pid < 0
             || !geometry_valid(geometry, size)
@@ -295,11 +490,15 @@ impl Lens {
             return None;
         }
         let mut state = self.state.lock().unwrap();
-        if state.generation != expected_generation || Self::run(&state) != "running" {
+        if state.generation != expected_generation
+            || state.control.is_cancelled()
+            || Self::run(&state) != "running"
+        {
             return None;
         }
         self.invalidate(&mut state);
         state.target = Some(target.clone());
+        state.placement = Some((geometry, size, display_bounds));
         self.bridge.emit(Kind::App {
             bundle: target.bundle.clone(),
             name: target.name.clone(),
@@ -312,32 +511,30 @@ impl Lens {
             url: target.url.clone(),
             display: target.display,
         });
-        Some(CaptureLease {
+        let lease = CaptureLease {
             epoch: self.bridge.epoch(),
             generation: state.generation,
             target,
             geometry,
             size,
-        })
+            display_bounds,
+        };
+        drop(state);
+        self.clear_source_overlays(expected_generation);
+        Some(lease)
     }
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(
-            dead_code,
-            reason = "RIME-49 publication guard; remove when RIME-50/51 attach"
-        )
-    )]
     fn current(&self, state: &State, lease: &CaptureLease) -> bool {
         Self::run(state) == "running"
+            && !state.control.is_cancelled()
             && self.bridge.epoch() == lease.epoch
             && state.generation == lease.generation
             && state.target.as_ref() == Some(&lease.target)
     }
     #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
+        all(target_os = "linux", not(test)),
         expect(
             dead_code,
-            reason = "RIME-49 provider AX; remove when RIME-50/51 attach"
+            reason = "RIME-51 AX association remains unproved; remove when exact AT-SPI association attaches"
         )
     )]
     pub fn publish_ax(&self, lease: &CaptureLease, lines: Vec<Line>) -> bool {
@@ -360,13 +557,6 @@ impl Lens {
     /// Immutable packed BGRA, after the provider proves identity AND geometry
     /// again for this sample. The frame's transform is never reconstructed from
     /// a later window position. The single pending recognition is latest wins.
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(
-            dead_code,
-            reason = "RIME-49 provider frames; remove when RIME-50/51 attach"
-        )
-    )]
     pub fn publish_frame(
         &self,
         lease: &CaptureLease,
@@ -523,9 +713,16 @@ impl Lens {
     pub fn status(&self) -> Value {
         let state = self.state.lock().unwrap();
         let stats = self.ring.stats();
+        #[cfg(not(target_os = "macos"))]
+        let overlay = self
+            .overlay()
+            .map(|o| o.status())
+            .unwrap_or(json!({"shown":0,"interactive":false}));
+        #[cfg(target_os = "macos")]
+        let overlay = json!({"shown":0,"interactive":false});
         json!({"platform":Self::platform(),"state":Self::run(&state),"reason":state.reason,"epoch":self.bridge.epoch(),"seq":self.bridge.last_seq(),"target":state.target,
             "ring":{"n":stats.n,"bytes":stats.bytes,"oldestAt":stats.oldest_at},"covered":false,"permissions":{"screen":state.capture,"ax":state.ax},
-            "capabilities":self.capabilities(&state),"visual":{"scoreId":state.score_id},"overlay":{"shown":0,"interactive":false},"helper":{"state":"down","outstanding":0},"filter":"window","consented":state.consented})
+            "capabilities":self.capabilities(&state),"visual":{"scoreId":state.score_id},"overlay":overlay,"helper":{"state":"down","outstanding":0},"filter":"window","consented":state.consented})
     }
     fn snapshot(&self) -> Value {
         let state = self.state.lock().unwrap();
@@ -536,19 +733,26 @@ impl Lens {
             "latest":self.ring.latest().map(|f|json!({"ref":f.frame_ref,"geometry":f.geometry}))})
     }
     async fn dispatch(
-        &self,
+        self: &Arc<Self>,
         op: &str,
         value: &Value,
         deadline: Option<i64>,
         cancellation: Arc<request::Cancellation>,
     ) -> Result<Value, String> {
+        if cancellation.is_cancelled() {
+            return Err("cancelled".into());
+        }
         match op {
             "lens-status" => Ok(self.status()),
             "lens-snapshot" => Ok(self.snapshot()),
             "lens-start" => {
-                {
+                let (generation, start) = {
                     let mut state = self.state.lock().unwrap();
+                    state.control.cancel();
                     self.invalidate(&mut state);
+                    self.cancel_native();
+                    state.control_generation = state.generation;
+                    state.control = cancellation;
                     state.consented = value["consented"] == true;
                     state.active = value["active"] != false;
                     state.paused = value["paused"] == true;
@@ -567,34 +771,40 @@ impl Lens {
                         .into(),
                     );
                     self.announce(&state);
-                }
-                self.ocr.drained().await;
+                    (
+                        state.control_generation,
+                        state.consented && state.active && !state.paused,
+                    )
+                };
+                self.finish_control(generation, start).await?;
                 Ok(self.status())
             }
             "lens-stop" => {
-                self.stop(value["reason"].as_str()).await;
+                self.stop(value["reason"].as_str()).await?;
                 Ok(self.status())
             }
             "lens-pause" => {
-                {
-                    self.state.lock().unwrap().paused = true;
-                }
-                self.stop(Some("paused")).await;
+                self.stop_control(Some("paused"), true).await?;
                 Ok(self.status())
             }
             "lens-resume" => {
-                let mut state = self.state.lock().unwrap();
-                if !state.consented {
-                    return Err("not-consented".into());
-                }
-                state.paused = false;
-                state.active = true;
-                state.reason = if state.capture {
-                    None
-                } else {
-                    Some("unsupported".into())
+                let generation = {
+                    let mut state = self.state.lock().unwrap();
+                    if !state.consented {
+                        return Err("not-consented".into());
+                    }
+                    state.control.cancel();
+                    self.invalidate(&mut state);
+                    self.cancel_native();
+                    state.control_generation = state.generation;
+                    state.control = cancellation;
+                    state.paused = false;
+                    state.active = true;
+                    state.reason = Some("warming".into());
+                    self.announce(&state);
+                    state.control_generation
                 };
-                self.announce(&state);
+                self.finish_control(generation, true).await?;
                 Ok(Value::Bool(true))
             }
             "lens-ocr" => {
@@ -629,9 +839,203 @@ impl Lens {
                     json!({"ref":out.frame.frame_ref,"epoch":out.frame.epoch,"seq":out.frame.seq,"at":out.frame.at,"w":out.w,"h":out.h,"geometry":out.frame.geometry,"jpeg":jpeg}),
                 )
             }
-            "overlay-clear" => Ok(Value::Bool(true)),
+            "overlay-clear" => {
+                #[cfg(not(target_os = "macos"))]
+                if let Some(overlay) = self.overlay() {
+                    let id = value["id"].as_str().map(str::to_owned);
+                    tokio::task::spawn_blocking(move || overlay.clear_checked(id.as_deref()))
+                        .await
+                        .map_err(|_| "overlay-window-gone")??;
+                }
+                Ok(Value::Bool(true))
+            }
+            #[cfg(not(target_os = "macos"))]
+            "overlay-show" => self.overlay_show(value, cancellation).await,
+            #[cfg(not(target_os = "macos"))]
+            "overlay-interactive" => {
+                if !self.state.lock().unwrap().overlay {
+                    return Err("unavailable".into());
+                }
+                self.overlay()
+                    .ok_or("unavailable")?
+                    .set_interactive(value["on"] == true);
+                Ok(Value::Bool(true))
+            }
             _ => Err("unavailable".into()),
         }
+    }
+    fn overlay_source(
+        self: &Arc<Self>,
+        epoch: u64,
+        cancellation: Arc<request::Cancellation>,
+    ) -> Result<OverlaySource, String> {
+        let state = self.state.lock().unwrap();
+        if !state.consented {
+            return Err("not-consented".into());
+        }
+        if !state.overlay || Self::run(&state) != "running" {
+            return Err("unavailable".into());
+        }
+        if cancellation.is_cancelled() || state.control.is_cancelled() {
+            return Err("cancelled".into());
+        }
+        if epoch != self.bridge.epoch() {
+            return Err("stale-epoch".into());
+        }
+        let target = state.target.clone().ok_or("no-target")?;
+        let (geometry, size, display_bounds) = state.placement.ok_or("no-target")?;
+        Ok(OverlaySource {
+            lens: self.clone(),
+            lease: CaptureLease {
+                epoch,
+                generation: state.generation,
+                target,
+                geometry,
+                size,
+                display_bounds,
+            },
+            session: state.session.clone(),
+            cancellation,
+            #[cfg(target_os = "linux")]
+            native: None,
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    async fn overlay_show(
+        self: &Arc<Self>,
+        value: &Value,
+        cancellation: Arc<request::Cancellation>,
+    ) -> Result<Value, String> {
+        let overlay = self.overlay().ok_or("unavailable")?;
+        let req = overlay::ShowReq::parse(value)?;
+        let source = self.overlay_source(req.epoch, cancellation)?;
+        if let overlay::Anchor::Rect { frame_ref, rect } = &req.anchor {
+            let frame = self.ring.get(frame_ref).ok_or("frame-evicted")?;
+            if frame.epoch != source.lease.epoch || frame.geometry != source.lease.geometry {
+                return Err("stale-epoch".into());
+            }
+            if geometry::intersect(*rect, frame.geometry.captured) != Some(*rect) {
+                return Err("bad-rect".into());
+            }
+        }
+        let place = overlay::Place {
+            window: source.lease.geometry.window,
+            display: source.lease.display_bounds,
+        };
+        #[cfg(target_os = "linux")]
+        let source = {
+            let backend = self.backend.get().ok_or("unavailable")?.clone();
+            let mut source = source;
+            let generation = source.lease.generation;
+            let epoch = source.lease.epoch;
+            let cancellation = source.cancellation.clone();
+            source.native = Some(
+                tokio::task::spawn_blocking(move || {
+                    backend.overlay.prepare(generation, epoch, cancellation)
+                })
+                .await
+                .map_err(|_| "unavailable")??,
+            );
+            source
+        };
+        let generation = source.lease.generation;
+        let result = tokio::task::spawn_blocking(move || overlay.show(req, place, source))
+            .await
+            .map_err(|_| "overlay-window-gone")?;
+        #[cfg(target_os = "linux")]
+        if result.is_err() {
+            self.set_overlay_available(generation, false);
+        }
+        #[cfg(target_os = "windows")]
+        let _ = generation;
+        result
+    }
+}
+
+#[derive(Clone)]
+struct OverlaySource {
+    lens: Arc<Lens>,
+    lease: CaptureLease,
+    session: Arc<request::Cancellation>,
+    cancellation: Arc<request::Cancellation>,
+    #[cfg(target_os = "linux")]
+    native: Option<Arc<linux_overlay::Token>>,
+}
+impl OverlaySource {
+    /// Freeze under State, then recheck while doing the actual UI mutation.
+    /// No State/native lock crosses main-thread dispatch or an async wait.
+    fn publish<T>(&self, publish: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let state = self.lens.state.lock().unwrap();
+        if self.cancellation.is_cancelled()
+            || self.session.is_cancelled()
+            || state.control.is_cancelled()
+        {
+            return Err("cancelled".into());
+        }
+        if !state.consented {
+            return Err("not-consented".into());
+        }
+        if !state.overlay
+            || !self.lens.current(&state, &self.lease)
+            || state.placement
+                != Some((
+                    self.lease.geometry,
+                    self.lease.size,
+                    self.lease.display_bounds,
+                ))
+            || !Arc::ptr_eq(&self.session, &state.session)
+        {
+            return Err("stale-epoch".into());
+        }
+        publish()
+    }
+    #[cfg(not(target_os = "macos"))]
+    fn failed(&self) {
+        #[cfg(target_os = "linux")]
+        self.lens
+            .set_overlay_available(self.lease.generation, false);
+    }
+    #[cfg(target_os = "linux")]
+    fn place(
+        &self,
+        window: &tauri::WebviewWindow,
+        rect: Rect,
+    ) -> Result<linux_overlay::Placement, String> {
+        self.lens.backend.get().ok_or("unavailable")?.overlay.place(
+            window,
+            rect,
+            self.native.as_ref().ok_or("unavailable")?,
+        )
+    }
+    #[cfg(target_os = "windows")]
+    fn place(&self, window: &tauri::WebviewWindow, rect: Rect) -> Result<Rect, String> {
+        // shortcut: no native overlay grant without capture-time geometry proof.
+        window.hide().map_err(|_| "overlay-window-gone")?;
+        windows::place_overlay(
+            ::windows::Win32::Foundation::HWND(window.hwnd().map_err(|_| "overlay-window-gone")?.0),
+            rect,
+        )?;
+        Ok(rect)
+    }
+    #[cfg(target_os = "linux")]
+    fn reveal(
+        &self,
+        window: &tauri::WebviewWindow,
+        proof: &linux_overlay::Placement,
+    ) -> Result<(), String> {
+        self.lens
+            .backend
+            .get()
+            .ok_or("unavailable")?
+            .overlay
+            .reveal(window, proof)
+    }
+    #[cfg(target_os = "windows")]
+    fn reveal(&self, window: &tauri::WebviewWindow, proof: &Rect) -> Result<(), String> {
+        let hwnd =
+            ::windows::Win32::Foundation::HWND(window.hwnd().map_err(|_| "overlay-window-gone")?.0);
+        windows::place_overlay(hwnd, *proof)?;
+        windows::show_overlay(hwnd)
     }
 }
 
@@ -652,6 +1056,29 @@ pub async fn desktop_request_cancel(
     }
     lens.dispatch(op, value, deadline, cancellation).await
 }
+#[cfg(not(target_os = "macos"))]
+pub(super) fn hide_overlay(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let lens = app.try_state::<Arc<Lens>>().ok_or("unavailable")?;
+    #[cfg(target_os = "linux")]
+    return lens
+        .backend
+        .get()
+        .ok_or("unavailable")?
+        .overlay
+        .hide(window);
+    #[cfg(target_os = "windows")]
+    {
+        let _ = lens;
+        windows::hide_overlay(::windows::Win32::Foundation::HWND(
+            window.hwnd().map_err(|_| "overlay-window-gone")?.0,
+        ))?;
+        window.hide().map_err(|_| "overlay-window-gone".into())
+    }
+}
 fn rect(value: &Value) -> Option<Rect> {
     let a = value.as_array()?;
     if a.len() != 4 {
@@ -668,13 +1095,6 @@ fn rect(value: &Value) -> Option<Rect> {
 fn valid_rect(r: Rect) -> bool {
     r.iter().all(|n| n.is_finite()) && r[2] > 0.0 && r[3] > 0.0
 }
-#[cfg_attr(
-    all(not(target_os = "macos"), not(test)),
-    expect(
-        dead_code,
-        reason = "RIME-49 provider geometry; remove when RIME-50/51 attach"
-    )
-)]
 fn geometry_valid(g: FrameGeometry, [w, h]: [u32; 2]) -> bool {
     valid_rect(g.window)
         && valid_rect(g.captured)
@@ -694,13 +1114,6 @@ fn geometry_valid(g: FrameGeometry, [w, h]: [u32; 2]) -> bool {
 /// RGB max-channel delta >= 16/255, in 32x32 tiles. Scores are changed-pixel
 /// fractions. Merge adjacent tiles into connected regions, then use bounded
 /// minimum-waste unions; every merged score keeps its maximum constituent.
-#[cfg_attr(
-    all(not(target_os = "macos"), not(test)),
-    expect(
-        dead_code,
-        reason = "RIME-49 provider scoring; remove when RIME-50/51 attach"
-    )
-)]
 fn score(
     previous: Option<&([u32; 2], Arc<[u8]>)>,
     bgra: &[u8],
@@ -798,13 +1211,6 @@ fn score(
         })
         .collect()
 }
-#[cfg_attr(
-    all(not(target_os = "macos"), not(test)),
-    expect(
-        dead_code,
-        reason = "RIME-49 provider scoring; remove when RIME-50/51 attach"
-    )
-)]
 fn merge_scores(regions: &mut Vec<bridge::Dirty>) {
     let rects: Vec<Rect> = regions.iter().map(|region| region.bbox).collect();
     let (i, j) = geometry::cheapest_pair(&rects);
@@ -816,6 +1222,46 @@ fn merge_scores(regions: &mut Vec<bridge::Dirty>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn cleanup_failure_revokes_only_the_current_controls_proved_capabilities() {
+        let (tx, _) = mpsc::unbounded_channel();
+        let lens = Lens::init(tx, Path::new("/missing-rimeward-ocr"));
+        let start = json!({"consented":true,"active":true});
+        lens.dispatch("lens-start", &start, None, request::Cancellation::new())
+            .await
+            .unwrap();
+        let old_control = lens.state.lock().unwrap().control_generation;
+        lens.dispatch("lens-start", &start, None, request::Cancellation::new())
+            .await
+            .unwrap();
+        let current_control = lens.state.lock().unwrap().control_generation;
+        lens.backend_status(
+            lens.request_generation(),
+            true,
+            true,
+            Lens::score_id(),
+            None,
+        )
+        .await
+        .unwrap();
+        let current = lens.status();
+        let generation = lens.request_generation();
+        assert!(!lens.cleanup_failure(old_control, "capture-teardown:old-failure"));
+        assert_eq!(lens.status(), current);
+        assert_eq!(lens.request_generation(), generation);
+        assert!(lens.cleanup_failure(current_control, "capture-teardown:worker-panic"));
+        let failed = lens.status();
+        assert_eq!(failed["capabilities"]["capture"], false);
+        assert_eq!(failed["capabilities"]["ax"], false);
+        assert_eq!(failed["state"], "stopped");
+        assert_eq!(failed["reason"], "capture-teardown:worker-panic");
+        assert_eq!(failed["consented"], true);
+        assert!(
+            lens.state.lock().unwrap().active,
+            "current demand is preserved"
+        );
+        assert_eq!(lens.request_generation(), generation);
+    }
     #[test]
     fn rgb_threshold_ignores_alpha_and_resets_dimensions() {
         let g = FrameGeometry {
@@ -886,7 +1332,13 @@ mod tests {
             },
         };
         let lease = lens
-            .accept_target(generation, target, geometry, [32, 32])
+            .accept_target(
+                generation,
+                target,
+                geometry,
+                [32, 32],
+                [0.0, 0.0, 1920.0, 1080.0],
+            )
             .unwrap();
         let pixels: Arc<[u8]> = vec![0; 32 * 32 * 4].into();
         assert!(lens
@@ -899,7 +1351,7 @@ mod tests {
             .is_none());
         let session = lens.request_session().unwrap();
         let generation = lens.request_generation();
-        lens.stop(Some("idle")).await;
+        lens.stop(Some("idle")).await.unwrap();
         assert!(lens.request_generation() > generation);
         assert!(lens.ring.latest().is_none());
         assert!(session.is_cancelled());
@@ -918,7 +1370,7 @@ mod tests {
             .await
             .unwrap();
         let delayed = lens.request_generation();
-        lens.stop(Some("idle")).await;
+        lens.stop(Some("idle")).await.unwrap();
         lens.dispatch("lens-start", &start, None, request::Cancellation::new())
             .await
             .unwrap();
@@ -956,7 +1408,13 @@ mod tests {
             },
         };
         let lease = lens
-            .accept_target(granted, target.clone(), geometry, [1, 1])
+            .accept_target(
+                granted,
+                target.clone(),
+                geometry,
+                [1, 1],
+                [0.0, 0.0, 100.0, 100.0],
+            )
             .unwrap();
         assert_eq!(lease.generation, lens.request_generation());
         let current = lens.status();
@@ -975,7 +1433,7 @@ mod tests {
             Err("cancelled".into())
         );
         assert!(lens
-            .accept_target(delayed, target, geometry, [1, 1])
+            .accept_target(delayed, target, geometry, [1, 1], [0.0, 0.0, 100.0, 100.0])
             .is_none());
         assert!(lens.invalidate_source(delayed, "old-close").is_none());
         // Target acceptance also superseded the earlier grant's callback owner.
@@ -995,5 +1453,199 @@ mod tests {
             .invalidate_source(lease.generation, "duplicate-close")
             .is_none());
         assert_eq!(lens.status(), current);
+    }
+
+    #[tokio::test]
+    async fn queued_controls_do_not_teardown_a_replacement_start() {
+        let (tx, _) = mpsc::unbounded_channel();
+        let lens = Lens::init(tx, Path::new("/missing-rimeward-ocr"));
+        assert_eq!(lens.status()["consented"], false);
+        assert_eq!(lens.status()["state"], "stopped");
+        let gate = lens.lifecycle.lock().await;
+        let start = json!({"consented":true,"active":true});
+        let old = lens.dispatch("lens-start", &start, None, request::Cancellation::new());
+        tokio::pin!(old);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(5), &mut old)
+                .await
+                .is_err()
+        );
+        let old_generation = lens.request_generation();
+        let stopped = lens.stop(Some("idle"));
+        tokio::pin!(stopped);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(5), &mut stopped)
+                .await
+                .is_err()
+        );
+        assert!(lens.request_generation() > old_generation);
+        let replacement = lens.dispatch("lens-start", &start, None, request::Cancellation::new());
+        tokio::pin!(replacement);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(5), &mut replacement)
+                .await
+                .is_err()
+        );
+        let current = lens.status();
+        drop(gate);
+        assert_eq!(old.await, Err("cancelled".into()));
+        assert_eq!(stopped.await, Err("cancelled".into()));
+        assert_eq!(replacement.await.unwrap(), current);
+        assert_eq!(lens.status(), current);
+        let cancelled = request::Cancellation::new();
+        cancelled.cancel();
+        assert_eq!(
+            lens.dispatch("lens-start", &start, None, cancelled).await,
+            Err("cancelled".into())
+        );
+        assert_eq!(
+            lens.status(),
+            current,
+            "cancelled admission never mutated the source"
+        );
+    }
+
+    #[tokio::test]
+    async fn portable_overlay_mutations_use_frozen_source_and_cancel_before_clear() {
+        let (tx, _) = mpsc::unbounded_channel();
+        let lens = Lens::init(tx, Path::new("/missing-rimeward-ocr"));
+        let start = json!({"consented":true,"active":true});
+        lens.dispatch("lens-start", &start, None, request::Cancellation::new())
+            .await
+            .unwrap();
+        let geometry = FrameGeometry {
+            window: [-1200.0, 50.0, 100.0, 100.0],
+            scale: 1.0,
+            content_rect: [0.0, 0.0, 100.0, 100.0],
+            content_scale: 1.0,
+            captured: [0.0, 0.0, 100.0, 100.0],
+        };
+        let display = [-1920.0, 0.0, 1920.0, 1080.0];
+        let target = Target {
+            pid: 42,
+            bundle: "disposable.test".into(),
+            name: "Disposable".into(),
+            window_id: 1,
+            title: "Current".into(),
+            bounds: geometry.window,
+            url: None,
+            display: DisplayInfo {
+                id: 1,
+                w: 1920.0,
+                h: 1080.0,
+                scale: 1.0,
+            },
+        };
+        let grant = lens
+            .backend_status(
+                lens.request_generation(),
+                true,
+                false,
+                Lens::score_id(),
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = lens
+            .accept_target(grant, target.clone(), geometry, [100, 100], display)
+            .unwrap();
+        // Stand in only for the platform's hidden-pool proof. All publication
+        // and invalidation below use the actual shared source/control methods.
+        lens.state.lock().unwrap().overlay = true;
+        let cancellation = request::Cancellation::new();
+        let source = lens
+            .overlay_source(lease.epoch, cancellation.clone())
+            .unwrap();
+        assert_eq!(source.lease.display_bounds, display);
+        assert_eq!(source.lease.geometry, geometry);
+        let mut mutations = 0;
+        source
+            .publish(|| {
+                mutations += 1;
+                Ok(())
+            })
+            .unwrap();
+        cancellation.cancel();
+        assert_eq!(
+            source.publish(|| {
+                mutations += 1;
+                Ok(())
+            }),
+            Err("cancelled".into())
+        );
+        let source = lens
+            .overlay_source(lease.epoch, request::Cancellation::new())
+            .unwrap();
+        let gate = lens.lifecycle.lock().await;
+        let stop = lens.stop(Some("idle"));
+        tokio::pin!(stop);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(5), &mut stop)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            source.publish(|| {
+                mutations += 1;
+                Ok(())
+            }),
+            Err("cancelled".into()),
+            "reveal is refused before native clear/teardown can run"
+        );
+        drop(gate);
+        stop.await.unwrap();
+        assert!(lens.ring.latest().is_none());
+        assert_eq!(lens.status()["capabilities"]["overlay"], false);
+        lens.dispatch("lens-start", &start, None, request::Cancellation::new())
+            .await
+            .unwrap();
+        let grant = lens
+            .backend_status(
+                lens.request_generation(),
+                true,
+                false,
+                Lens::score_id(),
+                None,
+            )
+            .await
+            .unwrap();
+        let fresh = lens
+            .accept_target(grant, target, geometry, [100, 100], display)
+            .unwrap();
+        lens.state.lock().unwrap().overlay = true;
+        let fresh = lens
+            .overlay_source(fresh.epoch, request::Cancellation::new())
+            .unwrap();
+        assert!(source
+            .publish(|| {
+                mutations += 1;
+                Ok(())
+            })
+            .is_err());
+        fresh
+            .publish(|| {
+                mutations += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            mutations, 2,
+            "same native-looking target cannot revive an old generation"
+        );
+        lens.dispatch(
+            "lens-start",
+            &json!({"consented":false,"active":true}),
+            None,
+            request::Cancellation::new(),
+        )
+        .await
+        .unwrap();
+        assert!(fresh
+            .publish(|| {
+                mutations += 1;
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(mutations, 2);
     }
 }

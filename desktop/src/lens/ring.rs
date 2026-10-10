@@ -15,13 +15,6 @@ use std::sync::{Arc, Mutex};
 /// 30 frames is about 15 s under continuous change. 60 s is a ceiling, not a
 /// guarantee: a busy screen evicts by count long before the age applies. The
 /// newest frame is exempt from the ceiling: see [`expire`].
-#[cfg_attr(
-    all(not(target_os = "macos"), not(test)),
-    expect(
-        dead_code,
-        reason = "RIME-49 provider ring bounds; remove when RIME-50/51 attach"
-    )
-)]
 pub const CAP: usize = 30;
 pub const MAX_AGE_MS: i64 = 60_000;
 /// The ring's own JPEGs and every crop. Cheap, and visibly lossy only on text
@@ -72,13 +65,6 @@ impl Ring {
         Ring::default()
     }
 
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(
-            dead_code,
-            reason = "RIME-49 provider ring publication; remove when RIME-50/51 attach"
-        )
-    )]
     pub fn push(&self, frame: Frame) {
         let mut frames = self.frames.lock().unwrap();
         expire(&mut frames);

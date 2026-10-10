@@ -482,7 +482,7 @@ mod tests {
         let current = lens.status();
         drop(running);
         assert_eq!(grant.await, Err("cancelled".into()));
-        stop.await;
+        assert_eq!(stop.await, Err("cancelled".into()));
         assert_eq!(restart.await.unwrap(), current);
         assert_eq!(
             lens.status(),
@@ -567,7 +567,13 @@ mod tests {
             },
         };
         let lease = lens
-            .accept_target(generation, target, geometry, [1, 1])
+            .accept_target(
+                generation,
+                target,
+                geometry,
+                [1, 1],
+                [0.0, 0.0, 100.0, 100.0],
+            )
             .unwrap();
         assert!(lens
             .publish_frame(&lease, Arc::from([255u8; 4]), [1, 1], geometry)

@@ -27,13 +27,6 @@ pub struct Stamp {
 
 impl Stamp {
     /// The `ref` a frame is addressed by for the rest of its life.
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(
-            dead_code,
-            reason = "RIME-49 provider frame refs; remove when RIME-50/51 attach"
-        )
-    )]
     pub fn frame_ref(&self) -> String {
         format!("f-{}-{}", self.epoch, self.seq)
     }
@@ -290,13 +283,6 @@ impl Bridge {
 
     /// The next stamp, but only while `epoch` is still current. `None` means
     /// the work that started in that epoch is stale and must be dropped.
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(
-            dead_code,
-            reason = "RIME-49 provider frame stamps; remove when RIME-50/51 attach"
-        )
-    )]
     pub fn stamp_in(&self, epoch: u64) -> Option<Stamp> {
         let mut queues = self.queues.lock().unwrap();
         if self.epoch() != epoch {
@@ -324,13 +310,6 @@ impl Bridge {
 
     /// Enqueue with a stamp taken earlier. A stamp from a past epoch is
     /// dropped: its work described a screen that is no longer on screen.
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(
-            dead_code,
-            reason = "RIME-49 provider frame signals; remove when RIME-50/51 attach"
-        )
-    )]
     pub fn emit_stamped(&self, stamp: Stamp, kind: Kind) {
         let mut queues = self.queues.lock().unwrap();
         if stamp.epoch != self.epoch() {

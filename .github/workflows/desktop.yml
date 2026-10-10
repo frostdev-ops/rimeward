@@ -195,6 +195,15 @@ jobs:
           RUST_BACKTRACE: '1'
         run: npm run desktop:check
 
+      # The target creates its own disposable Xvfb display and compositor
+      # redirect; it never captures or redirects the runner's user desktop.
+      # This proves native API regressions, not installed Lens acceptance.
+      - name: Isolated X11 Lens native regression
+        if: matrix.platform == 'ubuntu-24.04'
+        env:
+          RUST_BACKTRACE: '1'
+        run: cargo test --manifest-path desktop/Cargo.toml --lib lens::linux_x11::tests::isolated_xvfb_pixmap_excludes_foreign_pixels_and_rejects_retained_surface -- --ignored --exact --nocapture
+
       - name: Runtime validation
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/desktop/runtime/browsers
