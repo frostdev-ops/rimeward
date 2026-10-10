@@ -11,7 +11,10 @@ use macOS, Windows, or Linux. Hooks are disabled.
 
 Snapshot: **2026-10-10**, local and GitHub `main` **5ae7ea0**, deployed website and
 published server/desktop/Homebrew **1.0.18**. Active `dev/1.0.19` source is **1.0.19**;
-installed Mac is now **1.0.18** with preserved profile and verified sync/relay.
+published Mac **1.0.18** passed profile-preserving installation and sync/relay.
+This Mac currently runs a private signed **1.0.19** qualification artifact with
+control stopped; that temporary installation does not establish qualification
+or a published 1.0.19 release.
 See [state and evidence](STATE.md) for the live CI, release and branch checks.
 
 **Merged** means implementation in main; live acceptance is a separate package.

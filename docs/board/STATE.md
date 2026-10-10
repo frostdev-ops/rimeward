@@ -646,7 +646,9 @@ below is separately verified. Human feature/platform acceptance remains open.
   loss without a redraw and preserves its three-second retirement bound and
   retained-alias refusals. Exact-body host schedules fail before and pass after
   (**2/2**); formatting and strict GNU metadata Clippy pass. Actual Xvfb/platform
-  package execution and independent review remain required.
+  package execution remains required. Independent immutable review of `6e4078e`
+  passes, including independently repeated red/green scheduling checks; those
+  host checks do not establish native Linux execution.
 
 - The same candidate's Windows diagnostic self-check, failure collection and
   artifact upload pass. Its original native test executable still exits
@@ -656,8 +658,14 @@ below is separately verified. Human feature/platform acceptance remains open.
   All other named imports occur in the corresponding captured export lists.
   The Microsoft API requires Common Controls v6; the failed test PE has no
   resource section. These facts support a missing test activation manifest;
-  build-script/resource and fresh Windows verification remain required before
-  final disposition. No function suppression or native capability change is made.
+  pinned Tauri resource generation emits a bins-only linker argument, so the
+  library unit executable receives no manifest. The correction reuses Tauri's
+  compiled `resource.lib` through a generic Windows linker argument and asserts
+  that it exists, preserving the application manifest and native capabilities.
+  A real Cargo fixture proves the generic argument reaches library unit tests;
+  a native LLVM COFF probe deduplicates the repeated resource path. Actual MSVC
+  linking, the fourteen native fixtures, runtime and installer checks remain
+  fresh-CI gates. No function suppression or native capability change is made.
 
 - A private signed qualifier at `a4de1899`, parent `632eaf4`, contains only the
   two exact `26A434` allowance additions. Normal prebuild, **165** native tests
