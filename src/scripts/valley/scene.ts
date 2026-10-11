@@ -1,10 +1,8 @@
-// The valley — the same terraced terrain as the splash, seen from down inside
-// it. The splash gate dives into a valley; this is where every form lands.
-// Shares the splash shaders and palette; only camera, amplitude and mood
-// differ. `depth` walks the camera further down as a flow progresses.
+// Native forms sit inside terraced terrain. `depth` walks the camera further
+// down as a flow progresses; shaders and palette also serve the terrain benchmark.
 import * as THREE from 'three';
-import { terrainVert, terrainFrag } from '../splash/shaders.ts';
-import { PALETTE, FOG_COLOR, LEVELS } from '../splash/scene.ts';
+import { terrainVert, terrainFrag } from './shaders.ts';
+import { PALETTE, FOG_COLOR, LEVELS } from './terrain.ts';
 
 export interface ValleyOptions {
   /** Render exactly one frame (reduced motion, or ?still for screenshots). */

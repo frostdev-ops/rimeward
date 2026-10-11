@@ -62,10 +62,10 @@ If needed, `PM2_BIN`, `DOCKER_BIN`, and `SYSTEMCTL_BIN` supply explicit executab
 
 ## Brand your instance
 
-The admin settings and CLI control the instance name and brand assets used by sign-in and setup. The public `/` page is the Frostdev project hub; `/rimeward` introduces Rimeward. These marketing pages use their own artwork and copy rather than the instance's splash text, cards, and footer. For example:
+The admin settings and CLI control the instance name and brand assets used by sign-in and setup. The server root enters the authenticated app. The public Frostdev hub and product guides belong to the separate [website repository](https://github.com/frostdev-ops/frostdev.io). Legacy splash tagline, cards and footer settings remain stored for configuration compatibility. For example:
 
 ```sh
-node bin/rimeward.mjs splash --name "My workspace" --tagline "A place to get things done"
+node bin/rimeward.mjs splash --name "My workspace"
 node bin/rimeward.mjs brand install wordmark ./my-wordmark.svg
 ```
 

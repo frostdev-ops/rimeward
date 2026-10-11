@@ -10,11 +10,11 @@ The native server root redirects signed-in requests to `/dash`. Middleware sends
 fresh servers to `/setup` and signed-out browsers to `/login`. Desktop startup
 still redeems `/api/native/bootstrap` once and enters `/desktop/start`, preserving
 onboarding and restored navigation. Login, setup, recovery, registration and
-desktop onboarding retain ValleyLayout, the splash scene/shaders, frost palette,
+desktop onboarding retain ValleyLayout, native valley terrain/shaders, frost palette,
 semantic icons, Rimeward brand assets and installation-local brand helpers.
 
 The marketing root, `/rimeward`, `/crosspane`, `/rimewire`, MarketingLayout, three
-marketing demos, products CSS, `public/projects`, `public/ads.txt`, website-only
+marketing demos, products CSS, unused public splash renderer/entry/overlay CSS, `public/projects`, `public/ads.txt`, website-only
 master art, marketing screenshots and `docs/public-pages.md` are removed.
 All existing tests and `docs/goldens` remain. The screenshot capture instruction
 now targets `/login?still=1` for the welcome/valley capture; no goldens are generated
@@ -22,7 +22,8 @@ or inspected during this cleanup.
 
 Native API, authentication, OAuth origins, server identity and nginx relay/static
 include remain independent of this source removal. Public links to the separate
-website remain valid. The shared splash assets serve native forms and themes.
+website remain valid. Native terrain constants and unchanged shaders live under
+`src/scripts/valley`, used by forms and the existing performance benchmark.
 
 ## Release ordering
 

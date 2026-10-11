@@ -1,12 +1,12 @@
 // The /perf bench (dev-only page). Three numbers, all from the real shaders and
-// the real DOM, so a change to bg-shaders.ts, splash/shaders.ts or frost.css
+// the real DOM, so a change to bg-shaders.ts, valley/shaders.ts or frost.css
 // can be measured instead of guessed at:
 //
 //  1. Scene shaders — ms/frame per preset on one full-screen quad, exactly as
 //     bg-scene.ts draws it, at a chosen buffer size. "Per preset" compiles
 //     one program per scene (the shader's SCENE_ID hook) instead of the one
 //     all-presets program production uses — the A/B for that idea.
-//  2. Splash terrain — ms/frame for the topography mesh per tier, with and
+//  2. Native terrain — ms/frame for the topography mesh per tier, with and
 //     without MSAA.
 //  3. Page audit — loads a route in an iframe and counts what the compositor
 //     has to pay for: backdrop-filters, filters, running animations, canvases,
@@ -20,7 +20,7 @@
 import { GFX_DEFAULTS, SCENE_IDS, SCENE_INDEX, SCENES } from '../lib/theme.ts';
 import type { SceneConfig } from '../lib/theme.ts';
 import { bgVert, bgFrag } from './app/bg-shaders.ts';
-import { terrainVert, terrainFrag } from './splash/shaders.ts';
+import { terrainVert, terrainFrag } from './valley/shaders.ts';
 
 const FRAMES = 40;
 const BATCHES = 3;
@@ -203,11 +203,11 @@ async function runScenes(): Promise<void> {
   renderer.forceContextLoss();
 }
 
-// ------------------------------------------------------------ splash terrain
+// ------------------------------------------------------------ native terrain
 
 async function runTerrain(): Promise<void> {
   const THREE = await import('three');
-  const { PALETTE, FOG_COLOR, LEVELS, AMP, SEGMENTS, CAM_BASE } = await import('./splash/scene.ts');
+  const { PALETTE, FOG_COLOR, LEVELS, AMP, SEGMENTS, CAM_BASE } = await import('./valley/terrain.ts');
   const out = $('perf-terrain');
   const [w, h] = bufferSize();
   const rows: Row[] = [];
@@ -278,7 +278,7 @@ async function audit(): Promise<void> {
   const doc = frame.contentDocument!;
   const all = [...doc.querySelectorAll('*')];
 
-  // Pseudo-elements too: the splash's blurred blobs are ::before/::after, and
+  // Pseudo-elements too: the valley's blurred blobs are ::before/::after, and
   // querySelectorAll cannot see them.
   const tally = (pick: (cs: CSSStyleDeclaration) => string) => {
     const m = new Map<string, number>();
