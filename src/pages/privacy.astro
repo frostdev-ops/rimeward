@@ -1,0 +1,31 @@
+---
+import MarketingLayout from '../layouts/MarketingLayout.astro';
+import '../styles/products.css';
+---
+
+<MarketingLayout title="Privacy — Frostdev" description="How the Frostdev website handles requests, browser storage, account connections, and AdSense site verification." path="/privacy">
+  <article class="product-page reading-page">
+    <p class="article-meta">Updated <time datetime="2026-10-11">October 11, 2026</time></p>
+    <h1>Privacy at Frostdev.</h1>
+    <p>This page describes frostdev.io, including its public project pages and guides and the Rimeward service reached through this site. Other project websites and self-hosted installations have their own operators and configuration.</p>
+
+    <h2>Visiting the public site</h2>
+    <p>Our hosting and network services process information needed to deliver and protect the site, such as your IP address, requested URL and browser request information. The site uses Cloudflare for network delivery and security. See <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a> for its handling of that information.</p>
+    <p>The interface uses browser storage for preferences such as your theme and temporary navigation state. Signed-in services use session cookies to recognize your account; sign-in and desktop connection flows also use temporary cookies. Blocking this storage may affect those features.</p>
+
+    <h2>Accounts and connected services</h2>
+    <p>When you sign in, the service stores account and session information. If you connect mail, calendars, Notion or other integrations, the application stores connection credentials and accesses the data needed for the features you choose. Requests to those providers are also subject to their policies.</p>
+    <p>Rime sends the conversation and tool context needed for a response to the model provider serving that request. This can include attachments or file content you bring into the conversation. Consider that provider's data policy before sharing sensitive information.</p>
+
+    <h2>Local projects and remote access</h2>
+    <p>Rimeward desktop project folders remain on their owning computer. Connecting a trusted server can route live tool requests to that desktop and synchronize shared Rime conversation history, attachments and tool output. Local project storage does not mean that content included in a synchronized conversation stays only on the desktop.</p>
+    <p>Browser profiles and retained downloads belong to the runtime running the Browser ward. Self-hosted Rimeward operators are responsible for their own server access, storage, backups and retention.</p>
+
+    <h2>Google AdSense</h2>
+    <p>The public site currently contains AdSense ownership metadata and an <a href="/ads.txt">ads.txt authorization file</a>. These identify the publisher; the site does not currently load Google's ad-serving script or display Google ads.</p>
+    <p>If Google ads are enabled in the future, third-party vendors, including Google, may use cookies to serve ads based on prior visits to this and other websites. Google's advertising cookies allow it and its partners to personalize ads. You can manage or opt out of personalized Google advertising in <a href="https://myadcenter.google.com/">My Ad Center</a>, and find other participating vendors' choices at <a href="https://www.aboutads.info/choices/">YourAdChoices</a>. Advertising and any required consent controls will need to be configured before ad delivery begins.</p>
+
+    <h2>Your choices and questions</h2>
+    <p>You can manage site cookies and storage in your browser, disconnect integrations in the application, and revoke provider access in the provider's account settings. For questions about information held by the frostdev.io service, or to request access or deletion, contact <a href="mailto:admin@frostdev.io">admin@frostdev.io</a>. For another self-hosted installation, contact its operator.</p>
+  </article>
+</MarketingLayout>

@@ -1,0 +1,19 @@
+User-agent: *
+Allow: /$
+Allow: /rimeward$
+Allow: /rimeward/$
+Allow: /crosspane$
+Allow: /crosspane/$
+Allow: /rimewire$
+Allow: /rimewire/$
+Allow: /guides$
+Allow: /guides/
+Allow: /privacy$
+Allow: /privacy/$
+Allow: /ads.txt$
+Allow: /_astro/
+Allow: /projects/
+Allow: /brand/
+Disallow: /
+
+Sitemap: https://frostdev.io/sitemap.xml

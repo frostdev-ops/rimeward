@@ -1,0 +1,39 @@
+---
+import MarketingLayout from '../../layouts/MarketingLayout.astro';
+import '../../styles/products.css';
+---
+
+<MarketingLayout title="Build your first Rimeward project workspace — Frostdev" description="A practical Rimeward guide: open a local project, connect Editor, Terminal and Rime, review a change, and understand where your files and model calls run." path="/guides/rimeward-first-workspace">
+  <article class="product-page reading-page">
+    <p class="article-meta"><a href="/guides">All guides</a> · By Frostdev · Updated <time datetime="2026-10-11">October 11, 2026</time></p>
+    <h1>Build your first Rimeward project workspace.</h1>
+    <p>A useful first workspace has one folder and a few tools that share it. For this walkthrough, use a small project you can safely edit, with a text file and a Git repository if you want to inspect a diff. The goal is to open the file, make one change, run a check, and understand where each action happens.</p>
+
+    <h2>1. Start on the computer that owns the project</h2>
+    <p>Install the desktop app from <a href="https://github.com/frostdev-ops/rimeward/releases">Rimeward's releases</a>, checking the release's platform requirements first. The installer bundles Node and Chromium. Your project's own tools, Git and optional CLI agents are separate installations.</p>
+    <p>On the welcome screen, choose <strong>Start right here</strong>, then <strong>Open or create a project</strong>. Approve the folder you want to use. You can work locally without connecting a Rimeward server; a remote connection is a later choice.</p>
+
+    <h2>2. Give the tools the same Workspace</h2>
+    <p>Use <strong>Edit → Add ward</strong> to add a Workspace and the Editor, Terminal and Rime tools you need. A ward is a tool on a page; the Workspace supplies its folders. Select your primary folder in the Workspace. If the project has an instruction file such as <code>AGENTS.md</code>, select it explicitly. Leaving that selection empty loads no instruction file from the folder.</p>
+    <p>Connect each tool using <strong>Connect a ward…</strong>, its <strong>Workspace connection…</strong> control, or a Workspace Leyline. A tool has one Workspace. Putting tools on the same page does not itself connect their folders.</p>
+    <p>Check the terminal's owner label and working directory before running anything. Unlinked tools use a default workspace, which may differ from the project you intended. When a connected primary folder is offline, its Workspace is unavailable.</p>
+
+    <h2>3. Make a change you can inspect</h2>
+    <ol>
+      <li>Open a text file in the Editor's explorer, or use <strong>Cmd/Ctrl+P</strong> to find it.</li>
+      <li>Change one sentence and save with <strong>Cmd/Ctrl+S</strong>. Formatting changes the buffer; save afterward to write it to disk.</li>
+      <li>Open a shell in Terminal and run the project's documented check. The bundled editor's diagnostics do not replace cross-file type checks or project tests.</li>
+      <li>Use Changes to review the Git diff, if the folder is a repository. Confirm that only the intended file changed.</li>
+    </ol>
+    <p>If a file changes outside Rimeward while your buffer has edits, use <strong>Compare changes</strong> to choose which version to keep. Recovery history helps with interruptions; keep normal Git commits and backups for durable recovery.</p>
+
+    <h2>4. Add Rime when you need it</h2>
+    <p>For a standalone desktop, open <strong>Account → Agent</strong> and connect a supported provider. A new Rime response needs that connection; the editor, terminal and layout tools do not need model credits. A terminal running Codex or Claude Code needs that CLI installed and signed in separately.</p>
+    <p>Try a bounded request: “Explain this file and suggest one improvement. Wait for me to review it before changing anything.” Inspect the answer and action trail, then use the same file review and project checks when you approve an edit.</p>
+
+    <h2>Before you leave</h2>
+    <p>Save your buffers and inspect running terminal sessions. Closing a terminal tab hides its view and does not end its process. Use <strong>… → Task manager…</strong> to find hidden sessions and end work you no longer need.</p>
+    <p>Your project folders stay on their computer. If you later connect a trusted server, shared Rime history, attachments and tool output can pass through it. That distinction matters when a conversation includes private file content.</p>
+    <p>Continue with the <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Workspace">workspace reference</a>, <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup">installation requirements</a>, or <a href="/rimeward">Rimeward overview</a>.</p>
+  </article>
+</MarketingLayout>

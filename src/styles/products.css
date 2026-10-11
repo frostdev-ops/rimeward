@@ -40,6 +40,19 @@
 .product-text-link { display: inline-block; color: var(--product-accent); font-size: 0.85rem; margin-top: 1.25rem; }
 .product-text-link:hover { color: #e2f8ff; }
 .product-page a:focus-visible { outline: 2px solid var(--product-accent); outline-offset: 5px; }
+.reading-page { max-width: 50rem; margin-top: 1.5rem; margin-bottom: 1.5rem; padding-top: 2rem; padding-bottom: 2rem; border: 1px solid #23394e; border-radius: 0.75rem; background: #060d18; color: #b3c8dc; line-height: 1.8; }
+.reading-page h1 { color: #f1f7fc; font-size: clamp(2rem, 5vw, 3rem); font-weight: 600; letter-spacing: -0.04em; line-height: 1.15; margin-bottom: 1.5rem; }
+.reading-page h2 { color: #e8f2fa; font-size: 1.4rem; font-weight: 600; line-height: 1.3; margin: 2.5rem 0 1rem; }
+.reading-page p, .reading-page ul, .reading-page ol, .reading-page pre { margin-bottom: 1.25rem; }
+.reading-page ul, .reading-page ol { padding-left: 1.5rem; }
+.reading-page ul { list-style: disc; }
+.reading-page ol { list-style: decimal; }
+.reading-page li + li { margin-top: 0.75rem; }
+.reading-page a { color: #9be7ff; text-decoration: underline; text-underline-offset: 0.2em; }
+.reading-page strong { color: #e8f2fa; font-weight: 600; }
+.reading-page pre { padding: 1.25rem; border: 1px solid #23394e; border-radius: 0.75rem; background: #0a1725; overflow-x: auto; font-size: 0.8rem; line-height: 1.7; }
+.reading-page :not(pre) > code { color: #c0e6ec; font-size: 0.9em; overflow-wrap: anywhere; }
+.reading-page .article-meta { color: #8fa8c0; font-size: 0.8rem; }
 @media (max-width: 900px) {
   .product-hero { gap: 1.5rem; }
   .product-title { font-size: clamp(2.6rem, 5vw, 3.5rem); }

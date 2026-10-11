@@ -31,14 +31,19 @@ const { title, description, path = '/', image = '/projects/frostdev-wordmark-cry
         <img src="/projects/frostdev-icon-crystal.webp" width="192" height="192" alt="Frostdev" />
       </a>
       <nav aria-label="Main navigation">
-        <a href="https://github.com/frostdev-ops">GitHub</a>
+        <a href="/#projects">Projects</a>
+        <a href="/guides">Guides</a>
         <a href="/login">Sign in <span aria-hidden="true">↗</span></a>
       </nav>
     </header>
     <main id="main"><slot /></main>
     <footer class="marketing-footer">
       <span>© {new Date().getFullYear()} Frostdev</span>
-      <a href="mailto:admin@frostdev.io">Get in touch <span aria-hidden="true">↗</span></a>
+      <nav aria-label="Footer navigation">
+        <a href="https://github.com/frostdev-ops">GitHub</a>
+        <a href="/privacy">Privacy</a>
+        <a href="mailto:admin@frostdev.io">Contact</a>
+      </nav>
     </footer>
   </div>
 </BaseLayout>
@@ -63,7 +68,7 @@ const { title, description, path = '/', image = '/projects/frostdev-wordmark-cry
   a { transition: color 0.2s; }
   a:hover { color: #9be7ff; }
   a:focus-visible { outline: 2px solid #9be7ff; outline-offset: 6px; border-radius: 3px; }
-  .marketing-footer { padding-top: 2.5rem; padding-bottom: 2rem; color: #8fa8c0; }
+  .marketing-footer { flex-wrap: wrap; padding-top: 2.5rem; padding-bottom: 2rem; color: #8fa8c0; }
   .skip-link { position: absolute; left: 1rem; top: -5rem; z-index: 10; background: #060d18; padding: 0.75rem; }
   .skip-link:focus { top: 1rem; }
   @media (max-width: 600px) {

@@ -14,7 +14,7 @@ import { RimewardLockup, RimewardMark } from '../lib/brand.ts';
     <p class="splash-tagline">Work · Play · Create</p>
   </section>
 
-  <section class="project-carousel" aria-label="Frostdev projects">
+  <section class="project-carousel" id="projects" aria-label="Frostdev projects">
     <div class="projects" role="group" aria-label="Project carousel">
       <div class="project-ring">
         <a class="project rimeward" href="/rimeward" style="--index: 0">
@@ -72,9 +72,21 @@ import { RimewardLockup, RimewardMark } from '../lib/brand.ts';
     </div>
     <p id="carousel-help" class="carousel-hint">Drag or swipe to explore<span class="sr-only">. Use arrow keys to browse. Press Space to pause or resume.</span></p>
   </section>
+
+  <section class="hub-summary" aria-labelledby="about-title">
+    <h2 id="about-title">Tools you can make your own.</h2>
+    <p>Frostdev builds open-source software for everyday work and play. Rimeward brings projects, notes, browsers and AI into one workspace. Crosspane connects the computers on your desk. Rimewire keeps an agent team's plans and progress in view. Frostsim and Loothing help World of Warcraft players compare their characters and organize their guilds.</p>
+    <p>Explore each project for its current features, platform requirements and source. Our guides walk through real workflows, explain the choices involved, and show how to check that your setup works.</p>
+    <a href="/guides">Find your first workflow <span aria-hidden="true">→</span></a>
+  </section>
 </MarketingLayout>
 
 <style>
+  .hub-summary { position: relative; z-index: 1; max-width: 48rem; margin: 2rem auto 0; padding: 2rem 2rem 3rem; color: #b3c8dc; font-size: 0.95rem; line-height: 1.8; }
+  .hub-summary h2 { color: #e8f2fa; font-size: clamp(1.6rem, 4vw, 2rem); font-weight: 600; letter-spacing: -0.03em; margin-bottom: 1rem; }
+  .hub-summary p + p { margin-top: 1rem; }
+  .hub-summary a { display: inline-block; color: #9be7ff; margin-top: 1.25rem; }
+  .hub-summary a:focus-visible { outline: 2px solid #9be7ff; outline-offset: 5px; }
   .hub-hero {
     min-height: 0;
     padding: clamp(2rem, 5vh, 3.5rem) 1.5rem;

@@ -92,7 +92,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
     });
   }
   if (needsSetup() && ['/', '/login'].includes(pathname)) return context.redirect('/setup',303);
-  if (['/', '/rimeward', '/rimeward/', '/crosspane', '/crosspane/', '/rimewire', '/rimewire/'].includes(pathname)) return next();
+  if (['', '/rimeward', '/crosspane', '/rimewire', '/guides', '/guides/rimeward-first-workspace', '/guides/crosspane-two-computers', '/guides/rimewire-agent-handoffs', '/privacy', '/robots.txt', '/sitemap.xml'].includes(pathname.replace(/\/$/, ''))) return next();
   // Only the claim step is public, and only while there is nobody to claim it:
   // every later wizard step is an ADMIN_PREFIXES page with a real session.
   if (pathname === '/setup' && needsSetup()) return next();

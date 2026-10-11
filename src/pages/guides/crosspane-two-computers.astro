@@ -1,0 +1,41 @@
+---
+import MarketingLayout from '../../layouts/MarketingLayout.astro';
+import '../../styles/products.css';
+---
+
+<MarketingLayout title="Connect a Mac and Linux desk with Crosspane — Frostdev" description="Set up a two-computer Crosspane desk: pair machines, choose permissions, align displays, check input control, and try a projected window." path="/guides/crosspane-two-computers">
+  <article class="product-page reading-page">
+    <p class="article-meta"><a href="/guides">All guides</a> · By Frostdev · Updated <time datetime="2026-10-11">October 11, 2026</time></p>
+    <h1>Connect a Mac and Linux desk with Crosspane.</h1>
+    <p>Crosspane lets the keyboard and mouse on one computer drive another and can bring an individual application window to a different screen. Start by getting input control working between two machines. Window projection and clipboard sharing are separate choices.</p>
+    <p>This guide follows the Mac and Hyprland Linux workflow. Crosspane is in early development, so read the <a href="https://github.com/frostdev-ops/crosspane/blob/master/docs/running.md">current running guide</a> for build requirements and platform limits before installing. Run the agent in your desktop user session, never as root.</p>
+
+    <h2>1. Check the connection and permissions</h2>
+    <p>Put both computers on a network where they can reach each other. Crosspane uses direct peer connections. On Linux, allow its UDP agent and pairing ports from your local network as described in the running guide; a working internet connection alone does not prove the two machines can connect.</p>
+    <p>On the Mac, check Crosspane under <strong>System Settings → Privacy &amp; Security</strong>. Local Network permits connections; Accessibility permits input injection; Input Monitoring permits capturing keyboard and mouse input. Screen &amp; System Audio Recording is needed for capturing windows.</p>
+    <p>Use the tray or menu-bar status and <code>crosspanectl status</code> to see missing permissions. Grant only what you need for the workflow you are trying.</p>
+
+    <h2>2. Pair, then choose what each peer may do</h2>
+    <p>Use <strong>Pair a new machine…</strong> from the tray or the Settings pairing tab. Compare the pairing code on both computers before accepting. A nearby device is not a trusted peer until you complete pairing.</p>
+    <p>In <strong>Settings → Machines</strong>, inspect the paired computer's permissions. Input control, sharing, browsing windows and presenting windows are separate capabilities. Give the peer input permission for the first check. Leave clipboard sharing off until you decide you want it in each direction.</p>
+
+    <h2>3. Match the layout to your physical desk</h2>
+    <p>Open <strong>Settings → Layout</strong>. Drag the machines so their displays match where they sit, then choose <strong>Apply</strong>. The pointer crosses at touching edges between displays on different machines.</p>
+    <p>If the Mac sits to the left of your Linux display, place it there in the layout. Test a short crossing near the middle of the shared edge first. If crossing happens on the wrong side or nowhere at all, check the layout and permissions before changing unrelated settings.</p>
+
+    <h2>4. Test control and the way back</h2>
+    <ol>
+      <li>Open a disposable text editor on the target computer.</li>
+      <li>Move the pointer through the touching display edge. Confirm the control notice names the expected peer.</li>
+      <li>Type a short line and check it appears on the target.</li>
+      <li>Choose <strong>Take input back</strong> in the tray or run <code>crosspanectl release</code>.</li>
+    </ol>
+    <p><code>crosspanectl panic</code> ends every session and disarms edge crossing. Use <code>crosspanectl rearm</code> when you are ready to enable it again. Learn that recovery path before using Crosspane during important work.</p>
+
+    <h2>5. Try one projected window</h2>
+    <p>Use <strong>Show a window of the peer here</strong> or the Windows tab in Settings. The source computer must permit browsing its windows. Choose an ordinary app window first, with no private content or unsaved form.</p>
+    <p>The application continues running on its source computer. Mac window projection mirrors the source by default; it does not transfer the application or its files. Close the projected window or return it from the tray when you finish.</p>
+    <p>If a connection drops, Crosspane releases held keys and buttons. A projection can briefly retain its last picture while waiting to reconnect, so a visible frame is not proof that the peer is still responding. Check status before continuing to type.</p>
+    <p>Find the full configuration, clipboard options and troubleshooting steps in the <a href="https://github.com/frostdev-ops/crosspane/blob/master/docs/running.md">running reference</a>, or return to the <a href="/crosspane">Crosspane overview</a>.</p>
+  </article>
+</MarketingLayout>

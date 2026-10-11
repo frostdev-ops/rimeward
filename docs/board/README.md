@@ -130,7 +130,7 @@ delivered milestones and do not identify active work.
 | RIME-40 | Automate Homebrew cask updates | macOS | RIME-39 | Merged | main | [PR #7](https://github.com/frostdev-ops/rimeward/pull/7), [publication](https://github.com/frostdev-ops/rimeward/actions/runs/36299392704) | Live cask points to 1.0.17; subsequent release updates require verification. |
 | RIME-41 | Repository Arch package and AUR publishing workflow | Linux | RIME-39 | Merged | main | [PR #11](https://github.com/frostdev-ops/rimeward/pull/11), 06b8e11 | Versioned packaging/workflow merged; public AUR publication remains separate. |
 | RIME-44 | Make Frostdev the central project hub and product pages | Web | — | Merged | main | [PR #15](https://github.com/frostdev-ops/rimeward/pull/15), 82abf2c; journal ready 2026-10-10 | Hub, public product pages and actual-interface animated examples accepted and deployed. Website-only publication does not establish a native release. |
-| RIME-45 | AdSense site ownership verification metadata | Web | — | Merged | main | [PR #12](https://github.com/frostdev-ops/rimeward/pull/12), f94ed5e | Verification metadata/ads.txt merged; advertising delivery and Google review were not checked by this survey. |
+| RIME-45 | AdSense ownership and site review | Web | — | Blocked | dev/1.0.19 | [PR #12](https://github.com/frostdev-ops/rimeward/pull/12), f94ed5e; [review follow-up and validation](../adsense-review.md) | October 9 Low value content rejection; ownership/ads.txt accepted. Guides, navigation, privacy and crawlability fix committed. Web/auth checks pass; remote smoke also fails on unchanged parent. Native release CI blocks promotion; website publication and Google re-review remain required. No ad serving enabled. |
 
 ### Remaining delivery
 
