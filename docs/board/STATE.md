@@ -731,6 +731,14 @@ below is separately verified. Human feature/platform acceptance remains open.
   Source/Cargo identity checks pass locally; PowerShell/SDK execution, actual
   MSVC native tests, runtime and NSIS/MSI checks require fresh Windows CI.
 
+- Independent immutable reviews accept the PTY correction at `f518b6b` and
+  Windows native-test preparation at `ad0a1f3`, with no remaining findings in
+  their assigned scopes. The PTY reviewer independently repeats its focused
+  regression. The Windows review confirms original build-script restoration,
+  exact artifact selection, bounded manifest handling and workflow failure
+  preservation; actual PowerShell/SDK/native execution remains a CI gate.
+  The next candidate retains Windows Lens refusal and the public Mac allowlist.
+
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`
 on an implementation's acceptance package until that package's named checks pass.
 Later progress or a blocker reopens a package. Persist settled status/evidence in
