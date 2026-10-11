@@ -9,6 +9,11 @@ use tokio::{
 };
 
 pub struct Runtime(pub Arc<Mutex<Option<Child>>>);
+struct LensRequest {
+    control: bool,
+    source: bool,
+    cancellation: Arc<crate::lens::request::Cancellation>,
+}
 
 /// Every line that reaches the Node child's stdin — desktop replies, lens
 /// signals and the shutdown request — goes through this one channel, so
@@ -407,6 +412,8 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
     let desktop_slots = Arc::new(tokio::sync::Semaphore::new(16));
     // The lens and its helper get their own pool so they cannot starve computer-*.
     let lens_slots = Arc::new(tokio::sync::Semaphore::new(8));
+    let requests: Arc<std::sync::Mutex<std::collections::HashMap<u64, LensRequest>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     while let Some(line) = lines.next_line().await? {
         let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
@@ -483,25 +490,102 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
                 };
                 app.state::<Stdin>().send(reply.to_string())?;
             }
+            Some("cancel") => {
+                if let Some(id) = message["id"].as_u64() {
+                    if let Some(request) = requests.lock().unwrap().get(&id) {
+                        request.cancellation.cancel();
+                    }
+                }
+            }
             Some("desktop") => {
-                // Never wait for media, input or a dialog before reading vault/navigation.
-                let lens = message["op"].as_str().is_some_and(lens_op);
+                let op = message["op"].as_str().unwrap_or("");
+                let lens = lens_op(op);
+                let control = lens && crate::lens::request::control(op);
+                let source = lens
+                    && !control
+                    && (!op.starts_with("helper-") || message["value"]["ref"].is_string());
+                let cancellation = crate::lens::request::Cancellation::new();
+                let generation = app
+                    .try_state::<Arc<crate::lens::Lens>>()
+                    .map(|lens| lens.request_generation());
+                let session = app
+                    .try_state::<Arc<crate::lens::Lens>>()
+                    .and_then(|lens| lens.request_session());
+                let id = message["id"].as_u64().unwrap_or(0);
+                if lens {
+                    let mut requests = requests.lock().unwrap();
+                    let count = requests
+                        .values()
+                        .filter(|request| request.control == control)
+                        .count();
+                    if count >= if control { 4 } else { 64 } || requests.contains_key(&id) {
+                        let _ = app.state::<Stdin>().send(serde_json::json!({"id": id, "error": "Desktop is busy; operation was not started"}).to_string());
+                        continue;
+                    }
+                    if matches!(op, "lens-stop" | "lens-pause")
+                        || (op == "lens-start"
+                            && (message["value"]["consented"] != true
+                                || message["value"]["active"] == false
+                                || message["value"]["paused"] == true))
+                    {
+                        for request in requests.values() {
+                            if request.source {
+                                request.cancellation.cancel();
+                            }
+                        }
+                    }
+                    requests.insert(
+                        id,
+                        LensRequest {
+                            control,
+                            source,
+                            cancellation: cancellation.clone(),
+                        },
+                    );
+                }
                 let slot = (!lens).then(|| desktop_slots.clone().try_acquire_owned().ok());
                 let lens_slots = lens_slots.clone();
+                let requests = requests.clone();
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    // A lens op queues for one of the lens's own slots rather
-                    // than being refused on the spot: it carries an absolute
-                    // deadline, so the wait is bounded by the caller's clock,
-                    // and an op whose deadline passed meanwhile is dropped.
-                    let permit = match slot {
-                        Some(slot) => slot,
-                        None => lens_slots.acquire_owned().await.ok(),
+                    // Controls and cancellation never wait behind reads. A queued
+                    // read must still own its request and capture generation.
+                    let permit = if control {
+                        Ok(None)
+                    } else if let Some(slot) = slot {
+                        slot.map(Some)
+                            .ok_or("Desktop is busy; operation was not started".to_string())
+                    } else {
+                        let deadline = message["deadline"]
+                            .as_i64()
+                            .unwrap_or_else(|| now_ms() + 30_000);
+                        crate::lens::request::permit(
+                            lens_slots,
+                            cancellation.clone(),
+                            if source { session } else { None },
+                            deadline,
+                        )
+                        .await
+                        .map(Some)
                     };
                     let result = match permit {
-                        Some(_permit) => desktop_request(&app, &message).await,
-                        None => Err("Desktop is busy; operation was not started".into()),
+                        Ok(_permit) => {
+                            let stale =
+                                source
+                                    && app.try_state::<Arc<crate::lens::Lens>>().is_some_and(
+                                        |lens| generation != Some(lens.request_generation()),
+                                    );
+                            if cancellation.is_cancelled() || stale {
+                                Err("cancelled".into())
+                            } else {
+                                desktop_request(&app, &message, cancellation).await
+                            }
+                        }
+                        Err(error) => Err(error),
                     };
+                    if lens {
+                        requests.lock().unwrap().remove(&id);
+                    }
                     let reply = match result {
                         Ok(value) => serde_json::json!({"id":message["id"],"value":value}),
                         Err(error) => serde_json::json!({"id":message["id"],"error":error}),
@@ -513,6 +597,18 @@ pub async fn launch(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Se
         }
     }
     runtime_diagnostic(&diagnostics, "runtime-disconnected");
+    for request in requests.lock().unwrap().values() {
+        request.cancellation.cancel();
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(lens) = app
+        .try_state::<Arc<crate::lens::Lens>>()
+        .map(|lens| Arc::clone(&lens))
+    {
+        if let Err(reason) = lens.stop(None).await {
+            eprintln!("lens: disconnect teardown: {reason}");
+        }
+    }
     crate::computer::disconnect();
     if app.state::<Startup>().0.lock().unwrap().stage != "ready" {
         return Err("Local runtime disconnected before startup completed".into());
@@ -585,6 +681,7 @@ fn lens_op(op: &str) -> bool {
 async fn desktop_request(
     app: &AppHandle,
     message: &serde_json::Value,
+    cancellation: Arc<crate::lens::request::Cancellation>,
 ) -> Result<serde_json::Value, String> {
     use tauri_plugin_dialog::DialogExt;
     use tauri_plugin_opener::OpenerExt;
@@ -598,7 +695,7 @@ async fn desktop_request(
             if should_drop(now_ms(), deadline) {
                 return Err("deadline".into());
             }
-            crate::lens::desktop_request(app, op, value, deadline).await
+            crate::lens::desktop_request_cancel(app, op, value, deadline, cancellation).await
         }
         Some(op) if op.starts_with("computer-app") => {
             crate::background_apps::request(op, value).await
@@ -676,6 +773,15 @@ async fn desktop_request(
     }
 }
 pub async fn shutdown(app: &AppHandle) {
+    #[cfg(not(target_os = "macos"))]
+    if let Some(lens) = app
+        .try_state::<Arc<crate::lens::Lens>>()
+        .map(|lens| Arc::clone(&lens))
+    {
+        if let Err(reason) = lens.stop(None).await {
+            eprintln!("lens: shutdown teardown: {reason}");
+        }
+    }
     // Stop capturing before asking the core to wind down: the final `status`
     // signal goes out on the same channel, ahead of the shutdown line, so Node
     // sees `stopped` rather than losing the lens with the pipe. The helper's

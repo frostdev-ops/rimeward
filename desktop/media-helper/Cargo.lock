@@ -1657,6 +1657,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "gstreamer-sdp",
+ "gstreamer-video",
  "gstreamer-webrtc",
  "screencapturekit",
  "serde_json",

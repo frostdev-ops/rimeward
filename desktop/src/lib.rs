@@ -10,9 +10,7 @@ mod chromium;
 mod commands;
 mod computer;
 mod input_guardian;
-// Off macOS the lens is a stub that answers `unavailable`; the capture,
-// accessibility and OCR stages are platform work of their own.
-#[cfg_attr(not(target_os = "macos"), path = "lens/unsupported.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "lens/portable.rs")]
 mod lens;
 #[cfg(target_os = "macos")]
 mod permissions;
@@ -69,7 +67,7 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init());
-    // The overlay pool's interactive hotkey. macOS only, because the pool is.
+    // The Mac pool's existing hotkey; portable pool setup is optional.
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
     let app = builder
@@ -168,6 +166,14 @@ pub fn run() {
                     }
                     Err(error) => eprintln!("overlay: pool unavailable: {error}"),
                 }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let resources = runtime::resources(app.handle())?;
+                let lens = lens::Lens::init(lines.clone(), &resources.join("ocr"));
+                app.manage(lens.clone());
+                tauri::async_runtime::spawn(lens.bridge.clone().run_writer());
+                lens.attach(app.handle(), &resources.join("media"));
             }
             app.manage(runtime::Stdin::new(lines, reader));
             let handle = app.handle().clone();

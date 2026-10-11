@@ -24,29 +24,42 @@ const pending = new Map();
 let serial = 0;
 // The deadline goes on the wire as an absolute time (the native side drops an
 // op still queued then) and drives the local timer, so one clock governs both.
-const nativeRequest = (type, op, value, deadlineMs = type === "desktop" ? 120000 : 15000) =>
+const nativeRequest = (type, op, value, deadlineMs = type === "desktop" ? 120000 : 15000, signal) =>
   new Promise((resolve, reject) => {
-    if (pending.size >= 32 || process.stdout.writableLength > 1024 * 1024) {
+    const lens = type === 'desktop' && /^(lens-|overlay-|helper-)/.test(op);
+    const control = lens && ['lens-start', 'lens-stop', 'lens-pause', 'lens-resume', 'lens-status', 'overlay-clear'].includes(op);
+    if (signal?.aborted) { reject(new Error('Desktop request cancelled')); return; }
+    // Four bounded control slots remain available when reads fill ordinary admission.
+    const controls = [...pending.values()].filter((request) => request.control).length;
+    if ((control ? controls >= 4 : pending.size - controls >= 32) || (!control && process.stdout.writableLength > 1024 * 1024)) {
       reject(new Error("Desktop is busy. Retry after the current operation finishes."));
       return;
     }
     const id = ++serial;
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
+    const cancel = (message) => {
+      if (!pending.delete(id)) return;
+      cleanup();
+      if (lens) process.stdout.write(`${JSON.stringify({ type: 'cancel', id })}\n`);
+      reject(new Error(message));
+    };
+    const abort = () => cancel('Desktop request cancelled');
     const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error("Desktop request timed out"));
+      cancel('Desktop request timed out');
     }, deadlineMs);
-    pending.set(id, { resolve, reject, timer });
+    pending.set(id, { resolve, reject, cleanup, control });
     const message = `${JSON.stringify({ type, id, op, value, deadline: Date.now() + deadlineMs })}\n`;
-    if (Buffer.byteLength(message) > (op === 'computer-clipboard' ? 12 : op === 'computer-files' ? 6 : 2) * 1024 * 1024) {
+    if (Buffer.byteLength(message) > (control ? 64 * 1024 : (op === 'computer-clipboard' ? 12 : op === 'computer-files' ? 6 : 2) * 1024 * 1024)) {
       pending.delete(id);
-      clearTimeout(timer);
+      cleanup();
       reject(new Error("Desktop request too large"));
       return;
     }
     process.stdout.write(message);
+    signal?.addEventListener('abort', abort, { once: true });
   });
 globalThis.__nativeVault = (op, value) => nativeRequest("vault", op, value);
-globalThis.__nativeDesktop = (op, value, deadlineMs) => nativeRequest("desktop", op, value, deadlineMs);
+globalThis.__nativeDesktop = (op, value, deadlineMs, signal) => nativeRequest("desktop", op, value, deadlineMs, signal);
 // Lens signals are a push, not a reply, and start before the lens runtime is
 // imported: they queue until __lensAttach installs the handler.
 let lensSignal = null;
@@ -75,7 +88,7 @@ lines.on("line", (line) => {
     const p = pending.get(m.id);
     if (!p) return;
     pending.delete(m.id);
-    clearTimeout(p.timer);
+    p.cleanup();
     m.error
       ? p.reject(
           new Error(
@@ -86,7 +99,7 @@ lines.on("line", (line) => {
   } catch {}
 });
 lines.on("close", () => {
-  for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error("Desktop disconnected")); }
+  for (const p of pending.values()) { p.cleanup(); p.reject(new Error("Desktop disconnected")); }
   pending.clear();
   stop();
 });

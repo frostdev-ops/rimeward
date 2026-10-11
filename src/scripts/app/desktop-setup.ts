@@ -193,7 +193,7 @@ const lensForm = required<HTMLFormElement>('#lens-form');
 const lensConsented = required<HTMLInputElement>('#lens-consented');
 const lensStatus = required<HTMLElement>('#lens-status');
 const lensPermission = required<HTMLElement>('#lens-permission');
-type LensConsent = { consented: boolean; paused: boolean; state: string; screen: boolean; ax: boolean; error: string | null };
+type LensConsent = { consented: boolean; paused: boolean; state: string; screen: boolean; ax: boolean; error: string | null; platform?: string };
 async function lensConsent(value?: { consented: boolean }) {
   const response = await fetch('/api/dev/lens-consent', value ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) } : { cache: 'no-store' });
   const data = await response.json();
@@ -203,11 +203,18 @@ async function lensConsent(value?: { consented: boolean }) {
 function showLens(data: LensConsent) {
   lensConsented.checked = data.consented;
   lensPermission.hidden = !data.consented || data.screen;
+  const portable = data.platform === 'windows' || data.platform === 'linux';
+  if (portable) required<HTMLElement>('#lens-description').textContent = data.screen
+    ? 'Rime can read the window you share on this computer — its text, settled and versioned. Nothing is captured until you turn this on. Pause it at any time from the Screen lens ward.'
+    : 'Screen capture is unavailable on this computer. Rime reads a supported capture source only after you turn this on.';
+  lensPermission.textContent = portable ? data.error ?? 'Screen capture is unavailable on this computer.'
+    : 'macOS has not granted Screen Recording to Rimeward yet, so the lens has nothing to read.';
   lensStatus.textContent = !data.consented
     ? 'The screen lens is off. Nothing on this screen is read.'
     : data.screen
       ? `The screen lens is on${data.paused ? ', paused from its ward' : ''} (${data.state}).`
-      : 'Waiting for Screen Recording. Grant it in System Settings, then check again.';
+      : portable ? data.error ?? 'Screen capture is unavailable on this computer.'
+        : 'Waiting for Screen Recording. Grant it in System Settings, then check again.';
 }
 lensForm.onsubmit = event => {
   event.preventDefault();

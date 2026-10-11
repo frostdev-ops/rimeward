@@ -27,7 +27,7 @@ import {
   watchMode,
   watchText,
 } from './gate.ts';
-import type { DescribeQuery, GateDeps, TriageQuery, WatchReport } from './gate.ts';
+import type { DescribeQuery, GateDeps, TriageQuery, VisualCalibration, WatchReport } from './gate.ts';
 import { sqliteStore } from './store.ts';
 import type { Store } from './store.ts';
 import type {
@@ -139,6 +139,9 @@ export interface SourceSnapshot {
 }
 
 export interface Source {
+  /** Separate from text embedding calibration; absent preserves existing sources. */
+  visualCalibration?(): VisualCalibration | undefined;
+  capabilities?(): Partial<Record<'capture' | 'ax' | 'ocr' | 'embed' | 'triage' | 'describe' | 'translate' | 'overlay', boolean>> | undefined;
   /** Live readers, separate from saved cursors. Optional for sources that do
    *  not own a native capture session. */
   demand?(active: boolean): Promise<void>;
@@ -291,6 +294,7 @@ export class LensCore {
     const reembed = next !== undefined && this.#embedderId !== undefined && next !== this.#embedderId;
     if (next !== undefined) this.#embedderId = next;
     for (const consumer of [...this.#consumers.values()]) {
+      if (this.#deps.decider !== decider) return;
       if (consumer.watches.length === 0) continue;
       if (reembed) for (const watch of consumer.watches) delete watch.vector;
       await this.watch(consumer.id);
@@ -352,7 +356,7 @@ export class LensCore {
       const gate = this.#gate();
       // A purely visual change on an otherwise idle source opens the settle
       // window like a text change does.
-      if (d.d >= gate.visualThreshold && outsideLive(this.#liveNow(gate), d.bbox)) this.#bump();
+      if (gate.visualCalibrated !== false && d.d >= gate.visualThreshold && outsideLive(this.#liveNow(gate), d.bbox)) this.#bump();
     },
 
     live: (rects) => {
@@ -434,8 +438,9 @@ export class LensCore {
     const demand = this.#deps.source.demand;
     if (!demand) return { ready: Promise.resolve(), release: () => {} };
     const reader = {};
-    if (this.#readers.size === 0) this.#setDemand(true);
+    const start = this.#readers.size === 0;
     this.#readers.add(reader);
+    if (start) this.#setDemand(true);
     return {
       ready: this.#demand,
       release: () => {
@@ -445,9 +450,14 @@ export class LensCore {
   }
 
   #setDemand(active: boolean): void {
-    this.#demand = this.#demand.then(() => this.#deps.source.demand?.(active)).catch((err: unknown) => {
-      this.feed.offline(err instanceof Error ? err.message : String(err));
+    // A release must reach the source even while its chooser/start is pending.
+    let pending: Promise<void>;
+    try { pending = this.#deps.source.demand?.(active) ?? Promise.resolve(); }
+    catch (err) { pending = Promise.reject(err); }
+    const current = pending.catch((err: unknown) => {
+      if (this.#demand === current) this.feed.offline(err instanceof Error ? err.message : String(err));
     });
+    this.#demand = current;
   }
 
   doc(): Doc {
@@ -517,7 +527,7 @@ export class LensCore {
   #gate(): GateDeps {
     const settings = this.#deps.settings();
     const decider = this.#deps.decider;
-    return gateDefaults({
+    const gate = gateDefaults({
       settleMs: this.#settleMs(),
       minLines: settings.minLines,
       seq: this.#doc.lastSeq(),
@@ -531,6 +541,9 @@ export class LensCore {
       ...(decider?.describe ? { describe: decider.describe } : {}),
       ...(decider?.cloudTriage ? { cloudTriage: decider.cloudTriage } : {}),
     });
+    const visual = this.#deps.source.visualCalibration?.();
+    return visual ? { ...gate, visualThreshold: visual.visualThreshold, liveThreshold: visual.liveThreshold,
+      visualCalibrated: visual.calibrated } : gate;
   }
 
   /** The end of an epoch's opening turn: whatever the source wrote after the
@@ -635,6 +648,7 @@ export class LensCore {
   /** Live regions as of now, trimming the frame history on the way so a region
    *  stops being live once its frames stop arriving. */
   #liveNow(gate: GateDeps): Rect[] {
+    if (gate.visualCalibrated === false) return [];
     const cutoff = this.#clock.now() - FRAME_HISTORY_MS;
     while (this.#frames.length > 0 && (this.#frames[0] as { at: number }).at < cutoff) this.#frames.shift();
     // A region of the window, never the window (LIVE_WHOLE). A source with no
@@ -855,13 +869,16 @@ export class LensCore {
    *  indistinguishable from a live, empty one. */
   async ready(ms = CONNECT_SETTLE_MS): Promise<boolean> {
     const token = this.#connectToken;
-    const connecting = this.#demand.then(() => {
+    const demand = this.#demand;
+    const connecting = demand.then(() => {
+      if (demand !== this.#demand) return false;
       if (token === this.#connectToken) this.#connect();
-      return this.#connecting;
+      const connected = this.#connectToken;
+      return Promise.resolve(this.#connecting).then(() => demand === this.#demand && connected === this.#connectToken);
     });
     let timer: unknown = null;
     const settled = await Promise.race([
-      connecting.then(() => true),
+      connecting,
       new Promise<boolean>((resolve) => {
         timer = this.#hold(this.#clock.setTimeout(() => resolve(false), ms));
       }),
@@ -990,6 +1007,8 @@ export class LensCore {
     return this.#deps.decider?.embedderId;
   }
 
+  capabilities() { return this.#deps.source.capabilities?.(); }
+
   async watch(
     id: string,
     o: { add?: WatchSpec[]; remove?: string[]; minIntervalS?: number } = {}
@@ -1014,32 +1033,37 @@ export class LensCore {
 
     // `Watch.vector` is not persisted (it belongs to whichever model produced
     // it), so every call re-embeds whatever is missing one, in one batch.
-    const embed = this.#deps.decider?.embed;
-    const cal = calibration(this.#deps.decider?.embedderId);
+    const decider = this.#deps.decider;
+    const embed = decider?.embed;
+    const embeddingCal = calibration(decider?.embedderId);
     const pending = consumer.watches.filter((w) => w.spec.for && w.vector === undefined).slice(0, 32);
     if (pending.length > 0 && embed) {
       try {
-        const vectors = await embed(pending.map((w) => watchText(w.spec.for ?? '', cal.score)));
-        this.#embedding = vectors !== null;
-        // Whose space the stored vectors are in, for the next decider swap.
-        if (vectors) this.#embedderId = this.#deps.decider?.embedderId ?? this.#embedderId;
-        if (vectors) {
-          for (const [index, watch] of pending.entries()) {
-            const vector = vectors[index];
-            if (Array.isArray(vector) && vector.length > 0) watch.vector = vector;
+        const vectors = await embed(pending.map((w) => watchText(w.spec.for ?? '', embeddingCal.score)));
+        if (this.#deps.decider === decider) {
+          this.#embedding = vectors !== null;
+          // Whose space the stored vectors are in, for the next decider swap.
+          if (vectors) this.#embedderId = decider?.embedderId ?? this.#embedderId;
+          if (vectors) {
+            for (const [index, watch] of pending.entries()) {
+              const vector = vectors[index];
+              if (Array.isArray(vector) && vector.length > 0) watch.vector = vector;
+            }
           }
         }
       } catch {
-        this.#embedding = false;
+        if (this.#deps.decider === decider) this.#embedding = false;
       }
     } else if (pending.length > 0) {
       this.#embedding = false;
     }
 
+    const cal = calibration(this.#deps.decider?.embedderId);
     const caps = {
       triage: this.#deps.decider?.triage !== undefined,
       describe: this.#deps.decider?.describe !== undefined,
       cloud: this.#deps.decider?.cloudTriage !== undefined,
+      visual: this.#gate().visualCalibrated !== false,
     };
     for (const watch of consumer.watches) {
       // A vector scored against another model's threshold is a guess: an

@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 gst = { package = "gstreamer", version = "=0.25.3", features = ["v1_28"] }
 gst-app = { package = "gstreamer-app", version = "=0.25.2", features = ["v1_28"] }
+gst-video = { package = "gstreamer-video", version = "=0.25.3", features = ["v1_28"] }
 gst-sdp = { package = "gstreamer-sdp", version = "=0.25.3" }
 gst-webrtc = { package = "gstreamer-webrtc", version = "=0.25.2", features = ["v1_28"] }
 gstrswebrtc = { package = "gst-plugin-webrtc", version = "=0.15.3", default-features = false }

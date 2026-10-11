@@ -99,6 +99,7 @@ impl Cover {
     /// deliberately not part of it: a window dragged across the target moves
     /// twice a second, and that is the same cover in a new place rather than
     /// news a consumer needs a fresh header for.
+    #[cfg(any(target_os = "macos", test))]
     pub fn same(a: Option<&Cover>, b: Option<&Cover>) -> bool {
         a.map(|cover| (cover.pid, cover.id)) == b.map(|cover| (cover.pid, cover.id))
     }
@@ -107,6 +108,11 @@ impl Cover {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Kind {
+    Capabilities {
+        platform: String,
+        capabilities: serde_json::Value,
+        visual: serde_json::Value,
+    },
     Frame {
         #[serde(rename = "ref")]
         frame_ref: String,
@@ -269,6 +275,7 @@ impl Bridge {
 
     /// The next stamp in the current epoch. Use it only when the `ref` has to
     /// exist before the signal does; otherwise [`Bridge::emit`] stamps for you.
+    #[cfg(any(target_os = "macos", test))]
     pub fn stamp(&self) -> Stamp {
         let mut queues = self.queues.lock().unwrap();
         self.next(&mut queues)

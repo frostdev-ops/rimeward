@@ -58,16 +58,26 @@ test('guard rejects malformed targets outright', async () => {
   assert.equal((await get(port, 'ftp://example.com/')).status, 400);
 });
 
-test('CONNECT status checks close the upgraded socket even when the response body arrives later', async () => {
+for (const reset of [false, true]) test(reset
+  ? 'CONNECT status checks wait for socket close after a late ECONNRESET'
+  : 'CONNECT status checks close the upgraded socket even when the response body arrives later', async () => {
   let closed: Promise<unknown> | undefined;
+  let resetSeen = false;
   const sockets = new Set<net.Socket>();
-  const server = net.createServer(socket => {
+  const server = net.createServer({ allowHalfOpen: reset }, socket => {
     sockets.add(socket);
-    socket.on('error', () => {}); // its late body write can meet a reset too
-    closed = once(socket, 'close', { signal: AbortSignal.timeout(2000) });
+    socket.on('error', error => { resetSeen ||= (error as NodeJS.ErrnoException).code === 'ECONNRESET'; });
+    // events.once rejects on a late reset before it can observe the socket's close.
+    closed = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('upgraded socket did not close within 2000ms')), 2000);
+      socket.once('close', () => { clearTimeout(timer); resolve(); });
+    });
     socket.once('data', () => {
       socket.write('HTTP/1.1 403 Forbidden\r\ncontent-length: 12\r\n\r\n');
-      const timer = setTimeout(() => socket.end('private host'), 20);
+      const timer = setTimeout(() => {
+        socket.end('private host');
+        if (reset) socket.destroy(Object.assign(new Error('late reset'), { code: 'ECONNRESET' }));
+      }, 20);
       socket.once('close', () => clearTimeout(timer));
     });
   });
@@ -76,6 +86,7 @@ test('CONNECT status checks close the upgraded socket even when the response bod
     assert.equal(await connect((server.address() as net.AddressInfo).port, '127.0.0.1:1'), 403);
     assert.ok(closed);
     await closed;
+    if (reset) assert.equal(resetSeen, true, 'the close observer survives the expected late reset');
   } finally { for (const socket of sockets) socket.destroy(); server.close(); }
 });
 

@@ -8,21 +8,22 @@
 //! GPU power on macOS 26.x, so the overlay is never one full-screen sheet.
 //!
 //! Rust owns placement, the page owns rendering. Rust emits `overlay:show`
-//! `{id, kind, text, w, h, origin}` to one slot window, the page renders and
-//! answers `overlay:ready {id}`, and the window is revealed on that
+//! `{id, generation, kind, text, w, h, origin}` to one slot window, the page renders and
+//! answers `overlay:ready {id, generation}`, and the window is revealed on that
 //! acknowledgement or 100 ms later, whichever comes first.
 
 use super::bridge::{Bridge, Kind, Rect};
-use super::Lens;
+use super::{Lens, OverlaySource};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{
-    AppHandle, Emitter, Listener, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
+#[cfg(target_os = "macos")]
+use tauri::{LogicalPosition, LogicalSize};
 
 /// The pool size. Eight is what the plan fixed: more than any one host asks
 /// for at once, few enough that they all fit in the GPU budget.
@@ -32,6 +33,7 @@ pub const LABELS: [&str; SLOTS] = [
 ];
 
 /// The hotkey that turns click-through off so a card can be clicked.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub const HOTKEY: &str = "CmdOrCtrl+Shift+L";
 /// Registered only while interactive, so Esc is the user's own way back.
 pub const ESCAPE: &str = "Escape";
@@ -56,6 +58,37 @@ const MAX_TEXT: usize = 2_000;
 /// How long a reveal waits for `overlay:ready` before showing anyway.
 const ACK_WAIT: Duration = Duration::from_millis(100);
 const TICK: Duration = Duration::from_millis(500);
+
+/// A refused request never disproves the current native pool. Only an admitted
+/// native placement/proof failure can revoke that source's overlay capability.
+#[cfg(any(test, not(target_os = "macos")))]
+#[derive(Debug, PartialEq)]
+pub(super) enum Failure {
+    Refused(String),
+    Native(String),
+}
+#[cfg(any(test, not(target_os = "macos")))]
+impl Failure {
+    pub(super) fn reason(self) -> String {
+        match self {
+            Self::Refused(reason) | Self::Native(reason) => reason,
+        }
+    }
+}
+#[cfg(any(test, not(target_os = "macos")))]
+impl From<&str> for Failure {
+    fn from(reason: &str) -> Self {
+        Self::Refused(reason.into())
+    }
+}
+#[cfg(target_os = "macos")]
+type ShowResult<T> = Result<T, String>;
+#[cfg(not(target_os = "macos"))]
+type ShowResult<T> = Result<T, Failure>;
+#[cfg(target_os = "macos")]
+type InteractiveResult = ();
+#[cfg(not(target_os = "macos"))]
+type InteractiveResult = Result<(), String>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -173,33 +206,67 @@ pub struct Place {
 }
 
 /// One window in the pool. Free when `id` is `None`.
-struct Slot {
+pub(super) struct Slot {
     label: &'static str,
     id: Option<String>,
+    generation: u64,
+    #[cfg(any(test, not(target_os = "macos")))]
+    source_generation: u64,
+    #[cfg(target_os = "macos")]
     kind: OverlayKind,
+    #[cfg(target_os = "macos")]
     anchor: Anchor,
     /// The size the anchor asked for, before the display clamp.
+    #[cfg(target_os = "macos")]
     size: (f64, f64),
+    #[cfg(target_os = "macos")]
     sticky: bool,
+    #[cfg(target_os = "macos")]
     epoch: u64,
     shown_at: Instant,
     expires_at: Instant,
 }
 
 impl Slot {
+    #[cfg(test)]
+    pub(super) fn live_for_test(id: &str, generation: u64, source_generation: u64) -> Self {
+        let mut slot = Self::new("ov-0");
+        slot.id = Some(id.into());
+        slot.generation = generation;
+        slot.source_generation = source_generation;
+        slot.expires_at = Instant::now() + Duration::from_millis(DEFAULT_TTL_MS);
+        slot
+    }
     fn new(label: &'static str) -> Slot {
         let now = Instant::now();
         Slot {
             label,
             id: None,
+            generation: 0,
+            #[cfg(any(test, not(target_os = "macos")))]
+            source_generation: 0,
+            #[cfg(target_os = "macos")]
             kind: OverlayKind::Card,
+            #[cfg(target_os = "macos")]
             anchor: Anchor::Corner(Corner::Tr),
+            #[cfg(target_os = "macos")]
             size: (CARD_W, CARD_H),
+            #[cfg(target_os = "macos")]
             sticky: false,
+            #[cfg(target_os = "macos")]
             epoch: 0,
             shown_at: now,
             expires_at: now,
         }
+    }
+
+    pub(super) fn can_reveal(&self, id: &str, generation: u64, now: Instant) -> bool {
+        self.id.as_deref() == Some(id) && self.generation == generation && self.expires_at > now
+    }
+
+    fn invalidate(&mut self) {
+        self.id = None;
+        self.generation = self.generation.wrapping_add(1);
     }
 }
 
@@ -208,8 +275,12 @@ pub struct Overlay {
     bridge: Arc<Bridge>,
     slots: Mutex<Vec<Slot>>,
     interactive: AtomicBool,
+    #[cfg(not(target_os = "macos"))]
+    interactive_incomplete: AtomicBool,
     /// Ids the page has acknowledged and no reveal has consumed yet.
-    ready: Mutex<HashSet<String>>,
+    ready: Mutex<HashSet<(String, u64)>>,
+    #[cfg(target_os = "linux")]
+    hotkey: AtomicBool,
 }
 
 impl Overlay {
@@ -221,21 +292,42 @@ impl Overlay {
             bridge: lens.bridge.clone(),
             slots: Mutex::new(LABELS.iter().map(|label| Slot::new(label)).collect()),
             interactive: AtomicBool::new(false),
+            #[cfg(not(target_os = "macos"))]
+            interactive_incomplete: AtomicBool::new(false),
             ready: Mutex::new(HashSet::new()),
+            #[cfg(target_os = "linux")]
+            hotkey: AtomicBool::new(false),
         });
         // The capture filter excludes the pool by window id, so the ids are
         // collected as the windows are made and handed to the lens before any
         // stream could be built on them.
+        #[cfg(target_os = "macos")]
         let mut windows = Vec::with_capacity(SLOTS);
         for label in LABELS {
+            #[cfg(target_os = "macos")]
             windows.extend(slot_window(app, label).map_err(|error| error.to_string())?);
+            #[cfg(not(target_os = "macos"))]
+            slot_window(app, label).map_err(|error| error.to_string())?;
         }
+        #[cfg(target_os = "macos")]
         lens.set_overlay_windows(windows);
+        #[cfg(target_os = "linux")]
+        lens.register_overlay_windows(
+            LABELS
+                .iter()
+                .filter_map(|label| app.get_webview_window(label))
+                .collect(),
+        );
         let acked = overlay.clone();
         app.listen("overlay:ready", move |event| {
-            let Some(id) = serde_json::from_str::<Value>(event.payload())
+            let Some((id, generation)) = serde_json::from_str::<Value>(event.payload())
                 .ok()
-                .and_then(|value| value["id"].as_str().map(str::to_owned))
+                .and_then(|value| {
+                    Some((
+                        value["id"].as_str()?.to_owned(),
+                        value["generation"].as_u64()?,
+                    ))
+                })
             else {
                 return;
             };
@@ -243,7 +335,7 @@ impl Overlay {
             // Bounded: a page that acknowledged ids nobody asked for cannot
             // grow this without limit.
             if ready.len() < SLOTS * 4 {
-                ready.insert(id);
+                ready.insert((id, generation));
             }
         });
         let ticking = overlay.clone();
@@ -254,22 +346,65 @@ impl Overlay {
                 ticking.tick();
             })
             .map_err(|error| error.to_string())?;
-        let hotkey = overlay.clone();
+        #[cfg(target_os = "macos")]
+        {
+            let hotkey = overlay.clone();
+            use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+            app.global_shortcut()
+                .on_shortcut(HOTKEY, move |_, _, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    // The macOS hotkey handler runs on the main thread, and both
+                    // `set_ignore_cursor_events` and `unregister` block on it.
+                    let hotkey = hotkey.clone();
+                    std::thread::spawn(move || {
+                        hotkey.set_interactive(!hotkey.interactive());
+                    });
+                })
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(overlay)
+    }
+
+    /// Portable registration follows a real pool proof and remains optional.
+    /// Run off main; a later refusal prevents the callback from changing input.
+    #[cfg(target_os = "linux")]
+    pub fn enable_hotkey(self: &Arc<Self>) {
+        if !self
+            .app
+            .try_state::<Arc<Lens>>()
+            .is_some_and(|lens| lens.overlay_available())
+        {
+            return;
+        }
+        if self.hotkey.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let overlay = self.clone();
         use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-        app.global_shortcut()
-            .on_shortcut(HOTKEY, move |_, _, event| {
+        if self
+            .app
+            .global_shortcut()
+            .on_shortcut(HOTKEY, move |app, _, event| {
                 if event.state() != ShortcutState::Pressed {
                     return;
                 }
-                // The macOS hotkey handler runs on the main thread, and both
-                // `set_ignore_cursor_events` and `unregister` block on it.
-                let hotkey = hotkey.clone();
-                std::thread::spawn(move || {
-                    hotkey.set_interactive(!hotkey.interactive());
-                });
+                let enabled = app
+                    .try_state::<Arc<Lens>>()
+                    .is_some_and(|lens| lens.overlay_available());
+                if !enabled {
+                    return;
+                }
+                let overlay = overlay.clone();
+                if let Some(lens) = app.try_state::<Arc<Lens>>() {
+                    lens.queue_interactive(!overlay.interactive());
+                }
             })
-            .map_err(|error| error.to_string())?;
-        Ok(overlay)
+            .is_err()
+        {
+            self.hotkey.store(false, Ordering::Release);
+        }
     }
 
     pub fn interactive(&self) -> bool {
@@ -288,12 +423,69 @@ impl Overlay {
         json!({ "shown": shown, "interactive": self.interactive() })
     }
 
+    /// Slot mutation, placement, payload and visibility share one main-thread
+    /// order. No slot lock crosses dispatch; Wry executes inline on that thread.
+    fn on_main<T: Send + 'static>(
+        self: &Arc<Self>,
+        operation: impl FnOnce(&Arc<Self>) -> T + Send + 'static,
+    ) -> Result<T, String> {
+        let overlay = self.clone();
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        self.app
+            .run_on_main_thread(move || {
+                let result = operation(&overlay);
+                let _ = send.send(result);
+            })
+            .map_err(|_| "overlay-window-gone")?;
+        #[cfg(target_os = "macos")]
+        return receive.recv().map_err(|_| "overlay-window-gone".into());
+        #[cfg(not(target_os = "macos"))]
+        receive
+            .recv_timeout(Duration::from_millis(500))
+            .map_err(|_| "overlay-timeout".into())
+    }
+
     /// Places, tells the page what to draw and reveals on the acknowledgement.
     /// Never fails for lack of a slot: the oldest one is evicted and named in
     /// the receipt.
-    pub fn show(self: &Arc<Self>, req: ShowReq, place: Place) -> Result<Value, String> {
-        let (frame, size) = frame_for(&req, place);
-        let (index, evicted) = {
+    pub(super) fn show(
+        self: &Arc<Self>,
+        req: ShowReq,
+        place: Place,
+        source: OverlaySource,
+    ) -> Result<Value, String> {
+        #[cfg(not(target_os = "macos"))]
+        let cancellation = source.cancellation.clone();
+        #[cfg(target_os = "macos")]
+        let result = self
+            .on_main(move |overlay| source.publish(|| overlay.show_in(req, place, source.clone())));
+        #[cfg(not(target_os = "macos"))]
+        let result = self.on_main(move |overlay| {
+            let result = source.publish(|| overlay.show_in(req, place, source.clone()));
+            source.failed(&result);
+            result.map_err(Failure::reason)
+        });
+        #[cfg(not(target_os = "macos"))]
+        if result.is_err() {
+            cancellation.cancel();
+        }
+        result?
+    }
+
+    fn show_in(
+        self: &Arc<Self>,
+        req: ShowReq,
+        place: Place,
+        source: OverlaySource,
+    ) -> ShowResult<Value> {
+        if req.epoch != self.bridge.epoch() {
+            return Err("stale-epoch".into());
+        }
+        #[cfg(target_os = "macos")]
+        let (frame, _size) = frame_for(&req, place);
+        #[cfg(not(target_os = "macos"))]
+        let frame = native_frame(&req, place)?;
+        let (index, evicted, generation) = {
             let mut slots = self.slots.lock().unwrap();
             let index = pick(&slots, &req.id);
             let evicted = slots[index]
@@ -302,32 +494,66 @@ impl Overlay {
                 .filter(|id| *id != &req.id)
                 .cloned();
             let now = Instant::now();
+            let generation = slots[index].generation.wrapping_add(1);
             slots[index] = Slot {
                 label: slots[index].label,
                 id: Some(req.id.clone()),
+                generation,
+                #[cfg(not(target_os = "macos"))]
+                source_generation: source.lease.generation,
+                #[cfg(all(test, target_os = "macos"))]
+                source_generation: 0,
+                #[cfg(target_os = "macos")]
                 kind: req.kind,
+                #[cfg(target_os = "macos")]
                 anchor: req.anchor.clone(),
-                size,
+                #[cfg(target_os = "macos")]
+                size: _size,
+                #[cfg(target_os = "macos")]
                 sticky: req.sticky,
+                #[cfg(target_os = "macos")]
                 epoch: req.epoch,
                 shown_at: now,
                 expires_at: now + Duration::from_millis(req.ttl_ms),
             };
-            (index, evicted)
+            (index, evicted, generation)
         };
         let label = LABELS[index];
-        let window = self
-            .app
-            .get_webview_window(label)
-            .ok_or("overlay-window-gone")?;
-        let _ = window.set_size(LogicalSize::new(frame[2], frame[3]));
-        let _ = window.set_position(LogicalPosition::new(frame[0], frame[1]));
-        self.ready.lock().unwrap().remove(&req.id);
+        let window = self.app.get_webview_window(label).ok_or_else(|| {
+            #[cfg(target_os = "macos")]
+            {
+                "overlay-window-gone".to_owned()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Failure::Native("overlay-window-gone".into())
+            }
+        })?;
+        // An already-visible slot must not show the preceding DOM at its new
+        // placement while the current payload is waiting for its acknowledgement.
+        #[cfg(target_os = "macos")]
+        {
+            let _ = window.hide();
+            let _ = window.set_size(LogicalSize::new(frame[2], frame[3]));
+            let _ = window.set_position(LogicalPosition::new(frame[0], frame[1]));
+        }
+        #[cfg(not(target_os = "macos"))]
+        let proof = match source.place(&window, frame) {
+            Ok(proof) => proof,
+            Err(reason) => {
+                self.slots.lock().unwrap()[index].invalidate();
+                let _ = super::hide_overlay(&self.app, &window);
+                self.announce();
+                return Err(reason);
+            }
+        };
+        self.ready.lock().unwrap().retain(|(id, _)| id != &req.id);
         let _ = window.emit_to(
             label,
             "overlay:show",
             json!({
                 "id": req.id,
+                "generation": generation,
                 "kind": req.kind,
                 "text": req.text,
                 "w": frame[2],
@@ -342,7 +568,15 @@ impl Overlay {
             "overlay:interactive",
             json!({ "on": self.interactive() }),
         );
-        self.reveal(window, req.id.clone());
+        self.reveal(
+            window,
+            req.id.clone(),
+            index,
+            generation,
+            source,
+            #[cfg(not(target_os = "macos"))]
+            proof,
+        );
         self.announce();
         let mut receipt = json!({ "id": req.id });
         if let Some(evicted) = evicted {
@@ -357,44 +591,130 @@ impl Overlay {
     /// Nothing here touches the capture filter: it excludes the pool's windows
     /// by id (`Lens::set_overlay_windows`, named at build), so every slot is
     /// out of every frame however it is revealed.
-    fn reveal(self: &Arc<Self>, window: WebviewWindow, id: String) {
+    fn reveal(
+        self: &Arc<Self>,
+        window: WebviewWindow,
+        id: String,
+        index: usize,
+        generation: u64,
+        source: OverlaySource,
+        #[cfg(target_os = "linux")] proof: super::linux_overlay::Placement,
+        #[cfg(target_os = "windows")] proof: Rect,
+    ) {
         let overlay = self.clone();
         std::thread::spawn(move || {
             let deadline = Instant::now() + ACK_WAIT;
             let mut acked = false;
             while !acked && Instant::now() < deadline {
-                acked = overlay.ready.lock().unwrap().remove(&id);
+                acked = overlay
+                    .ready
+                    .lock()
+                    .unwrap()
+                    .remove(&(id.clone(), generation));
                 if !acked {
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
-            let _ = window.show();
+            // Validate on the same main-thread path that changes visibility; never
+            // keep the slot lock while dispatching a blocking window operation.
+            let app = overlay.app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let result = source.publish(|| {
+                    let current = overlay.slots.lock().unwrap()[index].can_reveal(
+                        &id,
+                        generation,
+                        Instant::now(),
+                    );
+                    if current {
+                        #[cfg(target_os = "macos")]
+                        let _ = window.show();
+                        #[cfg(not(target_os = "macos"))]
+                        if let Err(reason) = source.reveal(&window, &proof) {
+                            overlay.slots.lock().unwrap()[index].invalidate();
+                            let _ = super::hide_overlay(&overlay.app, &window);
+                            overlay.announce();
+                            return Err(Failure::Native(reason));
+                        }
+                    }
+                    Ok(())
+                });
+                #[cfg(not(target_os = "macos"))]
+                source.failed(&result);
+                #[cfg(target_os = "macos")]
+                let _ = result;
+            });
         });
     }
 
     /// `None` clears every slot.
-    pub fn clear(&self, id: Option<&str>) {
+    #[cfg(target_os = "macos")]
+    pub fn clear(self: &Arc<Self>, id: Option<&str>) {
+        let id = id.map(str::to_owned);
+        let _ = self.on_main(move |overlay| overlay.clear_in(id.as_deref()));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn clear_checked(self: &Arc<Self>, id: Option<&str>) -> Result<(), String> {
+        let id = id.map(str::to_owned);
+        let all = id.is_none();
+        let hidden = self
+            .on_main(move |overlay| overlay.clear_in(id.as_deref()))
+            .and_then(|result| result);
+        let disabled = if all {
+            self.set_interactive(false)
+        } else {
+            Ok(())
+        };
+        hidden.and(disabled)
+    }
+
+    /// Native source recovery only retires its own slots. A delayed close must
+    /// not hide a replacement source that reused the same slot or public id.
+    #[cfg(not(target_os = "macos"))]
+    pub fn clear_source(self: &Arc<Self>, generation: u64) -> Result<(), String> {
+        self.on_main(move |overlay| {
+            let hidden = revoke_source_slots(&mut overlay.slots.lock().unwrap(), generation);
+            overlay.hide(&hidden)
+        })?
+    }
+
+    fn clear_in(&self, id: Option<&str>) -> Result<(), String> {
         let mut hidden = Vec::new();
         {
             let mut slots = self.slots.lock().unwrap();
             for slot in slots.iter_mut() {
                 let matched = match (id, slot.id.as_deref()) {
                     (Some(want), Some(have)) => want == have,
-                    (None, Some(_)) => true,
+                    (None, _) => {
+                        #[cfg(target_os = "macos")]
+                        {
+                            slot.id.is_some()
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            true
+                        }
+                    }
                     _ => false,
                 };
                 if matched {
-                    slot.id = None;
+                    slot.invalidate();
                     hidden.push(slot.label);
                 }
             }
         }
-        self.hide(&hidden);
+        self.hide(&hidden)
     }
 
     /// A new epoch: everything anchored to the old window described a screen
     /// nobody is looking at. A sticky corner card is the one thing that stays.
-    pub fn retarget(&self) {
+    #[cfg(target_os = "macos")]
+    pub fn retarget(self: &Arc<Self>) {
+        let _ = self.on_main(|overlay| overlay.retarget_in());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn retarget_in(&self) {
         let epoch = self.bridge.epoch();
         let mut hidden = Vec::new();
         {
@@ -403,18 +723,29 @@ impl Overlay {
                 let corner = matches!(slot.anchor, Anchor::Corner(_));
                 let stale = slot.epoch != epoch;
                 if slot.id.is_some() && stale && !(slot.sticky && corner) {
-                    slot.id = None;
+                    slot.invalidate();
                     hidden.push(slot.label);
                 }
             }
         }
-        self.hide(&hidden);
+        let _ = self.hide(&hidden);
     }
 
     /// The target moved or resized. Every anchor is relative to it, so each
     /// live slot is re-placed; nothing is re-rendered, because a window-point
     /// anchor and the slot's own origin move by the same delta.
-    pub fn reposition(&self, place: Place) {
+    #[cfg(target_os = "macos")]
+    pub fn reposition(self: &Arc<Self>, place: Place) {
+        let epoch = self.bridge.epoch();
+        let _ = self.on_main(move |overlay| {
+            if overlay.bridge.epoch() == epoch {
+                overlay.reposition_in(place);
+            }
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    fn reposition_in(&self, place: Place) {
         let moves: Vec<(&'static str, Rect)> = self
             .slots
             .lock()
@@ -439,64 +770,125 @@ impl Overlay {
     /// Cursor events on for every slot, plus the page's own 1 px border, plus
     /// Esc as the way back. Never called on the main thread: `unregister`
     /// blocks on it.
-    pub fn set_interactive(&self, on: bool) {
+    pub fn set_interactive(&self, on: bool) -> InteractiveResult {
+        #[cfg(target_os = "linux")]
+        if on
+            && !self
+                .app
+                .try_state::<Arc<Lens>>()
+                .is_some_and(|lens| lens.overlay_available())
+        {
+            return Err("unavailable".into());
+        }
+        #[cfg(target_os = "macos")]
         if self.interactive.swap(on, Ordering::AcqRel) == on {
             return;
         }
-        for label in LABELS {
-            if let Some(window) = self.app.get_webview_window(label) {
-                let _ = window.set_ignore_cursor_events(!on);
-                let _ = window.emit_to(label, "overlay:interactive", json!({ "on": on }));
-            }
-        }
-        use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-        let shortcut = self.app.global_shortcut();
-        if on {
-            let app = self.app.clone();
-            let _ = shortcut.on_shortcut(ESCAPE, move |_, _, event| {
-                if event.state() != ShortcutState::Pressed {
-                    return;
-                }
-                let app = app.clone();
-                std::thread::spawn(move || {
-                    if let Some(overlay) = app.try_state::<Arc<Overlay>>() {
-                        overlay.set_interactive(false);
+        let apply = || {
+            #[cfg(not(target_os = "macos"))]
+            let mut failed = false;
+            for label in LABELS {
+                if let Some(window) = self.app.get_webview_window(label) {
+                    #[cfg(target_os = "macos")]
+                    let _ = window.set_ignore_cursor_events(!on);
+                    #[cfg(not(target_os = "macos"))]
+                    if window.set_ignore_cursor_events(!on).is_err() {
+                        failed = true;
                     }
-                });
-            });
-        } else {
-            let _ = shortcut.unregister(ESCAPE);
-        }
+                    let _ = window.emit_to(label, "overlay:interactive", json!({ "on": on }));
+                }
+            }
+            use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+            let shortcut = self.app.global_shortcut();
+            #[cfg(target_os = "macos")]
+            let settled = false;
+            #[cfg(not(target_os = "macos"))]
+            let settled = shortcut.is_registered(ESCAPE) == on;
+            let binding = if settled {
+                Ok(())
+            } else if on {
+                let app = self.app.clone();
+                shortcut.on_shortcut(ESCAPE, move |_, _, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            if let Some(overlay) = app.try_state::<Arc<Overlay>>() {
+                                overlay.set_interactive(false);
+                            }
+                        });
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    if let Some(lens) = app.try_state::<Arc<Lens>>() {
+                        lens.queue_interactive(false);
+                    }
+                })
+            } else {
+                shortcut.unregister(ESCAPE)
+            };
+            #[cfg(target_os = "macos")]
+            let _ = binding;
+            #[cfg(not(target_os = "macos"))]
+            {
+                if failed || binding.is_err() {
+                    return Err("overlay-interactive".into());
+                }
+                Ok(())
+            }
+        };
+        #[cfg(target_os = "macos")]
+        apply();
+        #[cfg(not(target_os = "macos"))]
+        interaction_transition(&self.interactive, &self.interactive_incomplete, on, apply)
     }
 
     /// TTL expiry.
-    pub fn tick(&self) {
+    pub fn tick(self: &Arc<Self>) {
+        let _ = self.on_main(|overlay| overlay.tick_in());
+    }
+
+    fn tick_in(&self) {
         let mut hidden = Vec::new();
         {
             let now = Instant::now();
             let mut slots = self.slots.lock().unwrap();
             for slot in slots.iter_mut() {
                 if slot.id.is_some() && slot.expires_at <= now {
-                    slot.id = None;
+                    slot.invalidate();
                     hidden.push(slot.label);
                 }
             }
         }
         if !hidden.is_empty() {
-            self.hide(&hidden);
+            let _ = self.hide(&hidden);
         }
     }
 
-    fn hide(&self, labels: &[&'static str]) {
+    fn hide(&self, labels: &[&'static str]) -> Result<(), String> {
         if labels.is_empty() {
-            return;
+            return Ok(());
         }
+        #[cfg(not(target_os = "macos"))]
+        let mut failed = None;
         for label in labels {
             if let Some(window) = self.app.get_webview_window(label) {
+                #[cfg(target_os = "macos")]
                 let _ = window.hide();
+                #[cfg(not(target_os = "macos"))]
+                if let Err(reason) = super::hide_overlay(&self.app, &window) {
+                    failed.get_or_insert(reason);
+                }
             }
         }
         self.announce();
+        #[cfg(not(target_os = "macos"))]
+        if let Some(reason) = failed {
+            return Err(reason);
+        }
+        Ok(())
     }
 
     fn announce(&self) {
@@ -509,6 +901,44 @@ impl Overlay {
             .collect();
         self.bridge.emit(Kind::Overlay { ids });
     }
+}
+
+/// Serialized by the portable lifecycle gate. `owned` includes partial native
+/// effects; only a complete transition permits an idempotent acknowledgement.
+#[cfg(any(test, not(target_os = "macos")))]
+fn interaction_transition(
+    owned: &AtomicBool,
+    incomplete: &AtomicBool,
+    on: bool,
+    apply: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if !incomplete.load(Ordering::Acquire) && owned.load(Ordering::Acquire) == on {
+        return Ok(());
+    }
+    incomplete.store(true, Ordering::Release);
+    owned.store(true, Ordering::Release);
+    let result = apply();
+    if result.is_ok() {
+        owned.store(on, Ordering::Release);
+        incomplete.store(false, Ordering::Release);
+    }
+    result
+}
+
+#[cfg(any(test, not(target_os = "macos")))]
+pub(super) fn revoke_source_slots(slots: &mut [Slot], generation: u64) -> Vec<&'static str> {
+    slots
+        .iter_mut()
+        .filter_map(|slot| {
+            // Retain source ownership when freeing a slot so a failed hide can be
+            // retried; a successful replacement show overwrites that ownership.
+            if slot.source_generation != generation {
+                return None;
+            }
+            slot.invalidate();
+            Some(slot.label)
+        })
+        .collect()
 }
 
 /// The slot to draw into: the one already holding this id, else the first
@@ -542,6 +972,37 @@ fn frame_for(req: &ShowReq, place: Place) -> (Rect, (f64, f64)) {
     };
     let size = (size.0.max(MIN_W), size.1.max(MIN_H));
     (placed(req.kind, &req.anchor, size, place), size)
+}
+
+/// Only the native outer window is rounded. Caption/anchor content coordinates
+/// remain as requested; payload origin and size describe this actual placement.
+#[cfg(any(test, not(target_os = "macos")))]
+pub(super) fn native_frame(req: &ShowReq, place: Place) -> Result<Rect, Failure> {
+    let frame = frame_for(req, place).0;
+    let x = frame[0].floor();
+    let y = frame[1].floor();
+    let frame = [
+        x,
+        y,
+        (frame[0] + frame[2]).ceil() - x,
+        (frame[1] + frame[3]).ceil() - y,
+    ];
+    validate_native_frame(frame)?;
+    Ok(frame)
+}
+
+#[cfg(any(test, not(target_os = "macos")))]
+pub(super) fn validate_native_frame(frame: Rect) -> Result<(), Failure> {
+    if frame.iter().any(|v| {
+        !v.is_finite() || v.fract() != 0.0 || *v < f64::from(i32::MIN) || *v > f64::from(i32::MAX)
+    }) || frame[2] <= 0.0
+        || frame[3] <= 0.0
+    {
+        return Err("bad-rect".into());
+    }
+    #[cfg(target_os = "linux")]
+    super::linux_overlay::physical(frame).map_err(Failure::Refused)?;
+    Ok(())
 }
 
 fn placed(kind: OverlayKind, anchor: &Anchor, size: (f64, f64), place: Place) -> Rect {
@@ -607,6 +1068,7 @@ fn measure(text: &str) -> (f64, f64) {
 }
 
 /// The display a target sits on, in screen points.
+#[cfg(target_os = "macos")]
 pub fn display_bounds(display_id: u32) -> Rect {
     let frame = objc2_core_graphics::CGDisplayBounds(display_id);
     [
@@ -639,7 +1101,13 @@ fn slot_window(app: &AppHandle, label: &'static str) -> tauri::Result<Option<u32
             .position(0.0, 0.0)
             .build()?;
     window.set_ignore_cursor_events(true)?;
-    Ok(native(&window))
+    #[cfg(target_os = "macos")]
+    return Ok(native(&window));
+    #[cfg(target_os = "windows")]
+    super::windows::exclude_overlay(windows::Win32::Foundation::HWND(window.hwnd()?.0))
+        .map_err(|_| tauri::Error::InvalidWindowHandle)?;
+    #[cfg(not(target_os = "macos"))]
+    Ok(None)
 }
 
 /// The level every slot sits at. Above every ordinary window, and — because
@@ -647,6 +1115,7 @@ fn slot_window(app: &AppHandle, label: &'static str) -> tauri::Result<Option<u32
 /// layer 0, which is what keeps a slot out of `signals::pick_window`'s targets
 /// and out of `signals::covering`'s covers now that Rimeward's own ordinary
 /// windows are both.
+#[cfg(target_os = "macos")]
 pub fn slot_level() -> isize {
     objc2_app_kit::NSFloatingWindowLevel + 1
 }
@@ -657,6 +1126,7 @@ pub fn slot_level() -> isize {
 /// the slot's `CGWindowID`: Tauri builds its `NSWindow` with `defer: NO`, so
 /// the window device — and with it the number — exists before the window is
 /// ever shown, which is what lets the filter name a hidden slot.
+#[cfg(target_os = "macos")]
 fn native(window: &WebviewWindow) -> Option<u32> {
     use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
     let Ok(pointer) = window.ns_window() else {
@@ -682,6 +1152,126 @@ fn native(window: &WebviewWindow) -> Option<u32> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn incomplete_native_interaction_retries_effects_before_acknowledging_on_or_off() {
+        let owned = AtomicBool::new(false);
+        let incomplete = AtomicBool::new(false);
+        let mut effects = ([false; SLOTS], false, 0);
+        fn apply(
+            owned: &AtomicBool,
+            incomplete: &AtomicBool,
+            on: bool,
+            effects: &mut ([bool; SLOTS], bool, usize),
+            refuse_cursor: Option<usize>,
+            refuse_binding: bool,
+        ) -> Result<(), String> {
+            // The actual setter's transition helper, with native effect spies.
+            interaction_transition(owned, incomplete, on, || {
+                effects.2 += 1;
+                for (i, interactive) in effects.0.iter_mut().enumerate() {
+                    if Some(i) != refuse_cursor {
+                        *interactive = on;
+                    }
+                }
+                if !refuse_binding {
+                    effects.1 = on;
+                }
+                if refuse_cursor.is_some() || refuse_binding {
+                    Err("overlay-interactive".into())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+        let failed = Err("overlay-interactive".into());
+        assert_eq!(
+            apply(&owned, &incomplete, true, &mut effects, Some(0), false),
+            failed
+        );
+        assert!(!effects.0[0]);
+        assert!(owned.load(Ordering::Acquire) && incomplete.load(Ordering::Acquire));
+        apply(&owned, &incomplete, true, &mut effects, None, false).unwrap();
+        assert_eq!(effects, ([true; SLOTS], true, 2));
+        interaction_transition(&owned, &incomplete, true, || {
+            panic!("completed on is idempotent")
+        })
+        .unwrap();
+
+        // Seven windows disable and Escape unregisters, but one cursor refuses.
+        assert_eq!(
+            apply(&owned, &incomplete, false, &mut effects, Some(0), false),
+            failed
+        );
+        assert!(effects.0[0] && effects.0[1..].iter().all(|on| !on) && !effects.1);
+        apply(&owned, &incomplete, true, &mut effects, None, false).unwrap();
+        assert_eq!(effects, ([true; SLOTS], true, 4));
+        apply(&owned, &incomplete, false, &mut effects, None, false).unwrap();
+        assert_eq!(effects, ([false; SLOTS], false, 5));
+        assert!(!owned.load(Ordering::Acquire) && !incomplete.load(Ordering::Acquire));
+        interaction_transition(&owned, &incomplete, false, || {
+            panic!("completed off is idempotent")
+        })
+        .unwrap();
+
+        // Binding failure also leaves work pending, with either retry direction.
+        assert_eq!(
+            apply(&owned, &incomplete, true, &mut effects, None, true),
+            failed
+        );
+        assert!(!effects.1);
+        apply(&owned, &incomplete, true, &mut effects, None, false).unwrap();
+        assert_eq!(effects, ([true; SLOTS], true, 7));
+        assert_eq!(
+            apply(&owned, &incomplete, false, &mut effects, None, true),
+            failed
+        );
+        assert_eq!(effects, ([false; SLOTS], true, 8));
+        apply(&owned, &incomplete, false, &mut effects, None, false).unwrap();
+        assert_eq!(effects, ([false; SLOTS], false, 9));
+    }
+
+    #[test]
+    fn delayed_source_clear_never_hides_a_replacement_id_and_retries_failed_hides() {
+        let mut slots = vec![Slot::new("ov-0"), Slot::new("ov-1")];
+        for slot in &mut slots {
+            slot.id = Some("caption".into());
+            slot.generation = 7;
+            slot.source_generation = 10;
+        }
+        // The second window has already been replaced before the old callback.
+        slots[1].source_generation = 12;
+        slots[1].generation = 8;
+        assert_eq!(revoke_source_slots(&mut slots, 10), vec!["ov-0"]);
+        assert!(slots[0].id.is_none());
+        assert!(!slots[0].can_reveal("caption", 7, Instant::now()));
+        assert_eq!(slots[1].id.as_deref(), Some("caption"));
+        assert_eq!(slots[1].generation, 8);
+        // If native hide failed, the exact old source can still retry its window.
+        assert_eq!(revoke_source_slots(&mut slots, 10), vec!["ov-0"]);
+        slots[0].source_generation = 12;
+        slots[0].id = Some("caption".into());
+        assert!(revoke_source_slots(&mut slots, 10).is_empty());
+    }
+
+    #[test]
+    fn clear_retarget_and_id_reuse_never_reveal_an_old_show() {
+        let now = Instant::now();
+        let mut slot = Slot::new("ov-0");
+        slot.id = Some("caption".into());
+        slot.generation = 7;
+        slot.expires_at = now + Duration::from_secs(1);
+        assert!(slot.can_reveal("caption", 7, now));
+        slot.invalidate(); // The same invalidation used by Clear, retarget and TTL.
+        assert!(!slot.can_reveal("caption", 7, now));
+        slot.id = Some("caption".into());
+        slot.generation += 1;
+        assert!(!slot.can_reveal("caption", 7, now));
+        assert!(slot.can_reveal("caption", 9, now));
+        assert!(!slot.can_reveal("caption", 9, now + Duration::from_secs(2)));
+        slot.invalidate();
+        assert!(!slot.can_reveal("caption", 9, now));
+    }
+
     const WINDOW: Rect = [100.0, 200.0, 800.0, 600.0];
     const DISPLAY: Rect = [0.0, 0.0, 1512.0, 982.0];
 
@@ -690,6 +1280,7 @@ mod tests {
     /// `NSFloatingWindowLevel` is 3, `CGWindowListCopyWindowInfo` reports a
     /// window's level as `kCGWindowLayer`, and signals.rs pins the same 4.
     #[test]
+    #[cfg(target_os = "macos")]
     fn a_slot_sits_off_layer_zero_so_it_is_never_a_target_or_a_cover() {
         assert_eq!(slot_level(), 4);
     }
@@ -764,6 +1355,32 @@ mod tests {
         assert_eq!(width, CAPTION_MAX_W);
         assert!(height > 18.0, "a 400 character line is more than one row");
         assert!(measure("hi").0 < CAPTION_MAX_W);
+    }
+
+    #[test]
+    fn portable_outer_rounding_preserves_content_and_reports_actual_bounds() {
+        let req = request("caption", json!({"corner":"tr"}));
+        assert_eq!(frame_for(&req, place()).0, [835.5, 216.0, 48.5, 34.0]);
+        assert_eq!(
+            native_frame(&req, place()).unwrap(),
+            [835.0, 216.0, 49.0, 34.0]
+        );
+        assert_eq!(req.text, "hello");
+        let req = request(
+            "caption",
+            json!({"rect":[10.25,20.75,300.5,40.5],"ref":"f-3-9"}),
+        );
+        assert_eq!(
+            native_frame(&req, place()).unwrap(),
+            [110.0, 220.0, 301.0, 42.0]
+        );
+        assert_eq!(
+            req.anchor,
+            Anchor::Rect {
+                rect: [10.25, 20.75, 300.5, 40.5],
+                frame_ref: "f-3-9".into()
+            }
+        );
     }
 
     #[test]

@@ -33,6 +33,12 @@ The installed 1.0.17 app passes `codesign --verify --deep --strict`; its Cua wor
 and Apple helper signature metadata both name team `22AAZFMTV8`. This read-only
 check neither notarizes a new candidate nor proves live permission attribution.
 
+Subsequent release evidence, 2026-10-10: the unchanged published 1.0.18 DMG is now
+installed, with strict Developer ID/version checks, a quiesced local profile
+backup, restored visible dashboard/connected sync and authenticated production
+relay. See [the release record](../board/STATE.md). This closes distribution
+installation, not the feature-specific checks below or background qualification.
+
 ## RIME-23 installed workspaces and native control
 
 - [ ] Record signed candidate, restored profile and the exact owning local runtime.
@@ -41,7 +47,8 @@ check neither notarizes a new candidate nor proves live permission attribution.
   An unavailable mount refuses without silently choosing another host.
 - [ ] Save and recover a disposable file, close/reopen a dirty tab, resolve an
   external edit explicitly, and restart. Verify buffers, undo/recovery and local
-  stores survive; project roots and `workspaces.db` never enter sync or backups.
+  stores survive; project roots never enter sync or backups. `workspaces.db` stays
+  local to this desktop and its supported local profile backups.
 - [ ] Open/end/resume a shell; verify PTY output, final saved screen, input ownership,
   delayed Enter cancellation and restart without task replay. Test real installed
   Codex/Claude prompt approvals with a disposable operation; a transport receipt
@@ -145,8 +152,9 @@ Preserve the profile, avoid remote pairing and use disposable native documents.
 
 All rows must pass on the signed normal host. Failure discards the qualification
 change and preserves production refusal. Only complete passing evidence permits
-the identical exact-build addition on `dev/1.0.18`; revalidate the resulting signed
-installed candidate for RIME-23. Do not broaden to an OS-version family.
+the identical exact-build addition on the next unpublished release candidate,
+currently `dev/1.0.19`; revalidate the resulting signed installed candidate for
+RIME-23. Published 1.0.18 tags remain immutable. Do not broaden to an OS-version family.
 
 ## RIME-33 installed Remote Desktop
 

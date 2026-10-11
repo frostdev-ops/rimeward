@@ -1,6 +1,6 @@
 [package]
 name = "rimeward"
-version = "1.0.18"
+version = "1.0.19"
 edition = "2021"
 rust-version = "1.98"
 description = "Rimeward — standalone development workspaces with live remote access"
@@ -41,6 +41,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+# Native Lens uses one shared, hidden overlay pool on supported desktops.
+tauri-plugin-global-shortcut = "2"
 # Self-update (src/updates.rs): signed manifests from the desktop-v* releases,
 # discovered through the bundled runtime; the OS notification says one is there.
 tauri-plugin-updater = "2"
@@ -53,9 +55,6 @@ cap-std = "=4.0.3"
 sha2 = "=0.10.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The overlay's interactive hotkey (Cmd+Shift+L, and Esc while interactive).
-# Registered from Rust only, so no capability grants its commands to a page.
-tauri-plugin-global-shortcut = "2"
 cua-driver-sdk = { git ="https://github.com/trycua/cua", rev = "6c0348b059595e63d1df96e6df2047ca7dbbbf1c" }
 platform-macos = { git = "https://github.com/trycua/cua", rev = "6c0348b059595e63d1df96e6df2047ca7dbbbf1c" }
 # Already pinned by Cua; the host owns the system sharing menu's lifecycle.
@@ -132,12 +131,24 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 ] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "=0.61.3", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_StationsAndDesktops"] }
+windows = { version = "=0.61.3", features = [
+    "Win32_UI_Input_KeyboardAndMouse", "Win32_System_StationsAndDesktops",
+    "Foundation", "Graphics_Capture", "Graphics_DirectX", "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation", "Win32_System_Com", "Win32_System_Threading",
+    "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging",
+    "Win32_System_WinRT", "Win32_System_WinRT_Graphics_Capture",
+    "Win32_System_WinRT_Direct3D11", "Win32_System_Performance",
+    "Wdk_System_SystemServices", "Win32_System_SystemInformation",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "=0.13.13", default-features = false, features = ["tokio", "remote_desktop", "screencast", "clipboard"] }
 reis = "=0.7.1"
 libc = "0.2"
+x11rb = { version = "=0.13.2", features = ["composite", "res", "damage", "randr"] }
+raw-window-handle = "=0.6.2"
 
 [profile.release]
 # Thin LTO, default codegen units: a few percent larger binary than fat LTO at

@@ -365,6 +365,11 @@ test('text reads the document by source and rect, and the accurate path re-runs 
     value: { ref: 'f-1-10', rect: [0, 0, 656, 422], accurate: true },
     deadlineMs: 30_000,
   });
+  const abort = new AbortController();
+  await text(h.core, { accurate: true, signal: abort.signal }, async (op, value, deadline, signal) => {
+    assert.equal(op, 'lens-ocr'); assert.equal(deadline, 30_000); assert.equal(signal, abort.signal);
+    return h.desktop(op, value, deadline);
+  });
 });
 
 test('describe frames the question as an observation and reports a stale epoch', async () => {
@@ -933,4 +938,79 @@ test('ready() waits for the screen lens status read, so a look never answers a l
   // live, empty document.
   assert.equal(h.core.status().state, 'offline');
   assert.equal(h.core.status().error, screenOffline('not-consented'));
+});
+
+for (const heldOp of ['lens-status', 'lens-snapshot']) for (const failure of [false, true]) {
+  test(`off/on replacement discards old ${heldOp} ${failure ? 'abort failure' : 'reply'} before source metadata/feed publication`, async () => {
+    const clock = new FakeClock(100_000);
+    const handlers = new Set<(body: Body) => void>();
+    const demands: boolean[] = [];
+    const requests: { op: string; signal?: AbortSignal }[] = [];
+    let hold: string | null = null;
+    let resolve!: (value: unknown) => void;
+    let reject!: (error: Error) => void;
+    const delayed = new Promise<unknown>((yes, no) => { resolve = yes; reject = no; });
+    let current = { epoch: 1, seq: 5, app: { bundle: 'fixture', name: 'Owned fixture', pid: 0 },
+      window: { id: 1, title: 'first', bounds: [0, 0, 20, 20], display: DISPLAY },
+      ocr: [wire('first text', 0)], latest: { ref: 'first' }, capabilities: { capture: true, overlay: false } };
+    const running = { state: 'running', permissions: { screen: true, ax: false }, capabilities: { capture: true, overlay: false } };
+    const source = screenSource({
+      desktop: async (op, _value, _deadline, signal) => {
+        requests.push({ op, ...(signal ? { signal } : {}) });
+        if (hold === op) { hold = null; return delayed; }
+        return op === 'lens-status' ? running : current;
+      },
+      demand: async active => { demands.push(active); },
+      attach: fn => { handlers.add(fn); return () => { handlers.delete(fn); }; },
+      now: () => clock.now(),
+    });
+    const user = createUser(`lens-screen-demand-${++users}@example.com`, 'pw-lens-screen-1');
+    const core = new LensCore({ user, target: 'local', source, clock,
+      store: sqliteStore(user, 'screen:local', () => clock.now()), settings: () => ({ settleMs: 750, minLines: 1 }) });
+    const tick = () => new Promise<void>(done => setImmediate(done));
+    const frame = () => { for (const fn of [...handlers]) fn(frameSig(6, [], clock.now(), current.epoch)); };
+    assert.equal(await core.ready(), true);
+    hold = heldOp;
+    const old = source.demand!(true).catch(error => error);
+    await tick();
+    if (heldOp === 'lens-snapshot') { frame(); await tick(); }
+    const oldRequest = requests.at(-1)!;
+    assert.equal(oldRequest.op, heldOp);
+    await source.demand!(false);
+    current = { ...current, epoch: 2, seq: 30, window: { ...current.window, title: 'replacement' }, ocr: [wire('replacement text', 0)], latest: { ref: 'replacement' } };
+    const replacement = source.demand!(true);
+    await tick();
+    frame();
+    await replacement;
+    assert.equal(oldRequest.signal?.aborted, true, 'actual native read receives cancellation');
+    assert.deepEqual(demands, [true, false, true]);
+    const before = structuredClone(core.doc());
+    if (failure) reject(new Error('late native abort failure'));
+    else resolve(heldOp === 'lens-status'
+      ? { state: 'stopped', reason: 'permission', capabilities: { capture: false, overlay: true } }
+      : { ...current, epoch: 99, seq: 99, window: { ...current.window, title: 'obsolete' }, ocr: [wire('obsolete text', 0)], latest: { ref: 'obsolete' }, capabilities: { capture: false, overlay: true } });
+    await old;
+    await tick();
+    assert.deepEqual(core.doc(), before, 'no old epoch, text, frame or header mutation');
+    assert.equal(core.status().state, 'live');
+    assert.deepEqual(source.capabilities!(), { capture: true, overlay: false }, 'no old capability mutation');
+    await source.demand!(false);
+    core.close();
+    assert.equal(handlers.size, 0, 'frame and source listeners are released');
+  });
+}
+
+test('release cancels the actual first-frame wait and detaches its temporary listener', async () => {
+  const handlers = new Set<(body: Body) => void>();
+  const source = screenSource({
+    desktop: async op => op === 'lens-status' ? { state: 'running' } : { epoch: 1, seq: 1 },
+    demand: async () => {},
+    attach: fn => { handlers.add(fn); return () => { handlers.delete(fn); }; },
+  });
+  const pending = source.demand!(true).then(() => null, error => error);
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(handlers.size, 1, 'waiting for its first frame');
+  await source.demand!(false);
+  assert.equal((await pending)?.name, 'AbortError', 'release settles without waiting for a frame or deadline');
+  assert.equal(handlers.size, 0);
 });
