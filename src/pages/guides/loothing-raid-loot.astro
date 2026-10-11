@@ -1,0 +1,156 @@
+---
+import GuideLayout from '../../layouts/GuideLayout.astro';
+
+const chapters = [
+  { id: 'guild', title: 'Connect your guild' },
+  { id: 'permissions', title: 'Give officers the right access' },
+  { id: 'roster', title: 'Build a useful roster' },
+  { id: 'wishlists', title: 'Prepare gear context' },
+  { id: 'event', title: 'Publish your first raid' },
+  { id: 'loot', title: 'Record and review loot' },
+  { id: 'addon', title: 'Add the in-game workflow' },
+  { id: 'recovery', title: 'Troubleshoot and continue' },
+];
+const guide = (id: string) => `https://loothing.xyz/community/guides?guide=${id}&step=0`;
+---
+
+<GuideLayout
+  title="Prepare your raid. Keep the loot story clear."
+  description="Connect your Discord guild, prepare a roster and wishlists, publish a raid, and turn loot records into a history your officers can review."
+  path="/guides/loothing-raid-loot"
+  project="Loothing"
+  duration="12 min read"
+  chapters={chapters}
+>
+  <figure slot="visual" class="raid-demo guide-diagram" aria-labelledby="raid-demo-caption">
+    <div class="raid-demo-heading">
+      <img src="/projects/loothing.webp" alt="" width="44" height="44" />
+      <div><strong>A raid, from plan to record</strong><span>Illustrative demo · fictional data</span></div>
+    </div>
+    <ol class="raid-demo-flow">
+      <li style="--phase:0"><span class="raid-demo-number">01</span><div><strong>Prepare</strong><span>Roster linked · wishlists shared</span></div><span class="raid-demo-check" aria-hidden="true">✓</span></li>
+      <li style="--phase:1"><span class="raid-demo-number">02</span><div><strong>Review</strong><span>Example shoulder piece · Mira</span></div><span class="raid-demo-check" aria-hidden="true">✓</span></li>
+      <li style="--phase:2"><span class="raid-demo-number">03</span><div><strong>Record</strong><span>Award reason · source · recipient</span></div><span class="raid-demo-check" aria-hidden="true">✓</span></li>
+    </ol>
+    <details class="raid-demo-details">
+      <summary>Follow the example award <span aria-hidden="true">+</span></summary>
+      <p>Mira lists the shoulder piece as a Major need. Officers review her equipped gear and the other candidates, apply their guild policy, and record the recipient and reason. After importing, they check the History entry.</p>
+    </details>
+    <figcaption id="raid-demo-caption">A wishlist is context. Your council makes the decision; the record preserves what happened.</figcaption>
+  </figure>
+
+  <section id="guild" class="guide-section">
+    <h2>Connect the right Discord guild.</h2>
+    <p>Start with a Discord server you can manage, your WoW guild’s name, realm and region, and a channel for raid signups. Use the bot invite supplied by your Loothing administrator. Review the requested Discord permissions and authorize the intended server. These bot permissions allow channel messages, embeds, commands and setup; they are separate from a member’s access inside Loothing.</p>
+    <ol class="guide-steps">
+      <li><strong>Log in.</strong> On <a href="https://loothing.xyz">Loothing</a>, choose <strong>Login with Discord</strong>, then select your server. The login prompt requests your identity and server list; it does not install the bot.</li>
+      <li><strong>Run Guild Setup.</strong> Open <code>/setup</code>. Work through Battle.net, Characters, Warcraft Logs and Discord Channels. Steps save independently. Raider.io and AI configuration can be left for later.</li>
+      <li><strong>Check guild identity.</strong> Match the WoW guild name, realm and region in your integrations. A Discord server name alone does not identify a Battle.net guild.</li>
+    </ol>
+    <p>Battle.net provides character and armory data; the platform’s shared credentials have a guild quota. For your own developer client, use the wizard’s exact redirect and service URLs. <strong>Save before Test Connection</strong>: the test uses saved credentials. Warcraft Logs needs a <strong>V2 OAuth client</strong>, not the older Web API key. See <a href={guide('guild-setup')}>Guild Setup</a> and <a href={guide('bot-setup')}>Bot Setup</a> for the full forms.</p>
+  </section>
+
+  <section id="permissions" class="guide-section">
+    <h2>Give officers the right access.</h2>
+    <p>Loothing permissions belong to the selected guild. Someone can administer one guild and be a regular member in another. Use Discord Role Mapping to give each role the individual permissions its work needs; multiple roles combine their grants.</p>
+    <div class="guide-table-wrap">
+      <table>
+        <thead><tr><th scope="col">Responsibility</th><th scope="col">Permissions to consider</th></tr></thead>
+        <tbody>
+          <tr><td>Read raid and loot information</td><td><code>events.view</code>, <code>loot.view</code></td></tr>
+          <tr><td>Prepare characters and roster data</td><td><code>players.view</code>, with <code>players.import</code> and <code>players.manage</code> for assigned officers</td></tr>
+          <tr><td>Run events or maintain loot records</td><td><code>events.manage</code> or <code>loot.manage</code>, according to responsibility</td></tr>
+          <tr><td>Use council upgrade information</td><td><code>loot.council</code>; raiders submit reports with <code>droptimizer.submit</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The automatically created <strong>lootAdmin</strong> role and Discord server ownership bypass ordinary guild permission checks. Assign lootAdmin sparingly. Test a normal member’s view as well as an officer’s. Individual deny overrides can block a role grant; use the <a href={guide('permissions')}>Permissions guide</a> when access seems inconsistent.</p>
+  </section>
+
+  <section id="roster" class="guide-section">
+    <h2>Build a roster that represents your team.</h2>
+    <p>In the setup wizard’s Characters step, import through <strong>Roster Sync</strong>, manual entry or CSV, then use <strong>Link to Discord</strong>. Check Auto-Link matches before relying on them. Members can self-link with <code>/claim</code> or connect Battle.net on their Account page.</p>
+    <p>Create a roster at <code>/raid-roster</code>. Set its name, type, difficulty and composition targets. Add the actual raid characters, choose Tank, Healer, DPS or Flex, and check their spec and status. A named main team is easier to keep accurate than one list containing every alt.</p>
+    <div class="guide-callout">
+      <strong>Sync refreshes existing members.</strong>
+      <p>Roster sync enriches gear and performance data; it does not add or remove roster members. Unlinked characters can appear in the roster, but Discord reminders and auto-confirmations need their owner linked.</p>
+    </div>
+    <p>Visit <code>/roster-audit</code> before raid night. Review tier, enchants, gems and the character detail view. Adjust the roster’s Config to your team’s requirements. Audit flags depend on those settings and available source data, so investigate a missing value before treating it as a player’s missing preparation. The <a href={guide('roster')}>Roster &amp; Audit guide</a> covers composition, snapshots and exports.</p>
+  </section>
+
+  <section id="wishlists" class="guide-section">
+    <h2>Prepare gear context before a drop.</h2>
+    <p>On <strong>Wishlists</strong>, select a character and create a named list. Add items through search or loot tables, then set priority and need: <strong>BiS, Major, Minor, Optional or Transmog</strong>. Search uses the cached item database, so an absent result can mean the item has not been imported.</p>
+    <p>Choose visibility deliberately: Private, Guild, Officers or Public. Link the wishlist to the raid roster so officers can find it during distribution; one list can serve multiple rosters. Mark received items fulfilled and keep the list current when a character’s gear or spec changes.</p>
+    <p>Use <a href={guide('gear')}>Gear &amp; Upgrades</a> for upgrade-track, raid, vault and crafting context. Consult its current tables rather than carrying old season values into raid requirements. BiS recommendations require an officer’s import. Where relevant, a Raidbots Droptimizer report adds simulation context; check its character, setup and freshness. A priority or score supports discussion, it does not settle the guild’s award policy. See <a href={guide('wishlists')}>Wishlists</a> for sharing and roster assignment.</p>
+  </section>
+
+  <section id="event" class="guide-section">
+    <h2>Publish a raid people can sign up for.</h2>
+    <p>From <strong>Events</strong>, choose <strong>New Event</strong>. In the Builder Wizard, pick Raid and its difficulty, then set the title, start time, duration, signup channel, visibility and any requirements. Check the time against your guild’s expected timezone.</p>
+    <p>Configure role slots and limits. Link your roster to pre-populate signups, use Split DPS if you need separate melee and ranged slots, and decide whether Require Character, Auto-accept and Waitlist fit your process. Inspect the Discord embed preview and review the schedule before saving.</p>
+    <p>A saved event begins as <strong>Draft</strong>. Use <strong>Publish</strong> to post the signup embed and make it Scheduled. Ask a member to select their character, role and Accept, Tentative or Decline status. Verify the signup appears correctly before sharing it widely. Later, review the Attendance tab rather than assuming every accepted signup attended. Templates and recurrence can wait until this first event works; the <a href={guide('events')}>Events &amp; Signups guide</a> explains them.</p>
+  </section>
+
+  <section id="loot" class="guide-section">
+    <h2>Record what happened, then inspect it.</h2>
+    <p>Agree on responses, council membership and award criteria before the raid. Keep the item, recipient, source encounter and reason clear. Loothing’s website can receive existing loot data without requiring everyone to adopt a new addon first.</p>
+    <ol class="guide-steps">
+      <li><strong>Choose the source.</strong> In the Loot Hub’s <strong>Import</strong> tab, upload JSON, CSV or TSV, or paste an addon export. For an individual correction or entry, use the History workflow.</li>
+      <li><strong>Preview and validate.</strong> Check character identities, item details, dates, encounter context and responses. Read errors and warnings before <strong>Confirm Import</strong>. Keep the original export available for comparison.</li>
+      <li><strong>Verify History.</strong> Filter by player, item or date, then open an entry. Review <strong>Award Context</strong> and <strong>Gear Comparison</strong>; officers can inspect candidate information when available.</li>
+    </ol>
+    <p>Use Items and Instances to trace drops across recipients and runs. Statistics and Analytics help officers review distribution patterns, but the history only describes recorded or imported data. Missing raids, incomplete candidates or different response conventions affect what those patterns mean. An analytics flag is a reason to investigate, not proof of an unfair award. The <a href={guide('loot')}>Loot System guide</a> explains views, filters and import validation.</p>
+  </section>
+
+  <section id="addon" class="guide-section">
+    <h2>Add the in-game workflow when you need it.</h2>
+    <p>The optional Loothing addon brings responses, council voting, awards and history into WoW. Follow the <a href={guide('addon')}>Addon guide</a> for installation and configuration. Agree on the master looter, council and response buttons, then rehearse the process before a live raid.</p>
+    <p>Raiders respond to items; council members review candidates and vote under the configured rules. The master looter resolves the award. Export <strong>History</strong> as <strong>Compact</strong>, then paste it into the website’s Import tab and review the preview. Native-roll records can exclude players whose guild membership is not confirmed; inspect the import’s retained count and notices.</p>
+    <div class="guide-callout">
+      <strong>An award record is not a completed trade.</strong>
+      <p>Confirm the actual item reaches the recipient. The addon has pending-trade tracking, but a website History entry alone does not establish that the in-game transfer finished.</p>
+    </div>
+  </section>
+
+  <section id="recovery" class="guide-section">
+    <h2>Troubleshoot the specific missing step.</h2>
+    <ul>
+      <li><strong>Server missing from the selector?</strong> Check the Discord account and Manage Server permission. Invite and web login are separate steps.</li>
+      <li><strong>Connection test fails?</strong> Save first; check client type, exact callback URL, guild realm and region. Read any quota banner before retrying roster sync.</li>
+      <li><strong>Member misses reminders?</strong> Check character-to-Discord linking and the event’s reminder settings, then channel or DM access.</li>
+      <li><strong>Roster or loot looks incomplete?</strong> Confirm the selected guild, roster, filters and import source. Compare one known character or drop before processing another full export.</li>
+      <li><strong>Addon window closed or state stale?</strong> The addon guide documents <code>/lt reopen</code>, <code>/lt resync</code> and <code>/lt diag</code> for session recovery and diagnostics.</li>
+    </ul>
+    <p>Your first working loop is small: a correctly linked character, a shared wishlist, a published event with a verified signup, and one checked loot record. Repeat that loop before adding more automation.</p>
+    <div class="guide-sources">
+      <h3>Continue with Loothing’s own guides.</h3>
+      <p>This walkthrough follows Loothing’s product guide system. Open the <a href="https://loothing.xyz/community/guides">full guide directory</a> for illustrated steps, character imports, guild administration and other workflows.</p>
+      <p>For the next step, explore <a href="/guides/frostsim-first-simulation">Frostsim’s simulation guide</a> or return to <a href="/guides">all Frostdev guides</a>.</p>
+    </div>
+  </section>
+</GuideLayout>
+
+<style>
+  .raid-demo { margin: 0; padding: 1.5rem; }
+  .raid-demo-heading { display: flex; align-items: center; gap: .8rem; }
+  .raid-demo-heading img { object-fit: contain; flex-shrink: 0; border-radius: .6rem; }
+  .raid-demo-heading strong { display: block; font-size: .85rem; font-weight: 600; color: #ecf5fc; }
+  .raid-demo-heading span { display: block; font-size: .65rem; color: #97aec3; margin-top: .25rem; }
+  .raid-demo-flow { padding: 0; list-style: none; margin: 1.75rem 0 1.25rem; }
+  .raid-demo-flow li { position: relative; display: flex; align-items: center; gap: .8rem; padding: 1rem .9rem; border: 1px solid #354251; border-radius: .65rem; background: #0f2131; margin-top: .75rem; animation: raid-arrive .7s both; animation-delay: calc(var(--phase) * .7s); }
+  .raid-demo-flow li + li::before { content: ''; position: absolute; width: 1px; height: .75rem; bottom: 100%; left: 1.3rem; background: #766550; }
+  .raid-demo-number { font-size: .65rem; font-weight: 600; color: #edc28c; }
+  .raid-demo-flow strong { display: block; font-size: .8rem; font-weight: 500; color: #e9f1f8; }
+  .raid-demo-flow div > span { display: block; font-size: .65rem; color: #a0b7cc; margin-top: .3rem; }
+  .raid-demo-check { margin-left: auto; color: #edc28c; animation: raid-check 1.2s both; animation-delay: calc(.6s + var(--phase) * .7s); }
+  .raid-demo-details { border-top: 1px solid #354251; padding-top: .9rem; }
+  .raid-demo-details summary { display: flex; justify-content: space-between; gap: .8rem; align-items: center; min-height: 2rem; list-style: none; cursor: pointer; font-size: .75rem; color: #edc28c; }
+  .raid-demo-details summary::-webkit-details-marker { display: none; }
+  .raid-demo-details[open] summary > span { transform: rotate(45deg); }
+  .raid-demo-details p { font-size: .75rem; color: #b8cad9; line-height: 1.8; margin: .75rem 0; }
+  .raid-demo figcaption { font-size: .65rem; color: #97aec3; line-height: 1.7; margin-top: .9rem; }
+  @keyframes raid-arrive { from { transform: translateY(8px); } to { transform: translateY(0); } }
+  @keyframes raid-check { from { opacity: .3; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .raid-demo-flow li, .raid-demo-check { animation: none; } }
+</style>

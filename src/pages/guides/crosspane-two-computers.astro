@@ -1,41 +1,111 @@
 ---
-import MarketingLayout from '../../layouts/MarketingLayout.astro';
-import '../../styles/products.css';
+import GuideLayout from '../../layouts/GuideLayout.astro';
+import CrosspaneDemo from '../../components/marketing/CrosspaneDemo.astro';
+
+const source = 'https://github.com/frostdev-ops/crosspane';
+const running = `${source}/blob/master/docs/running.md`;
+const chapters = [
+  { id: 'prepare', title: 'Prepare both computers' },
+  { id: 'pair', title: 'Connect and compare codes' },
+  { id: 'permissions', title: 'Choose each permission' },
+  { id: 'layout', title: 'Arrange a real desk' },
+  { id: 'control', title: 'Test input and take it back' },
+  { id: 'projection', title: 'Bring one window over' },
+  { id: 'troubleshooting', title: 'Find the first failing step' },
+];
 ---
 
-<MarketingLayout title="Connect a Mac and Linux desk with Crosspane — Frostdev" description="Set up a two-computer Crosspane desk: pair machines, choose permissions, align displays, check input control, and try a projected window." path="/guides/crosspane-two-computers">
-  <article class="product-page reading-page">
-    <p class="article-meta"><a href="/guides">All guides</a> · By Frostdev · Updated <time datetime="2026-10-11">October 11, 2026</time></p>
-    <h1>Connect a Mac and Linux desk with Crosspane.</h1>
-    <p>Crosspane lets the keyboard and mouse on one computer drive another and can bring an individual application window to a different screen. Start by getting input control working between two machines. Window projection and clipboard sharing are separate choices.</p>
-    <p>This guide follows the Mac and Hyprland Linux workflow. Crosspane is in early development, so read the <a href="https://github.com/frostdev-ops/crosspane/blob/master/docs/running.md">current running guide</a> for build requirements and platform limits before installing. Run the agent in your desktop user session, never as root.</p>
+<GuideLayout
+  title="Connect a Mac and Linux desk with Crosspane"
+  description="Build a two-computer workspace: pair a Mac and Hyprland desktop, arrange touching display edges, choose sharing permissions, and learn the recovery controls."
+  path="/guides/crosspane-two-computers"
+  project="Crosspane"
+  duration="10 min read"
+  chapters={chapters}
+>
+  <CrosspaneDemo slot="visual" />
 
-    <h2>1. Check the connection and permissions</h2>
-    <p>Put both computers on a network where they can reach each other. Crosspane uses direct peer connections. On Linux, allow its UDP agent and pairing ports from your local network as described in the running guide; a working internet connection alone does not prove the two machines can connect.</p>
-    <p>On the Mac, check Crosspane under <strong>System Settings → Privacy &amp; Security</strong>. Local Network permits connections; Accessibility permits input injection; Input Monitoring permits capturing keyboard and mouse input. Screen &amp; System Audio Recording is needed for capturing windows.</p>
-    <p>Use the tray or menu-bar status and <code>crosspanectl status</code> to see missing permissions. Grant only what you need for the workflow you are trying.</p>
+  <section class="guide-section" id="prepare">
+    <h2>Prepare both computers</h2>
+    <p>Start with one keyboard, one mouse, an Apple Silicon Mac and a Linux computer running Hyprland. Get pointer crossing working before adding clipboard or projection. Keep a way to operate each machine locally while setting up.</p>
+    <aside class="guide-callout"><strong>Development preview.</strong> Crosspane’s documented setup uses source builds and local developer installers. Mac and Hyprland are its established development targets; GNOME and KDE have no backend yet. Check the <a href={`${source}#platforms-and-current-status`}>current platform status</a> before choosing a build.</aside>
+    <p>Follow the <a href={running}>running guide</a> and pinned <a href={`${source}/blob/master/rust-toolchain.toml`}>Rust toolchain</a>. A Cargo build produces binaries; a usable installer also needs <a href={`${source}/blob/master/docs/setup/installer-tier1.md`}>staged platform payloads</a>.</p>
+    <ul>
+      <li><strong>Mac:</strong> builds need Xcode command-line tools, Python, Homebrew Opus and a stable signing identity. <code>scripts/macos/install-agent.sh --features video</code> builds and signs the app, installs it under <code>~/Applications</code>, adds login startup and installs <code>crosspanectl</code>.</li>
+      <li><strong>Hyprland:</strong> install the README’s native dependencies, including PipeWire, Opus and libxkbcommon development libraries. Run the agent in the graphical session, using the documented systemd user service or <code>crosspane-agent run</code>.</li>
+    </ul>
+    <p>Each computer runs its own agent in its desktop user session, never as root. The tray or Mac menu bar opens Settings. Run <code>crosspanectl status</code> on both machines and confirm each local agent responds before pairing.</p>
+  </section>
 
-    <h2>2. Pair, then choose what each peer may do</h2>
-    <p>Use <strong>Pair a new machine…</strong> from the tray or the Settings pairing tab. Compare the pairing code on both computers before accepting. A nearby device is not a trusted peer until you complete pairing.</p>
-    <p>In <strong>Settings → Machines</strong>, inspect the paired computer's permissions. Input control, sharing, browsing windows and presenting windows are separate capabilities. Give the peer input permission for the first check. Leave clipboard sharing off until you decide you want it in each direction.</p>
-
-    <h2>3. Match the layout to your physical desk</h2>
-    <p>Open <strong>Settings → Layout</strong>. Drag the machines so their displays match where they sit, then choose <strong>Apply</strong>. The pointer crosses at touching edges between displays on different machines.</p>
-    <p>If the Mac sits to the left of your Linux display, place it there in the layout. Test a short crossing near the middle of the shared edge first. If crossing happens on the wrong side or nowhere at all, check the layout and permissions before changing unrelated settings.</p>
-
-    <h2>4. Test control and the way back</h2>
-    <ol>
-      <li>Open a disposable text editor on the target computer.</li>
-      <li>Move the pointer through the touching display edge. Confirm the control notice names the expected peer.</li>
-      <li>Type a short line and check it appears on the target.</li>
-      <li>Choose <strong>Take input back</strong> in the tray or run <code>crosspanectl release</code>.</li>
+  <section class="guide-section" id="pair">
+    <h2>Connect and compare codes</h2>
+    <p>Crosspane connects directly over IP: a LAN, direct Ethernet or configured Thunderbolt networking can carry the connection. Internet access alone is insufficient if the network isolates the two machines.</p>
+    <p>On Linux, allow UDP <strong>47811</strong> for the agent and <strong>47812</strong> for pairing from your LAN subnet. The UFW example is <code>sudo ufw allow from 192.168.1.0/24 to any port 47811:47812 proto udp</code>; replace that subnet with yours. If you change the configured agent port, pairing uses port + 1.</p>
+    <ol class="guide-steps">
+      <li>On the Mac, open <strong>Settings → Pairing → Open pairing window</strong>.</li>
+      <li>On Linux, choose <strong>Scan</strong>, then <strong>Join</strong> beside the Mac’s name.</li>
+      <li>Compare the Mac’s six-digit code with the candidates on Linux. Select the matching code on Linux, then choose <strong>Confirm</strong> on the Mac.</li>
+      <li>Check both Machines tabs or <code>crosspanectl status</code> for the expected peer.</li>
     </ol>
-    <p><code>crosspanectl panic</code> ends every session and disarms edge crossing. Use <code>crosspanectl rearm</code> when you are ready to enable it again. Learn that recovery path before using Crosspane during important work.</p>
+    <p>A discovered name is not proof of identity. Compare the code on the physical computers; cancel if it does not match. Connections use authenticated peer identities and QUIC with TLS 1.3.</p>
+    <p>If discovery fails, use the <a href={`${running}#pair-two-machines-once`}>CLI pairing flow</a> with the Mac’s reachable IP address. Discovery disabled with <code>CROSSPANE_DISCOVERY=0</code> intentionally produces no scan results.</p>
+  </section>
 
-    <h2>5. Try one projected window</h2>
-    <p>Use <strong>Show a window of the peer here</strong> or the Windows tab in Settings. The source computer must permit browsing its windows. Choose an ordinary app window first, with no private content or unsaved form.</p>
-    <p>The application continues running on its source computer. Mac window projection mirrors the source by default; it does not transfer the application or its files. Close the projected window or return it from the tray when you finish.</p>
-    <p>If a connection drops, Crosspane releases held keys and buttons. A projection can briefly retain its last picture while waiting to reconnect, so a visible frame is not proof that the peer is still responding. Check status before continuing to type.</p>
-    <p>Find the full configuration, clipboard options and troubleshooting steps in the <a href="https://github.com/frostdev-ops/crosspane/blob/master/docs/running.md">running reference</a>, or return to the <a href="/crosspane">Crosspane overview</a>.</p>
-  </article>
-</MarketingLayout>
+  <section class="guide-section" id="permissions">
+    <h2>Choose each permission</h2>
+    <p>macOS permissions let Crosspane use the local computer. Crosspane’s per-peer grants let a particular paired computer act here. Pairing does not replace either layer.</p>
+    <p>On the Mac, open <strong>System Settings → Privacy &amp; Security</strong>. Local Network permits connections; Accessibility permits input injection and window movement; Input Monitoring permits keyboard and mouse capture; Screen &amp; System Audio Recording permits window capture. Use <code>crosspanectl request-permissions</code> to request missing permissions, then verify status.</p>
+    <p>In <strong>Settings → Machines</strong>, grants describe what the selected peer may do <em>on this computer</em>. To drive Linux with the Mac’s keyboard, allow the Mac’s <strong>input</strong> capability on Linux. Allow the reverse direction on the Mac only when needed.</p>
+    <ul>
+      <li><strong>input:</strong> the peer may control this computer.</li>
+      <li><strong>browse:</strong> the peer may list this computer’s windows.</li>
+      <li><strong>share:</strong> this computer may share its windows with the peer.</li>
+      <li><strong>present:</strong> the peer may present its windows here.</li>
+    </ul>
+    <p>Clipboard sharing starts off in both directions. On the Mac, <code>crosspanectl allow desktop clipboard.read</code> lets a peer named <code>desktop</code> read the Mac’s clipboard when you paste there. <code>clipboard.write</code> lets that peer offer its clipboard on the Mac. Replace the name with your peer’s name; add <code>--off</code> to withdraw a grant.</p>
+    <p>Test with harmless text, then a small PNG. Limits are 1 MiB for text and 16 MiB for PNG images; this is not general file transfer. Locking or unknown session state blocks clipboard operations; copy again after unlocking. Speakers need a separate <code>speaker</code> grant from their owner and the Mac’s audio component. Remote microphones are unsupported.</p>
+  </section>
+
+  <section class="guide-section" id="layout">
+    <h2>Arrange a real desk</h2>
+    <p>Suppose your MacBook sits left of your Linux monitor. Open <strong>Settings → Layout</strong>, drag their rectangles into that arrangement and choose <strong>Apply</strong>. Displays are sized in millimetres and snap at their edges.</p>
+    <p>The Mac’s right edge must touch Linux’s left edge. If the monitor is taller, align their lower edges or centres to match your desk. Only the overlapping part of those edges provides a crossing route. A corner above the neighbouring display has nowhere to cross.</p>
+    <p>Try near the middle of the overlap. If crossing happens on the wrong side, correct the layout. If there is a gap, bring the rectangles together and apply again. For a simple arrangement, run <code>crosspanectl layout desktop right</code> on the Mac.</p>
+  </section>
+
+  <section class="guide-section" id="control">
+    <h2>Test input and take it back</h2>
+    <ol class="guide-steps">
+      <li>Open a disposable text editor on Linux; keep local controls available on both computers.</li>
+      <li>Move the Mac’s pointer through the shared edge. Confirm the control banner names Linux, then type a short line.</li>
+      <li>Try a click, scroll and common shortcuts before opening an important document.</li>
+      <li>Choose <strong>Take input back</strong> in the tray or menu bar, or run <code>crosspanectl release</code> on the controlling machine.</li>
+    </ol>
+    <aside class="guide-callout"><strong>Know the stop controls.</strong> <code>release</code> takes input back. <code>crosspanectl panic</code> ends every session and disarms edge crossing. After checking status and layout, <code>crosspanectl rearm</code> enables crossing again.</aside>
+    <p>If shortcuts feel wrong, configure the per-peer modifier remap on the computer whose keyboard you use. The running guide documents Ctrl ↔ Command/Super and Alt ↔ Command/Super profiles. Configuration changes apply after <code>crosspanectl restart</code>; test again in the disposable editor.</p>
+  </section>
+
+  <section class="guide-section" id="projection">
+    <h2>Bring one window over</h2>
+    <p>Open an ordinary Mac app window. On the Mac, grant Linux <strong>browse</strong> and <strong>share</strong>; on Linux, grant the Mac <strong>present</strong>. Then on Linux, use <strong>Show a window of the peer here</strong> in the tray, Settings → Windows, or <code>crosspanectl pick --from macbook</code>.</p>
+    <p>The app and its files stay on the source. Mac projection mirrors the original by default. Hiding it requires the opt-in <code>private-vdisplay</code> build and <code>mac_virtual_display = true</code>, using a private macOS API. Hyprland can park a source window on a headless twin output, with mirroring as fallback.</p>
+    <p>Close the projection or choose <strong>Return</strong> to give it back. After picking works, try dragging a title bar toward a neighbouring screen. On Hyprland, release when the HUD says <strong>Release to move</strong>. Dragging depends on negotiated features, grants and native gesture reporting; use the picker when unavailable.</p>
+    <p>If the connection drops, held keys and buttons are released immediately. A projection keeps its last picture during a <strong>20-second reconnect grace period</strong>. It resumes on reconnection; otherwise the window returns to its source. The picture can be stale: check status before typing.</p>
+    <p>Hyprland also has a home-control mode for entering a projection of its own twin-parked window while controlling a peer. Its notice identifies the window and <kbd>Ctrl+Shift+Alt+Escape</kbd> release chord. Read the <a href={`${running}#use`}>home-control instructions</a> first; a permanent binding on that chord prevents entry.</p>
+  </section>
+
+  <section class="guide-section" id="troubleshooting">
+    <h2>Find the first failing step</h2>
+    <p>Run <code>crosspanectl status</code> on both computers. Check local agent availability, peer connection, grants, layout and recent notices in that order. Fix the first failed stage.</p>
+    <ul class="guide-checklist">
+      <li><strong>No connection:</strong> check Mac Local Network consent, Linux UDP rules and the peer address. “No route to host” on the Mac can indicate missing network consent.</li>
+      <li><strong>Connected, no crossing:</strong> check the target’s input grant, touching edges and whether panic left crossing disarmed.</li>
+      <li><strong>Permission still missing:</strong> restart the agent and check status. macOS permission changes normally trigger a restart, but verify the result.</li>
+      <li><strong>Empty picker or refused projection:</strong> check browse/share on the source and present on the destination. Mac window titles and capture need Screen Recording.</li>
+      <li><strong>Paste blocked:</strong> check grant direction, unlocked session and content limits. On macOS, inspect Crosspane’s Paste from Other Apps setting. Copy fresh text after unlocking.</li>
+      <li><strong>Motion consumes bandwidth:</strong> try wired networking and check the video-enabled build requirements. Lossless tiles can be expensive for full-screen video over Wi-Fi.</li>
+    </ul>
+    <p>Mac logs: <code>~/Library/Logs/Crosspane/agent.log</code>. Linux user-service logs: <code>journalctl --user -u crosspane-agent</code>. Report platforms, versions, connection direction and the first failure, removing sensitive content. A working input test does not establish projection, clipboard or speaker success.</p>
+    <div class="guide-sources"><p>Continue with the <a href={running}>running reference</a>, <a href={`${source}/blob/master/scripts/macos/README.md`}>Mac build helpers</a> and <a href={`${source}#current-limitations`}>current limitations</a>, or the <a href="/crosspane">Crosspane overview</a>.</p></div>
+  </section>
+</GuideLayout>

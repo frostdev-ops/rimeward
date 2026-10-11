@@ -1,39 +1,133 @@
 ---
-import MarketingLayout from '../../layouts/MarketingLayout.astro';
-import '../../styles/products.css';
+import GuideLayout from '../../layouts/GuideLayout.astro';
+import RimewireDemo from '../../components/marketing/RimewireDemo.astro';
+
+const chapters = [
+  { id: 'install', title: 'Install in your harness' },
+  { id: 'tracker', title: 'Define reviewable work' },
+  { id: 'local', title: 'Keep the board local' },
+  { id: 'plan', title: 'Read before starting' },
+  { id: 'updates', title: 'Post useful updates' },
+  { id: 'handoff', title: 'Unblock and hand off' },
+  { id: 'acceptance', title: 'Complete with evidence' },
+  { id: 'maintenance', title: 'Maintain and troubleshoot' },
+];
 ---
 
-<MarketingLayout title="Make agent handoffs useful with Rimewire — Frostdev" description="Build a local agent project board from a tracker, write useful progress and blocker updates, and record completion with acceptance evidence." path="/guides/rimewire-agent-handoffs">
-  <article class="product-page reading-page">
-    <p class="article-meta"><a href="/guides">All guides</a> · By Frostdev · Updated <time datetime="2026-10-11">October 11, 2026</time></p>
-    <h1>Make agent handoffs useful with Rimewire.</h1>
-    <p>An agent saying “done” is hard to assess when its branch, checks and next step are scattered across chats. Rimewire puts a Markdown tracker and checkout-local updates on a shared board. The board helps you find the evidence; the project still defines what completion means.</p>
+<GuideLayout title="Make agent handoffs useful with Rimewire." description="Turn a project tracker into a shared picture of the work. Set up your harness, coordinate across checkouts, and leave evidence the next person can use." path="/guides/rimewire-agent-handoffs" project="Rimewire" duration="10 min read" chapters={chapters}>
+  <RimewireDemo slot="visual" />
 
-    <h2>1. Install for the harness you use</h2>
-    <p>Rimewire requires Node.js 24 or newer and npm. Follow its <a href="https://github.com/frostdev-ops/rimewire#install">source installation instructions</a>, then register it with your harness. For Codex, run <code>rimewire install codex --user</code>; OpenCode and Pi have corresponding install commands. Claude Code uses the bundled plugin.</p>
-    <p>Restart the harness in your project and ask it to run <strong>rimewire-setup</strong>. Keep the built Rimewire checkout available: registrations use absolute paths. After moving or updating it, rebuild and rerun registration so future sessions reach the current runtime.</p>
+  <section class="guide-section" id="install">
+    <h2>Install in the harness you use.</h2>
+    <p>Rimewire runs a local MCP server and a browser board. It needs <strong>Node.js 24 or newer</strong> and npm; no model API or cloud account is required. Install from its public source repository:</p>
+    <pre><code>{`git clone https://github.com/frostdev-ops/rimewire.git
+cd rimewire
+npm ci
+npm run build
+npm install --global .`}</code></pre>
+    <p>Register the installed runtime with your harness. Run the matching command below; you only need the harness you actually use.</p>
+    <pre><code>{`rimewire install codex --user
+rimewire install opencode --user
+rimewire install pi --user`}</code></pre>
+    <p>User scope is the default. For checkout-specific registration, run the command inside that project with <code>--project</code>. Codex uses <code>~/.codex/config.toml</code> or <code>.codex/config.toml</code>; OpenCode uses its user or project JSON/JSONC configuration; Pi uses its user settings or <code>.pi/settings.json</code>. Environment overrides are documented in the <a href="https://github.com/frostdev-ops/rimewire/blob/main/docs/INSTALLATION.md">installation reference</a>.</p>
+    <p>Claude Code uses the bundled plugin. From the built Rimewire checkout, run:</p>
+    <pre><code>{`claude plugin marketplace add "$PWD/plugins"
+claude plugin install rimewire@rimewire-local`}</code></pre>
+    <p>Restart your harness in the project. Ask it to run <strong>rimewire-setup</strong>, or <code>/rimewire:rimewire-setup</code> in Claude Code. The skill surveys your plans and conventions, adapts the tracker and config, and adds managed agent instructions. Accept the harness's project trust requirements where needed.</p>
+    <div class="guide-callout"><strong>Keep the runtime available.</strong><p>Registration uses absolute paths to Node and Rimewire. After moving or updating the runtime, rebuild it and rerun registration. Use one installation method per harness and project to avoid duplicate servers.</p></div>
+  </section>
 
-    <h2>2. Start with a small, meaningful tracker</h2>
-    <p>Choose one deliverable you can review independently. Give it a stable ID, a clear title, a status and a completion condition. For example, a parser fix might be complete when the malformed input is rejected, the existing callers still work, and the project's checks pass.</p>
-    <p>The setup skill adapts your tracker path, IDs and status vocabulary in <code>.rimewire/config.toml</code>. Second-level Markdown headings become board lanes; tables with a Status column supply packages. Keep the tracker and configuration in version control, and the journal directory in <code>.gitignore</code>.</p>
-    <p>Ask for <strong>board_url</strong> to get the board's actual local address. Do not guess a port. The board runs on your machine and can combine updates from multiple Git worktrees.</p>
+  <section class="guide-section" id="tracker">
+    <h2>Define work someone can review.</h2>
+    <p>Start with one independently reviewable deliverable. Give it a stable ID, a concrete title, a status, dependencies and an acceptance condition. “Improve parsing” is vague; “Reject malformed input without changing valid callers” tells a reviewer what to check.</p>
+    <p>The default tracker is <code>docs/board/README.md</code>. Second-level Markdown headings become lanes. Tables beneath a lane with a <code>Status</code> column become packages; ordinary scheduling tables can stay in the same document.</p>
+    <pre><code>{`# Project tracker
 
-    <h2>3. Leave progress another person can use</h2>
-    <p>Read the package and recent updates before starting or resuming work. A useful progress message states what changed and what still needs evidence. “Parser implemented; caller validation remains” is more actionable than a percentage alone.</p>
-    <p>These CLI examples use <code>TASK-1</code> as a placeholder. Substitute an existing ID from your tracker and run them in the checkout that owns the work:</p>
-    <pre><code>{`rimewire list
-rimewire progress TASK-1 --percent 50 --text "Parser implemented; caller checks remain"
-rimewire blocker TASK-1 --text "Need a decision on the accepted input format"`}</code></pre>
-    <p>MCP can read packages and post the same updates. Workers without MCP can use the CLI. Each checkout appends its own journal, so an update should describe work from that checkout rather than claim another branch's results.</p>
+## Foundation
 
-    <h2>4. Make the handoff concrete</h2>
-    <p>Before asking for review, record the branch or revision, affected files, behavior that changed, checks actually run, and unresolved questions. For a failing check, include the relevant failure and its effect on acceptance. A reviewer should know what to inspect without reconstructing your chat.</p>
-    <p>Keep credentials, private prompts and application data out of board updates. Link to reviewable source or approved evidence instead. A local board can still be screenshotted or shared by the people using it.</p>
+| ID | Title | OS | Depends on | Status | Branch |
+|---|---|---|---|---|---|
+| [TASK-1](TASK-1.md) | Reject malformed input | any | — | planned | — |
 
-    <h2>5. Complete only after the criteria pass</h2>
-    <p>Use <code>ready</code> after the work and required checks pass. Write the evidence in the update:</p>
-    <pre><code>{`rimewire ready TASK-1 --text "Malformed input rejected; existing caller checks pass at the reviewed revision"`}</code></pre>
-    <p>A 100% progress update, a session exit or an activity hook does not establish completion. Later progress or a blocker reopens a ready package. If a deployment is still required, record that separately from a passing local build.</p>
-    <p>Continue with the <a href="https://github.com/frostdev-ops/rimewire/blob/main/docs/CONFIGURATION.md">configuration reference</a>, <a href="https://github.com/frostdev-ops/rimewire/blob/main/docs/INSTALLATION.md">harness installation guide</a>, or <a href="/rimewire">Rimewire overview</a>.</p>
-  </article>
-</MarketingLayout>
+## Delivery
+
+| ID | Title | OS | Depends on | Status | Branch |
+|---|---|---|---|---|---|
+| TASK-2 | Verify the release | any | TASK-1 | planned | — |`}</code></pre>
+    <p><code>TASK-1</code> and <code>TASK-2</code> are demonstration IDs throughout this guide. Use existing IDs from your tracker when posting real updates. The linked <code>TASK-1.md</code> is a sibling spec: put the problem, scope, constraints and acceptance checks there. The tracker path determines the spec directory.</p>
+    <p>Keep implementation and delivery separate when they need different evidence. A parser change may pass local checks while an installed release still needs verification. Record that dependency instead of folding both into an ambiguous “done.”</p>
+  </section>
+
+  <section class="guide-section" id="local">
+    <h2>Keep the project and its history local.</h2>
+    <p>Setup writes <code>.rimewire/config.toml</code>. A small project configuration can preserve your existing tracker and branch convention:</p>
+    <pre><code>{`name = "Example project"
+tracker = "docs/board/README.md"
+idPattern = 'TASK-[0-9]+'
+branchPrefix = "task"
+journalDir = ".rimewire/journal"
+
+[statuses]
+done = ["shipped"]
+active = ["building"]
+blocked = ["waiting"]`}</code></pre>
+    <p>Custom status prefixes extend the built-in categories. Paths must be relative and remain inside the project. IDs must match your pattern and be safe filenames of at most 48 characters. Invalid expressions and unknown configuration keys produce errors.</p>
+    <p>Version the configuration, tracker and specs. Add <code>.rimewire/journal/</code> to <code>.gitignore</code>. Each checkout appends its own <code>notes.jsonl</code>; the board combines journals across linked Git worktrees. Updates retain checkout identity, so parallel work stays attributable.</p>
+    <p>Ask for <strong>board_url</strong> to get the actual address. MCP sessions share a daemon bound to <code>127.0.0.1</code>, with a project URL based on the canonical main repository path. Linked worktrees register the same project. Closing the last MCP session eventually stops the daemon; an open browser does not keep it running.</p>
+  </section>
+
+  <section class="guide-section" id="plan">
+    <h2>Read the shared picture before starting.</h2>
+    <ol class="guide-steps">
+      <li><strong>Read the board.</strong><p>Use <code>board_overview</code> to see phases, active packages and blockers. Check what depends on the package you intend to change.</p></li>
+      <li><strong>Read the package.</strong><p>Call <code>get_package</code> with its <code>wp</code> ID. Review the spec, branch, worktree and acceptance condition.</p></li>
+      <li><strong>Read recent updates.</strong><p>Use <code>list_updates</code>, optionally filtered by <code>wp</code>. On resuming work, check for decisions or newer evidence before repeating an old approach.</p></li>
+    </ol>
+    <p>Keep the tracker synchronized when scope, dependencies or branch ownership change. Managed agent instructions should tell future workers to read and update the board, use real package IDs and keep checkout journals ignored. Pass those instructions to delegated workers too.</p>
+    <p>Choose a package small enough to describe its result clearly. Dependencies express the order of work; acceptance criteria express the proof required. Neither should need the reader to reconstruct a conversation.</p>
+  </section>
+
+  <section class="guide-section" id="updates">
+    <h2>Post an update that earns its place.</h2>
+    <p>A useful update says what changed, what was checked and what remains. A percentage can help you scan a board, but “Parser implemented; caller checks remain” gives the next worker an action.</p>
+    <pre><code>{`rimewire list TASK-1 --limit 10
+rimewire progress TASK-1 --percent 50 \\
+  --text "Parser implemented; existing caller checks remain"
+rimewire note TASK-1 \\
+  --text "Decision: retain the current valid-input format"`}</code></pre>
+    <p>Run these from the checkout that owns the work. From elsewhere, add <code>--checkout /absolute/path/project</code>. If <code>rimewire</code> is unavailable on PATH, substitute <code>node /absolute/path/rimewire/dist/cli.js</code>. This fallback lets sandboxed workers append updates without a network connection.</p>
+    <p>MCP exposes the same reporting through <code>post_update</code>. For example, ask the agent to submit <code>wp: "TASK-1"</code>, <code>kind: "progress"</code>, <code>percent: 50</code> and the text above. Supported kinds are <code>note</code>, <code>progress</code>, <code>blocker</code>, <code>unblock</code> and <code>ready</code>. Notes preserve context without changing completion.</p>
+    <p>Post at meaningful changes: a decision, a completed check, a blocker or a review handoff. Keep credentials, private prompts, transcripts and application data out of updates. Link to approved source and evidence instead.</p>
+  </section>
+
+  <section class="guide-section" id="handoff">
+    <h2>Name the blocker. Make the handoff concrete.</h2>
+    <p>Describe a blocker in terms someone can resolve: the missing decision, input or evidence, and how it affects acceptance. Once resolved, record what changed.</p>
+    <pre><code>{`rimewire blocker TASK-1 \\
+  --text "Need a decision: reject or ignore incomplete records"
+rimewire unblock TASK-1 \\
+  --text "Decision recorded: reject incomplete records"
+rimewire note TASK-1 \\
+  --text "Review handoff: task/TASK-1, commit abc1234; parser and callers checked. Release verification remains TASK-2."`}</code></pre>
+    <p>The revision above is a placeholder. A real handoff should identify the actual branch or revision, affected files, resulting behavior, checks run and unresolved questions. Include a failing check's relevant error and its effect on acceptance. The reviewer should be able to start without your chat history.</p>
+    <p>Record the result of a dependency decision in the tracker or spec as well as the update. That keeps the durable plan understandable after the original worker leaves.</p>
+  </section>
+
+  <section class="guide-section" id="acceptance">
+    <h2>Complete the package with evidence.</h2>
+    <p>Use <code>ready</code> only after the work and the package's required checks pass. Say which behavior was verified and against which revision.</p>
+    <pre><code>{`rimewire ready TASK-1 \\
+  --text "At the reviewed revision: malformed records rejected; valid callers preserved; required parser checks passed. Release acceptance tracked in TASK-2."`}</code></pre>
+    <div class="guide-callout"><strong>100% is progress. Ready is acceptance.</strong><p>A 100% progress update, session exit or optional activity hook cannot establish completion. Explicit ready completes a package; later progress or a blocker reopens it. A note does not change completion.</p></div>
+    <p>A passing build proves the build. It does not prove deployment, an installed app's behavior or an external provider's response. If those are required, keep the package open or track them in a clearly named dependent package. When new evidence invalidates readiness, post the remaining work and let the board reflect it.</p>
+  </section>
+
+  <section class="guide-section" id="maintenance">
+    <h2>Keep the board useful over time.</h2>
+    <p>If startup fails after an update or move, check Node's version and the registered runtime path, then rebuild and rerun installation. Restart the harness so it loads the current registration and skill. Repeated installation preserves unrelated settings; an unowned conflicting registration requires review.</p>
+    <p>If the board URL stops responding, reopen an MCP session and ask for <code>board_url</code> again. The daemon prefers port 8737 and tries alternatives when occupied. For a standalone board, run <code>rimewire serve --repo . --port 0</code> in the project and use the address it prints. Avoid assuming a fixed port.</p>
+    <p>If packages are missing, check the configured tracker path, second-level lane headings, Status column and ID pattern. If updates appear on the wrong branch, verify the checkout used for the write. Keep journals local and ignored; use a supported local filesystem for concurrent journal appends.</p>
+    <p>Optional activity hooks start disabled. Enable them only when useful, with the harness's required trust and <code>[hooks] enabled = true</code> in project configuration. They route to a uniquely matched branch package or an explicit package override. Activity and Git snapshots help explain work; they never replace acceptance.</p>
+    <div class="guide-sources"><h3>Keep the references close.</h3><p>Use the <a href="https://github.com/frostdev-ops/rimewire/blob/main/docs/INSTALLATION.md">harness installation guide</a>, <a href="https://github.com/frostdev-ops/rimewire/blob/main/docs/CONFIGURATION.md">configuration reference</a>, <a href="https://github.com/frostdev-ops/rimewire/blob/main/docs/MCP.md">MCP contract</a> and <a href="https://github.com/frostdev-ops/rimewire/blob/main/docs/LIFECYCLE.md">shared-board lifecycle</a> for the details. Return to the <a href="/rimewire">Rimewire overview</a> for the product tour.</p></div>
+  </section>
+</GuideLayout>

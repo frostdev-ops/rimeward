@@ -1,0 +1,129 @@
+---
+import GuideLayout from '../../layouts/GuideLayout.astro';
+
+const chapters = [
+  { id: 'import', title: 'Import and check your character' },
+  { id: 'conditions', title: 'Choose the conditions' },
+  { id: 'quick-sim', title: 'Run and read Quick Sim' },
+  { id: 'top-gear', title: 'Search with Top Gear' },
+  { id: 'droptimizer', title: 'Find useful drops' },
+  { id: 'compare', title: 'Compare and plan upgrades' },
+  { id: 'reports', title: 'Keep and share reports' },
+  { id: 'troubleshoot', title: 'Check status and recover' },
+];
+---
+
+<GuideLayout title="Make your first Frostsim gear decision" description="Import your character, establish a baseline, and compare gear under conditions that matter to you. Learn to read uncertainty, investigate drops, and keep reports you can revisit." path="/guides/frostsim-first-simulation" project="Frostsim" duration="9 min read" chapters={chapters}>
+  <figure slot="visual" class="sim-map">
+    <img src="/projects/frostsim.webp" width="720" height="178" alt="Frostsim" />
+    <div class="sim-path" aria-label="Import, simulate, compare">
+      <span><small>01</small> Import</span><b aria-hidden="true">→</b><span><small>02</small> Simulate</span><b aria-hidden="true">→</b><span><small>03</small> Compare</span>
+    </div>
+    <div class="sim-illustration" aria-hidden="true">
+      <div class="sim-chart-head"><span>Illustrative result</span><span>Relative score ± margin</span></div>
+      <div class="sim-chart-row"><span>Current</span><div class="sim-bar"><i style="--fill:75%"></i><b style="--position:75%"></b></div><strong>100.0 ± 0.4</strong></div>
+      <div class="sim-chart-row"><span>Alternative</span><div class="sim-bar"><i style="--fill:77%"></i><b style="--position:77%"></b></div><strong>100.2 ± 0.4</strong></div>
+      <p class="sim-tie">Close numbers. Overlapping uncertainty.</p>
+    </div>
+    <figcaption>Demo data: current 100.0 ± 0.4, alternative 100.2 ± 0.4. These overlapping ranges illustrate why a slightly higher number can leave a comparison unresolved.</figcaption>
+  </figure>
+
+  <section class="guide-section" id="import">
+    <h2>Import and check your character</h2>
+    <p>Open <a href="https://sim.frostdev.io/#/character">Frostsim’s Character screen</a>. With the SimulationCraft addon installed in World of Warcraft, type <code>/simc</code> and copy the full export into <strong>SimC output</strong>. Choose <strong>Import character</strong>. A fresh addon export is the practical starting point for comparing equipped gear, bag alternatives, and talent loadouts together.</p>
+    <ol class="guide-steps">
+      <li><strong>Check the identity.</strong> Confirm the character, specialization, and imported time. Use the character picker deliberately when you have several saved characters.</li>
+      <li><strong>Review what arrived.</strong> Inspect equipped gear and talent loadouts. Open any “lines needed attention” warnings before building a search.</li>
+      <li><strong>Refresh after changes.</strong> Use <strong>Update from SimC</strong> when gear or talents change. Previous reports retain their own snapshots.</li>
+    </ol>
+    <p>Armory lookup is another entry point: provide region, realm, and name. It needs the network and should not replace an addon export when you need bag contents or other details absent from the lookup. Export a character file when moving between browsers; <strong>Export without identity</strong> is available for sharing.</p>
+  </section>
+
+  <section class="guide-section" id="conditions">
+    <h2>Choose the conditions before the gear</h2>
+    <p>A result answers a specific modeled question. Choose fight style, target count, fight length, talents, raid buffs, and consumables to reflect that question. Patchwerk provides a straightforward baseline; dungeon scenarios model different conditions. Dungeon Route accepts a route through its route picker, including an MDT import, and runs through the final pull with a safety limit.</p>
+    <div class="guide-table-wrap"><table>
+      <thead><tr><th>Setting</th><th>Why it matters</th></tr></thead>
+      <tbody>
+        <tr><td>Fight style, targets, length</td><td>Change cooldown value, cleave, and the time available for damage.</td></tr>
+        <tr><td>Talents, buffs, consumables</td><td>Change the character being measured; keep them consistent unless they are the comparison.</td></tr>
+        <tr><td>Target error or iterations</td><td>Control measurement effort and uncertainty, rather than the encounter.</td></tr>
+        <tr><td>Engine channel and revision</td><td>Identify the game data and SimulationCraft model behind the result.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Each tool remembers its own settings, so check them when switching screens. Live is the default channel; PTR is a separate choice when available. Check <strong>Help and status</strong> for the loaded engine, game data, and hotfix identity. Avoid comparing historical results from different revisions as though only the gear changed.</p>
+  </section>
+
+  <section class="guide-section" id="quick-sim">
+    <h2>Run and read Quick Sim</h2>
+    <p>Open <a href="https://sim.frostdev.io/#/quick">Quick Sim</a>, confirm the selected character and active loadout, then choose <strong>Run Quick Sim</strong>. Start with the standard accuracy setting. Advanced settings offer fixed iterations or target error with a maximum iteration budget; a tighter error target asks for more work.</p>
+    <p>Read the mean DPS together with its uncertainty, actual iterations, and warnings. Check whether the requested target was reached: exhausting the iteration budget can leave a result less precise than requested. Inspect damage contributors, timeline, buffs, and action details to understand what the engine modeled. A detailed HTML report can be requested before running.</p>
+    <aside class="guide-callout"><strong>A simulation is a modeled outcome.</strong><p>Its statistical margin describes sampling uncertainty inside that model. It does not account for every mechanic, player decision, or model limitation. Use the number to compare controlled alternatives; it is not a promised live encounter DPS.</p></aside>
+    <p>Browser runs use SimulationCraft compiled to WebAssembly on your CPU, without a cloud queue. Optional Frostsim Cloud plans can run native SimulationCraft remotely; eligible Avalanche workloads can split independent simulations between browser and server. Check <strong>Run on</strong> and the report’s execution information. Cloud failures can fall back to the browser, but provider capacity and account entitlements still matter.</p>
+  </section>
+
+  <section class="guide-section" id="top-gear">
+    <h2>Search owned gear with Top Gear</h2>
+    <p>Use <a href="https://sim.frostdev.io/#/gear">Top Gear</a> when several items interact. Select plausible alternatives in each slot, then review available enhancements, consumables, and talent loadouts. Add hypothetical or Great Vault choices explicitly when needed; do not assume everything shown is already owned.</p>
+    <p>Check the combination count before choosing <strong>Find Top Gear</strong>. Selecting everything can create a large search. Start with the slots relevant to your decision and read legality notices, unavailable rules, and budget restrictions. A search is only comprehensive over the choices you included.</p>
+    <p>Frostsim spends early measurements across candidates, then concentrates effort on close contenders and verifies finalists separately. Read search completion and precision alongside the ranking. An unresolved tie means the available measurements did not separate those setups. Use <strong>Re-measure</strong> for finalists when a closer answer would change your decision.</p>
+    <p>Inspect the actual gear and talent changes, then open the setup in Quick Sim or export its SimulationCraft profile. “Best” here means best supported result within this selection and scenario; rerun under another relevant encounter before treating it as a universal set.</p>
+  </section>
+
+  <section class="guide-section" id="droptimizer">
+    <h2>Find useful drops with Droptimizer</h2>
+    <p>Open <a href="https://sim.frostdev.io/#/droptimizer">Droptimizer</a> to ask what a single drop would add. Select instances and bosses, then set the appropriate raid difficulty, Mythic+ key level, or custom track and item level. Review upgrade-to-maximum and baseline upgrade options carefully: they can make the comparison hypothetical.</p>
+    <p>Run with the same encounter assumptions as your baseline. Read each item’s gain and uncertainty; a small positive number can be indistinguishable from no improvement. Custom levels may not be obtainable, and a large simulated gain says nothing about the chance of receiving that item.</p>
+    <p>Send an interesting drop to <strong>Top Gear</strong> or <strong>Compare</strong> from its result row. Droptimizer measures individual changes; a piece that looks weak alone may complete a set or interact with another item. Validate the full combination before spending resources or making a loot decision.</p>
+  </section>
+
+  <section class="guide-section" id="compare">
+    <h2>Compare alternatives and plan upgrades</h2>
+    <p><a href="https://sim.frostdev.io/#/compare">Compare</a> is useful for a small set of named gear or talent variants against one baseline. Give each variant a recognizable name, inspect its changes and validation notices, then run all variants under matching conditions. Consult the separation or tie status, rather than declaring a winner from rounded DPS alone.</p>
+    <p><strong>Crest Sim</strong> measures upgrade possibilities and evaluates finished spending plans. Enter the resources you actually have or can earn, and check the imported currency details and unknown limits. Upgrade costs come from generated game data; unavailable values require your input. The verified finished plan matters more than adding individual gains together.</p>
+    <p><strong>Talents</strong> lets you inspect and edit loadouts for subsequent simulations. <strong>Advanced</strong> provides raw scripts, engine options, and stat weights. Weights approximate the value of another stat point for the current setup; direct item comparisons remain more useful after substantial gear changes.</p>
+    <p><strong>Power Infusion</strong> is a reference study across default SimulationCraft profiles and target counts, with uncertainty and detailed breakdowns. It is not a simulation of your imported character. Check its recorded engine identity before applying its ranking to a current decision.</p>
+  </section>
+
+  <section class="guide-section" id="reports">
+    <h2>Keep reports you can revisit</h2>
+    <p><a href="https://sim.frostdev.io/#/reports">Reports</a> stores runs on this device. Rename useful results and retain the baseline, assumptions, and candidate setup. Use <strong>Export all</strong> to keep a portable copy of saved work; browser storage can be cleared or evicted. Another browser does not automatically inherit local history.</p>
+    <p>Report exports can include JSON, the effective profile and input, and HTML when requested. A later rerun uses an engine available then; preserve the original result and revision when documenting a decision.</p>
+    <p><strong>Share report</strong> offers detailed and compact links carrying report data inside the link without uploading it. Check “What’s left out” for omitted detail. Eligible hosted links upload the full report after an explicit upload action and can be revoked under Account. Anyone with a shared link can read its included information; review identity and gear details before posting it.</p>
+  </section>
+
+  <section class="guide-section" id="troubleshoot">
+    <h2>Check status and recover</h2>
+    <ul class="guide-checklist">
+      <li><strong>Import fails:</strong> copy the entire fresh addon export and read the first parser error. Confirm the character before updating an existing slot.</li>
+      <li><strong>A tool is unavailable:</strong> open Help and status for engine capabilities, cross-origin isolation, and SharedArrayBuffer support. Restricted browsers can lose threaded or comparison capabilities.</li>
+      <li><strong>A run stops:</strong> read the SimulationCraft log and warnings. Check invalid talents, item choices, and custom options before repeating it.</li>
+      <li><strong>An update waits:</strong> finish or cancel the run before applying it. Save work before switching engine channels.</li>
+      <li><strong>Offline use fails:</strong> check cached app, engine, and catalogs in Help. Download offline resources in advance; icons and external lookups still need the network.</li>
+    </ul>
+    <p>Help’s downloadable diagnostic records browser and engine facts without character identity or profile text. Share it when reporting a technical failure. Keep a separate exported report when the question concerns a result; local status describes this browser’s state, not every cloud provider’s health.</p>
+    <aside class="guide-sources"><h3>Continue with the product</h3><p>Use <a href="https://sim.frostdev.io/#/help">Help and status</a> for your actual loaded version and capabilities. The <a href="https://github.com/frostdev-ops/frostsim/blob/cloud/README.md">Frostsim source README</a> explains the tools, browser and cloud execution, and generated game data. <a href="https://github.com/simulationcraft/simc">SimulationCraft</a> is the underlying engine.</p></aside>
+  </section>
+</GuideLayout>
+
+<style>
+  .sim-map { margin: 0; padding: 1.6rem; border: 1px solid #31516a; border-radius: 1rem; background: radial-gradient(ellipse at top right, #17395580, transparent 65%), #091827; }
+  .sim-map > img { display: block; width: 85%; height: auto; margin: .5rem auto 1.7rem; }
+  .sim-path { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding-bottom: 1.5rem; color: #dceefa; font-size: .8rem; }
+  .sim-path > span { display: flex; flex-direction: column; gap: .4rem; }
+  .sim-path small { color: #82b8dd; font-size: .6rem; }
+  .sim-path > b { font-weight: 400; color: #648da9; }
+  .sim-illustration { border-top: 1px solid #29455b; padding-top: 1.25rem; }
+  .sim-chart-head { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .3rem; color: #8fafc8; font-size: .65rem; margin-bottom: 1.3rem; }
+  .sim-chart-row { display: grid; grid-template-columns: 4.6rem minmax(0, 1fr) 5.8rem; gap: .6rem; align-items: center; font-size: .65rem; margin-block: 1.15rem; color: #bbd5e7; }
+  .sim-chart-row strong { font-size: .65rem; font-weight: 500; font-variant-numeric: tabular-nums; text-align: right; color: #dbeefd; }
+  .sim-bar { position: relative; height: .6rem; border-radius: 3px; background: #132d40; }
+  .sim-bar i { display: block; width: var(--fill); height: 100%; background: linear-gradient(90deg, #30566f, #8ecdf5); border-radius: 3px; transform-origin: left; animation: sim-measure 1.3s ease-out both; }
+  .sim-chart-row + .sim-chart-row .sim-bar i { animation-delay: .25s; }
+  .sim-bar b { position: absolute; left: var(--position); top: 50%; width: 15%; height: .95rem; transform: translate(-50%, -50%); border-inline: 1px solid #e8f6ff; background: linear-gradient(#e8f6ff, #e8f6ff) center / 100% 1px no-repeat; }
+  .sim-tie { margin-top: 1.45rem; font-size: .7rem; color: #b1cee2; }
+  .sim-map figcaption { font-size: .65rem; line-height: 1.75; color: #97b4c9; margin-top: 1.2rem; }
+  @keyframes sim-measure { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  @media (prefers-reduced-motion: reduce) { .sim-bar i { animation: none; } }
+  @media (max-width: 380px) { .sim-map { padding: 1.15rem; } .sim-chart-row { grid-template-columns: 4.3rem minmax(0, 1fr); } .sim-chart-row strong { grid-column: 2; } }
+</style>

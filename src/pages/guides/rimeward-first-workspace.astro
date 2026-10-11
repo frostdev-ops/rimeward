@@ -1,39 +1,137 @@
 ---
-import MarketingLayout from '../../layouts/MarketingLayout.astro';
-import '../../styles/products.css';
+import GuideLayout from '../../layouts/GuideLayout.astro';
+import Icon from '../../components/Icon.astro';
+import { ICONS, type IconId } from '../../lib/icon-names.ts';
+import { iconSvg } from '../../lib/icons.ts';
+
+const svg = (id: IconId) => iconSvg('lucide', ICONS[id][1], '', 1.75) ?? '';
+const chapters = [
+  { id: 'install', title: 'Install and open a project' },
+  { id: 'connect', title: 'Connect the tools' },
+  { id: 'first-task', title: 'Complete a first task' },
+  { id: 'rime', title: 'Bring in Rime' },
+  { id: 'save', title: 'Save, compare, and recover' },
+  { id: 'processes', title: 'Manage running work' },
+  { id: 'privacy', title: 'Understand where work goes' },
+  { id: 'troubleshoot', title: 'Find the next useful check' },
+];
 ---
 
-<MarketingLayout title="Build your first Rimeward project workspace — Frostdev" description="A practical Rimeward guide: open a local project, connect Editor, Terminal and Rime, review a change, and understand where your files and model calls run." path="/guides/rimeward-first-workspace">
-  <article class="product-page reading-page">
-    <p class="article-meta"><a href="/guides">All guides</a> · By Frostdev · Updated <time datetime="2026-10-11">October 11, 2026</time></p>
-    <h1>Build your first Rimeward project workspace.</h1>
-    <p>A useful first workspace has one folder and a few tools that share it. For this walkthrough, use a small project you can safely edit, with a text file and a Git repository if you want to inspect a diff. The goal is to open the file, make one change, run a check, and understand where each action happens.</p>
+<GuideLayout title="Build your first Rimeward project workspace" description="Open a local project, connect Editor, Terminal and Rime, and complete a change you can inspect. Learn what stays local, how recovery works, and how to manage running tasks." path="/guides/rimeward-first-workspace" project="Rimeward" duration="8 min read" chapters={chapters}>
+  <figure slot="visual" class="workspace-map">
+    <div class="workspace-graphic" aria-hidden="true">
+      <div class="workspace-node workspace-root"><span class="workspace-icon" set:html={svg('folder')} /><strong>Workspace</strong><small>Your project folder</small></div>
+      <svg class="workspace-lines" viewBox="0 0 600 100" preserveAspectRatio="none">
+        <path class="line-base" d="M300 0V38H100V100 M300 38V100 M300 38H500V100" />
+        <path class="line-flow" d="M300 0V38H100V100 M300 0V100 M300 0V38H500V100" />
+      </svg>
+      <div class="workspace-tools">
+        <div class="workspace-node"><span class="workspace-icon" set:html={svg('code')} /><strong>Editor</strong><small>Edit &amp; save</small></div>
+        <div class="workspace-node"><span class="workspace-icon" set:html={svg('bot')} /><strong>Terminal</strong><small>Run &amp; check</small></div>
+        <div class="workspace-node"><Icon id="rime" /><strong>Rime</strong><small>Explain &amp; act</small></div>
+      </div>
+      <span class="workspace-map-label">Workspace Leylines</span>
+    </div>
+    <figcaption>One Workspace connects your project folder to Editor, Terminal, and Rime. Each tool has its own connection; sharing a page alone does not connect them.</figcaption>
+  </figure>
 
-    <h2>1. Start on the computer that owns the project</h2>
-    <p>Install the desktop app from <a href="https://github.com/frostdev-ops/rimeward/releases">Rimeward's releases</a>, checking the release's platform requirements first. The installer bundles Node and Chromium. Your project's own tools, Git and optional CLI agents are separate installations.</p>
-    <p>On the welcome screen, choose <strong>Start right here</strong>, then <strong>Open or create a project</strong>. Approve the folder you want to use. You can work locally without connecting a Rimeward server; a remote connection is a later choice.</p>
-
-    <h2>2. Give the tools the same Workspace</h2>
-    <p>Use <strong>Edit → Add ward</strong> to add a Workspace and the Editor, Terminal and Rime tools you need. A ward is a tool on a page; the Workspace supplies its folders. Select your primary folder in the Workspace. If the project has an instruction file such as <code>AGENTS.md</code>, select it explicitly. Leaving that selection empty loads no instruction file from the folder.</p>
-    <p>Connect each tool using <strong>Connect a ward…</strong>, its <strong>Workspace connection…</strong> control, or a Workspace Leyline. A tool has one Workspace. Putting tools on the same page does not itself connect their folders.</p>
-    <p>Check the terminal's owner label and working directory before running anything. Unlinked tools use a default workspace, which may differ from the project you intended. When a connected primary folder is offline, its Workspace is unavailable.</p>
-
-    <h2>3. Make a change you can inspect</h2>
-    <ol>
-      <li>Open a text file in the Editor's explorer, or use <strong>Cmd/Ctrl+P</strong> to find it.</li>
-      <li>Change one sentence and save with <strong>Cmd/Ctrl+S</strong>. Formatting changes the buffer; save afterward to write it to disk.</li>
-      <li>Open a shell in Terminal and run the project's documented check. The bundled editor's diagnostics do not replace cross-file type checks or project tests.</li>
-      <li>Use Changes to review the Git diff, if the folder is a repository. Confirm that only the intended file changed.</li>
+  <section class="guide-section" id="install">
+    <h2>Install and open a project</h2>
+    <p>Start on the computer that owns your files. Download the latest <a href="https://github.com/frostdev-ops/rimeward/releases">Rimeward desktop release</a> and check its notes. The published macOS installer requires Apple Silicon and macOS 14 or newer; Windows targets x86-64. Linux packages currently target Ubuntu 24.04 or an equivalent system. The <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup#requirements">installation requirements</a> include the Linux libraries and package options.</p>
+    <p>The installer bundles Rimeward's backend, Node, Chromium, and editor tools. Git, your project's compiler or runtime, and optional coding CLIs remain separate installations. Bundled Node runs Rimeward; it does not replace your project's toolchain.</p>
+    <ol class="guide-steps">
+      <li>Launch the app and choose <strong>Start right here → Open or create a project</strong>.</li>
+      <li>Approve a small folder you can safely edit. An existing Git repository with a README is a useful starting point.</li>
+      <li>Rimeward creates or reuses the project page. Use <strong>Edit</strong> to arrange its wards, the tools that sit on a page.</li>
     </ol>
-    <p>If a file changes outside Rimeward while your buffer has edits, use <strong>Compare changes</strong> to choose which version to keep. Recovery history helps with interruptions; keep normal Git commits and backups for durable recovery.</p>
+    <p>You can start without a Rimeward server account. A page gets its purpose from its wards; there is no separate development-page mode. Keep the first layout small enough to see your file, terminal output, and review together.</p>
+  </section>
 
-    <h2>4. Add Rime when you need it</h2>
-    <p>For a standalone desktop, open <strong>Account → Agent</strong> and connect a supported provider. A new Rime response needs that connection; the editor, terminal and layout tools do not need model credits. A terminal running Codex or Claude Code needs that CLI installed and signed in separately.</p>
-    <p>Try a bounded request: “Explain this file and suggest one improvement. Wait for me to review it before changing anything.” Inspect the answer and action trail, then use the same file review and project checks when you approve an edit.</p>
+  <section class="guide-section" id="connect">
+    <h2>Connect the tools</h2>
+    <p>A Workspace supplies folders; a page arranges tools. Add a <strong>Workspace</strong> through <strong>Edit → Add ward</strong>, choose the primary folder, and connect Editor, Terminal, Rime, and Changes as needed. Use <strong>Connect a ward…</strong>, the tool's <strong>Workspace connection…</strong> control, or drag a Workspace Leyline in <strong>Leylines</strong> mode.</p>
+    <p>Each connected tool uses one Workspace. Moving it to another page preserves that connection. Select instruction files explicitly, such as <code>AGENTS.md</code> or <code>CLAUDE.md</code>; leaving the selection blank loads no instruction file from that folder.</p>
+    <p>The primary folder appears at <code>/</code>. Additional folders can appear at virtual paths such as <code>/data</code>, including folders on connected computers or SSH hosts. Keep the first task on one local folder. Tools and dependencies belong on the machine that owns it.</p>
+    <aside class="guide-callout"><strong>Check the owner before running commands.</strong> Fresh unlinked desktop tools use <code>Documents/Rimeward/workspace</code>, which may differ from your project. Existing sessions keep their original machine. Check the owner label and terminal working directory, even when the page looks familiar.</aside>
+  </section>
 
-    <h2>Before you leave</h2>
-    <p>Save your buffers and inspect running terminal sessions. Closing a terminal tab hides its view and does not end its process. Use <strong>… → Task manager…</strong> to find hidden sessions and end work you no longer need.</p>
-    <p>Your project folders stay on their computer. If you later connect a trusted server, shared Rime history, attachments and tool output can pass through it. That distinction matters when a conversation includes private file content.</p>
-    <p>Continue with the <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Workspace">workspace reference</a>, <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup">installation requirements</a>, or <a href="/rimeward">Rimeward overview</a>.</p>
-  </article>
-</MarketingLayout>
+  <section class="guide-section" id="first-task">
+    <h2>Complete a first task</h2>
+    <p>Try a documentation correction: improve one sentence in the README without changing behavior. It exercises the complete loop without requiring an AI connection.</p>
+    <ol class="guide-steps">
+      <li><strong>Establish the starting state.</strong> Open a shell in Terminal. Confirm the folder; in a Git project, run <code>git status --short</code>. Notice existing edits so you can preserve them.</li>
+      <li><strong>Find the file.</strong> Use the Editor explorer or <strong>Cmd/Ctrl+P</strong>. Read enough surrounding text to make the sentence accurate.</li>
+      <li><strong>Edit and save.</strong> Change one sentence, then press <strong>Cmd/Ctrl+S</strong>. Formatting also changes the buffer and needs a save.</li>
+      <li><strong>Check the result.</strong> Run the project's documented Markdown or documentation check if it has one. For a code change, run the relevant project checks in the terminal.</li>
+      <li><strong>Review what changed.</strong> Open Changes or run <code>git diff -- README.md</code>. Verify that the saved diff contains your intended correction and preserves unrelated work.</li>
+    </ol>
+    <p>A clean result means you can explain the change and the checks you ran. Decide whether to commit using your project's normal workflow. A successful save does not establish that code builds or that a service has been deployed.</p>
+  </section>
+
+  <section class="guide-section" id="rime">
+    <h2>Bring in Rime</h2>
+    <p>Open <strong>Account → Agent</strong> to connect a supported provider: the ChatGPT backend, OpenRouter, OpenAI API, or an OpenAI-compatible endpoint. New Rime responses need provider access; the editor, terminal, and layout tools do not require model credits. Model availability, billing, and quotas belong to that provider.</p>
+    <p>Connect Rime to the same Workspace, then use <strong>@</strong> to mention an editor buffer or terminal output. Try: “Explain this README paragraph and suggest one clearer sentence. Wait for my review before editing.” Inspect the response and action trail, then follow the same save, check, and diff steps for an approved edit.</p>
+    <p>Review the ward's tools and approval settings before giving it work. Do not assume every file write or command will prompt. A native shell uses your OS account's permissions; a Workspace's virtual paths do not sandbox that shell.</p>
+    <p>Terminal's <strong>+</strong> menu also offers Codex and Claude Code sessions. Install and authenticate those CLIs separately on the owning computer; connecting Rime's provider does not sign them in. For local AI, install a model server and suitable model separately, then configure its documented compatible endpoint. See <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Rime">the Rime guide</a> for provider and local-model setup.</p>
+  </section>
+
+  <section class="guide-section" id="save">
+    <h2>Save, compare, and recover</h2>
+    <p>Editor tabs retain undo history. Its <strong>…</strong> menu offers find/replace, go to line, word wrap, formatting, and recovery. If a file changes outside Rimeward while your buffer is dirty, use <strong>Compare changes</strong> to choose the version explicitly. Repeated saves are a poor way to resolve a conflict.</p>
+    <p>Closing a dirty tab keeps recovery data for reopening. Recovery helps with interruptions; keep Git commits and separate project backups for durable history. Before changing a Workspace connection, finish active work and resolve unsaved buffers. Disconnect linked wards before deleting a Workspace.</p>
+    <p>The Problems panel shows current-file diagnostics from bundled Biome analysis for supported languages. It does not execute project lint plugins. Syntax highlighting does not imply lint support, and the editor does not provide full language-server support, cross-file type checking, a debugger, or VS Code extensions. Run the project's checks in Terminal.</p>
+  </section>
+
+  <section class="guide-section" id="processes">
+    <h2>Manage running work</h2>
+    <p>Closing a terminal tab hides its view; it does not stop its process. Removing its ward also detaches the view. Open <strong>… → Task manager…</strong> to find hidden sessions, reopen one, inspect status, or end work you no longer need. Delete saved history separately when appropriate.</p>
+    <p><strong>Let Rime control</strong> is on by default for Shell, Codex, and Claude Code. You can type while it is on. Turn it off to block Rime input while retaining your keyboard. If another device owns input, use <strong>Take control</strong>.</p>
+    <p>Reloading reconnects to a live session. Quitting ends the local runtime; a restored terminal screen is not a resumed build. Reopening a saved tab starts the shell or CLI conversation chooser without replaying old commands. Explicitly ended sessions stay stopped until you select <strong>Resume session</strong>.</p>
+    <p>For Rime's longer work, use <strong>Tasks</strong> to inspect output and Stop controls. Stopping a response does not undo completed changes; stopping a wait may leave the observed process running. Check terminal and task status before launching work again.</p>
+  </section>
+
+  <section class="guide-section" id="privacy">
+    <h2>Understand where work goes</h2>
+    <p>Your project folders stay at their approved paths on their owning computer. Editor recovery and the Workspace database stay desktop-owned. The local app works without hosting a server, although cloud models, online pages, and integrations require their own network access.</p>
+    <p>Rime sends conversation and tool context to the model provider serving the response. Mentioning private file content can include it in that context. If you later pair a trusted server, Rime history, attachments, and tool output can synchronize; live remote reads and edits also travel through that server. Local project storage does not imply that all conversation content stays local.</p>
+    <p>Back up projects separately from the application profile. Before a profile backup or update, save work, finish or stop important tasks, and quit gracefully. Preserve OS credential storage through its supported backup process. Follow <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Care">Desktop care</a> for update and recovery details and <a href="https://github.com/frostdev-ops/rimeward/wiki/Remote-Access">remote access</a> before pairing.</p>
+  </section>
+
+  <section class="guide-section" id="troubleshoot">
+    <h2>Find the next useful check</h2>
+    <ul class="guide-checklist">
+      <li><strong>Wrong files or folder?</strong> Inspect the Workspace connection and session owner, then the working directory. Sharing a page does not supply project context.</li>
+      <li><strong>Workspace unavailable?</strong> Check the primary folder's owning machine and path. An offline primary folder blocks the Workspace; an offline secondary folder affects that path.</li>
+      <li><strong>Rime cannot respond?</strong> Check its provider, model, access, and endpoint. A saved transcript does not prove a working connection. Paired desktops use <strong>Provider connections</strong> to identify the installation serving model calls.</li>
+      <li><strong>CLI will not start?</strong> Confirm installation, authentication, and availability in the app's environment on the owning computer.</li>
+      <li><strong>Missing terminal or conflicting edit?</strong> Inspect Task manager for sessions; use Compare changes and recovery for buffers.</li>
+    </ul>
+    <p>For a bug report, include your app version, OS, and a short reproduction with private values removed. Keep application databases, credentials, cookies, and private files out of public reports. Match this guide to your installed release; platform permissions and external services still apply.</p>
+    <div class="guide-sources">
+      <p>Continue with the official <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Setup">setup</a>, <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Workspace">Workspace</a>, <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Rime">Rime</a>, and <a href="https://github.com/frostdev-ops/rimeward/wiki/Desktop-Care">care</a> references, or return to the <a href="/rimeward">Rimeward overview</a>.</p>
+    </div>
+  </section>
+</GuideLayout>
+
+<style>
+  .workspace-map { margin: 0; padding: 1.75rem; border: 1px solid rgb(127 194 227 / 20%); border-radius: 1.2rem; background: radial-gradient(ellipse at 50% 20%, rgb(43 132 167 / 15%), transparent 75%), rgb(7 18 31 / 65%); }
+  .workspace-graphic { position: relative; max-width: 36rem; margin: auto; padding-bottom: 2rem; }
+  .workspace-node { display: flex; align-items: center; flex-direction: column; gap: .35rem; padding: 1rem .5rem; border: 1px solid rgb(127 194 227 / 25%); border-radius: .75rem; background: #0b1e30; color: #deeff8; font-size: 1.4rem; }
+  .workspace-icon { display: inline-flex; width: 1.4rem; height: 1.4rem; }
+  .workspace-icon :global(svg) { width: 100%; height: 100%; }
+  .workspace-node :global(.fd-ic) { width: 1.4rem; height: 1.4rem; }
+  .workspace-node strong { font-size: .95rem; }
+  .workspace-node small { color: #9ab7cd; font-size: .75rem; }
+  .workspace-root { width: 11rem; margin: auto; border-color: rgb(113 220 245 / 55%); box-shadow: 0 0 35px rgb(63 171 202 / 9%); }
+  .workspace-lines { display: block; width: 100%; height: 4.5rem; overflow: visible; fill: none; }
+  .workspace-lines path { vector-effect: non-scaling-stroke; }
+  .line-base { stroke: #294e63; stroke-width: 2; }
+  .line-flow { stroke: #84dcf0; stroke-width: 2; stroke-dasharray: 9 31; animation: workspace-flow 4s linear; }
+  .workspace-tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+  .workspace-map-label { position: absolute; bottom: 0; width: 100%; text-align: center; color: #82b8ce; font-size: .7rem; letter-spacing: .1em; text-transform: uppercase; }
+  .workspace-map figcaption { max-width: 36rem; margin: 1.2rem auto 0; color: #a5bed1; font-size: .85rem; line-height: 1.6; }
+  @keyframes workspace-flow { to { stroke-dashoffset: -40; } }
+  @media (max-width: 500px) { .workspace-map { padding: 1.1rem .75rem; } .workspace-tools { gap: .5rem; } .workspace-node strong { font-size: .82rem; } .workspace-node small { font-size: .67rem; } }
+  @media (prefers-reduced-motion: reduce) { .line-flow { animation: none; stroke-dasharray: none; } }
+</style>

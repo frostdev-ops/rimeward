@@ -5,9 +5,10 @@ Ownership verification was complete and ads.txt was Authorized. The report asks
 for substantial useful content, ongoing maintenance, and genuine user interest.
 Technical ownership verification alone does not meet those requirements.
 
-The website follow-up adds three practical guides grounded in project documentation:
-local Rimeward workspaces, Crosspane desk setup, and Rimewire agent handoffs. A guide
-index, product links and persistent navigation make them discoverable. The hub
+The website follow-up adds five practical guides grounded in project documentation:
+local Rimeward workspaces, Crosspane desk setup, Rimewire agent handoffs, Frostsim
+character simulations, and Loothing raid preparation. Chapter navigation, animated
+demonstrations, product links and a guide index make them discoverable. The hub
 explains the projects in readable text. A public privacy page describes current
 storage, provider connections and the distinction between local files and shared
 conversation content.
@@ -29,22 +30,29 @@ configuration. References: [site readiness](https://support.google.com/adsense/a
 [approval issues](https://support.google.com/adsense/answer/81904), and
 [privacy disclosures](https://support.google.com/adsense/answer/1348695).
 
-## Validation and publication status
+## Website-only publication
 
-- 896 existing tests, type checking, desktop lint and the web build pass.
-- A detached checkout of the committed website change builds and passes the
-  existing Auth UI smoke. All nine HTML pages pass 1440px, 390px and 320px layout
-  checks, with no page errors; phone navigation also passes with motion enabled.
-- Public page/crawler routes return anonymous 200. Canonicals, sitemap entries,
-  unchanged publisher authorization and protected dashboard/API routes pass.
-  The guides' external documentation links return 200.
-- The required remote workspace smoke fails at its phone terminal assertion:
-  `UI_CONTINUED` is absent from the terminal screen. The same assertion fails on
-  unchanged parent revision `437623e`, so it predates the website change. Tests
-  and native/terminal code were preserved; this failure is not a passing check.
-- The existing dev/1.0.19 draft release has a failed Windows desktop workflow.
-  It cannot be promoted under the release guide. The website change is committed
-  locally; publication and a new Google review have not occurred.
+The candidate is based on current main (`5ae7ea0`) on `dev/1.0.18`. It contains
+only public website content, navigation, crawler routes and review documentation.
+Package versions, desktop code, dependencies and existing tests remain unchanged.
+The native `dev/1.0.19` candidate is separate; its changes are not in this website
+deployment. No desktop tag, installation or updater publication is part of this
+follow-up.
+
+Validation and public review evidence will be recorded in RIME-45 and the website
+pull request. A review request confirms submission, not Google's approval.
+
+Local validation passed 871 existing unit tests, typecheck, build, desktop lint,
+the auth UI smoke check, and 33 responsive public-page checks across 1440, 390 and
+320 pixels. All 39 chapter anchors, mobile guide navigation, demo controls,
+canonical URLs, crawler files and anonymous/private route boundaries were checked.
+
+The existing remote-workspace smoke check failed at its terminal input assertion
+under Node 22 and Node 26. An unchanged-main baseline passed once. A separate
+artifact review found unchanged terminal execution code and shared dashboard CSS;
+guide assets are outside the dashboard import graph, while chunk loading metadata
+differs. The cause remains unresolved. No native code or test assertion was changed.
+Exact-candidate CI and production publication still require separate verification.
 
 Review screenshots: [guides desktop](screenshots/frostdev-guides-desktop.jpg),
 [guides phone](screenshots/frostdev-guides-phone.jpg),

@@ -11,6 +11,8 @@ Allow: /guides/
 Allow: /privacy$
 Allow: /privacy/$
 Allow: /ads.txt$
+Allow: /robots.txt$
+Allow: /sitemap.xml$
 Allow: /_astro/
 Allow: /projects/
 Allow: /brand/
