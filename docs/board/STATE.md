@@ -690,6 +690,27 @@ below is separately verified. Human feature/platform acceptance remains open.
 
 ## Keeping the board truthful
 
+- At `d3eae00`, push Tests and server CI pass. Linux desktop CI passes **79**
+  ordinary native tests, the isolated Xvfb regression, all seven Wayland and five
+  media-helper cases, staged **895** Node tests and extracted DEB/AppImage runtime,
+  pinned OCR and generated screen/audio checks. Mac passes **165** native tests
+  (eleven ignored), staged **895** Node tests, staged/app-contained runtime/media
+  and ad hoc deep strict signature/version checks. Windows fails before its
+  fourteen native fixtures with MSVC **CVT1100/LNK1123** duplicate VERSION resource.
+  This supersedes the LLVM-only deduplication inference; no Windows acceptance is
+  claimed. A duplicate PR Tests run is explicitly canceled after **951 seconds**.
+  Its original log records an uncaught deferred node-pty resize after process exit;
+  the cause of the overall stall remains unproved.
+
+- The shared PTY correction guards the pinned Windows agent when a queued resize
+  actually executes, and closes input admission synchronously at exit while final
+  output drains. The focused regression uses the real pinned Windows JavaScript
+  queue/resize implementation with mocked native I/O: it reproduces the original
+  exception before the fix and passes afterward, including live resize/error and
+  persisted final output. All **896** Node tests, typecheck and desktop lint pass
+  locally. Independent commit review and fresh Windows/final-candidate CI remain
+  gates; these checks do not establish native Windows or installed acceptance.
+
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`
 on an implementation's acceptance package until that package's named checks pass.
 Later progress or a blocker reopens a package. Persist settled status/evidence in

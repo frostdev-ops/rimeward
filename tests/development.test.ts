@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { EventEmitter } from "node:events";
 import { DEV_TOOLS } from "../src/lib/dev/tools.ts";
 import {
   addProject,
@@ -180,6 +182,75 @@ test("terminal permissions change live, denied input cannot claim ownership, and
     assert.throws(() => configureSession(1, s.id, { agentInput: true, mode: "invalid" as never }));
     assert.equal(readSession(1, s.id).session.agentInput, false);
   } finally { t.mock.timers.reset(); await closeSession(1, s.id); }
+});
+
+test("Windows deferred PTY resizes stop at close or native exit and final output still drains", { timeout: 5000 }, async t => {
+  const require = createRequire(import.meta.url);
+  const { WindowsTerminal } = require("node-pty/lib/windowsTerminal.js");
+  const agentModule = require("node-pty/lib/windowsPtyAgent.js");
+  const agentPrototype = agentModule.WindowsPtyAgent.prototype;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const resizes: number[][] = [];
+  let agent: any;
+  // Use the pinned Windows queue and resize implementation, replacing only native I/O.
+  t.mock.method(agentModule, "WindowsPtyAgent", function () {
+    agent = Object.assign(Object.create(agentPrototype), {
+      _useConpty: true, _pty: 1, _innerPid: 1, _exitCode: undefined as number | undefined,
+      _inSocket: Object.assign(new EventEmitter(), { destroy() {} }),
+      _outSocket: new EventEmitter(),
+      _ptyNative: { resize: (_pty: number, cols: number, rows: number) => resizes.push([cols, rows]) },
+      kill() { this._exitCode = 0; },
+    });
+    return agent;
+  });
+  const p = addProject(1, root);
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    for (const ending of ["native-exit", "close", "output-drain"] as const) {
+      const transport = new WindowsTerminal("cmd.exe", [], {});
+      const s = await startSession(1, { project: p.id, transport });
+      const socket = agent.outSocket;
+      socket.emit("ready_datapipe");
+      resizeSession(1, s.id, "client:one", 91, 26);
+      assert.equal(transport._deferreds.length, 1, "resize waits for first Windows output");
+      let closed: Promise<void> | undefined;
+      if (ending === "close") closed = closeSession(1, s.id);
+      else agent._exitCode = 0;
+      if (ending === "output-drain") {
+        assert.doesNotThrow(() => socket.emit("data", "FINAL_OUTPUT\r\n"));
+        socket.emit("close");
+        assert.throws(() => resizeSession(1, s.id, "client:one", 92, 27), /process has ended/);
+        assert.throws(() => writeSession(1, s.id, "client:one", "late input"), /process has ended/);
+      }
+      // The library drains its queue in this event, outside resizeSession's stack.
+      if (ending !== "output-drain") assert.doesNotThrow(() => socket.emit("data", "FINAL_OUTPUT\r\n"));
+      assert.deepEqual(resizes, [], "ended PTYs never receive a native resize");
+      if (ending !== "output-drain") socket.emit("close");
+      if (closed) await closed;
+      else {
+        while (readSession(1, s.id).session.state === "running")
+          await waitSession(1, s.id, readSession(1, s.id).session.sequence, 1000);
+      }
+      const result = readSession(1, s.id);
+      assert.match(result.data, /FINAL_OUTPUT/);
+      assert.equal(result.session.cols, 91);
+      assert.equal(result.session.state, ending === "close" ? "interrupted" : "exited");
+      assert.equal(result.session.terminationReason, ending === "close" ? "remote-process-unconfirmed" : null);
+    }
+    const transport = new WindowsTerminal("cmd.exe", [], {});
+    const s = await startSession(1, { project: p.id, transport });
+    const socket = agent.outSocket;
+    socket.emit("ready_datapipe");
+    resizeSession(1, s.id, "client:one", 93, 28);
+    assert.doesNotThrow(() => socket.emit("data", "READY\r\n"));
+    resizeSession(1, s.id, "client:one", 94, 29);
+    assert.deepEqual(resizes, [[93, 28], [94, 29]], "live queued and ready resizes still reach native I/O");
+    agent._ptyNative.resize = () => { throw new Error("live native resize failed"); };
+    assert.throws(() => resizeSession(1, s.id, "client:one", 95, 30), /live native resize failed/);
+    const closed = closeSession(1, s.id);
+    socket.emit("close");
+    await closed;
+  } finally { Object.defineProperty(process, "platform", platform); }
 });
 
 test("streamed terminal output is ordered, bounded and drains before exit; restart keeps settings without replaying tasks", async () => {

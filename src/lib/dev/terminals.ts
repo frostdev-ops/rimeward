@@ -83,6 +83,7 @@ interface Live {
   queuedBytes: number;
   paused: boolean;
   closing?: boolean;
+  ended?: boolean;
   terminationReason?: 'cancelled' | 'closed' | 'runtime-shutdown' | 'input-error';
   outputTimer?: ReturnType<typeof setTimeout>;
   flush?: ReturnType<typeof setTimeout>;
@@ -491,10 +492,19 @@ export async function startSession(
   // node-pty 1.1 exposes errors only from conout; conin otherwise crashes the host.
   // ponytail: pinned private handle; remove when node-pty exposes input errors publicly.
   if (process.platform === "win32") {
-    s.input = (pty as IPty & { _agent?: { inSocket?: Socket } })._agent?.inSocket;
+    const agent = (pty as IPty & { _agent?: { inSocket?: Socket; exitCode: number | undefined; resize(cols: number, rows: number): void } })._agent;
+    // shortcut: pinned node-pty agent; guard deferred resizes here until its public queue handles exit.
+    if (agent) {
+      const resize = agent.resize;
+      agent.resize = (cols, rows) => {
+        if (s.closing || s.ended || agent.exitCode !== undefined) return;
+        resize.call(agent, cols, rows);
+      };
+    }
+    s.input = agent?.inSocket;
     s.input?.on("error", error => {
       console.error("[terminal] Input pipe failed", error);
-      if (!s.closing && live.get(id) === s) stopPty(s, 'input-error');
+      if (!s.closing && !s.ended && live.get(id) === s) stopPty(s, 'input-error');
     });
   }
   if (restored) flushOutput(s);
@@ -510,6 +520,7 @@ export async function startSession(
     else if (!s.outputTimer) { flushOutput(s); s.outputTimer = setTimeout(() => flushOutput(s), 4); }
   });
   pty.onExit(({ exitCode, signal }) => {
+    s.ended = true;
     const exitSignal = typeof signal === 'number' && signal > 0 ? signal : null;
     flushOutput(s);
     term.write("", () => {
@@ -634,7 +645,7 @@ function claimInput(row: Row, owner: string, takeover = false) {
 function running(user: number, id: string): Live {
   rowOf(user, id);
   const s = live.get(id);
-  if (!s || s.closing)
+  if (!s || s.closing || s.ended)
     throw new DevError("This process has ended. Resume the session to continue.", 409);
   return s;
 }
@@ -677,7 +688,7 @@ function commandLine(s: Live, expected = ''): boolean {
 
 function commandBlocker(row: Row, s: Live | undefined, settling = false): string | null {
   if (row.kind !== 'claude' && row.kind !== 'codex') return 'Slash commands require a Claude Code or Codex session, not a shell or command log.';
-  if (!s || s.closing || row.state !== 'running') return 'The CLI is not running.';
+  if (!s || s.closing || s.ended || row.state !== 'running') return 'The CLI is not running.';
   if (!row.agent_input) return 'Let Rime control is off.';
   const parked = cliInputBlocker(row.id);
   if (parked) return parked;
