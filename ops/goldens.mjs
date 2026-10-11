@@ -111,7 +111,7 @@ try {
     await frame(`${OUT}/${name}.png`);
     console.log('wrote', `${OUT}/${name}.png`);
   };
-  await shot('/?still=1', 'splash', 4000);
+  await shot('/login?still=1', 'splash', 4000);
   await shot('/dash', 'dashboard', 16000); // the browser ward's chromium needs time for its first frame
   // The vocabulary: a ward up close, Rime, Leylines mode, the catalog.
   const el = async (sel, name) => {

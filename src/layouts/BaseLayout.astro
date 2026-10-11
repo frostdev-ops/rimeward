@@ -8,12 +8,10 @@ import { siteInfo } from '../lib/site.ts';
 interface Props {
   title: string;
   description?: string;
-  /** Public marketing pages opt in to search indexing. */
-  index?: boolean;
   wardWindow?: boolean;
 }
 
-const { title, description = siteInfo().name, index = false, wardWindow = false } = Astro.props;
+const { title, description = siteInfo().name, wardWindow = false } = Astro.props;
 
 // Per-user theme rides locals.user (populated by middleware from the session
 // join). Knob values land as attributes on <html> — SSR'd, so no flash.
@@ -27,7 +25,7 @@ const theme = parseTheme(Astro.locals.user?.theme ?? null);
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="description" content={description} />
-    {!index && <meta name="robots" content="noindex, nofollow" />}
+    <meta name="robots" content="noindex, nofollow" />
     <meta name="theme-color" content={themeColor(theme)} />
     <title>{title}</title>
     <link rel="icon" href="/brand/favicon" type="image/png" />

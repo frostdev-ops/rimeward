@@ -14,6 +14,7 @@ The wiki has two paths:
 | Reference | Covers |
 | --- | --- |
 | [Contributing](../CONTRIBUTING.md) | Development setup, validation commands, platform builds, and contribution expectations. |
+| [Native website cleanup](native-website-cleanup.md) | App entry, separate public-site ownership, preserved native contracts and 1.0.20 release ordering. |
 | [Development workspaces](development-workspaces.md) | Runtime ownership, editor/terminal behavior, conversation routing, sync, proxy configuration, and checks. |
 | [Computer control](computer-control.md) | Remote Desktop transport, OS integration, permissions, clipboard/files, and native safety contracts. |
 | [Browser downloads](browser-downloads.md) | Placement, authenticated downloads, attachments, limits, and validation evidence. |
