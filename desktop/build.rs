@@ -21,13 +21,4 @@ fn main() {
         ]),
     ))
     .expect("tauri-build");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
-        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
-    {
-        // Tauri links Common Controls v6 only to bins; library unit tests need it too.
-        let resource = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"))
-            .join("resource.lib");
-        assert!(resource.is_file(), "Tauri Windows resource is missing");
-        println!("cargo:rustc-link-arg={}", resource.display());
-    }
 }

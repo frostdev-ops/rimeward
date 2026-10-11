@@ -204,7 +204,20 @@ jobs:
           RUST_BACKTRACE: '1'
         run: |
           ./ops/windows-loader.ps1 -SelfTest
-          npm run desktop:check 2>&1 | Tee-Object -FilePath desktop-native-check.log
+          ./ops/windows-native-tests.ps1 -SelfTest
+          npm run lint:desktop 2>&1 | Tee-Object -FilePath desktop-native-check.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fmt --manifest-path desktop/Cargo.toml --check 2>&1 | Tee-Object -FilePath desktop-native-check.log -Append
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --manifest-path desktop/Cargo.toml --all-targets -- -D warnings 2>&1 | Tee-Object -FilePath desktop-native-check.log -Append
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The library unit PE lacks Tauri's bins-only activation manifest.
+          cargo test --manifest-path desktop/Cargo.toml --no-run --message-format=json > windows-native-artifacts.jsonl 2> windows-native-build-errors.log
+          $buildExit = $LASTEXITCODE
+          Get-Content windows-native-build-errors.log | Tee-Object -FilePath desktop-native-check.log -Append
+          if ($buildExit -ne 0) { exit $buildExit }
+          ./ops/windows-native-tests.ps1 -ArtifactsPath windows-native-artifacts.jsonl | Tee-Object -FilePath desktop-native-check.log -Append
+          cargo test --manifest-path desktop/Cargo.toml 2>&1 | Tee-Object -FilePath desktop-native-check.log -Append
           $nativeExit = $LASTEXITCODE
           exit $nativeExit
 

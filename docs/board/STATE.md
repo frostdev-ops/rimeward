@@ -685,8 +685,16 @@ below is separately verified. Human feature/platform acceptance remains open.
   fixture page/ward and genuine projectless conversation are added through normal
   concurrent-save/placement APIs, preserving every original entry. Its full-policy
   status passes after normal source synchronization; the initial refusal is retained.
-  Input enablement awaits action-time confirmation, and physical parent/worker/
-  guardian/local Stop qualification remains pending. Production allowances are unchanged.
+  After explicit action-time approval, the normal authenticated paired tool route
+  enumerates the disposable fixture and captures exact TARGET window pixels and
+  accessibility identity. One fixed text insertion reaches TARGET while the
+  fixture's own AppKit ledger proves OTHER unchanged. Installed parent/worker/
+  guardian paths, hashes and strict signatures match the signed artifact. The
+  owned session is released; the UI saves remote access off and normal status
+  confirms `enabled=false`, `suspended=true`, `controller=null`. This narrow probe
+  does not prove physical takeover, IME, held-input release, lock/sleep, Spaces,
+  permission recovery or process-death behavior. The full qualification remains
+  pending and production allowances are unchanged.
 
 ## Keeping the board truthful
 
@@ -710,6 +718,18 @@ below is separately verified. Human feature/platform acceptance remains open.
   persisted final output. All **896** Node tests, typecheck and desktop lint pass
   locally. Independent commit review and fresh Windows/final-candidate CI remain
   gates; these checks do not establish native Windows or installed acceptance.
+
+- Windows test preparation now restores the original Tauri build script and
+  avoids duplicate app resource linkage. A scoped PowerShell helper selects the
+  exact current Cargo library unit and normal app artifacts, extracts the app's
+  existing activation manifest with SDK `mt.exe`, validates bounded XML/Common
+  Controls v6 with DTDs prohibited, and copies its exact bytes only to the unit
+  executable's `.manifest` sidecar. The workflow preserves desktop lint,
+  formatting, all-target Clippy, full native tests and original stderr/exit
+  evidence, inserting this preparation before native execution. A focused
+  self-check covers artifact ambiguity/identity/path and manifest refusal.
+  Source/Cargo identity checks pass locally; PowerShell/SDK execution, actual
+  MSVC native tests, runtime and NSIS/MSI checks require fresh Windows CI.
 
 Use a real tracker ID for progress, decisions and evidence. Do not post `ready`
 on an implementation's acceptance package until that package's named checks pass.
