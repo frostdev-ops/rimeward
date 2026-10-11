@@ -10,7 +10,7 @@ human-run provider acceptance.
 | Surface | Observed state | Evidence |
 |---|---|---|
 | Local and GitHub main | `5ae7ea0`, source **1.0.18**; PR #16 merged without changing candidate | [PR #16](https://github.com/frostdev-ops/rimeward/pull/16) |
-| Active development | `dev/1.0.19`, source **1.0.19**; immutable-artifact validation correction `f723d30` starts the follow-up release | [Draft PR #17](https://github.com/frostdev-ops/rimeward/pull/17) |
+| Active development | `dev/1.0.19`, source **1.0.19**; reviewed implementation candidate `0bb220e` plus this documentation-only session handoff | [Draft PR #17](https://github.com/frostdev-ops/rimeward/pull/17) |
 | Final 1.0.18 development workflows | Tests, server and all desktop platforms passed at `5ae7ea0` | [Tests](https://github.com/frostdev-ops/rimeward/actions/runs/38068411399), [server](https://github.com/frostdev-ops/rimeward/actions/runs/38068411406), [desktop](https://github.com/frostdev-ops/rimeward/actions/runs/38068411467) |
 | Main workflows | Tests, server and all desktop platforms passed at the same `5ae7ea0` | [Tests](https://github.com/frostdev-ops/rimeward/actions/runs/38071140635), [server](https://github.com/frostdev-ops/rimeward/actions/runs/38071140666), [desktop](https://github.com/frostdev-ops/rimeward/actions/runs/38071140612) |
 | Tagged desktop checks | Windows NSIS/MSI and Linux DEB/AppImage passed. Original Mac signer predicate failed; corrected audit passed on the unchanged DMG and frozen source | [Original tagged run](https://github.com/frostdev-ops/rimeward/actions/runs/38074080663), [corrected immutable-DMG audit](https://github.com/frostdev-ops/rimeward/actions/runs/38077738647) |
@@ -26,6 +26,70 @@ Passing build workflows establish the recorded revision's CI result. They do not
 replace feature-specific live acceptance or installed-app checks. Published
 1.0.18 alone is not installed-app or live provider evidence; the Mac installation
 below is separately verified. Human feature/platform acceptance remains open.
+
+## Session handoff, 2026-10-10
+
+The user requested a commit and push after the current handoffs. The PTY fix
+(`f518b6b`), Windows unit-manifest preparation (`ad0a1f3`) and full release diff
+(`5ae7ea0..0bb220e`) pass independent review. Local **896** Node tests, typecheck,
+desktop lint and a clean committed production build pass. The full release
+review independently passes **59** focused existing tests. Unrelated artwork,
+private instructions, application data and other worktrees are preserved.
+
+Fresh `0bb220e` [push Tests](https://github.com/frostdev-ops/rimeward/actions/runs/38098481030),
+[PR Tests](https://github.com/frostdev-ops/rimeward/actions/runs/38098483361) and
+[server CI](https://github.com/frostdev-ops/rimeward/actions/runs/38098481039) pass.
+Linux desktop native/Xvfb/helper checks pass, but staged runtime validation
+fails: **895 passed, one failed,
+zero skipped**. Browser history lookup reports `Page.getNavigationHistory: Not
+attached to an active page` before forward navigation dispatch. The original
+test passes locally; the browser suite passes **10/10**, and **100** real-session
+navigation cycles (**400** commands) pass with protocol traces. Local and CI use
+the same Chromium version; macOS/Node 26 differs from Linux/bundled Node 22.22.
+The cause remains unproved. No retry, product change, test weakening or passing
+CI claim is made. RIME-31/53 remain open with the exact failed run retained.
+
+In the same [desktop run](https://github.com/frostdev-ops/rimeward/actions/runs/38098481019),
+Windows passes both PowerShell self-checks and prepares the exact Cargo-reported
+library unit manifest. The executable now runs **77** native tests: **75** pass,
+one fails and one is ignored. All fourteen Windows Lens fixtures execute;
+thirteen pass, while real WGC initialization fails before stage one with
+`capture-unavailable:0x80070057`. Original stdout/backtrace, step exit **1** and
+diagnostic artifact are retained. The loader hurdle is cleared; this native
+failure keeps Windows runtime/NSIS/MSI validation open. Read-only source review
+cannot identify which D3D/WGC API produced the combined HRESULT or distinguish
+fixture eligibility from host graphics availability. No cause is inferred and
+no assertion is weakened. Mac native, staged runtime and media steps pass;
+application build and packaged signature/runtime checks remain in progress.
+The documentation-only push starts fresh branch CI and may supersede the older
+in-flight run. Inspect newest exact-head results before further release work;
+neither old partial successes nor the handoff establish final-candidate readiness.
+
+The signed private Mac fixture passes one bounded background text observation/
+input probe through the normal authenticated paired tool route. TARGET's pixels
+and AX identity agree; TARGET changes once and OTHER remains unchanged. The
+owned session is released and both fixture windows/process are closed. Control
+is saved off/suspended with no controller. This does not complete RIME-48 or
+permit the private exact-build allowance in public source.
+
+Restoring the accepted public 1.0.18 app is deferred: a fresh read-only/normal
+consumer-status check finds no busy local Rime wards or jobs, but one actual
+native shell session remains running. It is preserved. A fresh live backup
+refuses Chromium's external `SingletonSocket` profile link; that partial owned
+backup is retained and is not a completed snapshot. The prior verified quiesced
+backup and public app remain available. The private qualifier stays installed
+with remote access off; no app/profile replacement or terminal interruption occurs.
+
+Local evidence writes subsequently fail with ENOSPC. The tracker is intact.
+Both full **32,106**-entry qualifier bundle trees independently match the frozen
+bytes/modes/directories/symlinks, and the installed signature passes deep strict
+verification. Removing only the identical owned temporary build copy recovers
+space for the handoff. The installed app, committed private source, signed
+inventory, evidence, profile and recovery material remain available.
+
+Continue from the draft release branch after inspecting its newest CI. Windows
+Lens geometry, current-Mac physical qualification and manual provider/platform
+acceptance remain explicit gates. AUR remains retired; 1.0.19 is not published.
 
 ## Branch and worktree disposition
 
