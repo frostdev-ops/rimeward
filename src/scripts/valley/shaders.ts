@@ -1,4 +1,4 @@
-// GLSL for the splash terrain. Plain template strings — no imports, no deps.
+// GLSL for native valley terrain. Plain template strings — no imports, no deps.
 //
 // The scene is one mesh: a plane displaced into quantized terraces by fbm
 // noise — the same construction as the brand's paper-cut topography art,

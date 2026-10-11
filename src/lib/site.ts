@@ -1,8 +1,7 @@
 import { deleteSetting, getSetting, setSetting } from './settings.ts';
 
-// What the public pages say about this instance — name, tagline, the splash's
-// cards and footer — as settings rows, edited on the admin page or with
-// `rimeward splash`. An empty row is not rendered; the name falls back.
+// Native instance branding and share policy, edited by admins and `rimeward splash`.
+// Legacy splash fields remain stored for CLI/config compatibility; the public site is separate.
 
 export interface SiteCard {
   title: string;

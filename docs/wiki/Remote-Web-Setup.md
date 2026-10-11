@@ -32,6 +32,10 @@ PORT=3005
 
 Replace the domain with the actual address users will visit. `PUBLIC_BASE_URL` controls OAuth redirects, origin checks, and secure-cookie behavior. The placeholder above is not a usable key.
 
+The server root opens Rimeward setup or login, then the authenticated dashboard.
+Public Frostdev pages are deployed separately from the [website repository](https://github.com/frostdev-ops/frostdev.io);
+keep any existing public static nginx include and native relay routes when upgrading.
+
 For a local web-only trial, use `PUBLIC_BASE_URL=http://localhost:3005` with the production server or Docker port. For `npm run dev:env`, use `http://localhost:4321`. A local web trial does not provide the desktop app's native tools.
 
 ## 2A. Run with Docker Compose
