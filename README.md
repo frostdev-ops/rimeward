@@ -147,6 +147,12 @@ For implementation details, see the [documentation index](docs/README.md). Wiki 
 
 To work on Rimeward itself, follow [CONTRIBUTING.md](CONTRIBUTING.md) for the development environment and checks. Bug reports and focused improvements are welcome in [Issues](https://github.com/frostdev-ops/rimeward/issues) and pull requests.
 
+## Built with AI, by a developer
+
+I'm a software developer, and AI is one of my tools, not a substitute for knowing what I'm doing. Rimeward is written with AI assistance under my direction. I review the code I ship and take responsibility for it, whether I typed it or an AI helped write it.
+
+That said, I'm human, and I can miss things. You're welcome to audit the code, report issues, and contribute improvements.
+
 ## License
 
 [MIT](LICENSE). Make it your own.
